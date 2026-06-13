@@ -325,19 +325,33 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
+        # Mirror the sent message into the target's gateway session.
+        # For thread-capable platforms, derive the effective thread root:
+        # - If thread_id was already set, the session for that thread exists.
+        # - If the send created a new thread (thread_id was None but
+        #   result carries the new event ID), pre-create the session entry
+        #   under the thread-root key so mirror_to_session can find it.
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
-                from gateway.mirror import mirror_to_session
+                from gateway.mirror import mirror_to_session, ensure_outbound_session
                 from gateway.session_context import get_session_env
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
                 user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+
+                effective_thread_id = thread_id
+                new_message_id = result.get("message_id")
+                if not effective_thread_id and new_message_id and platform_name in {
+                    "matrix", "slack", "discord", "telegram",
+                }:
+                    effective_thread_id = new_message_id
+                    ensure_outbound_session(platform_name, chat_id, effective_thread_id)
+
                 if mirror_to_session(
                     platform_name,
                     chat_id,
                     mirror_text,
                     source_label=source_label,
-                    thread_id=thread_id,
+                    thread_id=effective_thread_id,
                     user_id=user_id,
                 ):
                     result["mirrored"] = True
@@ -528,7 +542,15 @@ async def _send_via_adapter(
                     metadata["publish_topic"] = chat_id
                 if not metadata:
                     metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                gateway_loop = getattr(runner, "_gateway_loop", None)
+                if gateway_loop is not None and gateway_loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(
+                        adapter.send(chat_id=chat_id, content=chunk, metadata=metadata),
+                        gateway_loop,
+                    )
+                    result = future.result(timeout=60)
+                else:
+                    result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

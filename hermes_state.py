@@ -492,7 +492,9 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    mirror INTEGER DEFAULT 0,
+    mirror_source TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -2280,6 +2282,8 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        mirror: bool = False,
+        mirror_source: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2321,8 +2325,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, observed, mirror, mirror_source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2340,6 +2344,8 @@ class SessionDB:
                     codex_message_items_json,
                     platform_message_id,
                     1 if observed else 0,
+                    1 if mirror else 0,
+                    mirror_source,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -2768,7 +2774,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+                "mirror, mirror_source "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY id",
                 tuple(session_ids),
@@ -2799,6 +2806,10 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if row["mirror"]:
+                msg["mirror"] = True
+                if row["mirror_source"]:
+                    msg["mirror_source"] = row["mirror_source"]
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.

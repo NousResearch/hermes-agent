@@ -4556,6 +4556,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            # Claim the session slot *before* spawning the task so that an
+            # inbound message arriving between task creation and the task's
+            # first await (where _process_message_background sets the real
+            # sentinel) sees the slot as occupied and queues behind it
+            # instead of spinning up a duplicate AIAgent (#45456).
+            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[entry.session_key] = time.time()
+
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
             # system note before the turn runs.
@@ -4565,7 +4573,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
-            task = asyncio.create_task(adapter.handle_message(event))
+
+            async def _guarded_handle_message(
+                _adapter: Any, _event: MessageEvent, _key: str = entry.session_key,
+            ) -> None:
+                """Ensure the pre-claimed sentinel is always released.
+
+                In the normal flow the resume turn reaches
+                ``_handle_message``, which replaces our pre-claim with
+                its own ``_AGENT_PENDING_SENTINEL`` (and releases it in
+                its ``finally`` block) once the run begins.  If
+                ``handle_message`` raises *before* the runner takes over
+                the slot (e.g. during topic recovery or session-key
+                resolution), nobody clears our pre-claim — so we do it
+                here unconditionally.  The ``is _AGENT_PENDING_SENTINEL``
+                guard below only releases the slot we ourselves placed,
+                never one a live run currently owns.
+                """
+                try:
+                    await _adapter.handle_message(_event)
+                finally:
+                    # Only release if the sentinel we set is still there
+                    # (i.e. _process_message_background hasn't replaced
+                    # and cleaned it already).
+                    if self._running_agents.get(_key) is _AGENT_PENDING_SENTINEL:
+                        self._release_running_agent_state(_key)
+
+            task = asyncio.create_task(_guarded_handle_message(adapter, event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
             scheduled += 1

@@ -93,7 +93,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.SYNC_PUSH_TOKEN }}
+          # Default GITHUB_TOKEN for checkout — SYNC_PUSH_TOKEN is configured only
+          # before push. An empty/expired PAT here breaks checkout with auth errors
+          # while leaving rebase/test steps unreachable (failed_step: unknown).
 
       - name: Prepare sync failure recorder
         run: chmod +x .github/scripts/record-sync-failure.sh
@@ -215,6 +217,16 @@ jobs:
           if ! python -m pytest -q --tb=short; then
             bash "$GITHUB_WORKSPACE/.github/scripts/record-sync-failure.sh" plugin-smoke-test "$INTEGRATION_BRANCH"
             exit 1
+          fi
+
+      - name: Configure push credentials
+        env:
+          SYNC_PUSH_TOKEN: ${{ secrets.SYNC_PUSH_TOKEN }}
+        run: |
+          # PAT is required to push workflow-file changes from rebased ops-overlay;
+          # GITHUB_TOKEN checkout above keeps fetch alive when the PAT is missing.
+          if [ -n "$SYNC_PUSH_TOKEN" ]; then
+            git remote set-url origin "https://x-access-token:${SYNC_PUSH_TOKEN}@github.com/${{ github.repository }}.git"
           fi
 
       - name: Push rebased source branches and integration branch

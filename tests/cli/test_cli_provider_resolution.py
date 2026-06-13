@@ -626,6 +626,83 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
     assert captured_provider["api_mode"] == "codex_responses"
 
 
+def test_model_flow_custom_port_50009_no_false_positive(monkeypatch, capsys):
+    """B1: port 50009 must NOT trigger the /v1 prompt (only exact port 5000)."""
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "",
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": [],
+            "probed_url": f"{base_url}/models",
+            "resolved_base_url": None,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_custom_api_mode_selection",
+        lambda *a, **kw: "",
+    )
+
+    # User enters port 50009 — should NOT see /v1 prompt
+    # input sequence: base_url, api_key(=masked), api_mode(select=enter),
+    # model_name, context_length, display_name
+    answers = iter(["http://localhost:50009", "test-model", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "test-key")
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert "Did you mean to add /v1" not in output
+
+
+def test_model_flow_custom_respects_user_v1_rejection(monkeypatch, capsys):
+    """B2: when user rejects /v1, probe fallback must NOT override their URL."""
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "",
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": ["llm"],
+            "probed_url": "http://localhost:11434/v1/models",
+            "resolved_base_url": "http://localhost:11434/v1",
+            "suggested_base_url": "http://localhost:11434/v1",
+            "used_fallback": True,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": {}})
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_custom_api_mode_selection",
+        lambda *a, **kw: "",
+    )
+
+    # User enters localhost:11434, rejects /v1 with "n", then confirms model
+    answers = iter(["http://localhost:11434", "test-key", "n", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert "Keeping your original URL" in output
+    assert "Saving the working base URL instead" not in output
+
+
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
     monkeypatch.setattr(hermes_main, "_require_tty", lambda *a: None)
     monkeypatch.setattr(

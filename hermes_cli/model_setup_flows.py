@@ -752,11 +752,16 @@ def _model_flow_custom(config):
     # Hint: most local model servers (Ollama, vLLM, llama.cpp) require /v1
     # in the base URL for OpenAI-compatible chat completions.  Prompt the
     # user if the URL looks like a local server without /v1.
+    from urllib.parse import urlparse as _urlparse
+
+    _parsed = _urlparse(effective_url)
+    _local_ports = {11434, 8080, 5000}
+    _is_local_host = _parsed.hostname in ("localhost", "127.0.0.1", "0.0.0.0")
+    _has_known_local_port = _parsed.port in _local_ports
+    _no_port_specified = _parsed.port is None
+    _looks_local = _has_known_local_port or (_is_local_host and _no_port_specified)
+    _user_rejected_v1 = False
     _url_lower = effective_url.rstrip("/").lower()
-    _looks_local = any(
-        h in _url_lower
-        for h in ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":8080", ":5000")
-    )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
         print(f"  Hint: Did you mean to add /v1 at the end?")
@@ -771,19 +776,27 @@ def _model_flow_custom(config):
             if base_url:
                 base_url = effective_url
             print(f"  Updated URL: {effective_url}")
+        else:
+            _user_rejected_v1 = True
         print()
 
     from hermes_cli.models import probe_api_models
 
     probe = probe_api_models(effective_key, effective_url)
     if probe.get("used_fallback") and probe.get("resolved_base_url"):
-        print(
-            f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
-            f"not the exact URL you entered. Saving the working base URL instead."
-        )
-        effective_url = probe["resolved_base_url"]
-        if base_url:
-            base_url = effective_url
+        if _user_rejected_v1:
+            print(
+                f"  Note: endpoint also responds at {probe['resolved_base_url']}/models. "
+                f"Keeping your original URL. If you need /v1, re-run with it included."
+            )
+        else:
+            print(
+                f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
+                f"not the exact URL you entered. Saving the working base URL instead."
+            )
+            effective_url = probe["resolved_base_url"]
+            if base_url:
+                base_url = effective_url
     elif probe.get("models") is not None:
         print(
             f"Verified endpoint via {probe.get('probed_url')} "

@@ -94,6 +94,7 @@ def agent_with_memory_tool():
             skip_memory=True,
         )
         a.client = MagicMock()
+        a._memory_enabled = True  # required for MEMORY_GUIDANCE injection (#45422)
         return a
 
 

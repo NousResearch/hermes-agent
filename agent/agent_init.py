@@ -1200,17 +1200,26 @@ def init_agent(
     # 400 errors on providers that enforce unique names (e.g. Xiaomi
     # MiMo via Nous Portal).
     #
-    # Respect the platform's enabled_toolsets configuration (#5544):
-    #   enabled_toolsets is None        → no filter, inject (backward compat)
-    #   "memory" in enabled_toolsets    → user opted in, inject
-    #   otherwise (incl. [])            → user excluded memory, skip injection
+    # External memory providers (configured via memory.provider in
+    # config.yaml) are independent of the built-in "memory" toolset.
+    # Disabling the built-in memory tool (``hermes tools disable memory``)
+    # should NOT suppress external providers — users who swap in a third-party
+    # memory plugin (e.g. mnemosyne, honcho) expect it to work alongside the
+    # rest of their toolset (#45422).
     #
-    # Without this gate, `platform_toolsets: telegram: []` still leaks memory
-    # provider tools (fact_store, etc.) into the tool surface — a 10x latency
-    # penalty on local models and a frequent trigger of tool-call loops.
-    if agent._memory_manager and agent.tools is not None and (
-        agent.enabled_toolsets is None or "memory" in agent.enabled_toolsets
-    ):
+    # Suppression rules (tightened from #5544):
+    #   enabled_toolsets is None          → no filter, inject (backward compat)
+    #   enabled_toolsets is non-empty     → inject (platform has tools; external
+    #                                        provider works regardless of whether
+    #                                        the built-in memory toolset is enabled)
+    #   enabled_toolsets is empty ([])    → skip (constrained platform, no tools)
+    #   "memory" in disabled_toolsets     → skip (global nuclear option — user
+    #                                        explicitly opted out of ALL memory)
+    _ext_memory_suppressed = (
+        (agent.enabled_toolsets is not None and len(agent.enabled_toolsets) == 0)
+        or (agent.disabled_toolsets and "memory" in agent.disabled_toolsets)
+    )
+    if agent._memory_manager and agent.tools is not None and not _ext_memory_suppressed:
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

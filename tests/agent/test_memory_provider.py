@@ -1321,22 +1321,27 @@ class TestMemoryToolToolsetGate:
     tool-call loops on small models.
 
     These tests mirror the gate logic in agent/agent_init.py around the
-    memory provider tool injection block. The gate condition is:
+    memory provider tool injection block. The gate condition is (#45422):
 
-        enabled_toolsets is None        → no filter, inject (backward compat)
-        "memory" in enabled_toolsets    → user opted in, inject
-        otherwise (incl. [])            → skip injection
+        enabled_toolsets is None          → no filter, inject (backward compat)
+        enabled_toolsets is non-empty     → inject (platform has tools; external
+                                             provider works regardless of whether
+                                             the built-in memory toolset is enabled)
+        enabled_toolsets is empty ([])    → skip (constrained platform, no tools)
+        "memory" in disabled_toolsets     → skip (global nuclear option)
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager):
+    def _run_memory_injection(enabled_toolsets, memory_manager, disabled_toolsets=None):
         """Simulate the gated memory-tool injection block from agent_init.py."""
         tools = []
         valid_tool_names = set()
 
-        if memory_manager and tools is not None and (
-            enabled_toolsets is None or "memory" in enabled_toolsets
-        ):
+        _ext_memory_suppressed = (
+            (enabled_toolsets is not None and len(enabled_toolsets) == 0)
+            or (disabled_toolsets and "memory" in disabled_toolsets)
+        )
+        if memory_manager and tools is not None and not _ext_memory_suppressed:
             _existing = {
                 t.get("function", {}).get("name")
                 for t in tools
@@ -1383,12 +1388,16 @@ class TestMemoryToolToolsetGate:
         assert tools == []
         assert names == set()
 
-    def test_toolsets_without_memory_blocks_injection(self):
-        """Toolset list that doesn't name 'memory' must suppress injection."""
+    def test_toolsets_without_memory_still_injects(self):
+        """Toolset list that doesn't name 'memory' still injects external providers (#45422).
+
+        Disabling the built-in memory toolset should not suppress external memory
+        providers configured via memory.provider in config.yaml.
+        """
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection(["terminal", "web"], mgr)
-        assert tools == []
-        assert names == set()
+        assert "fact_store" in names
+        assert any(t["function"]["name"] == "fact_store" for t in tools)
 
     def test_no_memory_manager_no_injection(self):
         """Gate is moot without a memory manager."""
@@ -1396,11 +1405,34 @@ class TestMemoryToolToolsetGate:
         assert tools == []
 
     def test_multiple_schemas_all_blocked_together(self):
-        """When the gate is closed, no memory tools leak — not even partially."""
+        """When the gate is closed (empty toolsets), no memory tools leak — not even partially."""
         mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
-        tools, names = self._run_memory_injection(["terminal"], mgr)
+        tools, names = self._run_memory_injection([], mgr)
         assert tools == []
         assert names == set()
+
+    def test_multiple_schemas_all_injected_with_nonempty_toolsets(self):
+        """Non-empty toolsets (without 'memory') still injects external provider tools (#45422)."""
+        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
+        tools, names = self._run_memory_injection(["terminal"], mgr)
+        assert names == {"fact_store", "memory_search", "memory_add"}
+
+    def test_disabled_toolsets_blocks_injection(self):
+        """agent.disabled_toolsets containing 'memory' suppresses all external provider tools."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            ["terminal", "web"], mgr, disabled_toolsets=["memory"]
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_toolsets_none_does_not_block(self):
+        """agent.disabled_toolsets without 'memory' does not suppress external providers."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            ["terminal", "web"], mgr, disabled_toolsets=["browser"]
+        )
+        assert "fact_store" in names
 
     def test_multiple_schemas_all_injected_when_enabled(self):
         """When the gate is open, every memory tool schema is injected."""

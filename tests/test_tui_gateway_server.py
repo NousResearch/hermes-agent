@@ -1740,8 +1740,8 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
 
 
 def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
-    """Without an explicit workspace, cwd is left null so the session groups
-    under "No workspace" rather than the gateway's launch directory."""
+    """Generic non-project cwd is left null so the session groups under
+    "No workspace" rather than a desktop/gateway launch directory."""
     created = []
 
     class _FakeDB:
@@ -1750,6 +1750,46 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
+
+    assert created == [{"key": "k1", "source": "tui", "model": "test-model", "cwd": None}]
+
+
+def test_ensure_session_db_row_persists_auto_detected_project_cwd(monkeypatch, tmp_path):
+    """A non-explicit cwd below a project marker is persisted as a workspace."""
+    project = tmp_path / "project"
+    nested = project / "src" / "pkg"
+    nested.mkdir(parents=True)
+    (project / ".git").mkdir()
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "cwd": str(nested)})
+
+    assert created == [
+        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(nested)}
+    ]
+
+
+def test_ensure_session_db_row_does_not_persist_home_launch_cwd(monkeypatch, tmp_path):
+    """Even if home contains project-like files, it remains a generic launch cwd."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server.Path, "home", lambda: tmp_path)
+    (tmp_path / ".git").mkdir()
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 

@@ -1120,6 +1120,54 @@ def _session_cwd(session: dict | None) -> str:
     return _completion_cwd()
 
 
+_PROJECT_CWD_MARKERS = (
+    ".git",
+    ".hg",
+    ".svn",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "Gemfile",
+    "composer.json",
+)
+
+
+def _is_project_cwd(cwd: str) -> bool:
+    """Return True when cwd looks like a real project/workspace directory.
+
+    Desktop may launch the gateway from a generic directory such as the user's
+    home; persisting that would group unrelated sessions under the home
+    directory. Persist only directories that are either a repository/project
+    root or below one, so sessions opened from ``~/src/app`` show up under that
+    workspace.
+    """
+    try:
+        path = Path(cwd).expanduser().resolve()
+    except Exception:
+        return False
+    if not path.is_dir():
+        return False
+    try:
+        if path == Path.home().resolve():
+            return False
+    except Exception:
+        pass
+    for parent in (path, *path.parents):
+        if any((parent / marker).exists() for marker in _PROJECT_CWD_MARKERS):
+            return True
+    return False
+
+
+def _session_persisted_cwd(session: dict | None) -> str | None:
+    if not session:
+        return None
+    cwd = _session_cwd(session)
+    if session.get("explicit_cwd") or _is_project_cwd(cwd):
+        return cwd
+    return None
+
+
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
@@ -1141,12 +1189,10 @@ def _ensure_session_db_row(session: dict) -> None:
     Uses INSERT OR IGNORE under the hood, so re-calls (and the AIAgent's own
     lazy create) are no-ops.
 
-    Only an *explicitly chosen* workspace is persisted as the session's cwd.
-    The agent still runs in the auto-detected directory (session["cwd"]), but
-    we don't stamp that onto the row — otherwise every session the user never
-    picked a folder for gets grouped under whatever directory the desktop
-    happened to launch in (e.g. "desktop"). Leaving it null groups them under
-    "No workspace", which is the desired default.
+    Persist an explicitly chosen workspace, or an auto-detected cwd that looks
+    like a real project/workspace. Generic launch directories such as the
+    user's home stay null so they group under "No workspace" instead of
+    swallowing unrelated sessions under the home directory.
     """
     key = session.get("session_key")
     if not key:
@@ -1174,7 +1220,7 @@ def _ensure_session_db_row(session: dict) -> None:
             key,
             source="tui",
             model=_resolve_model(),
-            cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
+            cwd=_session_persisted_cwd(session),
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)

@@ -1,8 +1,11 @@
 """Tests for per-profile subprocess HOME isolation (#4426).
 
 Verifies that subprocesses (terminal, execute_code, background processes)
-receive a per-profile HOME directory while the Python process's own HOME
-and Path.home() remain unchanged.
+receive a per-profile HOME directory. The *pure read* ``get_subprocess_home()``
+never mutates the environment. Note that the main process's own ``HOME`` IS
+aligned to the same per-profile directory at startup by
+``align_main_process_home_with_subprocess()`` (#27250) — that is a separate,
+explicit step, not a side effect of the read covered here.
 
 See: https://github.com/NousResearch/hermes-agent/issues/4426
 """
@@ -172,11 +175,16 @@ class TestProfileBootstrap:
 
 
 # ---------------------------------------------------------------------------
-# Python process HOME unchanged
+# get_subprocess_home() is a pure read (does not mutate the environment)
 # ---------------------------------------------------------------------------
 
 class TestPythonProcessUnchanged:
-    """Confirm the Python process's own HOME is never modified."""
+    """Confirm ``get_subprocess_home()`` itself never modifies HOME.
+
+    (Main-process HOME alignment is a separate, explicit step performed by
+    ``align_main_process_home_with_subprocess()`` — see #27250 and the
+    dedicated alignment tests — not a side effect of this pure read.)
+    """
 
     def test_path_home_unchanged_after_subprocess_home_resolved(
         self, tmp_path, monkeypatch

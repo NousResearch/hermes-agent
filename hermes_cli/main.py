@@ -211,8 +211,8 @@ _apply_profile_override()
 #
 # Must run AFTER _apply_profile_override() finalises HERMES_HOME and BEFORE
 # any subsequent module-level code caches Path.home() / expands ``~``.
-# Honours HERMES_PRESERVE_HOST_HOME=1 as an opt-out for callers that depend
-# on the historical split-HOME behaviour.
+# The opt-out (profiles.preserve_host_home in config.yaml) is read from disk
+# inside the function so it is honoured here — before .env is loaded below.
 # ---------------------------------------------------------------------------
 try:
     from hermes_constants import align_main_process_home_with_subprocess

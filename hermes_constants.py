@@ -177,8 +177,8 @@ def get_subprocess_home() -> str | None:
     This function is a pure read — it never modifies the environment.  Use
     :func:`align_main_process_home_with_subprocess` to also align the main
     process's own ``HOME`` with the same value (the default at startup), or
-    set ``HERMES_PRESERVE_HOST_HOME=1`` to skip that alignment and keep the
-    original host-level ``HOME`` for the main process.
+    set ``profiles.preserve_host_home: true`` in config.yaml to skip that
+    alignment and keep the original host-level ``HOME`` for the main process.
 
     Activation is directory-based: if the ``home/`` subdirectory doesn't
     exist, returns ``None`` and behavior is unchanged.
@@ -196,6 +196,44 @@ def _truthy_env(name: str) -> bool:
     """Return True when ``name`` is set to a recognised affirmative value."""
     raw = os.environ.get(name, "")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _preserve_host_home_enabled() -> bool:
+    """Return True when main-process HOME alignment should be skipped.
+
+    The documented, user-facing surface is ``profiles.preserve_host_home`` in
+    ``config.yaml`` — a non-secret behavioural setting, which per the
+    contribution rubric belongs in config.yaml rather than a new ``HERMES_*``
+    env var.  It is read straight from disk under ``HERMES_HOME`` (already
+    finalised by the profile override), so the opt-out is honoured *before*
+    alignment runs at startup — unlike a value in ``.env``, which is loaded
+    only after this point.
+
+    ``HERMES_PRESERVE_HOST_HOME`` is retained as an internal/automation
+    escape hatch, but it must be a real exported environment variable to take
+    effect at this stage (a value in ``.env`` is too late).
+    """
+    # config.yaml — the documented configuration surface, read before .env.
+    try:
+        hermes_home = os.getenv("HERMES_HOME")
+        if hermes_home:
+            cfg_path = os.path.join(hermes_home, "config.yaml")
+            if os.path.isfile(cfg_path):
+                import yaml as _yaml
+
+                with open(cfg_path, encoding="utf-8") as fh:
+                    cfg = _yaml.safe_load(fh) or {}
+                profiles_cfg = cfg.get("profiles")
+                if isinstance(profiles_cfg, dict) and bool(
+                    profiles_cfg.get("preserve_host_home", False)
+                ):
+                    return True
+    except Exception:
+        # A malformed config must never wedge startup — fall back to the env
+        # override below and otherwise proceed with alignment.
+        pass
+    # Internal / automation-only override (real env var, not .env).
+    return _truthy_env("HERMES_PRESERVE_HOST_HOME")
 
 
 def align_main_process_home_with_subprocess() -> str | None:
@@ -221,8 +259,9 @@ def align_main_process_home_with_subprocess() -> str | None:
 
     * No-op when ``get_subprocess_home()`` returns ``None`` (no profile
       ``home/`` directory exists — covers fresh / non-Docker installs).
-    * No-op when ``HERMES_PRESERVE_HOST_HOME=1`` (escape hatch for users
-      who depend on the old split-HOME behaviour).
+    * No-op when ``profiles.preserve_host_home: true`` in config.yaml (the
+      documented opt-out, read from disk before alignment runs), or when the
+      internal ``HERMES_PRESERVE_HOST_HOME=1`` env override is exported.
     * Idempotent — safe to call multiple times; subsequent calls return
       the already-aligned path without re-setting the env var.
 
@@ -232,7 +271,7 @@ def align_main_process_home_with_subprocess() -> str | None:
     profile_home = get_subprocess_home()
     if profile_home is None:
         return None
-    if _truthy_env("HERMES_PRESERVE_HOST_HOME"):
+    if _preserve_host_home_enabled():
         return None
 
     current = os.environ.get("HOME", "")

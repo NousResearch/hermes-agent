@@ -117,6 +117,66 @@ class TestPreserveHostHomeOptOut:
 
 
 # ---------------------------------------------------------------------------
+# config.yaml opt-out — the documented surface, honoured before .env loads
+# ---------------------------------------------------------------------------
+
+class TestPreserveHostHomeConfigOptOut:
+    """``profiles.preserve_host_home: true`` in config.yaml skips alignment.
+
+    The opt-out must be read straight from disk so it takes effect at startup
+    *before* ``.env`` is loaded (the env var alone is too late for a value set
+    in ``.env`` — see the hermes-sweeper review on #27260).
+    """
+
+    def test_config_true_skips_alignment(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "home").mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "profiles:\n  preserve_host_home: true\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/home/host-user")
+        # The env var is NOT set — the config.yaml value alone must opt out.
+        monkeypatch.delenv("HERMES_PRESERVE_HOST_HOME", raising=False)
+
+        from hermes_constants import align_main_process_home_with_subprocess
+        assert align_main_process_home_with_subprocess() is None
+        assert os.environ["HOME"] == "/home/host-user"
+
+    def test_config_false_still_aligns(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_home = hermes_home / "home"
+        profile_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "profiles:\n  preserve_host_home: false\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/home/host-user")
+        monkeypatch.delenv("HERMES_PRESERVE_HOST_HOME", raising=False)
+
+        from hermes_constants import align_main_process_home_with_subprocess
+        assert align_main_process_home_with_subprocess() == str(profile_home)
+        assert os.environ["HOME"] == str(profile_home)
+
+    def test_malformed_config_does_not_block_alignment(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        profile_home = hermes_home / "home"
+        profile_home.mkdir()
+        (hermes_home / "config.yaml").write_text("profiles: [oops\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HOME", "/home/host-user")
+        monkeypatch.delenv("HERMES_PRESERVE_HOST_HOME", raising=False)
+
+        from hermes_constants import align_main_process_home_with_subprocess
+        # A broken config must not wedge startup — alignment proceeds.
+        assert align_main_process_home_with_subprocess() == str(profile_home)
+        assert os.environ["HOME"] == str(profile_home)
+
+
+# ---------------------------------------------------------------------------
 # Profile isolation invariant
 # ---------------------------------------------------------------------------
 

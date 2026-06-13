@@ -248,7 +248,7 @@ Each profile bootstraps a `home/` subdirectory. When it exists, Hermes redirects
 
 Isolation is still maintained across profiles — each profile gets its own `home/` — and the alignment only kicks in when that directory actually exists, so non-Docker installs that never created one are unaffected.
 
-If you specifically depend on the historical split behaviour (rare; mostly tools that read host-level credentials from the agent process), set `HERMES_PRESERVE_HOST_HOME=1` to opt out of the main-process alignment. Subprocess `HOME` injection is unaffected by this flag.
+If you specifically depend on the historical split behaviour (rare; mostly tools that read host-level credentials from the agent process), set `profiles.preserve_host_home: true` in `config.yaml` to opt out of the main-process alignment. This is read at startup before `.env` is loaded, so it reliably takes effect. Subprocess `HOME` injection is unaffected by this setting.
 
 ## Sharing profiles as distributions
 

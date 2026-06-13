@@ -1,7 +1,6 @@
 import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useI18n } from '@/i18n'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -142,6 +141,9 @@ const drawAsciiDiffusion = (
   const cellHeight = fontSize * 1.28
   const cols = Math.ceil(width / cellWidth)
   const rows = Math.ceil(height / cellHeight)
+  // Normalise both axes by the shorter side so the radial bloom stays a circle
+  // (not a squished ellipse) when the frame isn't landscape.
+  const short = Math.min(width, height)
   const centerX = 0.53 + Math.sin(time * 0.055) * 0.02
   const centerY = 0.5 + Math.cos(time * 0.048) * 0.02
   const timestep = Math.floor(time * 1.15)
@@ -155,10 +157,10 @@ const drawAsciiDiffusion = (
     for (let col = -1; col <= cols + 1; col += 1) {
       const x = col * cellWidth + cellWidth * 0.5
       const y = row * cellHeight + cellHeight * 0.5
-      const nx = x / width
-      const ny = y / height
-      const dx = (nx - centerX) * 1.2
-      const dy = (ny - centerY) * 0.95
+      const sx = (x - centerX * width) / short
+      const sy = (y - centerY * height) / short
+      const dx = sx * 1.2
+      const dy = sy * 0.95
       const radius = Math.hypot(dx, dy)
       const angle = Math.atan2(dy, dx)
 
@@ -169,7 +171,7 @@ const drawAsciiDiffusion = (
       const contour =
         Math.exp(-((Math.sin(angle * 3 + radius * 17 - time * 0.17) * 0.5 + 0.5 - radius) ** 2) / 0.016) * 0.38
 
-      const stem = Math.exp(-((nx - centerX + 0.05) ** 2 / 0.004 + (ny - centerY - 0.25) ** 2 / 0.08)) * 0.46
+      const stem = Math.exp(-((sx + 0.05) ** 2 / 0.004 + (sy - 0.25) ** 2 / 0.08)) * 0.46
 
       const latent = clamp(bloom + contour + stem, 0, 1)
       const staticA = hash2(col + timestep * 19, row - timestep * 11)
@@ -241,7 +243,7 @@ const drawAsciiDiffusion = (
   ctx.fillRect(0, 0, width, height)
 }
 
-const DiffusionCanvas: FC = () => {
+export const DiffusionCanvas: FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
   const themeRef = useRef<Theme>(FALLBACKS)
@@ -304,16 +306,4 @@ const DiffusionCanvas: FC = () => {
   }, [])
 
   return <canvas className="absolute inset-0 h-full w-full" ref={canvasRef} />
-}
-
-export const ImageGenerationPlaceholder: FC = () => {
-  const { t } = useI18n()
-
-  return (
-    <div aria-label={t.assistant.tool.renderingImage} aria-live="polite" className="w-full max-w-136 self-start" role="status">
-      <div className="relative h-(--image-preview-height) overflow-hidden rounded-4xl border border-border/55 shadow-[inset_0_0.0625rem_0_color-mix(in_srgb,white_45%,transparent),inset_0_0_0_0.0625rem_color-mix(in_srgb,var(--dt-border)_34%,transparent),inset_0_-0.75rem_1.75rem_color-mix(in_srgb,var(--dt-primary)_5%,transparent)]">
-        <DiffusionCanvas />
-      </div>
-    </div>
-  )
 }

@@ -16,6 +16,11 @@ import {
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import {
+  dedupeGeneratedImageEchoesInParts,
+  generatedImageEchoSources,
+  stripGeneratedImageEchoes
+} from '@/lib/generated-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
@@ -343,7 +348,7 @@ export function useMessageStream({
         if (queued.assistant) {
           mutateStream(
             id,
-            parts => appendAssistantTextPart(parts, queued.assistant),
+            parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
             () => [assistantTextPart(queued.assistant)]
           )
         }
@@ -507,7 +512,7 @@ export function useMessageStream({
 
       mutateStream(
         sessionId,
-        parts => upsertToolPart(parts, payload, phase),
+        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase)),
         () => upsertToolPart([], payload, phase),
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
@@ -540,9 +545,11 @@ export function useMessageStream({
         const finalText = renderMediaTags(text).trim()
         const completionError = completionErrorText(finalText)
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
-        const dedupeReference = normalize(finalText)
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
+          const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
+          const dedupeReference = normalize(visibleFinalText)
+
           const kept = parts.filter(part => {
             if (part.type === 'text') {
               return false
@@ -557,7 +564,7 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return finalText ? [...kept, assistantTextPart(finalText)] : kept
+          return visibleFinalText ? [...kept, assistantTextPart(visibleFinalText)] : kept
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>

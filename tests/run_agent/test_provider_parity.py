@@ -1087,6 +1087,21 @@ class TestProviderRouting:
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["extra_body"]["provider"]["only"] == ["anthropic", "google"]
 
+    def test_fusion_config_reaches_openrouter_kwargs(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.openrouter_fusion_config = {
+            "enabled": True,
+            "analysis_models": ["openai/gpt-5-mini"],
+            "force": True,
+        }
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["tools"][-1] == {
+            "type": "openrouter:fusion",
+            "parameters": {"analysis_models": ["openai/gpt-5-mini"]},
+        }
+        assert "plugins" not in kwargs.get("extra_body", {})
+        assert kwargs["tool_choice"] == "required"
+
     def test_ignore_providers(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         agent.providers_ignored = ["deepinfra"]

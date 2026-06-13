@@ -474,6 +474,16 @@ def init_agent(
     agent.provider_require_parameters = provider_require_parameters
     agent.provider_data_collection = provider_data_collection
     agent.openrouter_min_coding_score = openrouter_min_coding_score
+    agent.openrouter_fusion_config = None
+    try:
+        from hermes_cli.config import load_config as _load_or_cfg
+
+        _or_cfg = (_load_or_cfg().get("openrouter") or {})
+        _fusion_cfg = _or_cfg.get("fusion")
+        if isinstance(_fusion_cfg, dict):
+            agent.openrouter_fusion_config = dict(_fusion_cfg)
+    except Exception:
+        pass
 
     # Store toolset filtering options
     agent.enabled_toolsets = enabled_toolsets

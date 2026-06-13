@@ -498,11 +498,24 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools — apply Moonshot/Kimi schema sanitization regardless of path
+        # Tools — local Hermes functions plus optional provider-managed server
+        # tools. Only local function schemas go through Moonshot/Kimi schema
+        # sanitization; server tools are provider declarations, not JSON Schema
+        # functions Hermes will dispatch locally.
+        request_tools: list[dict[str, Any]] = []
         if tools:
+            local_tools = tools
             if is_moonshot_model(model):
-                tools = sanitize_moonshot_tools(tools)
-            api_kwargs["tools"] = tools
+                local_tools = sanitize_moonshot_tools(local_tools)
+            request_tools.extend(local_tools)
+        server_tools = profile.build_server_tools(
+            model=model,
+            openrouter_fusion=params.get("openrouter_fusion"),
+        )
+        if server_tools:
+            request_tools.extend(server_tools)
+        if request_tools:
+            api_kwargs["tools"] = request_tools
 
         # max_tokens resolution — priority: ephemeral > user > profile default
         max_tokens_fn = params.get("max_tokens_param_fn")
@@ -533,6 +546,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 model=model,
                 ollama_num_ctx=params.get("ollama_num_ctx"),
                 session_id=params.get("session_id"),
+                openrouter_fusion=params.get("openrouter_fusion"),
             )
         )
         api_kwargs.update(top_level_from_profile)
@@ -548,6 +562,7 @@ class ChatCompletionsTransport(ProviderTransport):
             base_url=params.get("base_url"),
             reasoning_config=reasoning_config,
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
+            openrouter_fusion=params.get("openrouter_fusion"),
         )
         if profile_body:
             extra_body.update(profile_body)

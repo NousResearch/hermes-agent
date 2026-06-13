@@ -145,6 +145,19 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def build_server_tools(
+        self, *, model: str | None = None, **context: Any
+    ) -> list[dict[str, Any]]:
+        """Return provider-managed tools to append to the request.
+
+        OpenAI-compatible providers increasingly expose server-side tools that
+        are declared in the same ``tools`` array as local function tools, but
+        are executed by the provider rather than by Hermes. Provider profiles
+        own those declarations so the agent loop can continue dispatching only
+        local function tool calls.
+        """
+        return []
+
     def get_max_tokens(self, model: str | None) -> int | None:
         """Return the default max_tokens cap for *model*.
 

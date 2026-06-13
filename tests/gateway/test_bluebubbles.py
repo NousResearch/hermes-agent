@@ -830,3 +830,95 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesInboundDedupe:
+    @pytest.mark.asyncio
+    async def test_duplicate_dm_emission_is_deduplicated(self, monkeypatch):
+        """BlueBubbles emits a DM twice (once keyed by the raw chat GUID, once by
+        the normalized handle). The gateway must dispatch it only once."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        emission_a = _FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-dup-1",
+                "text": "hello there",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": False,
+                "chats": [{"guid": "iMessage;-;+15555550100"}],
+            },
+        })
+        emission_b = _FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-dup-1",
+                "text": "hello there",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": False,
+            },
+        })
+
+        assert (await adapter._handle_webhook(emission_a)).status == 200
+        await asyncio.sleep(0)
+        assert (await adapter._handle_webhook(emission_b)).status == 200
+        await asyncio.sleep(0)
+
+        assert [event.text for event in handled] == ["hello there"]
+
+    @pytest.mark.asyncio
+    async def test_attachment_update_after_text_is_not_deduplicated(self, monkeypatch):
+        """An 'updated' message that adds attachments after an earlier text-only
+        message with the same guid must still be processed, because media is part
+        of the dedupe fingerprint."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_download_attachment(att_guid, att):
+            return "/cache/" + att_guid
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download_attachment)
+
+        text_only = _FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-update-1",
+                "text": "look at this",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": False,
+                "chats": [{"guid": "iMessage;-;+15555550100"}],
+            },
+        })
+        with_attachment = _FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {
+                "guid": "msg-update-1",
+                "text": "look at this",
+                "handle": {"address": "+15555550100"},
+                "isFromMe": False,
+                "isGroup": False,
+                "chats": [{"guid": "iMessage;-;+15555550100"}],
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        })
+
+        assert (await adapter._handle_webhook(text_only)).status == 200
+        await asyncio.sleep(0)
+        assert (await adapter._handle_webhook(with_attachment)).status == 200
+        await asyncio.sleep(0)
+
+        assert len(handled) == 2
+        assert handled[1].media_urls == ["/cache/att-1"]

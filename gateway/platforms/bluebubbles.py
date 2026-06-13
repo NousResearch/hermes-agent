@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -150,6 +151,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Fingerprints of recently-handled inbound messages, used to drop the
+        # duplicate emissions BlueBubbles sends for DMs (see _is_duplicate_inbound).
+        self._recent_inbound_messages: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -860,6 +864,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _is_duplicate_inbound(self, key: Optional[str], ttl: float = 60.0) -> bool:
+        """Return True if this inbound fingerprint was handled within ``ttl`` seconds."""
+        if not key:
+            return False
+        now = time.monotonic()
+        # Opportunistic cleanup keeps the map small without a background task.
+        for old_key, seen_at in list(self._recent_inbound_messages.items()):
+            if now - seen_at > ttl:
+                self._recent_inbound_messages.pop(old_key, None)
+        if key in self._recent_inbound_messages:
+            return True
+        self._recent_inbound_messages[key] = now
+        return False
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -993,6 +1011,33 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        # BlueBubbles can emit the same inbound DM twice (once keyed by the raw
+        # chat GUID, once by the normalized handle), which makes the gateway reply
+        # twice. Fingerprint and drop exact repeats. Media is part of the
+        # fingerprint on purpose: an "updated" message carrying attachments can
+        # follow an earlier text-only "new" message with the same guid, and that
+        # update must still be processed.
+        dedupe_key = "|".join(
+            [
+                message_id or "",
+                sender,
+                text,
+                ",".join(media_urls),
+                ",".join(media_types),
+            ]
+        )
+        if self._is_duplicate_inbound(dedupe_key):
+            logger.info(
+                "[bluebubbles] duplicate inbound message ignored: %s",
+                _redact(dedupe_key),
+            )
+            return web.Response(text="ok")
+
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         if is_group and self.require_mention:
@@ -1015,11 +1060,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),

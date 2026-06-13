@@ -3983,9 +3983,19 @@ def get_compatible_custom_providers(
     custom_providers = config.get("custom_providers")
     if custom_providers is not None:
         if not isinstance(custom_providers, list):
-            return []
-        for entry in custom_providers:
-            _append_if_new(_normalize_custom_provider_entry(entry))
+            # Malformed custom_providers (e.g. a JSON string instead of a YAML
+            # list) — warn and fall through so providers dict entries are still
+            # processed.  Returning early here silently drops all custom
+            # providers configured under the v12+ ``providers:`` key.
+            logger.warning(
+                "custom_providers is a %s, expected a list — "
+                "skipping legacy entries; providers dict entries will still be used. "
+                "Move your provider configs to the 'providers:' section.",
+                type(custom_providers).__name__,
+            )
+        else:
+            for entry in custom_providers:
+                _append_if_new(_normalize_custom_provider_entry(entry))
 
     for entry in providers_dict_to_custom_providers(config.get("providers")):
         _append_if_new(entry)
@@ -4152,10 +4162,26 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
 
-    # ── custom_providers must be a list, not a dict ──────────────────────
+    # ── custom_providers must be a list, not a dict or string ──────────
     cp = config.get("custom_providers")
     if cp is not None:
-        if isinstance(cp, dict):
+        if isinstance(cp, str):
+            issues.append(ConfigIssue(
+                "error",
+                f"custom_providers is a string (got {repr(cp[:80])}...) — "
+                "it must be a YAML list (items prefixed with '-')",
+                "Change to:\n"
+                "  custom_providers:\n"
+                "    - name: my-provider\n"
+                "      base_url: https://...\n"
+                "      api_key: ...\n\n"
+                "Or better, move your provider to the 'providers:' section:\n"
+                "  providers:\n"
+                "    my-provider:\n"
+                "      api: https://...\n"
+                "      api_key: ...",
+            ))
+        elif isinstance(cp, dict):
             issues.append(ConfigIssue(
                 "error",
                 "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",

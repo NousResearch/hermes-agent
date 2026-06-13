@@ -125,6 +125,31 @@ function isUrlOnlyBlock(lines: string[]): boolean {
   return nonEmpty.length > 0 && nonEmpty.every(line => URL_ONLY_LINE_RE.test(line))
 }
 
+function trimUnbalancedTrailingParens(url: string): string {
+  let result = url
+
+  while (result.endsWith(')')) {
+    let opens = 0
+    let closes = 0
+
+    for (const char of result) {
+      if (char === '(') {
+        opens += 1
+      } else if (char === ')') {
+        closes += 1
+      }
+    }
+
+    if (closes <= opens) {
+      break
+    }
+
+    result = result.slice(0, -1)
+  }
+
+  return result
+}
+
 function autoLinkRawUrls(text: string): string {
   return text.replace(RAW_URL_RE, (url: string, index: number) => {
     const previous = text[index - 1] || ''
@@ -134,7 +159,9 @@ function autoLinkRawUrls(text: string): string {
       return url
     }
 
-    return `<${url}>`
+    const trimmed = trimUnbalancedTrailingParens(url)
+
+    return `<${trimmed}>${url.slice(trimmed.length)}`
   })
 }
 

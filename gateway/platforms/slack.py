@@ -603,6 +603,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Register message event handler
             @self._app.event("message")
             async def handle_message_event(event, say):
+                await self._maybe_forward_channel_event(event)
                 await self._handle_slack_message(event)
 
             # Handle app_mention explicitly. In some Slack app configurations,
@@ -707,6 +708,37 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.info(
                     "[Slack] slash forwards registered: %s",
                     ", ".join(f"/{n}" for n in sorted(_forwards)),
+                )
+
+            # Register config-driven event/action forwards (slack.event_forwards
+            # and slack.action_forwards in config.yaml). In Socket Mode, Slack
+            # delivers channel message events and Block Kit actions over the
+            # WebSocket only, so external local services that implement Slack's
+            # HTTP callbacks (e.g. a profile's order/approval server) need the
+            # gateway to relay re-signed copies. See slack_event_forward.py.
+            from gateway.platforms.slack_event_forward import (
+                parse_action_forwards,
+                parse_event_forwards,
+            )
+
+            self._event_forwards = parse_event_forwards(self.config.extra.get("event_forwards"))
+            if self._event_forwards:
+                logger.info(
+                    "[Slack] event forwards registered: %s",
+                    ", ".join(sorted(self._event_forwards)),
+                )
+            _action_forwards = parse_action_forwards(self.config.extra.get("action_forwards"))
+            for _prefix, _action_url in sorted(_action_forwards.items()):
+
+                @self._app.action(_re.compile("^" + _re.escape(_prefix)))
+                async def handle_forwarded_action(ack, body, _url=_action_url):
+                    await ack()
+                    await self._forward_block_actions(body, _url)
+
+            if _action_forwards:
+                logger.info(
+                    "[Slack] action forwards registered: %s",
+                    ", ".join(f"{p}*" for p in sorted(_action_forwards)),
                 )
 
             # Register Block Kit action handlers for approval buttons
@@ -2900,6 +2932,32 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
+
+    async def _maybe_forward_channel_event(self, event: dict) -> None:
+        """Relay a channel message event to its configured external service."""
+        forwards = getattr(self, "_event_forwards", None) or {}
+        url = forwards.get(str(event.get("channel", "")))
+        if not url:
+            return
+        from gateway.platforms.slack_event_forward import forward_event
+
+        signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+        result = await forward_event(event, url, signing_secret)
+        if not result.get("ok"):
+            logger.warning(
+                "[Slack] event forward to %s failed: %s", url, result.get("error")
+            )
+
+    async def _forward_block_actions(self, payload: dict, url: str) -> None:
+        """Relay a block_actions payload to its configured external service."""
+        from gateway.platforms.slack_event_forward import forward_block_actions
+
+        signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+        result = await forward_block_actions(payload, url, signing_secret)
+        if not result.get("ok"):
+            logger.warning(
+                "[Slack] action forward to %s failed: %s", url, result.get("error")
+            )
 
     async def _handle_forwarded_slash_command(self, command: dict, url: str) -> None:
         """Relay a config-forwarded slash command to its external service.

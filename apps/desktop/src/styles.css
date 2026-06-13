@@ -1180,6 +1180,12 @@ canvas {
   opacity: 1;
 }
 
+/* A generated image is the deliverable, not scaffolding — keep it at full
+   strength instead of dimming it until hover. */
+[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
+  opacity: 1;
+}
+
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
    of the message content with no per-part wrapper, so adjacency rules cover
    every pairing — first block needs no reset, nested tool rows are untouched.

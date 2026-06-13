@@ -216,6 +216,32 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
+function assistantImageMessage(running = false): ThreadMessage {
+  return {
+    id: `assistant-image-${running ? 'running' : 'done'}`,
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'image-1',
+        toolName: 'image_generate',
+        args: { prompt: 'draw a cat' },
+        argsText: JSON.stringify({ prompt: 'draw a cat' }),
+        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
+      }
+    ],
+    status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function StreamingHarness() {
   const [messages, setMessages] = useState<ThreadMessage[]>([userMessage()])
   const [isRunning, setIsRunning] = useState(true)
@@ -415,14 +441,19 @@ describe('assistant-ui streaming renderer', () => {
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
     const ui = within(container)
+    const thinkingToggle = ui.getByRole('button', { name: /thinking/i })
 
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+    if (thinkingToggle.getAttribute('aria-expanded') !== 'true') {
+      fireEvent.click(thinkingToggle)
+    }
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
     })
 
-    expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
+    })
     expect(container.textContent).not.toContain('```ts')
   })
 
@@ -474,5 +505,17 @@ describe('assistant-ui streaming renderer', () => {
     )
 
     expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeNull()
+  })
+
+  it('renders completed image generation results in the tool slot', async () => {
+    const { container } = render(<MessageHarness message={assistantImageMessage()} />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: 'Generated image' }).getAttribute('src')).toBe(
+        'https://cdn.example/cat.png'
+      )
+    })
+    expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
   })
 })

@@ -5,6 +5,7 @@ summaries — if they do, the downstream model re-emits them as active
 directives on the next turn.
 """
 import pytest
+import json
 from unittest.mock import patch
 from agent.context_compressor import ContextCompressor
 
@@ -62,6 +63,41 @@ class TestMediaDirectiveStripping:
         assert "[image]" in result
         assert "base64" not in result
 
+
+@pytest.mark.parametrize("mode", ["legacy", "lean"])
+def test_fallback_summary_never_preserves_delivery_directives(compressor, mode):
+    compressor.tail_mode = mode
+    sources = [
+        [{"role": "user", "content": "Please play MEDIA:/tmp/voice.ogg"}],
+        [{"role": "assistant", "content": "Sent MEDIA:/tmp/voice.ogg"}],
+        [{"role": "tool", "tool_call_id": "t1", "content": "Generated MEDIA:/tmp/out.mp3"}],
+        [
+            {"role": "assistant", "tool_calls": [{"id": "t1", "function": {
+                "name": "read_file", "arguments": json.dumps({"path": "MEDIA:/tmp/render.png"}),
+            }}]},
+            {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+        ],
+    ]
+    for turns in sources:
+        turns = turns + [{"role": "assistant", "content": "Edited /tmp/app.py; tests pass."}]
+        result = compressor._build_static_fallback_summary(turns, reason="provider unavailable")
+        assert "MEDIA:" not in result
+        assert "[media attachment]" in result
+        assert "/tmp/app.py" in result
+
+
+@pytest.mark.parametrize("mode", ["legacy", "lean"])
+def test_summary_augmentation_cannot_reintroduce_delivery_directives(compressor, mode):
+    compressor.tail_mode = mode
+    result = compressor._augment_summary_lean(
+        "Previous summary: MEDIA:/tmp/old.png; preserve /tmp/app.py.",
+        [{"role": "user", "content": "Please play MEDIA:/tmp/new.ogg"}],
+    )
+    assert "MEDIA:" not in result
+    assert "[media attachment]" in result
+    assert "/tmp/app.py" in result
+    if mode == "lean":
+        assert "Please play" in result
 
 
 

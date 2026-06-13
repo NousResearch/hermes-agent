@@ -31,6 +31,16 @@ function makeSession(cwd: null | string, overrides: Partial<SessionInfo> = {}): 
 const labels = (sessions: SessionInfo[]) => workspaceGroupsFor(sessions, 'No workspace').map(g => g.label)
 
 describe('workspaceGroupsFor', () => {
+  it('sorts rows within a group by last activity, newest first (#42707)', () => {
+    const stale = makeSession('/work/proj', { id: 'stale', started_at: 100, last_active: 100 })
+    const fresh = makeSession('/work/proj', { id: 'fresh', started_at: 50, last_active: 900 })
+
+    const [group] = workspaceGroupsFor([stale, fresh], 'No workspace')
+
+    // fresh has the later last_active despite an earlier started_at.
+    expect(group.sessions.map(s => s.id)).toEqual(['fresh', 'stale'])
+  })
+
   it('groups by full cwd, not by basename — same-named folders are separate groups', () => {
     const groups = workspaceGroupsFor(
       [makeSession('/a/hermes-agent/apps/desktop'), makeSession('/a/hermes-agent-wt-rtl/apps/desktop')],

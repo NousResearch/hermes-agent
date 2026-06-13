@@ -90,6 +90,9 @@ function disambiguateLabels(groups: Labelable[]): void {
   }
 }
 
+// Most-recent activity for a session, falling back to creation time.
+const sessionTime = (s: SessionInfo): number => s.last_active || s.started_at || 0
+
 export function workspaceGroupsFor(
   sessions: SessionInfo[],
   noWorkspaceLabel: string,
@@ -109,11 +112,11 @@ export function workspaceGroupsFor(
 
   if (!options.preserveSessionOrder) {
     // Groups keep recency order (Map insertion = first-seen in the recency-sorted
-    // input, so an active project floats up), but rows *within* a group sort by
-    // creation time so they don't reshuffle every time a message lands — keeps
-    // muscle memory intact.
+    // input, so an active project floats up); rows *within* a group sort by last
+    // activity (most recent first), falling back to started_at when last_active
+    // is unset, so the freshest session in a workspace surfaces at the top.
     for (const group of groups.values()) {
-      group.sessions.sort((a, b) => b.started_at - a.started_at)
+      group.sessions.sort((a, b) => sessionTime(b) - sessionTime(a))
     }
   }
 
@@ -284,7 +287,7 @@ export function workspaceTreeFor(
 
   if (!options.preserveSessionOrder) {
     for (const entry of worktrees.values()) {
-      entry.group.sessions.sort((a, b) => b.started_at - a.started_at)
+      entry.group.sessions.sort((a, b) => sessionTime(b) - sessionTime(a))
     }
   }
 

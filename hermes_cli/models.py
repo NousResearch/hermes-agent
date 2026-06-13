@@ -282,6 +282,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
@@ -291,6 +292,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "kimi-coding-cn": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -302,6 +304,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "step-3.5-flash-2603",
     ],
     "moonshot": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-k2-thinking",

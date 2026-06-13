@@ -1477,6 +1477,79 @@ provider_routing:
 
 **Shortcuts:** Append `:nitro` to any model name for throughput sorting (e.g., `anthropic/claude-sonnet-4:nitro`), or `:floor` for price sorting.
 
+## OpenRouter Fusion
+
+[OpenRouter Fusion](https://openrouter.ai/docs/features/fusion) lets OpenRouter coordinate multiple analysis models and use a judge model to produce the final answer. Hermes exposes Fusion through the OpenRouter provider; it uses your existing `OPENROUTER_API_KEY` and does not require a separate Hermes tool.
+
+To make Fusion available on normal OpenRouter chat requests, enable it in `~/.hermes/config.yaml`:
+
+```yaml
+model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4.6
+
+openrouter:
+  fusion:
+    enabled: true
+```
+
+With that setting, Hermes appends OpenRouter's `openrouter:fusion` server tool to the request. OpenRouter and the selected model can decide when to use it, and normal Hermes local tools remain available.
+
+You can also pin the analysis panel and judge settings:
+
+```yaml
+openrouter:
+  fusion:
+    enabled: true
+    analysis_models:
+      - openai/gpt-5-mini
+      - anthropic/claude-sonnet-4.6
+    judge_model: openai/gpt-5.4
+    max_tool_calls: 3
+    max_completion_tokens: 1024
+    reasoning:
+      effort: high
+    temperature: 0.2
+```
+
+Supported keys:
+
+| Key | Meaning |
+|-----|---------|
+| `enabled` | Add the `openrouter:fusion` server tool to OpenRouter chat-completions requests. |
+| `force` | Require Fusion for the request. See the note below. |
+| `analysis_models` | Up to 8 model IDs for Fusion's analysis panel. Leave empty to let OpenRouter choose. |
+| `judge_model` | Judge/final model sent as Fusion's `model` parameter. |
+| `max_tool_calls` | Maximum Fusion tool calls, capped by Hermes at 16. |
+| `max_completion_tokens` | Completion-token budget for the judge model. |
+| `reasoning` | Reasoning object forwarded to the judge model, such as `{effort: high}`. |
+| `temperature` | Judge-model temperature; Hermes forwards values from 0 through 2. |
+
+:::warning Forced Fusion disables local tools for that request
+OpenRouter documents `tool_choice: "required"` as "choose some tool" when more than one tool is present. To guarantee Fusion is the chosen tool, Hermes sends Fusion as the **only** request tool when `openrouter.fusion.force: true` is set. That means local Hermes tools, MCP tools, and built-in function tools are unavailable for that request.
+
+Use forced mode when you want every eligible turn to go through Fusion:
+
+```yaml
+openrouter:
+  fusion:
+    enabled: true
+    force: true
+```
+
+Leave `force` off when you want Fusion to coexist with normal Hermes tool use.
+:::
+
+OpenRouter also exposes a router model named `openrouter/fusion`. You can select it like any other OpenRouter model:
+
+```yaml
+model:
+  provider: openrouter
+  model: openrouter/fusion
+```
+
+Use `openrouter/fusion` when you want Fusion as the model route itself. Use `openrouter.fusion.enabled` when you want to add Fusion as a server-side option while using another OpenRouter model.
+
 ## OpenRouter Pareto Code Router
 
 OpenRouter ships an experimental coding-model router at `openrouter/pareto-code` that auto-routes requests to the cheapest model meeting a coding-quality bar (ranked by [Artificial Analysis](https://artificialanalysis.ai/)). Pick this model and tune the `min_coding_score` knob in `~/.hermes/config.yaml`:

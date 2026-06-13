@@ -959,6 +959,54 @@ auxiliary:
 
 The shape mirrors what OpenRouter accepts in the chat completions request body. Hermes forwards the entire `extra_body` verbatim, so any other OpenRouter request-body field documented at [openrouter.ai/docs](https://openrouter.ai/docs) works the same way.
 
+### OpenRouter Fusion for the main agent
+
+When your main model provider is OpenRouter, Hermes can add OpenRouter's Fusion server tool to each chat-completions request. Fusion lets OpenRouter coordinate multiple analysis models and judge the final answer server-side.
+
+Minimal config:
+
+```yaml
+model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4.6
+
+openrouter:
+  fusion:
+    enabled: true
+```
+
+Optional tuning:
+
+```yaml
+openrouter:
+  fusion:
+    enabled: true
+    analysis_models:
+      - openai/gpt-5-mini
+      - anthropic/claude-sonnet-4.6
+    judge_model: openai/gpt-5.4
+    max_tool_calls: 3
+    max_completion_tokens: 1024
+    reasoning:
+      effort: high
+    temperature: 0.2
+```
+
+Set `force: true` to require Fusion on every eligible request:
+
+```yaml
+openrouter:
+  fusion:
+    enabled: true
+    force: true
+```
+
+Forced Fusion has an important tradeoff: Hermes sends Fusion as the only request tool so OpenRouter must choose it. Local Hermes tools, MCP tools, and built-in function tools are unavailable for that request. Leave `force` off when you want Fusion to coexist with normal tool use.
+
+This top-level `openrouter.fusion` config applies to the main agent. It does not automatically propagate into auxiliary model calls. For auxiliary tasks that use OpenRouter, configure OpenRouter request-body behavior under that task's `extra_body` if needed.
+
+For the full Fusion option reference, see [OpenRouter Fusion](/integrations/providers#openrouter-fusion).
+
 ### Changing the Vision Model
 
 To use GPT-4o instead of Gemini Flash for image analysis:

@@ -7067,7 +7067,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         command = event.get_command()
 
         from hermes_cli.commands import (
-            GATEWAY_KNOWN_COMMANDS,
             is_gateway_known_command,
             resolve_command as _resolve_cmd,
         )
@@ -7495,7 +7494,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     resolve_skill_command_key,
                 )
                 skill_cmds = get_skill_commands()
-                cmd_key = resolve_skill_command_key(command)
+                skill_user_instruction = event.get_command_args().strip()
+                normalized_command = command.replace("_", "-")
+
+                if normalized_command == "skill-list":
+                    if not skill_cmds:
+                        return "No runnable skills are currently available."
+                    names = sorted(info.get("name") or key.lstrip("/")
+                                   for key, info in skill_cmds.items())
+                    preview = ", ".join(names[:25])
+                    suffix = (
+                        f" and {len(names) - 25} more"
+                        if len(names) > 25 else ""
+                    )
+                    return (
+                        f"Available skills: {preview}{suffix}. "
+                        "Run one with `/skill <name> [args]`."
+                    )
+
+                if normalized_command == "skill":
+                    parts = skill_user_instruction.split(maxsplit=1)
+                    if not parts:
+                        return (
+                            "Usage: `/skill <name> [args]`. "
+                            "Use `/skill_list` to list available skills."
+                        )
+                    cmd_key = resolve_skill_command_key(parts[0])
+                    skill_user_instruction = parts[1] if len(parts) > 1 else ""
+                    if cmd_key is None:
+                        return (
+                            f"Unknown skill: `{parts[0]}`. "
+                            "Use `/skill_list` to list available skills."
+                        )
+                else:
+                    cmd_key = resolve_skill_command_key(command)
                 if cmd_key is not None:
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled
@@ -7510,9 +7542,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 f"The **{_skill_name}** skill is disabled for {_plat}.\n"
                                 f"Enable it with: `hermes skills config`"
                             )
-                    user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=_quick_key
+                        cmd_key, skill_user_instruction, task_id=_quick_key
                     )
                     if msg:
                         event.text = msg
@@ -7531,7 +7562,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Normalize to hyphenated form before checking known
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
-                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                    if not is_gateway_known_command(command):
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
                             "replying with unknown-command notice",

@@ -326,19 +326,28 @@ def is_gateway_known_command(name: str | None) -> bool:
     """Return True if ``name`` resolves to a gateway-dispatchable slash command.
 
     This covers both built-in commands (``GATEWAY_KNOWN_COMMANDS`` derived
-    from ``COMMAND_REGISTRY``) and plugin-registered commands, which are
-    looked up lazily so importing this module never forces plugin
-    discovery. Gateway code uses this to decide whether to emit
-    ``command:<name>`` hooks — plugin commands get the same lifecycle
-    events as built-ins.
+    from ``COMMAND_REGISTRY``), plugin-registered commands, and installed
+    skill commands. Plugin and skill commands are looked up lazily so
+    importing this module never forces plugin or skill discovery. Gateway
+    code uses this to decide whether to emit ``command:<name>`` hooks —
+    dynamic commands get the same lifecycle events as built-ins.
     """
     if not name:
         return False
+    name = name.strip().lstrip("/").lower().replace("_", "-")
     if name in GATEWAY_KNOWN_COMMANDS:
+        return True
+    if name in {"skill", "skill-list"}:
         return True
     for plugin_name, _description, _args_hint in _iter_plugin_command_entries():
         if plugin_name == name:
             return True
+    try:
+        from agent.skill_commands import get_skill_commands
+        if f"/{name}" in get_skill_commands():
+            return True
+    except Exception:
+        pass
     return False
 
 

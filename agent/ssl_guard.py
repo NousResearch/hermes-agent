@@ -1,90 +1,84 @@
-"""Preventive SSL CA certificate guard for Hermes Agent.
+"""Preventive SSL CA certificate checks for Hermes Agent.
 
-This module provides an early fail-fast check to detect corrupted or missing
-certifi CA bundles before any network client is initialized.
+This module catches broken CA bundle paths before OpenAI/httpx turns them into
+opaque ``FileNotFoundError: [Errno 2] No such file or directory`` failures.
 """
+
+from __future__ import annotations
 
 import logging
 import os
-import platform
 import ssl
 from pathlib import Path
-
-import certifi
 
 from agent.errors import SSLConfigurationError
 
 logger = logging.getLogger(__name__)
 
+_CA_BUNDLE_ENV_VARS = (
+    "HERMES_CA_BUNDLE",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+)
+
+
+def _repair_hint() -> str:
+    return (
+        "Repair: python -m pip install --force-reinstall certifi openai httpx\n"
+        "If you configured a custom corporate CA bundle, fix or unset the "
+        "broken CA bundle environment variable."
+    )
+
 
 def _ssl_err(message: str) -> SSLConfigurationError:
-    """Helper to create a consistent error with remediation hint."""
-    return SSLConfigurationError(message + "\nRun: pip install -e .")
+    """Create a consistent, user-actionable SSL configuration error."""
+    return SSLConfigurationError(f"{message}\n{_repair_hint()}")
+
+
+def _validate_bundle_path(label: str, value: str, *, require_substantial: bool = False) -> None:
+    path = Path(value).expanduser()
+    if not path.exists():
+        raise _ssl_err(f"{label} points to a missing CA bundle: {value}")
+    if not path.is_file():
+        raise _ssl_err(f"{label} does not point to a CA bundle file: {value}")
+    if require_substantial and path.stat().st_size < 1024:
+        raise _ssl_err(f"{label} at {value} appears corrupted (too small)")
+    try:
+        ctx = ssl.create_default_context(cafile=str(path))
+    except Exception as exc:
+        raise _ssl_err(f"{label} CA bundle at {value} cannot be loaded: {exc}") from exc
+    if not ctx.get_ca_certs():
+        raise _ssl_err(f"{label} CA bundle at {value} did not load any certificates")
 
 
 def verify_ca_bundle() -> None:
-    """Verify that the certifi CA bundle is valid and loadable.
+    """Verify configured and bundled CA certificates are present and loadable.
 
     Raises:
-        SSLConfigurationError: If the bundle is missing, empty, or cannot be
-            used to create a working SSLContext.
+        SSLConfigurationError: If an explicit CA-bundle environment variable
+            points at a bad path, or if certifi's bundled ``cacert.pem`` is
+            missing/corrupt.
     """
-    if os.getenv("HERMES_SKIP_SSL_GUARD"):
-        logger.debug("SSL guard skipped via HERMES_SKIP_SSL_GUARD")
-        return
-
-    ca_bundle = str(certifi.where())
-    bundle_path = Path(ca_bundle)
-
-    if not bundle_path.exists():
-        raise _ssl_err(f"certifi CA bundle not found at {ca_bundle}")
-
-    if bundle_path.stat().st_size < 1024:
-        raise _ssl_err(f"certifi CA bundle at {ca_bundle} appears corrupted (too small)")
+    for env_var in _CA_BUNDLE_ENV_VARS:
+        value = os.getenv(env_var)
+        if value:
+            _validate_bundle_path(env_var, value)
 
     try:
-        ctx = ssl.create_default_context(cafile=ca_bundle)
+        import certifi
     except Exception as exc:
-        raise _ssl_err(
-            f"CA certificate bundle at {ca_bundle} cannot be loaded: {exc}"
-        ) from exc
+        raise _ssl_err(f"certifi is not importable: {exc}") from exc
 
-    # Paranoid check + macOS fallback
-    if not ctx.get_ca_certs():
-        try:
-            fallback = ssl.create_default_context()
-            if not fallback.get_ca_certs():
-                raise _ssl_err(
-                    f"CA certificate bundle at {ca_bundle} is empty and "
-                    "no system CA certificates are available."
-                )
-            logger.debug(
-                "certifi bundle at %s is empty but system CA store is ok", ca_bundle
-            )
-        except Exception:
-            raise
+    ca_bundle = str(certifi.where())
+    _validate_bundle_path("certifi", ca_bundle, require_substantial=True)
 
 
 def verify_ca_bundle_with_fallback() -> None:
-    """Verify CA bundle with macOS paranoid fallback.
+    """Backward-compatible wrapper for older call sites.
 
-    On macOS, if certifi fails but the system trust store works,
-    we allow startup (some corporate proxies / MDM setups break certifi).
-    The fallback only applies to "empty/unloadable" cases, not to
-    completely missing files.
+    The old PR name mentioned a platform fallback, but allowing startup with a
+    broken certifi bundle still leaves httpx/OpenAI and requests call sites
+    failing later. Keep the wrapper name but enforce the same check.
     """
-    try:
-        verify_ca_bundle()
-    except SSLConfigurationError as e:
-        if platform.system() == "Darwin" and "not found" not in str(e).lower():
-            try:
-                context = ssl.create_default_context()
-                if context.get_ca_certs():
-                    logger.warning(
-                        "certifi bundle invalid but macOS system trust store works. "
-                        "Proceeding with reduced security."
-                    )
-                    return
-            except Exception:
-                pass
-        raise
+    verify_ca_bundle()

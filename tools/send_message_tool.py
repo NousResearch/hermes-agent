@@ -302,9 +302,9 @@ def _handle_send(args):
     if target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
-            if resolved:
-                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            result = resolve_channel_name(platform_name, target_ref)
+            if result:
+                chat_id, thread_id = result
             else:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
@@ -523,6 +523,18 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
+    # Plugin-registered target parser fallback.
+    # Lets platforms declare their own target format via PlatformEntry.target_parse_fn
+    # without adding hardcoded branches above.
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+        if entry and entry.target_parse_fn:
+            parsed = entry.target_parse_fn(target_ref)
+            if parsed:
+                return parsed[0], parsed[1], True
+    except Exception:
+        pass
     return None, None, False
 
 

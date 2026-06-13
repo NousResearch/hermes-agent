@@ -471,15 +471,12 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
         try:
             from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_key, chat_id)
-            if resolved:
-                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
-                if resolved_is_explicit:
-                    chat_id = parsed_chat_id
-                    if parsed_thread_id is not None:
-                        thread_id = parsed_thread_id
-                else:
-                    chat_id = resolved
+            if chat_id:
+                result = resolve_channel_name(platform_key, chat_id)
+                if result:
+                    chat_id = result[0]
+                    if result[1] is not None:
+                        thread_id = result[1]
         except Exception:
             pass
 

@@ -30,7 +30,7 @@ Usage (gateway side):
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +157,29 @@ class PlatformEntry:
     # Without this hook, plugin platforms cannot serve as cron ``deliver=``
     # targets when the gateway is not co-resident with the cron process.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+
+    # ── Target parsing ──
+    # Optional: parse a raw target string into ``(chat_id, thread_id)`` for
+    # ``tools/send_message_tool._parse_target_ref``.  Called as a fallback
+    # when the hardcoded platform branches in ``_parse_target_ref`` do not
+    # match.  Lets plugin platforms declare their own target ID format
+    # without modifying core ``send_message_tool.py``.
+    #
+    # Signature: ``(target_ref: str) -> Optional[Tuple[str, Optional[str]]]``
+    #   - Return ``(chat_id, thread_id)`` to accept the target as explicit.
+    #   - Return ``None`` to decline (let the next fallback or default handle it).
+    #   - Must NOT raise; exceptions are caught and logged at debug level.
+    #
+    # Example for an infoflow-like platform that uses uuapNames as DM IDs::
+    #
+    #     def _parse_infoflow_target(target_ref: str):
+    #         target_ref = target_ref.strip()
+    #         if not target_ref:
+    #             return None
+    #         # "group:4507088" or "chengbo05"
+    #         return (target_ref, None)
+    #
+    target_parse_fn: Optional[Callable[[str], Optional[Tuple[str, Optional[str]]]]] = None
 
 
 class PlatformRegistry:

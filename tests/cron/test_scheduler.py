@@ -216,7 +216,7 @@ class TestResolveDeliveryTarget:
         }
         with patch(
             "gateway.channel_directory.resolve_channel_name",
-            return_value="-1003724596514",
+            return_value=("-1003724596514", None),
         ):
             result = _resolve_delivery_target(job)
         assert result == {
@@ -241,7 +241,7 @@ class TestResolveDeliveryTarget:
         job = {"deliver": "whatsapp:Alice (dm)"}
         with patch(
             "gateway.channel_directory.resolve_channel_name",
-            return_value="12345678901234@lid",
+            return_value=("12345678901234@lid", None),
         ) as resolve_mock:
             result = _resolve_delivery_target(job)
         resolve_mock.assert_called_once_with("whatsapp", "Alice (dm)")
@@ -256,7 +256,7 @@ class TestResolveDeliveryTarget:
         job = {"deliver": "telegram:My Group"}
         with patch(
             "gateway.channel_directory.resolve_channel_name",
-            return_value="-1009999",
+            return_value=("-1009999", None),
         ):
             result = _resolve_delivery_target(job)
         assert result == {
@@ -270,7 +270,7 @@ class TestResolveDeliveryTarget:
         job = {"deliver": "telegram:Coaching Chat / topic 17585 (group)"}
         with patch(
             "gateway.channel_directory.resolve_channel_name",
-            return_value="-1009999:17585",
+            return_value=("-1009999", "17585"),
         ):
             result = _resolve_delivery_target(job)
         assert result == {

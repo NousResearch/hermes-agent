@@ -37,6 +37,14 @@ status display, gateway setup, and more.
   `deliver=<name>` job fires correctly but the actual send returns
   `No live adapter for platform '<name>'`.  Pair with `cron_deliver_env_var`
   for end-to-end cron support.  See the docsite for the signature.
+- `target_parse_fn: (target_ref: str) -> Optional[Tuple[str, Optional[str]]]`:
+  parse a raw target string into `(chat_id, thread_id)` for the
+  `send_message` tool.  Called as a fallback when `_parse_target_ref`'s
+  hardcoded branches don't match.  Return the tuple to accept the target
+  as explicit, or `None` to decline.  Exceptions are caught and logged at
+  debug level.  Without this, plugin platforms whose chat_id format is not
+  recognized by `_parse_target_ref` will silently fall back to the
+  home_channel when `send_message` is used with a non-numeric target.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.

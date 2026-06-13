@@ -8,8 +8,9 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
@@ -17,6 +18,8 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+_LEGACY_NUMERIC_TOPIC_ID_RE = re.compile(r"^\s*(-?\d+):(\d+)\s*$")
+_LEGACY_SLACK_THREAD_ID_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -264,15 +267,56 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     return None
 
 
-def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
+def _split_legacy_composite_id(
+    platform_name: str,
+    entry_id: str,
+) -> Tuple[str, Optional[str]]:
+    """Split old directory ids that encoded thread_id in ``id`` only."""
+    platform_key = (platform_name or "").lower()
+    if platform_key in {"telegram", "discord"}:
+        match = _LEGACY_NUMERIC_TOPIC_ID_RE.fullmatch(entry_id)
+        if match:
+            return match.group(1), match.group(2)
+    if platform_key == "slack":
+        match = _LEGACY_SLACK_THREAD_ID_RE.fullmatch(entry_id)
+        if match:
+            return match.group(1), match.group(2)
+    if platform_key == "matrix":
+        split_idx = entry_id.rfind(":$")
+        if split_idx > 0:
+            return entry_id[:split_idx], entry_id[split_idx + 1 :]
+    if platform_key == "feishu" and entry_id.count(":") == 1:
+        chat_id, thread_id = entry_id.split(":", 1)
+        if chat_id.startswith(("oc_", "ou_", "on_", "chat_", "open_")) and thread_id:
+            return chat_id, thread_id
+    return entry_id, None
+
+
+def resolve_channel_name(
+    platform_name: str, name: str
+) -> Optional[Tuple[str, Optional[str]]]:
     """
-    Resolve a human-friendly channel name to a numeric ID.
+    Resolve a human-friendly channel name to ``(chat_id, thread_id)``.
+
+    Returns ``None`` if no match is found.
+    Returns ``(chat_id, thread_id)`` where *thread_id* may be ``None``.
 
     Matching strategy (case-insensitive, first match wins):
     - Discord: "bot-home", "#bot-home", "GuildName/bot-home"
     - Telegram: display name or group name
     - Slack: "engineering", "#engineering"
     """
+
+    def _result(ch: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+        entry_id = str(ch["id"])
+        thread_id = ch.get("thread_id")
+        if thread_id and entry_id.endswith(f":{thread_id}"):
+            chat_id = entry_id[: -(len(thread_id) + 1)]
+        else:
+            chat_id, inferred_thread_id = _split_legacy_composite_id(platform_name, entry_id)
+            thread_id = thread_id or inferred_thread_id
+        return (chat_id, thread_id)
+
     directory = load_directory()
     channels = directory.get("platforms", {}).get(platform_name, [])
     if not channels:
@@ -284,16 +328,16 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     raw = name.strip()
     for ch in channels:
         if ch.get("id") == raw:
-            return ch["id"]
+            return _result(ch)
 
     query = _normalize_channel_query(name)
 
     # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:
         if _normalize_channel_query(ch["name"]) == query:
-            return ch["id"]
+            return _result(ch)
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
-            return ch["id"]
+            return _result(ch)
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
@@ -301,12 +345,12 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
         for ch in channels:
             guild = ch.get("guild", "").strip().lower()
             if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
-                return ch["id"]
+                return _result(ch)
 
     # 3. Partial prefix match (only if unambiguous)
     matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
-        return matches[0]["id"]
+        return _result(matches[0])
 
     return None
 

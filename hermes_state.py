@@ -674,7 +674,9 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a PASSIVE WAL checkpoint every N successful writes.
+    # Attempt a RESTART WAL checkpoint every N successful writes.
+    # RESTART is used instead of TRUNCATE to avoid B-tree corruption on
+    # large FTS5 databases (see #45383).
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
@@ -723,6 +725,15 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
+                # Disable SQLite's built-in PASSIVE auto-checkpoint (default
+                # threshold: 1000 pages).  We manage checkpointing explicitly
+                # via _try_wal_checkpoint() using RESTART mode, which avoids
+                # the B-tree corruption risk that TRUNCATE poses on large
+                # FTS5 databases (#45383).  Having both SQLite's internal
+                # PASSIVE and our RESTART checkpoints competing for WAL
+                # frames creates redundant I/O and increases the window for
+                # lock contention on databases with 65K+ pages.
+                self._conn.execute("PRAGMA wal_autocheckpoint=0")
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 
@@ -924,27 +935,40 @@ class SessionDB:
         )
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort TRUNCATE WAL checkpoint.  Never raises.
+        """Best-effort RESTART WAL checkpoint.  Never raises.
 
         Flushes committed WAL frames back into the main DB file and
-        truncates the WAL file to zero bytes.  Keeps the WAL from
-        growing unbounded when many processes hold persistent
-        connections.
+        resets the WAL header so subsequent writes start from the
+        beginning of the WAL file.  Keeps the WAL from growing
+        unbounded when many processes hold persistent connections.
 
-        PASSIVE checkpoint was previously used here, but it never
-        truncates the WAL file — the file stays at its high-water
-        mark until an explicit TRUNCATE is called (which only
-        happened inside the infrequent vacuum()).
+        **Why RESTART instead of TRUNCATE (fix for #45383):**
 
-        TRUNCATE may block writers briefly while checkpointing, but
-        _try_wal_checkpoint is called off the hot path (every 50
-        writes) and already runs under ``self._lock``, so the
-        additional hold time is negligible.
+        TRUNCATE mode acquires an exclusive lock, checkpoints all
+        committed frames, syncs the DB file, *and* then calls
+        ``ftruncate`` to shrink the WAL file to zero bytes.  On large
+        FTS5 databases (255 MB / 65K+ pages observed in #45383), this
+        massive I/O burst while holding an exclusive lock has been
+        shown to corrupt FTS5 shadow-table B-trees — specifically
+        ``btreeInitPage() returns error code 11`` and invalid page
+        numbers after an interrupted TRUNCATE cycle.
+
+        RESTART performs the same frame transfer and WAL-header reset
+        as TRUNCATE, but does **not** truncate the WAL file on disk.
+        The file retains its high-water-mark size, so new writers
+        simply overwrite already-checkpointed frames from the start.
+        This avoids the ``ftruncate`` race that causes B-tree
+        corruption on large FTS5 databases while still preventing
+        unbounded WAL growth.
+
+        TRUNCATE is reserved for :meth:`close` and :meth:`vacuum`
+        where the connection is shutting down or the entire DB is
+        being rewritten, so exclusive access is guaranteed safe.
         """
         try:
             with self._lock:
                 result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                    "PRAGMA wal_checkpoint(RESTART)"
                 ).fetchone()
                 if result and result[1] > 0:
                     logger.debug(
@@ -958,7 +982,11 @@ class SessionDB:
         """Close the database connection.
 
         Attempts a TRUNCATE WAL checkpoint first so that exiting processes
-        help shrink the WAL file.
+        help shrink the WAL file.  TRUNCATE is safe here because the
+        connection is being torn down — no other writers will be issued
+        on this connection and the lock is held for the full teardown.
+        (Periodic checkpoints use RESTART — see _try_wal_checkpoint and
+        #45383.)
         """
         with self._lock:
             if self._conn:
@@ -4595,7 +4623,10 @@ class SessionDB:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
-            # Best-effort WAL checkpoint first, then VACUUM.
+            # TRUNCATE checkpoint before VACUUM is safe: VACUUM rewrites
+            # the entire database, so any FTS5 B-tree pages are rebuilt
+            # from scratch regardless.  See #45383 for why periodic
+            # checkpoints use RESTART instead.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception:

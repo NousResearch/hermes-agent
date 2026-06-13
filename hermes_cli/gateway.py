@@ -2197,6 +2197,21 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _is_transient_wsl_interop_path(entry: str) -> bool:
+    """Return True for host PATH entries that should not be persisted in units."""
+    normalized = entry.replace("\\", "/").lower().rstrip("/")
+    transient_markers = (
+        "/.codex/tmp",
+        "/appdata/local/temp",
+        "/appdata/local/tmp",
+        "/windows/temp",
+    )
+    return any(
+        normalized.endswith(marker) or f"{marker}/" in f"{normalized}/"
+        for marker in transient_markers
+    )
+
+
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """Return WSL Windows interop PATH entries for generated systemd units.
 
@@ -2210,13 +2225,15 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
 
     candidates: list[str] = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if entry.startswith("/mnt/"):
+        if entry.startswith("/mnt/") and not _is_transient_wsl_interop_path(entry):
             candidates.append(entry)
 
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)
         if resolved:
-            candidates.append(str(Path(resolved).parent))
+            parent = str(Path(resolved).parent)
+            if not _is_transient_wsl_interop_path(parent):
+                candidates.append(parent)
 
     for entry in (
         "/mnt/c/WINDOWS/system32",

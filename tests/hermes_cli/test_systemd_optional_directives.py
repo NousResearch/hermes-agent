@@ -51,6 +51,82 @@ KillSignal=SIGTERM
         assert "KillMode=mixed" in result
         assert "KillSignal=SIGTERM" in result
 
+    def test_unit_with_stable_path_difference_is_not_current(self, tmp_path, monkeypatch):
+        """Stable PATH changes should still mark the unit as outdated."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+Environment="PATH=/usr/bin"
+Restart=always
+
+[Install]
+WantedBy=default.target
+"""
+        expected = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+Environment="PATH=/usr/bin:/opt/tools/bin"
+Restart=always
+
+[Install]
+WantedBy=default.target
+"""
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is False
+
+    def test_unit_with_transient_path_drift_is_not_current(self, tmp_path, monkeypatch):
+        """Installed temp PATH entries should force a rewrite to the safer PATH."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+Environment="PATH=/usr/bin:/mnt/c/Users/test/AppData/Local/Temp"
+Restart=always
+
+[Install]
+WantedBy=default.target
+"""
+        expected = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+Environment="PATH=/usr/bin"
+Restart=always
+
+[Install]
+WantedBy=default.target
+"""
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is False
+
     def test_handles_empty_string(self):
         from hermes_cli.gateway import _strip_optional_systemd_directives
         assert _strip_optional_systemd_directives("") == ""

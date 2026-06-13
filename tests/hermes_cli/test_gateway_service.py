@@ -452,6 +452,33 @@ class TestGeneratedSystemdUnits:
         assert "/mnt/c/WINDOWS/system32" in unit
         assert "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/" in unit
 
+    def test_user_unit_omits_transient_wsl_windows_interop_paths(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv(
+            "PATH",
+            "/usr/local/bin:/mnt/c/Users/test/AppData/Local/Temp:/mnt/c/WINDOWS/system32",
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "/mnt/c/Users/test/AppData/Local/Temp" not in unit
+        assert "/mnt/c/WINDOWS/system32" in unit
+
+    def test_user_unit_omits_transient_wsl_windows_interop_parent_from_which(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
+        monkeypatch.setenv("PATH", "/usr/local/bin")
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: "/mnt/c/Users/test/AppData/Local/Temp/powershell.exe" if cmd == "powershell.exe" else None,
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "/mnt/c/Users/test/AppData/Local/Temp" not in unit
+        assert "/mnt/c/WINDOWS/system32" in unit
+
     def test_user_unit_omits_windows_interop_paths_outside_wsl(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
         monkeypatch.setenv("PATH", "/usr/local/bin:/mnt/c/WINDOWS/system32")

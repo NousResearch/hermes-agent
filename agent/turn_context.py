@@ -236,8 +236,11 @@ def build_turn_context(
     active_system_prompt = agent._cached_system_prompt
 
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
+    # skip_user_override=True: the multimodal content (image_url parts) must
+    # survive in the in-memory messages list for the API call.  The plain-text
+    # override is applied on the final _persist_session after the API call.
     try:
-        agent._persist_session(messages, conversation_history)
+        agent._persist_session(messages, conversation_history, skip_user_override=True)
     except Exception:
         logger.warning(
             "Early turn-start session persistence failed for session=%s",

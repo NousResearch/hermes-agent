@@ -1476,13 +1476,21 @@ class AIAgent:
             if isinstance(msg, dict) and msg.get("role") == "user":
                 msg["content"] = override
 
-    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None, *, skip_user_override: bool = False):
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
+
+        When *skip_user_override* is True, the persist-user-message text
+        replacement is skipped — used by the early crash-resilience persist
+        in ``build_turn_context`` so that multimodal content (image_url
+        parts) survives in the in-memory messages list for the API call.
+        The override is applied on the final persist after the API call
+        completes.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
-        self._apply_persist_user_message_override(messages)
+        if not skip_user_override:
+            self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)

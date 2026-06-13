@@ -1,0 +1,7 @@
+name: web-crw
+version: 1.0.0
+description: "fastCRW web search + content extraction via the single-binary crw scraper (https://fastcrw.com). Extract runs locally with zero config (auto-downloads the crw-mcp binary); set CRW_API_KEY (cloud) or CRW_API_URL (self-hosted) to enable search."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - crw

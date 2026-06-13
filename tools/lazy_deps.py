@@ -109,6 +109,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
+    # fastCRW — single-binary scraper SDK (https://fastcrw.com). Bump in
+    # lockstep with the `crw` extra in pyproject.toml and uv.lock.
+    "search.crw": ("crw==0.3.2",),
 
     # ─── TTS providers ─────────────────────────────────────────────────────
     # Pinned to exact versions to match pyproject.toml's no-ranges policy

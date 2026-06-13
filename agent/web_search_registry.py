@@ -124,6 +124,11 @@ _LEGACY_PREFERENCE = (
     "parallel",
     "tavily",
     "exa",
+    # fastCRW trails the established paid backends so an upgrade never reroutes
+    # an existing setup. Its is_available() only reports True when cloud /
+    # self-hosted creds are set (or the binary is already local), so keyless
+    # subprocess installs stay opt-in via an explicit web.backend=crw.
+    "crw",
     "searxng",
     "brave-free",
     "ddgs",

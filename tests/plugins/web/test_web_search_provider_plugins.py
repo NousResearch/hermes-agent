@@ -45,6 +45,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "CRW_API_KEY",
+        "CRW_API_URL",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -63,8 +65,17 @@ def _ensure_plugins_loaded() -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Each test starts with a clean web-provider env."""
+    """Each test starts with a clean web-provider env.
+
+    fastCRW's ``is_available()`` also reports True when the ``crw-mcp`` binary
+    is already cached locally (subprocess mode), which would make resolution
+    machine-dependent. Pin that probe to False here so every test sees crw as
+    creds-gated only; the dedicated crw subprocess test re-patches it True.
+    """
     _clear_web_env(monkeypatch)
+    monkeypatch.setattr(
+        "plugins.web.crw.provider._crw_binary_present", lambda: False
+    )
 
 
 class TestBundledPluginsRegister:
@@ -77,6 +88,7 @@ class TestBundledPluginsRegister:
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "crw",
             "ddgs",
             "exa",
             "firecrawl",
@@ -142,6 +154,324 @@ class TestBundledPluginsRegister:
         assert isinstance(schema, dict)
         assert "name" in schema
         assert "env_vars" in schema
+
+
+# ---------------------------------------------------------------------------
+# fastCRW provider (search [cloud-only] + extract [all modes])
+# ---------------------------------------------------------------------------
+
+
+class TestCrwProvider:
+    """fastCRW's mode-dependent capabilities and availability."""
+
+    def _provider(self):
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("crw")
+        assert p is not None
+        return p
+
+    def test_registered_with_names(self) -> None:
+        p = self._provider()
+        assert p.name == "crw"
+        assert p.display_name == "fastCRW"
+
+    def test_extract_always_supported_search_is_cloud_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = self._provider()
+        # Subprocess mode (no creds): extract works, search does not.
+        assert p.supports_extract() is True
+        assert p.supports_search() is False
+        # Cloud / self-hosted creds enable search.
+        monkeypatch.setenv("CRW_API_KEY", "real")
+        assert p.supports_search() is True
+        monkeypatch.delenv("CRW_API_KEY", raising=False)
+        monkeypatch.setenv("CRW_API_URL", "http://localhost:3000")
+        assert p.supports_search() is True
+
+    def test_is_available_creds_based(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        p = self._provider()
+        # Fixture pins the subprocess binary probe to False, so no creds → unavailable.
+        assert p.is_available() is False
+        monkeypatch.setenv("CRW_API_KEY", "real")
+        assert p.is_available() is True
+        monkeypatch.delenv("CRW_API_KEY", raising=False)
+        monkeypatch.setenv("CRW_API_URL", "http://localhost:3000")
+        assert p.is_available() is True
+
+    def test_is_available_subprocess_binary_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no creds, a locally-present crw-mcp binary makes extract usable."""
+        p = self._provider()
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._crw_binary_present", lambda: True
+        )
+        assert p.is_available() is True
+
+    def test_extract_is_async(self) -> None:
+        p = self._provider()
+        assert inspect.iscoroutinefunction(p.extract) is True
+
+    def test_setup_schema_shape(self) -> None:
+        p = self._provider()
+        schema = p.get_setup_schema()
+        assert isinstance(schema, dict)
+        assert schema["name"] == "fastCRW"
+        keys = {e["key"] for e in schema["env_vars"]}
+        assert keys == {"CRW_API_KEY", "CRW_API_URL"}
+
+    def test_search_subprocess_returns_error_dict(self) -> None:
+        """Search is cloud-only; in subprocess mode it returns a typed error."""
+        p = self._provider()
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_search_cloud_normalizes_results(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Cloud search maps SDK rows to the {success, data: {web: [...]}} shape."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _FakeClient:
+            def search(self, query: str, limit: int = 5):
+                return [
+                    {"title": "T1", "url": "https://a.example", "description": "d1"},
+                    {"title": "T2", "url": "https://b.example", "snippet": "d2"},
+                ]
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _FakeClient()
+        )
+        p = self._provider()
+        result = p.search("hi", limit=5)
+        assert result["success"] is True
+        web = result["data"]["web"]
+        assert [r["url"] for r in web] == ["https://a.example", "https://b.example"]
+        assert web[0]["description"] == "d1"
+        assert web[1]["description"] == "d2"  # falls back to snippet
+        assert [r["position"] for r in web] == [1, 2]
+
+    def test_search_propagates_upstream_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An upstream failure (SDK raises on success:false / non-2xx) is a
+        failure, not a successful empty search."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _FailingClient:
+            def search(self, query: str, limit: int = 5):
+                raise RuntimeError("HTTP 500: boom")
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _FailingClient()
+        )
+        p = self._provider()
+        result = p.search("hi", limit=5)
+        assert result["success"] is False
+        assert "boom" in result["error"]
+
+    def test_search_null_data_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``data: null`` response (SDK returns None) yields no results rather
+        than raising an AttributeError."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _NullClient:
+            def search(self, query: str, limit: int = 5):
+                return None
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _NullClient()
+        )
+        p = self._provider()
+        result = p.search("hi", limit=5)
+        assert result["success"] is True
+        assert result["data"]["web"] == []
+
+    def test_search_grouped_dict_shape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the server groups by source type ({"web": [...]}), pull web."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _GroupedClient:
+            def search(self, query: str, limit: int = 5):
+                return {"web": [{"title": "T", "url": "https://a.example"}]}
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _GroupedClient()
+        )
+        p = self._provider()
+        result = p.search("hi", limit=5)
+        assert [r["url"] for r in result["data"]["web"]] == ["https://a.example"]
+
+    def test_search_canonical_results_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """crw-server returns data={"results": [...]} — must not drop results.
+
+        (Regression guard: a flat-list-only parser would yield zero results
+        against the real server contract.)"""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _WrappedClient:
+            def search(self, query: str, limit: int = 5):
+                return {
+                    "results": [
+                        {"title": "T1", "url": "https://a.example", "snippet": "s1"},
+                        {"title": "T2", "url": "https://b.example", "description": "d2"},
+                    ],
+                    "number_of_results": 2,
+                }
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _WrappedClient()
+        )
+        p = self._provider()
+        result = p.search("hi", limit=5)
+        web = result["data"]["web"]
+        assert [r["url"] for r in web] == ["https://a.example", "https://b.example"]
+        assert web[0]["description"] == "s1"  # snippet alias
+
+    def test_search_canonical_grouped_results_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With sources, data={"results": {"web": [...]}} — pull the web bucket."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _GroupedWrappedClient:
+            def search(self, query: str, limit: int = 5):
+                return {
+                    "results": {
+                        "web": [{"title": "T", "url": "https://a.example"}],
+                        "news": [{"title": "N", "url": "https://n.example"}],
+                    }
+                }
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client",
+            lambda: _GroupedWrappedClient(),
+        )
+        p = self._provider()
+        result = p.search("hi", limit=5)
+        assert [r["url"] for r in result["data"]["web"]] == ["https://a.example"]
+
+    def test_self_hosted_search_supported_and_errors_cleanly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Self-hosted (CRW_API_URL) advertises search; a server without SearXNG
+        raises (search_disabled), surfaced as a clean error dict — not a crash."""
+        monkeypatch.setenv("CRW_API_URL", "http://localhost:3000")
+        p = self._provider()
+        assert p.supports_search() is True
+
+        class _DisabledClient:
+            def search(self, query: str, limit: int = 5):
+                raise RuntimeError("search_disabled")
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _DisabledClient()
+        )
+        result = p.search("hi", limit=5)
+        assert result["success"] is False
+        assert "search_disabled" in result["error"]
+
+    def _run_extract(self, provider, urls, monkeypatch, **kwargs):
+        """Run the async extract with policy + interrupt gates stubbed open."""
+        monkeypatch.setattr(
+            "plugins.web.crw.provider.check_website_access", lambda url: None
+        )
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        return asyncio.run(provider.extract(urls, **kwargs))
+
+    def test_extract_format_html_selects_html(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """format='html' must return the HTML, not the markdown (review #3)."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _ScrapeClient:
+            def scrape(self, url, formats=None):
+                assert formats == ["html"]
+                return {
+                    "markdown": "# md",
+                    "html": "<p>html</p>",
+                    "metadata": {"title": "T", "sourceURL": url},
+                }
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _ScrapeClient()
+        )
+        p = self._provider()
+        out = self._run_extract(p, ["https://a.example"], monkeypatch, format="html")
+        assert out[0]["content"] == "<p>html</p>"
+        assert out[0]["title"] == "T"
+
+    def test_extract_format_markdown_selects_markdown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _ScrapeClient:
+            def scrape(self, url, formats=None):
+                assert formats == ["markdown"]
+                return {
+                    "markdown": "# md",
+                    "html": "<p>html</p>",
+                    "metadata": {"sourceURL": url},
+                }
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _ScrapeClient()
+        )
+        p = self._provider()
+        out = self._run_extract(
+            p, ["https://a.example"], monkeypatch, format="markdown"
+        )
+        assert out[0]["content"] == "# md"
+
+    def test_extract_null_data_does_not_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A null scrape payload yields empty content, never a crash."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _NullClient:
+            def scrape(self, url, formats=None):
+                return None
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _NullClient()
+        )
+        p = self._provider()
+        out = self._run_extract(p, ["https://a.example"], monkeypatch)
+        assert out[0]["content"] == ""
+        assert "error" not in out[0]  # empty-but-successful, matches firecrawl
+
+    def test_extract_scrape_error_becomes_error_field(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scrape failure (SDK raises) becomes a per-URL error entry, not a
+        silent empty success (review #5)."""
+        monkeypatch.setenv("CRW_API_KEY", "real")
+
+        class _FailingClient:
+            def scrape(self, url, formats=None):
+                raise RuntimeError("scrape blew up")
+
+        monkeypatch.setattr(
+            "plugins.web.crw.provider._get_crw_client", lambda: _FailingClient()
+        )
+        p = self._provider()
+        out = self._run_extract(p, ["https://a.example"], monkeypatch)
+        assert out[0]["content"] == ""
+        assert "scrape blew up" in out[0]["error"]
 
 
 # ---------------------------------------------------------------------------

@@ -146,6 +146,10 @@ anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
 parallel-web = ["parallel-web==0.4.2"]
+# fastCRW — single-binary web scraper (https://fastcrw.com). Extract runs
+# locally with no key (the SDK auto-downloads the crw-mcp binary); cloud /
+# self-hosted mode enables search. Lazy-installed via LAZY_DEPS["search.crw"].
+crw = ["crw==0.3.2"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick

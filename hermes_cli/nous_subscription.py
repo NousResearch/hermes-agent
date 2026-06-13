@@ -411,6 +411,7 @@ def get_nous_subscription_features(
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
+    direct_crw = bool(get_env_value("CRW_API_KEY") or get_env_value("CRW_API_URL"))
     direct_fal = fal_key_is_configured()
     direct_fal_video = direct_fal  # same FAL_KEY; separate var so use_gateway is independent
     direct_openai_tts = bool(resolve_openai_audio_api_key())
@@ -442,6 +443,7 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
+        direct_crw = False
     if image_use_gateway:
         direct_fal = False
     if video_use_gateway:
@@ -518,6 +520,7 @@ def get_nous_subscription_features(
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
             or (web_backend == "searxng" and direct_searxng)
+            or (web_backend == "crw" and direct_crw)
             # Per-capability overrides: search_backend or extract_backend may be set
             # without web.backend (using the new split config from #20061)
             or (web_search_backend == "searxng" and direct_searxng)
@@ -525,10 +528,11 @@ def get_nous_subscription_features(
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
             or (web_search_backend == "tavily" and direct_tavily)
+            or (web_search_backend == "crw" and direct_crw)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
+        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng or direct_crw
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal

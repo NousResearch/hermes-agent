@@ -711,6 +711,18 @@ wheels = [
 ]
 
 [[package]]
+name = "crw"
+version = "0.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "platformdirs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/90/37a7d03bdc7b22cbb77a1d6d28a2100e1cabf8f849490898e4f931308189/crw-0.3.2.tar.gz", hash = "sha256:0a49ec900894c3585e05d20b2e81e047c73585b553e9879fcc05a5ff4ae380cb", size = 9725, upload-time = "2026-04-08T13:04:37.283Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/d1/e68ec3e4e44ad5b75ca22cc5202e3a2c3076f934f1b8c1edf2ecd88804fd/crw-0.3.2-py3-none-any.whl", hash = "sha256:de0b26ceeeac684610dfb1386b1db6d35ca3d9978b22958e9b36c03788cd3f19", size = 8732, upload-time = "2026-04-08T13:04:36.491Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "46.0.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1575,6 +1587,9 @@ computer-use = [
     { name = "mcp" },
     { name = "starlette" },
 ]
+crw = [
+    { name = "crw" },
+]
 daytona = [
     { name = "daytona" },
 ]
@@ -1735,6 +1750,7 @@ requires-dist = [
     { name = "certifi", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", specifier = "==6.0.0" },
+    { name = "crw", marker = "extra == 'crw'", specifier = "==0.3.2" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
     { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
@@ -1836,7 +1852,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "crw", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -2994,6 +3010,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c3/28/ec0fc38107fc32536908034e990c47914c57cd7c5a3ece4d8d8f7ffd7e27/pillow-12.2.0-pp311-pypy311_pp73-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4a6c9fa44005fa37a91ebfc95d081e8079757d2e904b27103f4f5fa6f0bf78c0", size = 5355404, upload-time = "2026-04-01T14:46:06.33Z" },
     { url = "https://files.pythonhosted.org/packages/5e/8b/51b0eddcfa2180d60e41f06bd6d0a62202b20b59c68f5a132e615b75aecf/pillow-12.2.0-pp311-pypy311_pp73-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:25373b66e0dd5905ed63fa3cae13c82fbddf3079f2c8bf15c6fb6a35586324c1", size = 6002215, upload-time = "2026-04-01T14:46:08.83Z" },
     { url = "https://files.pythonhosted.org/packages/bc/60/5382c03e1970de634027cee8e1b7d39776b778b81812aaf45b694dfe9e28/pillow-12.2.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:bfa9c230d2fe991bed5318a5f119bd6780cda2915cca595393649fc118ab895e", size = 7080946, upload-time = "2026-04-01T14:46:11.734Z" },
+]
+
+[[package]]
+name = "platformdirs"
+version = "4.10.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/47/e4501f49c178ae1d9f4a75073fda4204f52647993f075a9db4d14930e0c5/platformdirs-4.10.0.tar.gz", hash = "sha256:31e761a6a0ca04faf7353ea759bdba55652be214725111e5aac52dfa29d4bef7", size = 31224, upload-time = "2026-05-28T03:32:53.587Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/e6/cd9575ac904136b3cbf7aa7ee819ef86eedb7274e46f230e94ea4342e729/platformdirs-4.10.0-py3-none-any.whl", hash = "sha256:fb516cdb12eb0d857d0cd85a7c57cea4d060bee4578d6cf5a14dfdf8cbf8784a", size = 22743, upload-time = "2026-05-28T03:32:52.175Z" },
 ]
 
 [[package]]

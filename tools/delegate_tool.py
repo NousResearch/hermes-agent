@@ -28,7 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Callable, Optional
 
 from toolsets import TOOLSETS
 
@@ -725,7 +725,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
-) -> Optional[callable]:
+) -> Optional[Callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:

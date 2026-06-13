@@ -45,7 +45,7 @@ import tempfile
 import time
 import threading
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Callable, Optional
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:
@@ -5095,14 +5095,15 @@ class AIAgent:
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
-        stream_callback: Optional[callable] = None,
+        stream_callback: Optional[Callable] = None,
         persist_user_message: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
         return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
 
-    def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
+
+    def chat(self, message: str, stream_callback: Optional[Callable] = None) -> str:
         """
         Simple chat interface that returns just the final response.
 

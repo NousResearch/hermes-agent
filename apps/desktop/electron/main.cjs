@@ -4709,6 +4709,11 @@ async function spawnPoolBackend(profile, entry) {
         ...process.env,
         HERMES_HOME,
         ...backend.env,
+        // Force Python subprocess stdio to UTF-8 on Windows. Without this,
+        // Python can default to the active ANSI code page and crash reader
+        // threads with UnicodeDecodeError when output contains non-CP1252 bytes.
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8:replace',
         // Pin the gateway's tool/terminal cwd to the same directory we chose for
         // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
         // can still point at the install dir even when spawn cwd is home.
@@ -4929,6 +4934,11 @@ async function startHermes() {
           // can't reliably do that, so we set it inline for every spawn.
           HERMES_HOME,
           ...backend.env,
+          // Force Python subprocess stdio to UTF-8 on Windows. Without this,
+          // Python can default to the active ANSI code page and crash reader
+          // threads with UnicodeDecodeError when output contains non-CP1252 bytes.
+          PYTHONUTF8: '1',
+          PYTHONIOENCODING: 'utf-8:replace',
           TERMINAL_CWD: hermesCwd,
           HERMES_DASHBOARD_SESSION_TOKEN: token,
           // Marks this dashboard backend as desktop-spawned so it runs the cron

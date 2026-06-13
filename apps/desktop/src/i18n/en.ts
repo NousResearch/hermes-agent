@@ -509,6 +509,11 @@ export const en: Translations = {
       getKey: 'Get a key',
       saving: 'Saving'
     },
+    credentialFields: {
+      labels: {},
+      descriptions: {},
+      providerDescriptions: {}
+    },
     envActions: {
       actionsFor: label => `Actions for ${label}`,
       credentialActions: 'Credential actions',
@@ -772,6 +777,38 @@ export const en: Translations = {
       deleteFailed: 'Delete failed',
       updateDirFailed: 'Could not update default directory',
       clearDirFailed: 'Could not clear default directory'
+    },
+    uninstall: {
+      dangerZone: 'Danger zone',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      confirmMessage: consequence => `This removes ${consequence}. This can't be undone.`,
+      running: 'Uninstalling…',
+      confirmButton: 'Yes, uninstall',
+      cancel: 'Cancel',
+      title: 'Uninstall Hermes',
+      description:
+        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      appPath: path => `App: ${path}`,
+      couldNotStart: 'Uninstall could not start.',
+      options: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description: 'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description: 'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description: 'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence:
+            'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
+      }
     },
     toolsets: {
       loadingConfig: 'Loading configuration',

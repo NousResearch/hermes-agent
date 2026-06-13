@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar'
 
 export type ToolTitleKey =
   | 'browser_click'
@@ -423,6 +423,11 @@ export interface Translations {
       getKey: string
       saving: string
     }
+    credentialFields: {
+      labels: Record<string, string>
+      descriptions: Record<string, string>
+      providerDescriptions: Record<string, string>
+    }
     envActions: {
       actionsFor: (label: string) => string
       credentialActions: string
@@ -663,6 +668,27 @@ export interface Translations {
       deleteFailed: string
       updateDirFailed: string
       clearDirFailed: string
+    }
+    uninstall: {
+      dangerZone: string
+      checking: string
+      confirmTitle: string
+      confirmMessage: (consequence: string) => string
+      running: string
+      confirmButton: string
+      cancel: string
+      title: string
+      description: string
+      appPath: (path: string) => string
+      couldNotStart: string
+      options: Record<
+        'full' | 'gui' | 'lite',
+        {
+          consequence: string
+          description: string
+          title: string
+        }
+      >
     }
     toolsets: {
       loadingConfig: string

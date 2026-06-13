@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { fieldCopyForSchemaKey } from '@/app/settings/field-copy'
+import { credentialRowLabel, providerGroupDescription } from '@/app/settings/credential-key-ui'
 
 import { TRANSLATIONS } from './catalog'
 import { setRuntimeI18nLocale, translateNow } from './runtime'
+import { ar } from './ar'
 import { zh } from './zh'
 
 describe('desktop i18n runtime translator', () => {
@@ -44,6 +46,25 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh-hant')
     expect(translateNow('settings.appearance.title')).toBe('外觀')
     expect(translateNow('settings.nav.providerApiKeys')).toBe('API 金鑰')
+
+    setRuntimeI18nLocale('ar')
+    expect(translateNow('settings.sections.model')).toBe('النموذج')
+    expect(translateNow('settings.nav.providers')).toBe('المزودون')
+    expect(translateNow('settings.gateway.title')).toBe('اتصال البوابة')
+    expect(translateNow('settings.mcp.emptyTitle')).toBe('لا توجد خوادم MCP')
+    expect(translateNow('settings.sessions.archivedTitle')).toBe('الجلسات المؤرشفة')
+    expect(translateNow('settings.uninstall.dangerZone')).toBe('منطقة الخطر')
+    expect(translateNow('settings.appearance.translucencyTitle')).toBe('شفافية النافذة')
+    expect(translateNow('onboarding.connected')).toBe('متصل')
+  })
+
+  it('uses Arabic copy for credential and provider rows', () => {
+    setRuntimeI18nLocale('ar')
+
+    expect(credentialRowLabel('OPENROUTER_API_KEY', { is_password: true } as never)).toBe('مفتاح OpenRouter API')
+    expect(providerGroupDescription('OpenRouter', 'Aggregator for hundreds of frontier models')).toBe(
+      'مجمّع يتيح مئات النماذج المتقدمة عبر مفتاح واحد.'
+    )
   })
 
   it('keeps translated settings field copy addressable from schema keys', () => {
@@ -51,6 +72,15 @@ describe('desktop i18n runtime translator', () => {
 
     expect(fieldCopyForSchemaKey(zh.settings.fieldLabels, field)).toBe('推理过程块')
     expect(fieldCopyForSchemaKey(zh.settings.fieldDescriptions, field)).toBe('当后端提供推理内容时予以显示。')
+  })
+
+  it('keeps Arabic settings field copy addressable from schema keys', () => {
+    expect(fieldCopyForSchemaKey(ar.settings.fieldLabels, 'terminal.cwd')).toBe('مجلد العمل')
+    expect(fieldCopyForSchemaKey(ar.settings.fieldLabels, 'approvals.mode')).toBe('نمط الموافقات')
+    expect(fieldCopyForSchemaKey(ar.settings.fieldLabels, 'memory.memory_enabled')).toBe('الذاكرة المستمرة')
+    expect(fieldCopyForSchemaKey(ar.settings.fieldDescriptions, 'terminal.cwd')).toBe(
+      'مجلد المشروع الافتراضي لعمل الأدوات والطرفية.'
+    )
   })
 
   it('falls back to English when the active locale cannot resolve a key', () => {

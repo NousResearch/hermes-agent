@@ -26,12 +26,61 @@ const CRED_BARE = 'border-0! bg-transparent! shadow-none! h-auto! p-0! @2xl:h-8!
 
 export const isKeyVar = (key: string, info: EnvVarInfo) => info.is_password || /(?:_API_KEY|_TOKEN|_KEY)$/.test(key)
 
-export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
+const translationOr = (path: string, fallback: string): string => {
+  const translated = translateNow(path)
+  return translated === path ? fallback : translated
+}
+
+const credentialTranslation = (
+  kind: 'descriptions' | 'labels' | 'providerDescriptions',
+  key: string,
+  fallback: string
+): string => translationOr(`settings.credentialFields.${kind}.${key}`, fallback)
+
+const PROVIDER_DESCRIPTION_KEYS: Record<string, string> = {
+  'Nous Portal': 'nousPortal',
+  OpenRouter: 'openRouter',
+  Anthropic: 'anthropic',
+  xAI: 'xai',
+  Gemini: 'gemini',
+  DeepSeek: 'deepSeek',
+  'DashScope (Qwen)': 'dashScope',
+  'GLM / Z.AI': 'glm',
+  'Kimi / Moonshot': 'kimi',
+  'Kimi (China)': 'kimiChina',
+  MiniMax: 'minimax',
+  'MiniMax (China)': 'minimaxChina',
+  'Hugging Face': 'huggingFace',
+  'OpenCode Zen': 'openCodeZen',
+  'OpenCode Go': 'openCodeGo',
+  'NVIDIA NIM': 'nvidia',
+  'Ollama Cloud': 'ollama',
+  'LM Studio': 'lmStudio',
+  StepFun: 'stepFun',
+  'Xiaomi MiMo': 'xiaomi',
+  'Arcee AI': 'arcee',
+  'GMI Cloud': 'gmi',
+  'Azure Foundry': 'azureFoundry',
+  'AWS Bedrock': 'awsBedrock'
+}
+
+const defaultFieldLabel = (key: string, info: EnvVarInfo) =>
   info.description?.trim() ||
   key
     .replace(/_/g, ' ')
     .toLowerCase()
     .replace(/\b\w/g, c => c.toUpperCase())
+
+export const friendlyFieldLabel = (key: string, info: EnvVarInfo) =>
+  credentialTranslation('labels', key, defaultFieldLabel(key, info))
+
+export const credentialFieldDescription = (key: string, info: EnvVarInfo) =>
+  credentialTranslation('descriptions', key, info.description?.trim() ?? '')
+
+export const providerGroupDescription = (name: string, fallback = ''): string => {
+  const translationKey = PROVIDER_DESCRIPTION_KEYS[name]
+  return translationKey ? credentialTranslation('providerDescriptions', translationKey, fallback) : fallback
+}
 
 export const credentialPlaceholder = (key: string, info: EnvVarInfo, label: string): string =>
   isKeyVar(key, info)
@@ -169,7 +218,7 @@ export function CredentialKeyCard({
   varKey
 }: CredentialKeyCardProps) {
   const docsUrl = info.url?.trim()
-  const description = info.description?.trim()
+  const description = credentialFieldDescription(varKey, info)
   const expandable = Boolean(description || docsUrl)
 
   return (
@@ -256,7 +305,7 @@ export function CredentialKeyCard({
 export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps }: ProviderKeyRowsProps) {
   const { t } = useI18n()
   const docsUrl = group.docsUrl?.trim()
-  const description = group.description?.trim()
+  const description = providerGroupDescription(group.name, group.description?.trim())
   const expandable = Boolean(description || docsUrl || group.advanced.length > 0)
 
   return (
@@ -370,6 +419,11 @@ export function ProviderKeyRows({ expanded, group, onExpand, onToggle, rowProps 
 }
 
 export function credentialRowLabel(varKey: string, info: EnvVarInfo): string {
+  const translated = credentialTranslation('labels', varKey, '')
+  if (translated) {
+    return translated
+  }
+
   if (isKeyVar(varKey, info)) {
     return prettyName(varKey.replace(/(?:_API_KEY|_TOKEN|_KEY)$/i, ''))
   }

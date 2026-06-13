@@ -55,6 +55,15 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
 
+function applyDocumentLocale(locale: Locale) {
+  if (typeof document === 'undefined') {
+    return
+  }
+
+  document.documentElement.lang = locale
+  document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr'
+}
+
 export interface I18nContextValue {
   configLoadError: Error | null
   isLoadingConfig: boolean
@@ -92,6 +101,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   useEffect(() => {
     localeRef.current = locale
     setRuntimeI18nLocale(locale)
+    applyDocumentLocale(locale)
   }, [locale])
 
   useEffect(() => {

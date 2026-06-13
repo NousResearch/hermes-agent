@@ -538,8 +538,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
+            # Resolve the API key from the env var name stored in key_env.
+            # Accept api_key_env too: setup/import flows and docs have used
+            # both spellings for providers: dict entries.
+            key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
             resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
@@ -553,8 +555,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
+                        "model": entry.get("default_model") or entry.get("model", ""),
                     }
+                    if key_env:
+                        result["key_env"] = key_env
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
@@ -582,8 +586,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
-                            "model": entry.get("default_model", ""),
+                            "model": entry.get("default_model") or entry.get("model", ""),
                         }
+                        if key_env:
+                            result["key_env"] = key_env
                         extra_body = entry.get("extra_body")
                         if isinstance(extra_body, dict):
                             result["extra_body"] = dict(extra_body)

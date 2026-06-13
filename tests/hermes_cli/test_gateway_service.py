@@ -415,6 +415,28 @@ class TestGeneratedSystemdUnits:
         timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
         return f"TimeoutStopSec={timeout}"
 
+    def test_user_unit_loads_gateway_env_file(self):
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "EnvironmentFile=-" in unit
+        assert "/gateway.env" in unit
+
+    def test_system_unit_loads_target_users_gateway_env_file(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_hermes_home_for_target_user",
+            lambda home: "/home/alice/.hermes",
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert "EnvironmentFile=-/home/alice/.hermes/gateway.env" in unit
+
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self, monkeypatch):
         monkeypatch.setattr(
             gateway_cli,

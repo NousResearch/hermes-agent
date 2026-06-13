@@ -863,6 +863,52 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_accepts_api_key_env_and_model_fields(monkeypatch):
+    """providers dict accepts documented api_key_env/model aliases.
+
+    Some importers and examples write ``api_key_env`` + ``model`` instead of
+    the older ``key_env`` + ``default_model`` spelling. Runtime resolution
+    must accept both forms so gateway services can load credentials from their
+    generated environment file without duplicating config fields.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MYCORP_API_KEY", "env-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "model": "acme-large",
+                    "api_key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "env-secret"
+    assert resolved["requested_provider"] == "mycorp-proxy"
+    assert resolved["source"] == "custom_provider:MyCorp Proxy"
+    assert resolved["model"] == "acme-large"
+
+
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
     """Named custom providers on one gateway must keep their own credentials and protocol."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

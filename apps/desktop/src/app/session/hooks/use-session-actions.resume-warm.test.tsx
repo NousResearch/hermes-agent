@@ -4,8 +4,9 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessions, setSessions } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
-import type { ClientSessionState, SessionInfo } from '../../types'
+import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 

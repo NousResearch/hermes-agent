@@ -40,6 +40,84 @@ class ImmediateThread:
         self._target()
 
 
+def test_memory_write_metadata_records_background_review_provenance():
+    import agent.background_review as bg_review
+
+    agent = _bare_agent()
+    agent._parent_session_id = "parent-session"
+    agent._memory_write_origin = "background_review"
+    agent._memory_write_context = "background_review"
+
+    metadata = bg_review.build_memory_write_metadata(
+        agent,
+        task_id="task-123",
+        tool_call_id="call-456",
+    )
+
+    assert metadata == {
+        "write_origin": "background_review",
+        "execution_context": "background_review",
+        "session_id": "test-session",
+        "parent_session_id": "parent-session",
+        "platform": "telegram",
+        "tool_name": "memory",
+        "task_id": "task-123",
+        "tool_call_id": "call-456",
+    }
+
+
+def test_memory_write_metadata_omits_empty_values_and_uses_platform_env(monkeypatch):
+    import agent.background_review as bg_review
+
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "gateway")
+    agent = _bare_agent()
+    agent.platform = ""
+    agent.session_id = ""
+    agent._parent_session_id = ""
+
+    metadata = bg_review.build_memory_write_metadata(agent)
+
+    assert metadata == {
+        "write_origin": "assistant_tool",
+        "execution_context": "foreground",
+        "platform": "gateway",
+        "tool_name": "memory",
+    }
+
+
+def test_spawn_background_review_thread_selects_prompt_and_target(monkeypatch):
+    import agent.background_review as bg_review
+
+    agent = _bare_agent()
+    messages_snapshot = [{"role": "user", "content": "teach yourself this"}]
+    captured: list[tuple[AIAgent, list[dict], str]] = []
+
+    def fake_run_review(agent_arg, messages_arg, prompt_arg):
+        captured.append((agent_arg, messages_arg, prompt_arg))
+
+    monkeypatch.setattr(bg_review, "_run_review_in_thread", fake_run_review)
+
+    target, prompt = bg_review.spawn_background_review_thread(
+        agent,
+        messages_snapshot,
+        review_memory=True,
+        review_skills=True,
+    )
+
+    assert prompt == "review both"
+    target()
+    assert captured == [(agent, messages_snapshot, "review both")]
+
+    _target, prompt = bg_review.spawn_background_review_thread(
+        agent,
+        messages_snapshot,
+        review_memory=False,
+        review_skills=True,
+    )
+
+    assert prompt == "review skills"
+
+
 def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     events = []
 
@@ -473,3 +551,199 @@ def test_skill_patch_off_silent_verbose_shows_diff():
     )
     assert len(verbose) == 1
     assert "demo" in verbose[0] and "→" in verbose[0]
+
+
+def test_background_review_downgrades_codex_app_server_for_tool_dispatch(monkeypatch):
+    captured_kwargs: dict = {}
+    captured_run: dict = {}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            captured_run.update(kwargs)
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.api_mode = "codex_app_server"
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_skills=True,
+    )
+
+    assert captured_kwargs["api_mode"] == "codex_responses"
+    assert "You can only call memory and skill management tools" in (
+        captured_run["user_message"]
+    )
+
+
+def test_background_review_ignores_summary_callback_errors(monkeypatch):
+    import json
+
+    captured_prints: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_bg",
+                    "content": json.dumps(
+                        {"success": True, "message": "Entry added", "target": "memory"}
+                    ),
+                }
+            ]
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    def failing_callback(_message):
+        raise RuntimeError("gateway went away")
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._safe_print = lambda *a, **kw: captured_prints.append(
+        " ".join(str(x) for x in a)
+    )
+    agent.background_review_callback = failing_callback
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert len(captured_prints) == 1
+    assert "Self-improvement review" in captured_prints[0]
+
+
+def test_background_review_ignores_normal_teardown_errors(monkeypatch):
+    events: list[str] = []
+    failures: list[tuple[str, BaseException]] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append("run_conversation")
+
+        def shutdown_memory_provider(self):
+            events.append("shutdown_memory_provider")
+            raise RuntimeError("shutdown failed")
+
+        def close(self):
+            events.append("close")
+            raise RuntimeError("close failed")
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._emit_auxiliary_failure = lambda task, exc: failures.append((task, exc))
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert events == ["run_conversation", "shutdown_memory_provider", "close"]
+    assert failures == []
+
+
+def test_background_review_cleans_up_after_failed_review(monkeypatch):
+    events: list[str] = []
+    failures: list[tuple[str, str]] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append("run_conversation")
+            raise RuntimeError("review failed")
+
+        def shutdown_memory_provider(self):
+            events.append("shutdown_memory_provider")
+            raise RuntimeError("shutdown failed")
+
+        def close(self):
+            events.append("close")
+            raise RuntimeError("close failed")
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent._emit_auxiliary_failure = lambda task, exc: failures.append(
+        (task, str(exc))
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert events == ["run_conversation", "shutdown_memory_provider", "close"]
+    assert failures == [("background review", "review failed")]
+
+
+def test_background_review_continues_when_approval_callback_fails(monkeypatch):
+    import tools.terminal_tool as tt
+
+    calls: list = []
+    events: list[str] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append("run_conversation")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    def failing_set_approval_callback(callback):
+        calls.append(callback)
+        raise RuntimeError("thread local unavailable")
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(tt, "set_approval_callback", failing_set_approval_callback)
+
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert events == ["run_conversation"]
+    assert len(calls) == 2

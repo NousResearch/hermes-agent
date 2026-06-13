@@ -23,9 +23,11 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import difflib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -108,6 +110,26 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
             "then remove or rewrite the original file to a clean state."
         ),
     }
+
+
+def _fuzzy_candidates(pattern: str, entries: List[str], k: int = 3) -> List[Dict[str, Any]]:
+    """Return up to ``k`` entries most similar to ``pattern`` with scores.
+
+    Surfaced when a ``patch`` regex finds no match so the model can refine
+    its pattern without re-reading the whole store. Similarity is a cheap
+    stdlib ratio against a de-regexed form of the pattern — enough to rank
+    existing entries, not a semantic search.
+    """
+    probe = re.sub(r"[.^$*+?{}\[\]\\|()]", " ", pattern).strip().lower() or pattern.lower()
+    scored = [
+        {
+            "snippet": entry[:120] + ("..." if len(entry) > 120 else ""),
+            "confidence": round(difflib.SequenceMatcher(None, probe, entry.lower()).ratio(), 3),
+        }
+        for entry in entries
+    ]
+    scored.sort(key=lambda c: c["confidence"], reverse=True)
+    return scored[:k]
 
 
 class MemoryStore:
@@ -453,6 +475,91 @@ class MemoryStore:
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
+
+    def patch(self, target: str, pattern: str, new_content: str) -> Dict[str, Any]:
+        """Regex-replace the first matching span inside a memory entry.
+
+        Unlike ``replace`` — which locates an entry by an exact ``old_text``
+        substring and swaps the whole entry — ``patch`` compiles ``pattern``
+        as a regex (IGNORECASE | DOTALL) and substitutes only the matched
+        span within the entry, preserving the rest of its formatting. This
+        tolerates the whitespace and wording drift that makes exact-match
+        ``replace`` fail (#35995). On no match it returns the closest
+        existing entries so the model can refine without re-reading the store.
+        """
+        if not pattern or not pattern.strip():
+            return {"success": False, "error": "pattern cannot be empty."}
+        new_content = (new_content or "").strip()
+        if not new_content:
+            return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
+
+        # Scan replacement content for injection/exfiltration
+        scan_error = _scan_memory_content(new_content)
+        if scan_error:
+            return {"success": False, "error": scan_error}
+
+        try:
+            regex = re.compile(pattern, re.IGNORECASE | re.DOTALL)
+        except re.error as e:
+            return {"success": False, "error": f"Invalid regex pattern: {e}"}
+
+        with self._file_lock(self._path_for(target)):
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
+
+            entries = self._entries_for(target)
+            matches = [(i, e) for i, e in enumerate(entries) if regex.search(e)]
+
+            if not matches:
+                return {
+                    "success": False,
+                    "error": f"No entry matched pattern '{pattern}'.",
+                    "candidates": _fuzzy_candidates(pattern, entries),
+                }
+
+            if len(matches) > 1:
+                # Mirror replace(): only auto-resolve ambiguity when every
+                # matching entry is identical; otherwise make the model
+                # tighten the pattern rather than guess which to rewrite.
+                unique_texts = {e for _, e in matches}
+                if len(unique_texts) > 1:
+                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                    return {
+                        "success": False,
+                        "error": f"Pattern '{pattern}' matched multiple entries. Tighten the pattern.",
+                        "matches": previews,
+                    }
+
+            idx = matches[0][0]
+            # Replace the matched span with new_content treated literally — a
+            # lambda replacement stops re.sub from interpreting backslashes or
+            # group references (e.g. "\1") in user content.
+            new_entry = regex.sub(lambda _m: new_content, entries[idx], count=1)
+
+            limit = self._char_limit(target)
+            test_entries = entries.copy()
+            test_entries[idx] = new_entry
+            new_total = len(ENTRY_DELIMITER.join(test_entries))
+            if new_total > limit:
+                current = self._char_count(target)
+                return {
+                    "success": False,
+                    "error": (
+                        f"Patch would put memory at {new_total:,}/{limit:,} chars. "
+                        f"Shorten the new content, or 'remove' other stale or less "
+                        f"important entries to make room (see current_entries below), "
+                        f"then retry — all in this turn."
+                    ),
+                    "current_entries": entries,
+                    "usage": f"{current:,}/{limit:,}",
+                }
+
+            entries[idx] = new_entry
+            self._set_entries(target, entries)
+            self.save_to_disk(target)
+
+        return self._success_response(target, "Entry patched.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -821,14 +928,14 @@ def load_on_disk_store() -> "MemoryStore":
 
 
 def _apply_write_gate(action: str, target: str, content: Optional[str],
-                      old_text: Optional[str]) -> Optional[str]:
+                      old_text: Optional[str], pattern: Optional[str] = None) -> Optional[str]:
     """Evaluate the memory write gate. Returns a JSON tool-result string when
     the write should NOT proceed normally (blocked or staged), or None when the
     caller should perform the real write.
 
-    Only the mutating actions (add/replace/remove) are gated.
+    Only the mutating actions (add/replace/remove/patch) are gated.
     """
-    if action not in {"add", "replace", "remove"}:
+    if action not in {"add", "replace", "remove", "patch"}:
         return None
 
     try:
@@ -846,6 +953,9 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     elif action == "replace":
         summary = f"replace in {label}"
         detail = f"old: {old_text}\nnew: {content}"
+    elif action == "patch":
+        summary = f"patch {label}"
+        detail = f"pattern: {pattern}\nnew: {content}"
     else:  # remove
         summary = f"remove from {label}"
         detail = old_text or ""
@@ -962,6 +1072,7 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     operations: Optional[List[Dict[str, Any]]] = None,
+    pattern: str = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -1012,10 +1123,13 @@ def memory_tool(
         return tool_error(f"{missing} is required for 'replace' action.", success=False)
     if action == "remove" and not old_text:
         return _missing_old_text_error(store, target, "remove")
+    if action == "patch" and (not pattern or not content):
+        missing = "pattern" if not pattern else "content"
+        return tool_error(f"{missing} is required for 'patch' action.", success=False)
 
     # Approval gate: when on, stages the write (background/gateway) or prompts
     # inline (interactive CLI); when off (default) passes straight through.
-    gate_result = _apply_write_gate(action, target, content, old_text)
+    gate_result = _apply_write_gate(action, target, content, old_text, pattern)
     if gate_result is not None:
         return gate_result
 
@@ -1028,8 +1142,11 @@ def memory_tool(
     elif action == "remove":
         result = store.remove(target, old_text)
 
+    elif action == "patch":
+        result = store.patch(target, pattern, content)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, patch", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1049,6 +1166,7 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     target = payload.get("target", "memory")
     content = payload.get("content") or ""
     old_text = payload.get("old_text") or ""
+    pattern = payload.get("pattern") or ""
     if action == "batch":
         return store.apply_batch(target, payload.get("operations") or [])
     if action == "add":
@@ -1057,6 +1175,8 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
         return store.replace(target, old_text, content)
     if action == "remove":
         return store.remove(target, old_text)
+    if action == "patch":
+        return store.patch(target, pattern, content)
     return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
@@ -1073,6 +1193,10 @@ MEMORY_SCHEMA = {
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
+        "ACTIONS: add (new entry), replace (update via an exact old_text substring), remove "
+        "(delete via old_text), patch (update via a regex 'pattern' that locates and rewrites "
+        "the matched span — tolerant of whitespace/wording drift, so prefer it over replace "
+        "when the exact old_text is uncertain). patch is single-op only.\n\n"
         "WHEN: save proactively when the user states a preference, correction, or personal "
         "detail, or you learn a stable fact about their environment, conventions, or workflow. "
         "Priority: user preferences & corrections > environment facts > procedures. The best "
@@ -1090,7 +1214,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "patch"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
@@ -1100,7 +1224,7 @@ MEMORY_SCHEMA = {
             },
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace' (single-op shape)."
+                "description": "The entry content. Required for 'add', 'replace', and 'patch' (single-op shape; the replacement text)."
             },
             "old_text": {
                 "type": "string",
@@ -1123,6 +1247,10 @@ MEMORY_SCHEMA = {
                     "required": ["action"],
                 },
             },
+            "pattern": {
+                "type": "string",
+                "description": "Regex (IGNORECASE, DOTALL) locating the span to rewrite. Required for 'patch'."
+            },
         },
         "required": ["target"],
     },
@@ -1142,6 +1270,7 @@ registry.register(
         content=args.get("content"),
         old_text=args.get("old_text"),
         operations=args.get("operations"),
+        pattern=args.get("pattern"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",

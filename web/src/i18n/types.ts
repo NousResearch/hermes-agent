@@ -58,6 +58,7 @@ export interface Translations {
       status: string;
       sessions: string;
       analytics: string;
+      grafana: string;
       logs: string;
       cron: string;
       skills: string;
@@ -89,6 +90,23 @@ export interface Translations {
     lastUpdate: string;
     platformError: string;
     platformDisconnected: string;
+  };
+
+  // ── Grafana page ──
+  grafana: {
+    title: string;
+    subtitle: string;
+    contextTitle: string;
+    contextDescription: string;
+    notConfiguredBadge: string;
+    failedToLoad: string;
+    emptyTitle: string;
+    emptyDescription: string;
+    securityNote: string;
+    embedBlocked: string;
+    openPanel: string;
+    panel: string;
+    defaultFallbackText: string;
   };
 
   // ── Sessions page ──

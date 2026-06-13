@@ -55,6 +55,10 @@ export const api = {
   getAnalytics: (days: number) =>
     fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
+  getGrafanaConfig: async () => {
+    const config = await fetchJSON<Record<string, unknown>>("/api/config");
+    return readGrafanaConfig(config);
+  },
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
@@ -452,4 +456,73 @@ export interface PluginManifestResponse {
   css?: string | null;
   has_api: boolean;
   source: string;
+}
+
+export interface GrafanaPanelConfig {
+  id?: string | number;
+  title?: string;
+  description?: string;
+  height?: number | string;
+  span?: number | string;
+}
+
+export interface GrafanaConfig {
+  enabled: boolean;
+  base_url: string;
+  dashboard_uid: string;
+  dashboard_slug: string;
+  org_id: string;
+  theme: string;
+  kiosk: boolean;
+  default_from: string;
+  default_to: string;
+  timezone: string;
+  variable_map: {
+    service?: string;
+    namespace?: string;
+    workload?: string;
+    incident_id?: string;
+  };
+  panels: GrafanaPanelConfig[];
+  fallback_text: string;
+}
+
+function readGrafanaConfig(config: Record<string, unknown>): GrafanaConfig {
+  const aiops = asRecord(config.aiops);
+  const grafana = asRecord(aiops.grafana);
+  const variableMap = asRecord(grafana.variable_map);
+  const panels = Array.isArray(grafana.panels)
+    ? grafana.panels.filter((panel): panel is GrafanaPanelConfig => Boolean(panel && typeof panel === "object"))
+    : [];
+
+  return {
+    enabled: Boolean(grafana.enabled),
+    base_url: asString(grafana.base_url),
+    dashboard_uid: asString(grafana.dashboard_uid),
+    dashboard_slug: asString(grafana.dashboard_slug),
+    org_id: asString(grafana.org_id),
+    theme: asString(grafana.theme),
+    kiosk: Boolean(grafana.kiosk),
+    default_from: asString(grafana.default_from) || "now-6h",
+    default_to: asString(grafana.default_to) || "now",
+    timezone: asString(grafana.timezone) || "browser",
+    variable_map: {
+      service: asString(variableMap.service) || "service",
+      namespace: asString(variableMap.namespace) || "namespace",
+      workload: asString(variableMap.workload) || "workload",
+      incident_id: asString(variableMap.incident_id) || "incident_id",
+    },
+    panels,
+    fallback_text: asString(grafana.fallback_text),
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }

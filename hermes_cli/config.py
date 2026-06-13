@@ -776,8 +776,43 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # AIOps Console integration settings.
+    # Grafana credentials and service-account tokens must remain server-side in
+    # enterprise Grafana/Gateway infrastructure. The web UI only consumes these
+    # non-secret embed coordinates to build links for an already-authorized user.
+    "aiops": {
+        "grafana": {
+            "enabled": False,
+            "base_url": "",
+            "dashboard_uid": "",
+            "dashboard_slug": "",
+            "org_id": "",
+            "theme": "dark",
+            "kiosk": False,
+            "default_from": "now-6h",
+            "default_to": "now",
+            "timezone": "browser",
+            "variable_map": {
+                "service": "service",
+                "namespace": "namespace",
+                "workload": "workload",
+                "incident_id": "incident_id",
+            },
+            "panels": [
+                {
+                    "id": "",
+                    "title": "Service latency",
+                    "description": "Primary service latency panel",
+                    "height": 320,
+                    "span": 6,
+                }
+            ],
+            "fallback_text": "Grafana embed may be blocked by CSP, same-site cookies, or missing login. Open the panel in Grafana using the fallback link.",
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================

@@ -149,6 +149,16 @@ code {
 .font-collapse { font-family: "Collapse", Arial, sans-serif; }
 .font-mono-ui { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace; }
 
+.grafana-panel-card {
+  grid-column: span 12 / span 12;
+}
+
+@media (min-width: 768px) {
+  .grafana-panel-card {
+    grid-column: span var(--panel-span) / span var(--panel-span);
+  }
+}
+
 /* ---- Subtle grain overlay for badges ---- */
 .grain {
   position: relative;

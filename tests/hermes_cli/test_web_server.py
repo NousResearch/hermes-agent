@@ -195,16 +195,29 @@ class TestWebServerEndpoints:
         schema = data["fields"]
         assert len(schema) > 100  # Should have 150+ fields
         assert "model" in schema
+        assert "aiops.grafana.base_url" in schema
+        assert "aiops.grafana.dashboard_uid" in schema
+        assert "aiops.grafana.variable_map.service" in schema
+        assert not any(
+            key.startswith("aiops.grafana.") and ("token" in key or "secret" in key or "password" in key)
+            for key in schema
+        )
         # Verify category_order is a non-empty list
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
+        assert "aiops" in data["category_order"]
 
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
         defaults = resp.json()
         assert "model" in defaults
+        grafana = defaults["aiops"]["grafana"]
+        assert grafana["enabled"] is False
+        assert grafana["base_url"] == ""
+        assert "panels" in grafana
+        assert not any(key in grafana for key in ("token", "api_key", "secret", "password"))
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")

@@ -220,6 +220,67 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Reasoning effort for delegated subagents",
         "options": ["", "low", "medium", "high"],
     },
+    "aiops.grafana.enabled": {
+        "type": "boolean",
+        "description": "Enable AIOps Grafana panel embedding",
+    },
+    "aiops.grafana.base_url": {
+        "type": "string",
+        "description": "Grafana public base URL used for iframe and fallback links",
+    },
+    "aiops.grafana.dashboard_uid": {
+        "type": "string",
+        "description": "Grafana dashboard UID",
+    },
+    "aiops.grafana.dashboard_slug": {
+        "type": "string",
+        "description": "Optional Grafana dashboard slug for friendly URLs",
+    },
+    "aiops.grafana.org_id": {
+        "type": "string",
+        "description": "Optional Grafana orgId query value",
+    },
+    "aiops.grafana.theme": {
+        "type": "select",
+        "description": "Grafana embed theme",
+        "options": ["", "dark", "light"],
+    },
+    "aiops.grafana.kiosk": {
+        "type": "boolean",
+        "description": "Append kiosk mode to Grafana panel URLs",
+    },
+    "aiops.grafana.default_from": {
+        "type": "string",
+        "description": "Default Grafana time range start, for example now-6h",
+    },
+    "aiops.grafana.default_to": {
+        "type": "string",
+        "description": "Default Grafana time range end, for example now",
+    },
+    "aiops.grafana.timezone": {
+        "type": "string",
+        "description": "Grafana timezone query value, for example browser or utc",
+    },
+    "aiops.grafana.variable_map.service": {
+        "type": "string",
+        "description": "Grafana variable name for service context",
+    },
+    "aiops.grafana.variable_map.namespace": {
+        "type": "string",
+        "description": "Grafana variable name for namespace context",
+    },
+    "aiops.grafana.variable_map.workload": {
+        "type": "string",
+        "description": "Grafana variable name for workload context",
+    },
+    "aiops.grafana.variable_map.incident_id": {
+        "type": "string",
+        "description": "Grafana variable name for incident context",
+    },
+    "aiops.grafana.fallback_text": {
+        "type": "string",
+        "description": "Fallback message shown when Grafana cannot be embedded",
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.
@@ -234,13 +295,14 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "smart_model_routing": "agent",
     "dashboard": "display",
+    "aiops": "aiops",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
-    "tts", "stt", "logging", "discord", "auxiliary",
+    "tts", "stt", "logging", "discord", "auxiliary", "aiops",
 ]
 
 

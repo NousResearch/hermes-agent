@@ -14,6 +14,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import GrafanaPage from "@/pages/GrafanaPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -35,6 +36,7 @@ const BUILTIN_NAV: NavItem[] = [
   { path: "/", labelKey: "status", label: "Status", icon: Activity },
   { path: "/sessions", labelKey: "sessions", label: "Sessions", icon: MessageSquare },
   { path: "/analytics", labelKey: "analytics", label: "Analytics", icon: BarChart3 },
+  { path: "/grafana", labelKey: "grafana", label: "Grafana", icon: Activity },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
@@ -160,6 +162,7 @@ export default function App() {
           <Route path="/" element={<StatusPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/grafana" element={<GrafanaPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/cron" element={<CronPage />} />
           <Route path="/skills" element={<SkillsPage />} />

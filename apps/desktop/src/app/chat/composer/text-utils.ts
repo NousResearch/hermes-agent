@@ -102,6 +102,30 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
   return before.toString()
 }
 
+/** Commands whose arguments trigger live completion in the slash popover. */
+const ARGS_COMPLETABLE_COMMANDS = new Set([
+  '/handoff',
+  '/personality',
+  '/resume',
+  '/sessions',
+  '/skin',
+  '/switch',
+  '/tools'
+])
+
+/**
+ * Whether the slash trigger should stay open for the given query.
+ * When the query contains a space the user has finished selecting the
+ * command name and is typing arguments.  Only keep the popover open for
+ * commands that support argument completion; close it for all others
+ * (e.g. skills) to prevent "No matches found" from blocking input.
+ */
+export function shouldKeepSlashTriggerLive(query: string): boolean {
+  if (!query.includes(' ')) return true
+  const commandName = query.split(/\s+/, 1)[0]
+  return ARGS_COMPLETABLE_COMMANDS.has(`/${commandName}`.replace(/^\/\//, '/'))
+}
+
 export function detectTrigger(textBefore: string): TriggerState | null {
   const slash = SLASH_TRIGGER_RE.exec(textBefore)
 

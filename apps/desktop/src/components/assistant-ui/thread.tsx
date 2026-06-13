@@ -51,7 +51,7 @@ import {
   renderComposerContents,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import { detectTrigger, shouldKeepSlashTriggerLive, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import {
   extractDroppedFiles,
@@ -1269,6 +1269,17 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
     const before = textBeforeCaret(editor)
     const detected = detectTrigger(before ?? composerPlainText(editor))
+
+    // Close the popover for slash commands that don't support argument
+    // completion.  When the query already contains a space the user has
+    // finished selecting the command and is typing regular text — keeping
+    // the popover open produces "No matches found" and blocks input.
+    if (detected?.kind === '/' && !shouldKeepSlashTriggerLive(detected.query)) {
+      setTrigger(null)
+      setTriggerItems([])
+      setTriggerActive(0)
+      return
+    }
 
     if (detected) {
       const rect = editor.getBoundingClientRect()

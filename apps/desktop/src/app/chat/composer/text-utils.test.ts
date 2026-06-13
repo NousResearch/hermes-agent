@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs, shouldKeepSlashTriggerLive } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -48,6 +48,27 @@ describe('detectTrigger', () => {
 
   it('still anchors at-mention triggers strictly at the token edge', () => {
     expect(detectTrigger('@file:path with space')).toBeNull()
+  })
+})
+
+describe('shouldKeepSlashTriggerLive', () => {
+  it('keeps the popover open when there is no space in the query', () => {
+    expect(shouldKeepSlashTriggerLive('hermes-agent')).toBe(true)
+    expect(shouldKeepSlashTriggerLive('')).toBe(true)
+  })
+
+  it('closes the popover for skill commands with arguments', () => {
+    expect(shouldKeepSlashTriggerLive('hermes-agent ')).toBe(false)
+    expect(shouldKeepSlashTriggerLive('hermes-agent help me with')).toBe(false)
+    expect(shouldKeepSlashTriggerLive('help ')).toBe(false)
+  })
+
+  it('keeps the popover open for args-completable commands', () => {
+    expect(shouldKeepSlashTriggerLive('personality alic')).toBe(true)
+    expect(shouldKeepSlashTriggerLive('tools enable foo')).toBe(true)
+    expect(shouldKeepSlashTriggerLive('resume my-session')).toBe(true)
+    expect(shouldKeepSlashTriggerLive('skin dark')).toBe(true)
+    expect(shouldKeepSlashTriggerLive('sessions ')).toBe(true)
   })
 })
 

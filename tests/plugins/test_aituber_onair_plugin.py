@@ -137,6 +137,26 @@ def test_speak_dispatches_selected_tts_provider(monkeypatch):
     assert seen["text"] == "hello"
 
 
+def test_irodori_speech_uses_configured_hakua_voice(monkeypatch, tmp_path):
+    from plugins.irodori_tts import core as irodori_core
+
+    seen = {}
+
+    monkeypatch.setattr(core, "_plugin_config", lambda: {"tts_voice": "hakua", "tts_speed": 1.06})
+    monkeypatch.setattr(
+        irodori_core,
+        "synthesize_text",
+        lambda **kwargs: seen.update(kwargs)
+        or {"ok": True, "provider": "irodori", "file_path": str(kwargs["output_path"])},
+    )
+
+    result = core._synthesize_irodori({"text": "hello", "output_path": str(tmp_path / "voice.wav")})
+
+    assert result["ok"] is True
+    assert seen["voice"] == "hakua"
+    assert seen["speed"] == 1.06
+
+
 def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
     repo = _fake_repo(tmp_path)
     calls = []

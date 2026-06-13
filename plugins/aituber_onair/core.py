@@ -91,6 +91,14 @@ CONFIGURE_HAKUA_SCHEMA = {
                 "type": "string",
                 "description": "Optional path to vv-engine/run.exe.",
             },
+            "tts_voice": {
+                "type": "string",
+                "description": "Default irodoriTTS voice id. Use hakua for the local Hakua reference voice.",
+            },
+            "tts_speed": {
+                "type": "number",
+                "description": "Default local TTS speed multiplier.",
+            },
         },
     },
 }
@@ -182,6 +190,8 @@ SAY_SCHEMA = {
             },
             "output_path": {"type": "string"},
             "play": {"type": "boolean"},
+            "tts_voice": {"type": "string"},
+            "tts_speed": {"type": "number"},
         },
     },
 }
@@ -529,6 +539,23 @@ def _plugin_voicevox_engine_exe(explicit: Any = None) -> str:
     cfg = _plugin_config()
     raw = explicit if explicit is not None else cfg.get("voicevox_engine_exe")
     return _path_text(raw) or os.environ.get("VOICEVOX_ENGINE_EXE", "")
+
+
+def _plugin_tts_voice(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("tts_voice")
+    return _path_text(raw)
+
+
+def _plugin_tts_speed(explicit: Any = None) -> float | None:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("tts_speed")
+    if raw in (None, ""):
+        return None
+    try:
+        return max(0.25, min(4.0, float(raw)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_tts_format(value: Any = None) -> str:
@@ -1055,10 +1082,10 @@ def _synthesize_irodori(values: dict[str, Any]) -> dict[str, Any]:
         result = irodori_core.synthesize_text(
             text=text,
             output_path=output_path,
-            voice=_path_text(values.get("voice")) or None,
+            voice=_plugin_tts_voice(values.get("voice")) or None,
             model=_path_text(values.get("model")) or None,
             output_format=fmt,
-            speed=values.get("speed"),
+            speed=_plugin_tts_speed(values.get("speed")),
         )
         if values.get("play"):
             result["playback"] = _play_wav_file(Path(result["file_path"]))
@@ -1140,6 +1167,8 @@ def status() -> dict[str, Any]:
             "fbx_port": fbx_port,
             "url": url,
             "tts_provider": cfg.get("tts_provider") or DEFAULT_TTS_PROVIDER,
+            "tts_voice": _plugin_tts_voice() or "provider default",
+            "tts_speed": _plugin_tts_speed() or "provider default",
             "voicevox_url": _plugin_voicevox_url(),
             "voicevox_speaker": _plugin_voicevox_speaker(),
         },
@@ -1207,6 +1236,12 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         entry["voicevox_engine_exe"] = voicevox_engine
     elif _voicevox_engine_candidates():
         entry["voicevox_engine_exe"] = str(_voicevox_engine_candidates()[0])
+    tts_voice = _plugin_tts_voice(values.get("tts_voice"))
+    if tts_voice:
+        entry["tts_voice"] = tts_voice
+    tts_speed = _plugin_tts_speed(values.get("tts_speed"))
+    if tts_speed is not None:
+        entry["tts_speed"] = tts_speed
     model = _path_text(values.get("model"))
     if model:
         entry["model"] = model
@@ -1225,6 +1260,8 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "voicevox_url": entry["voicevox_url"],
         "voicevox_speaker": entry["voicevox_speaker"],
         "voicevox_engine_exe": entry.get("voicevox_engine_exe", ""),
+        "tts_voice": entry.get("tts_voice", ""),
+        "tts_speed": entry.get("tts_speed", ""),
     }
 
 
@@ -1588,6 +1625,8 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
                 "provider": values.get("tts_provider"),
                 "output_path": values.get("output_path"),
                 "format": values.get("format"),
+                "voice": values.get("tts_voice") or values.get("voice"),
+                "speed": values.get("tts_speed") or values.get("speed"),
                 "play": values.get("play"),
             }
         )

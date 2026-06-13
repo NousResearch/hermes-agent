@@ -20,6 +20,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     configure.add_argument("--voicevox-url", default="")
     configure.add_argument("--voicevox-speaker", type=int, default=None)
     configure.add_argument("--voicevox-engine-exe", default="")
+    configure.add_argument("--tts-voice", default="")
+    configure.add_argument("--tts-speed", type=float, default=None)
 
     subs.add_parser("status", help="Show AITuber OnAir bridge readiness")
 
@@ -65,6 +67,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     say.add_argument("--timeout-seconds", type=int, default=None)
     say.add_argument("--speak", action="store_true")
     say.add_argument("--tts-provider", choices=["auto", "irodori", "voicevox"], default="")
+    say.add_argument("--tts-voice", default="")
+    say.add_argument("--tts-speed", type=float, default=None)
     say.add_argument("--output-path", default="")
     say.add_argument("--play", action="store_true")
 
@@ -92,6 +96,8 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "voicevox_url": getattr(args, "voicevox_url", ""),
                     "voicevox_speaker": getattr(args, "voicevox_speaker", None),
                     "voicevox_engine_exe": getattr(args, "voicevox_engine_exe", ""),
+                    "tts_voice": getattr(args, "tts_voice", ""),
+                    "tts_speed": getattr(args, "tts_speed", None),
                 }
             )
         )
@@ -161,6 +167,8 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "timeout_seconds": getattr(args, "timeout_seconds", None),
                     "speak": getattr(args, "speak", False),
                     "tts_provider": getattr(args, "tts_provider", ""),
+                    "tts_voice": getattr(args, "tts_voice", ""),
+                    "tts_speed": getattr(args, "tts_speed", None),
                     "output_path": getattr(args, "output_path", ""),
                     "play": getattr(args, "play", False),
                 }

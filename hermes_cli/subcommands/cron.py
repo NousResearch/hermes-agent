@@ -19,14 +19,23 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
 
+    def _add_profile_arg(parser):
+        parser.add_argument(
+            "--profile",
+            help="Profile to operate on (overrides global --profile/-p for this command). "
+            "Available profiles: default, plus any created with `hermes profile create`.",
+        )
+
     # cron list
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
+    _add_profile_arg(cron_list)
 
     # cron create/add
     cron_create = cron_subparsers.add_parser(
         "create", aliases=["add"], help="Create a scheduled job"
     )
+    _add_profile_arg(cron_create)
     cron_create.add_argument(
         "schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'"
     )
@@ -75,6 +84,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit = cron_subparsers.add_parser(
         "edit", help="Edit an existing scheduled job"
     )
+    _add_profile_arg(cron_edit)
     cron_edit.add_argument("job_id", help="Job ID to edit")
     cron_edit.add_argument("--schedule", help="New schedule")
     cron_edit.add_argument("--prompt", help="New prompt/task instruction")
@@ -137,27 +147,35 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
+    _add_profile_arg(cron_pause)
     cron_pause.add_argument("job_id", help="Job ID to pause")
 
     cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
+    _add_profile_arg(cron_resume)
     cron_resume.add_argument("job_id", help="Job ID to resume")
 
     cron_run = cron_subparsers.add_parser(
         "run", help="Run a job on the next scheduler tick"
     )
+    _add_profile_arg(cron_run)
     cron_run.add_argument("job_id", help="Job ID to trigger")
     add_accept_hooks_flag(cron_run)
 
     cron_remove = cron_subparsers.add_parser(
         "remove", aliases=["rm", "delete"], help="Remove a scheduled job"
     )
+    _add_profile_arg(cron_remove)
     cron_remove.add_argument("job_id", help="Job ID to remove")
 
     # cron status
-    cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
+    cron_status_parser = cron_subparsers.add_parser(
+        "status", help="Check if cron scheduler is running"
+    )
+    _add_profile_arg(cron_status_parser)
 
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
+    _add_profile_arg(cron_tick)
     add_accept_hooks_flag(cron_tick)
     add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)

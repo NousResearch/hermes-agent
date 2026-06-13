@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.profiles import get_profile_dir, profile_exists, normalize_profile_name
 
 # Patterns that indicate a cron job targets the gateway lifecycle.
 # Matches commands that restart/stop the gateway or its service manager.
@@ -28,6 +29,43 @@ _GATEWAY_LIFECYCLE_PATTERNS = re.compile(
     r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
     r"|(p?kill\s+.*hermes.*gateway)"
 )
+
+
+def _cron_profile_context(profile: Optional[str]):
+    """Context manager to temporarily set HERMES_HOME for cron operations.
+    
+    Usage:
+        with _cron_profile_context(args.profile):
+            cron_list(show_all=args.all)
+    """
+    from contextlib import contextmanager
+    import os
+    import hermes_constants
+    
+    @contextmanager
+    def _ctx():
+        old_hermes_home = os.environ.get("HERMES_HOME")
+        token = None
+        try:
+            if profile:
+                # Validate and normalize the profile name
+                canon = normalize_profile_name(profile)
+                if not profile_exists(canon):
+                    raise ValueError(f"Profile '{canon}' does not exist.")
+                profile_dir = get_profile_dir(canon)
+                os.environ["HERMES_HOME"] = str(profile_dir)
+                # Also update the context-local HERMES_HOME override
+                token = hermes_constants.set_hermes_home_override(profile_dir)
+            yield
+        finally:
+            if old_hermes_home is not None:
+                os.environ["HERMES_HOME"] = old_hermes_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
+            if token is not None:
+                hermes_constants.reset_hermes_home_override(token)
+    
+    return _ctx()
 
 
 def _contains_gateway_lifecycle_command(text: str) -> bool:
@@ -320,6 +358,18 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
+    profile = getattr(args, 'profile', None)
+
+    # Wrap the subcommand execution in profile context if --profile is specified
+    if profile:
+        with _cron_profile_context(profile):
+            return _cron_command_inner(args, subcmd)
+    else:
+        return _cron_command_inner(args, subcmd)
+
+
+def _cron_command_inner(args, subcmd):
+    """Inner cron command handler without profile context."""
 
     if subcmd is None or subcmd == "list":
         show_all = getattr(args, 'all', False)

@@ -263,6 +263,54 @@ describe('useRouteResume', () => {
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
   })
+
+  it('starts local resume for a routed session even while the gateway is connecting', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const { rerender } = render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    rerender(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="connecting"
+        locationPathname="/profile-session"
+        resumeSession={resumeSession}
+        routedSessionId="profile-session"
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('profile-session', true)
+  })
 })
 
 describe('useRouteResume bounded auto-retry after a failed resume', () => {

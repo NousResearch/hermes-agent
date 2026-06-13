@@ -108,7 +108,7 @@ export function useRouteResume({
     seenGatewayStateRef.current = true
     wasGatewayOpenRef.current = gatewayOpen
 
-    if (currentView !== 'chat' || !gatewayOpen) {
+    if (currentView !== 'chat') {
       return
     }
 

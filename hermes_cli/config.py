@@ -2357,6 +2357,17 @@ DEFAULT_CONFIG = {
         "write_json_snapshots": False,
     },
 
+    "profiles": {
+        # When a profile has a {HERMES_HOME}/home/ directory, Hermes aligns the
+        # main process's HOME with that per-profile directory so the agent and
+        # its tool subprocesses agree on where ~/.ssh, ~/.gitconfig, etc. live
+        # (#27250).  Set this to true to keep the original host-level HOME for
+        # the main process and preserve the historical split-HOME behaviour.
+        # Read at startup before .env is loaded, so this is the reliable
+        # opt-out surface.
+        "preserve_host_home": False,
+    },
+
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
     # Each hint is shown once per install and then latched here so it
     # never fires again.  Users can wipe the section to re-see all hints.
@@ -4111,7 +4122,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates",
+    "sessions", "streaming", "updates", "profiles",
 }
 
 # Valid fields inside a custom_providers list entry

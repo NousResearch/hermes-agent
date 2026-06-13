@@ -275,6 +275,17 @@ This is separate from terminal working directory. Tool execution starts from `te
 
 The default profile is simply `~/.hermes` itself. No migration needed — existing installs work identically.
 
+### Per-profile `HOME` for tools and the agent
+
+Each profile bootstraps a `home/` subdirectory. When it exists, Hermes redirects `HOME` for:
+
+- **Tool subprocesses** (`git`, `ssh`, `gh`, `npm`, terminal, `execute_code`, background processes) — so their config files (`.ssh`, `.gitconfig`, `.config/gh`, …) live inside the profile instead of leaking into the host's `/root` or `~/`. This is what keeps credentials separated per profile in Docker.
+- **The main Hermes Python process itself** — so that `~`, `Path.home()` and `os.path.expanduser('~')` resolve to the same per-profile directory the tools see. Without this alignment, a single active profile would have two competing `HOME` values (the host-level one for the agent process and the profile-local one for tools), and paths like `~/.ssh/config`, `~/.gitconfig` or `~/workspace` would refer to *different* places depending on who expanded them. See [issue #27250](https://github.com/NousResearch/hermes-agent/issues/27250).
+
+Isolation is still maintained across profiles — each profile gets its own `home/` — and the alignment only kicks in when that directory actually exists, so non-Docker installs that never created one are unaffected.
+
+If you specifically depend on the historical split behaviour (rare; mostly tools that read host-level credentials from the agent process), set `profiles.preserve_host_home: true` in `config.yaml` to opt out of the main-process alignment. This is read at startup before `.env` is loaded, so it reliably takes effect. Subprocess `HOME` injection is unaffected by this setting.
+
 ## Sharing profiles as distributions
 
 A profile you built on one machine can be packaged as a **git repository** and installed with one command on another machine — your own workstation, a teammate's laptop, or a community user's environment. The shared package includes the SOUL, config, skills, cron jobs, and MCP connections. Credentials, memories, and sessions stay per-machine.

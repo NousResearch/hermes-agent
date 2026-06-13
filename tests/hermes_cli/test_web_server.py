@@ -1305,6 +1305,48 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
+    def test_env_var_platform_shows_connected_when_gateway_running(self, monkeypatch):
+        """Platforms configured via env vars should show runtime state even when
+        the web server process doesn't have those env vars in its os.environ."""
+        import gateway.config as gateway_config
+        import hermes_cli.web_server as web_server
+
+        class _PlatformConfig:
+            enabled = False
+            home_channel = None
+
+        class _GatewayConfig:
+            platforms = {}
+            def _is_platform_connected(self, platform, config):
+                return False
+
+        # Gateway is running and reports feishu as connected
+        monkeypatch.setattr(web_server, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(
+            web_server,
+            "read_runtime_status",
+            lambda: {
+                "gateway_state": "running",
+                "platforms": {
+                    "feishu": {"state": "connected", "updated_at": "2026-06-13T00:00:00+00:00"},
+                },
+            },
+        )
+        # But load_gateway_config doesn't see feishu configured
+        # (simulating the web server not having FEISHU_APP_ID in its env)
+        monkeypatch.setattr(
+            gateway_config,
+            "load_gateway_config",
+            lambda: _GatewayConfig(),
+        )
+
+        resp = self.client.get("/api/messaging/platforms")
+        assert resp.status_code == 200
+        platforms = {p["id"]: p for p in resp.json()["platforms"]}
+        feishu = platforms["feishu"]
+        # The state should be "connected" from runtime, not "not_configured"
+        assert feishu["state"] == "connected"
+
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform

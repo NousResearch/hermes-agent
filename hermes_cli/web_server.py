@@ -4287,7 +4287,15 @@ def _messaging_platform_payload(
     state = (
         runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
     )
-    if not enabled:
+    # When the gateway is running and reports a live state for this
+    # platform, trust the runtime status.  The static enabled/configured
+    # checks above can produce false negatives when the web-server
+    # process does not share the gateway's environment (e.g. platforms
+    # configured only via env vars in Docker Compose, not written to
+    # the .env file that the dashboard reads).
+    if gateway_running and state:
+        pass  # keep the live runtime state as-is
+    elif not enabled:
         state = "disabled"
     elif not configured:
         state = "not_configured"

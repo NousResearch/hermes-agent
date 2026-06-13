@@ -1175,7 +1175,7 @@ hermes profile <subcommand>
 |------------|-------------|
 | `list` | 列出所有 profile。 |
 | `use <name>` | 设置粘性默认 profile。 |
-| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | 创建新 profile。`--clone` 从活跃 profile 复制 config、`.env` 和 `SOUL.md`。`--clone-all` 复制所有状态。`--clone-from` 指定源 profile。 |
+| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | 创建新 profile。`--clone` 从活跃 profile 复制 config、`.env`、`SOUL.md` 和 skills。`--clone-all` 复制所有状态。`--clone-from` 指定源 profile，除非与 `--clone-all` 配合使用，否则会隐含 config 克隆。 |
 | `delete <name> [-y]` | 删除 profile。 |
 | `show <name>` | 显示 profile 详情（主目录、config 等）。 |
 | `alias <name> [--remove] [--name NAME]` | 管理快速访问 profile 的包装脚本。 |

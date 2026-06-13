@@ -22,7 +22,12 @@ concurrency:
 
 jobs:
   deploy-vercel:
-    if: github.event_name == 'release'
+    # Triggered automatically on release publish (production cuts) and
+    # manually via `gh workflow run deploy-site.yml` when an out-of-band
+    # main commit needs to ship live before the next release tag — e.g.
+    # a skills-index PR that doesn't touch website/** paths and so
+    # doesn't auto-deploy via the deploy-docs path.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger Vercel Deploy
@@ -35,34 +40,47 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: '3.11'
 
       - name: Install PyYAML for skill extraction
         run: pip install pyyaml==6.0.2 httpx==0.28.1
 
+      - name: Build skills index (unified multi-source catalog)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Rebuild the unified catalog. The file is gitignored, so a fresh
+          # checkout starts without it and we want the freshest crawl in
+          # every deploy.
+          #
+          # This MUST be fatal. build_skills_index.py runs a health check and
+          # exits non-zero WITHOUT writing the output file when a source
+          # collapses (e.g. a GitHub API rate limit zeroes the github /
+          # claude-marketplace / well-known taps all at once). Letting the
+          # deploy continue would either (a) ship a degenerate index missing
+          # whole hubs — the June 2026 regression where OpenAI/Anthropic/
+          # HuggingFace/NVIDIA tabs vanished — or (b) fall through to a
+          # local-only catalog. Failing here keeps the last good deployment
+          # live (GitHub Pages serves the previous build) instead of
+          # publishing a broken catalog. Re-run the workflow once the
+          # transient rate limit clears.
+          python3 scripts/build_skills_index.py
+
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
 
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
-
-      - name: Build skills index (if not already present)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ ! -f website/static/api/skills-index.json ]; then
-            python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
-          fi
 
       - name: Install dependencies
         run: npm ci

@@ -636,7 +636,10 @@ class CopilotACPClient:
                 block_error = get_read_block_error(str(path))
                 if block_error:
                     raise PermissionError(block_error)
-                content = path.read_text() if path.exists() else ""
+                try:
+                    content = path.read_text()
+                except FileNotFoundError:
+                    content = ""
                 line = params.get("line")
                 limit = params.get("limit")
                 if isinstance(line, int) and line > 1:

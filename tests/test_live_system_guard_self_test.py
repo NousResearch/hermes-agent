@@ -259,7 +259,7 @@ def test_kill_own_subtree_passes_through():
     finally:
         p.wait(timeout=2)
     # SIGTERM = 15; subprocess returncode is -15 on POSIX.
-    assert p.returncode in (-signal.SIGTERM, 128 + int(signal.SIGTERM))
+    assert p.returncode in {-signal.SIGTERM, 128 + int(signal.SIGTERM)}
 
 
 def test_subprocess_pkill_with_unrelated_pattern_passes_through():

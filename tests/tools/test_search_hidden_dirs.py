@@ -13,7 +13,6 @@ Fix: _search_files (find) and _search_with_grep both now exclude hidden
 directories, matching ripgrep's default behavior.
 """
 
-import os
 import subprocess
 
 import pytest

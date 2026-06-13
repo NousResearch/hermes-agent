@@ -51,6 +51,18 @@ const SLIDE_STEP = 12
 
 const NOOP = () => {}
 
+export const virtualHistorySnapshotKey = (s?: ScrollBoxHandle | null): string => {
+  if (!s) {
+    return 'none'
+  }
+
+  const target = s.getScrollTop() + s.getPendingDelta()
+  const bin = Math.floor(target / QUANTUM)
+  const viewportHeight = Math.max(0, s.getViewportHeight())
+
+  return `${s.isSticky() ? ~bin : bin}:${viewportHeight}`
+}
+
 const upperBound = (arr: ArrayLike<number>, target: number, length = arr.length) => {
   let lo = 0
   let hi = length
@@ -174,11 +186,9 @@ export function useVirtualHistory(
   }, [scrollRef])
 
   // Quantized snapshot: same-bin scrolls (most wheel ticks) produce the same
-  // number → React.Object.is short-circuits the commit entirely. sticky state
-  // is folded in via the sign bit so sticky→broken transitions also trigger.
-  // Uses the TARGET (committed + pendingDelta), not committed scrollTop, so
-  // scrollBy notifications immediately remount for the destination before
-  // Ink's drain frames need the children.
+  // key → React.Object.is short-circuits the commit entirely. The key includes
+  // sticky state, target scroll position, and viewport height so resize-only
+  // changes still recompute the mounted transcript window.
   const subscribe = useCallback(
     (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
     [hasScrollRef, scrollRef]
@@ -186,19 +196,8 @@ export function useVirtualHistory(
 
   useSyncExternalStore(
     subscribe,
-    () => {
-      const s = scrollRef.current
-
-      if (!s) {
-        return NaN
-      }
-
-      const target = s.getScrollTop() + s.getPendingDelta()
-      const bin = Math.floor(target / QUANTUM)
-
-      return s.isSticky() ? ~bin : bin
-    },
-    () => NaN
+    () => virtualHistorySnapshotKey(scrollRef.current),
+    () => 'none'
   )
 
   useEffect(() => {
@@ -249,8 +248,26 @@ export function useVirtualHistory(
   // During a freeze, drop the frozen range if items shrank past its start
   // (/clear, compaction) — clamping would collapse to an empty mount and
   // flash blank. Fall through to the normal path in that case.
-  const frozenRange =
-    freezeRenders.current > 0 && prevRange.current && prevRange.current[0] < n ? prevRange.current : null
+  const frozenRangeCandidate =
+    freezeRenders.current > 0 && prevRange.current && prevRange.current[0] < n
+      ? ([prevRange.current[0], Math.min(prevRange.current[1], n)] as const)
+      : null
+
+  // Width grows can shrink wrapped rows enough that the old tail window no
+  // longer covers the viewport. In that case freezing preserves stale spacers
+  // and visually cuts off the last message, so recompute immediately.
+  const frozenRange = (() => {
+    if (!frozenRangeCandidate || vp <= 0) {
+      return frozenRangeCandidate
+    }
+
+    const visibleTop = sticky && !recentManual ? Math.max(0, total - vp) : target
+    const visibleBottom = visibleTop + vp
+    const rangeTop = offsets[frozenRangeCandidate[0]] ?? 0
+    const rangeBottom = offsets[frozenRangeCandidate[1]] ?? total
+
+    return rangeTop <= visibleTop && rangeBottom >= visibleBottom ? frozenRangeCandidate : null
+  })()
 
   let start = 0
   let end = n
@@ -465,6 +482,7 @@ export function useVirtualHistory(
 
     if (skipMeasurement.current) {
       skipMeasurement.current = false
+      bumpMeasuredHeightVersion(n => n + 1)
     } else {
       for (let i = effStart; i < effEnd; i++) {
         const k = items[i]?.key

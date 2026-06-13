@@ -69,17 +69,31 @@ class UpstreamAdapter(ABC):
 
     @abstractmethod
     def get_credential(self) -> UpstreamCredential:
-        """Return a fresh credential, refreshing/minting if necessary.
+        """Return a fresh credential, refreshing or rotating if necessary.
 
         Implementations should:
           - refresh the access token if it's near expiry
-          - mint/rotate the upstream bearer key if it's near expiry
+          - rotate the upstream bearer key if it's near expiry
           - persist any refreshed state back to disk
 
         Raises:
             RuntimeError: if the user isn't authenticated or the upstream
               refresh fails. The proxy will return 401 to the client.
         """
+
+    def get_retry_credential(
+        self,
+        *,
+        failed_credential: UpstreamCredential,
+        status_code: int,
+    ) -> Optional[UpstreamCredential]:
+        """Return an alternate credential after an upstream auth failure.
+
+        The default is no retry. Providers can override this for one-shot
+        fallback paths after the upstream rejects the first request.
+        """
+        _ = failed_credential, status_code
+        return None
 
     def describe(self) -> str:
         """One-line status summary for ``proxy status``."""

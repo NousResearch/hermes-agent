@@ -43,6 +43,9 @@ export const en: Translations = {
     expand: "Expand",
     general: "General",
     messaging: "Messaging",
+    gateway: "Gateway",
+    gatewayHint:
+      "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     pluginLoadFailed:
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
@@ -90,6 +93,10 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
+    managingProfile: "Managing profile",
+    currentProfileOption: "this dashboard ({name})",
+    managingProfileBanner:
+      "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
   },
 
   status: {
@@ -127,6 +134,8 @@ export const en: Translations = {
 
   sessions: {
     title: "Sessions",
+    history: "History",
+    overview: "Overview",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
     noMatch: "No sessions match your search",
@@ -139,6 +148,22 @@ export const en: Translations = {
       "This permanently removes the conversation and all of its messages. This cannot be undone.",
     sessionDeleted: "Session deleted",
     failedToDelete: "Failed to delete session",
+    deleteEmpty: "Delete empty",
+    deleteEmptyConfirmTitle: "Delete empty sessions?",
+    deleteEmptyConfirmMessage:
+      "This permanently removes {count} sessions that have no messages. Active and archived sessions are skipped. This cannot be undone.",
+    emptySessionsDeleted: "{count} empty sessions deleted",
+    failedToDeleteEmpty: "Failed to delete empty sessions",
+    selectSession: "Select session",
+    selectAllOnPage: "Select all on this page",
+    clearSelection: "Clear selection",
+    selectedCount: "{count} selected",
+    deleteSelected: "Delete {count}",
+    deleteSelectedConfirmTitle: "Delete {count} sessions?",
+    deleteSelectedConfirmMessage:
+      "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
+    selectedSessionsDeleted: "{count} sessions deleted",
+    failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     previousPage: "Previous page",
     nextPage: "Next page",
@@ -209,6 +234,41 @@ export const en: Translations = {
     promptPlaceholder: "What should the agent do on each run?",
     schedule: "Schedule (cron expression)",
     schedulePlaceholder: "0 9 * * *",
+    scheduleMode: "Schedule",
+    scheduleModes: {
+      interval: "Every interval",
+      daily: "Daily",
+      weekly: "Weekly",
+      monthly: "Monthly",
+      once: "Once",
+      custom: "Custom (cron expression)",
+      intervalEvery: "Every",
+      intervalUnit: "Unit",
+      unitMinutes: "minutes",
+      unitHours: "hours",
+      unitDays: "days",
+      timeOfDay: "Time of day",
+      weekdays: "Days of week",
+      weekdaysShort: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+      dayOfMonth: "Day of month",
+      onceAt: "Run at",
+      customLabel: "Cron expression",
+      customPlaceholder: "0 9 * * *",
+      customHint:
+        "Five-field cron expression (minute, hour, day, month, weekday).",
+      preview: "Sends as",
+      previewEmpty: "(incomplete)",
+    },
+    scheduleDescribe: {
+      none: "—",
+      everyMinutes: "Every {n} min",
+      everyHours: "Every {n} h",
+      everyDays: "Every {n} d",
+      dailyAt: "Daily at {time}",
+      weeklyAt: "Weekly on {days} at {time}",
+      monthlyAt: "Monthly on the {day} at {time}",
+      onceAt: "Once at {time}",
+    },
     deliverTo: "Deliver to",
     scheduledJobs: "Scheduled Jobs",
     noJobs: "No cron jobs configured. Create one above.",
@@ -223,6 +283,9 @@ export const en: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "set a home channel first",
+      noneConfigured:
+        "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
   },
 
@@ -256,6 +319,38 @@ export const en: Translations = {
     created: "Created",
     deleted: "Deleted",
     renamed: "Renamed",
+    activeProfile: "Active profile",
+    activeBadge: "active",
+    setActive: "Set as active",
+    activeSet: "Active profile set",
+    gatewayRunning: "Gateway running",
+    gatewayStopped: "Gateway stopped",
+    gatewayRunningWarning:
+      "This profile's gateway is running — it will be stopped.",
+    aliasBadge: "alias",
+    description: "Description",
+    descriptionPlaceholder:
+      "What is this profile good at? Used to route kanban tasks by role.",
+    noDescription: "No description",
+    editDescription: "Edit description",
+    descriptionSaved: "Description saved",
+    reviewBadge: "review",
+    autoGenerate: "Auto-generate",
+    generating: "Generating…",
+    describeFailed: "Could not generate description",
+    distribution: "Distribution",
+    advancedOptions: "Advanced options",
+    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    noSkillsOption: "Don't seed bundled skills",
+    descriptionOptional: "Description (optional)",
+    modelOptional: "Model (optional)",
+    modelInherit: "Inherit from clone / default",
+    modelLoading: "Loading models…",
+    modelNone: "No authenticated providers — set a key first",
+    editModel: "Change model",
+    modelSaved: "Model updated",
+    modelSelect: "Select a model",
+    actions: "Actions",
   },
 
   pluginsPage: {
@@ -269,9 +364,9 @@ export const en: Translations = {
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
     identifierLabel: "Git URL or owner/repo",
     inactive: "inactive",
-    installBtn: "Install from Git",
+    installBtn: "Install",
     installHeading: "Install from GitHub / Git URL",
-    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
+    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL. For a plugin in a subdirectory, append the path: owner/repo/path/to/plugin (or <url>#path/to/plugin).",
     memoryProviderLabel: "Memory provider",
     missingEnvWarn: "Set these in Keys before the plugin can run:",
     noDashboardTab: "No dashboard tab",
@@ -317,6 +412,10 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
+    profileSelector: "Profile",
+    currentProfile: "current ({name})",
+    managingProfile:
+      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {
@@ -367,6 +466,8 @@ export const en: Translations = {
     description: "Manage API keys and secrets stored in",
     hideAdvanced: "Hide Advanced",
     showAdvanced: "Show Advanced",
+    showLess: "Show less",
+    showMore: "Show more",
     llmProviders: "LLM Providers",
     providersConfigured: "{configured} of {total} providers configured",
     getKey: "Get key",
@@ -392,7 +493,7 @@ export const en: Translations = {
     disconnect: "Disconnect",
     managedExternally: "Managed externally",
     copied: "Copied ✓",
-    cli: "CLI",
+    cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",
     sessionExpires: "Session expires in {time}",
@@ -419,12 +520,18 @@ export const en: Translations = {
   },
 
   language: {
-    switchTo: "Switch to Chinese",
+    switchTo: "Switch language",
   },
 
   theme: {
     title: "Theme",
     switchTheme: "Switch theme",
+    fontTitle: "Font",
+    fontDefault: "Theme default",
+    fontDefaultHint: "Use the active theme's font",
+    fontSans: "Sans",
+    fontSerif: "Serif",
+    fontMono: "Mono",
   },
 
   achievements: {
@@ -658,6 +765,7 @@ export const en: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Todo",
+      scheduled: "Scheduled",
       ready: "Ready",
       running: "In Progress",
       blocked: "Blocked",
@@ -667,6 +775,7 @@ export const en: Translations = {
     columnHelp: {
       triage: "Raw ideas — a specifier will flesh out the spec",
       todo: "Waiting on dependencies or unassigned",
+      scheduled: "Waiting on a known time delay or scheduled follow-up",
       ready: "Dependencies satisfied; assign a profile to dispatch",
       running: "Claimed by a worker — in-flight",
       blocked: "Worker asked for human input",
@@ -679,6 +788,8 @@ export const en: Translations = {
       "Archive this task? It disappears from the default board view.",
     confirmBlocked:
       "Mark this task as blocked? The worker's claim is released.",
+    confirmScheduled:
+      "Move this task to Scheduled? Use this for known time delays rather than human blockers.",
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
     completionSummaryRequired:

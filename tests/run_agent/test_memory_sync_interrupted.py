@@ -91,6 +91,45 @@ class TestSyncExternalMemoryForTurn:
             session_id="test_session_001",
         )
 
+    def test_completed_turn_syncs_messages_when_present(self):
+        agent = _bare_agent()
+        messages = [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": "{\"command\":\"pytest\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "terminal",
+                "tool_call_id": "call-1",
+                "content": "final Hermes-processed output",
+            }
+        ]
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="run tests",
+            final_response="tests passed",
+            interrupted=False,
+            messages=messages,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "run tests",
+            "tests passed",
+            session_id="test_session_001",
+            messages=messages,
+        )
+
     # --- Edge cases (pre-existing behaviour preserved) ------------------
 
     def test_no_final_response_skips(self):
@@ -167,6 +206,57 @@ class TestSyncExternalMemoryForTurn:
         )
         # sync_all still happened before the prefetch blew up.
         agent._memory_manager.sync_all.assert_called_once()
+
+    # --- Multimodal content flattening ----------------------------------
+
+    def test_multimodal_user_message_is_flattened(self):
+        """A turn with an attached image carries the user message as a
+        list of typed parts.  Providers feed the content to regexes
+        (sanitize_context), so a raw list raised ``expected string or
+        bytes-like object, got 'list'`` and the turn silently never
+        synced.  The boundary must flatten to text first."""
+        agent = _bare_agent()
+        agent._sync_external_memory_for_turn(
+            original_user_message=[
+                {"type": "text", "text": "what is in this screenshot?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+            final_response="A terminal window showing a stack trace.",
+            interrupted=False,
+        )
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "[1 image] what is in this screenshot?",
+            "A terminal window showing a stack trace.",
+            session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_called_once_with(
+            "[1 image] what is in this screenshot?",
+            session_id="test_session_001",
+        )
+
+    def test_multimodal_response_is_flattened(self):
+        agent = _bare_agent()
+        agent._sync_external_memory_for_turn(
+            original_user_message="describe it",
+            final_response=[{"type": "text", "text": "a cat"}],
+            interrupted=False,
+        )
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "describe it", "a cat",
+            session_id="test_session_001",
+        )
+
+    def test_multimodal_with_no_text_at_all_skips(self):
+        """Unknown-typed parts flatten to an empty string — don't sync a
+        turn with no recoverable text."""
+        agent = _bare_agent()
+        agent._sync_external_memory_for_turn(
+            original_user_message=[{"type": "audio", "data": "..."}],
+            final_response="noted",
+            interrupted=False,
+        )
+        agent._memory_manager.sync_all.assert_not_called()
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
 
     # --- The specific matrix the reporter asked about ------------------
 

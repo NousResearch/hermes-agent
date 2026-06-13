@@ -70,6 +70,12 @@ const NUMBERED_RE = /^(\s*)(\d+)[.)]\s+(.*)$/
 const QUOTE_RE = /^\s*(?:>\s*)+/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
+const MD_IDENTIFIER_RE = '[A-Za-z_][A-Za-z0-9_]*'
+const MD_DUNDER_IDENTIFIER_RE = `(?:${MD_IDENTIFIER_RE}__(?!\\w))`
+const MD_UNDERSCORE_BOLD_RE = `(?<!\\w)__(?!${MD_DUNDER_IDENTIFIER_RE})(.+?)__(?!\\w)`
+const MD_UNDERSCORE_ITALIC_RE = `(?<![\\w_])_(?!_)(.+?)(?<!_)_(?![\\w_])`
+const STRIP_UNDERSCORE_BOLD_RE = new RegExp(MD_UNDERSCORE_BOLD_RE, 'g')
+const STRIP_UNDERSCORE_ITALIC_RE = new RegExp(MD_UNDERSCORE_ITALIC_RE, 'g')
 
 // Display math openers: `$$ ... $$` (TeX) and `\[ ... \]` (LaTeX). The
 // opener is matched only when `$$` / `\[` appears at the very start of the
@@ -107,9 +113,9 @@ export const INLINE_RE = new RegExp(
     `~~(.+?)~~`, // 6    strike
     `\`([^\\\`]+)\``, // 7    code
     `\\*\\*(.+?)\\*\\*`, // 8    bold *
-    `(?<!\\w)__(.+?)__(?!\\w)`, // 9    bold _
+    MD_UNDERSCORE_BOLD_RE, // 9    bold _
     `\\*(.+?)\\*`, // 10   italic *
-    `(?<!\\w)_(.+?)_(?!\\w)`, // 11   italic _
+    MD_UNDERSCORE_ITALIC_RE, // 11   italic _
     `==(.+?)==`, // 12   highlight
     `\\[\\^([^\\]]+)\\]`, // 13   footnote ref
     `\\^([^^\\s][^^]*?)\\^`, // 14   superscript
@@ -190,9 +196,9 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/~~(.+?)~~/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
+    .replace(STRIP_UNDERSCORE_BOLD_RE, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
+    .replace(STRIP_UNDERSCORE_ITALIC_RE, '$1')
     .replace(/==(.+?)==/g, '$1')
     .replace(/\[\^([^\]]+)\]/g, '[$1]')
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')

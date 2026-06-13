@@ -286,7 +286,6 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
                 "trust_level": "trusted",
                 "metadata": {},
             })()
-
     q_path = tmp_path / "skills" / ".hub" / "quarantine" / "frontend-design"
     q_path.mkdir(parents=True)
     (q_path / "SKILL.md").write_text("# Frontend Design")
@@ -316,6 +315,93 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
 
     assert scanned["source"] == canonical_identifier
+
+
+def test_do_install_scans_official_bundles_with_source_provenance(
+    monkeypatch, tmp_path, hub_env
+):
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    class _OfficialSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": "official/agent/prunus-gaia",
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "prunus-gaia",
+                "files": {"SKILL.md": "# Prunus Gaia"},
+                "source": "official",
+                "identifier": "official/agent/prunus-gaia",
+                "trust_level": "builtin",
+                "metadata": {},
+            })()
+
+    q_path = tmp_path / "skills" / ".hub" / "quarantine" / "prunus-gaia"
+    q_path.mkdir(parents=True)
+    (q_path / "SKILL.md").write_text("# Prunus Gaia")
+
+    scanned = {}
+
+    def _scan_skill(skill_path, source="community"):
+        scanned["source"] = source
+        return guard.ScanResult(
+            skill_name="prunus-gaia",
+            source=source,
+            trust_level="builtin",
+            verdict="safe",
+        )
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [_OfficialSource()])
+    monkeypatch.setattr(hub, "quarantine_bundle", lambda bundle: q_path)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, name: None})())
+    monkeypatch.setattr(guard, "scan_skill", _scan_skill)
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: "scan ok")
+    monkeypatch.setattr(guard, "should_allow_install", lambda result, force=False: (False, "stop after scan"))
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install("official/agent/prunus-gaia", console=console, skip_confirm=True)
+
+    assert scanned["source"] == "official"
+
+
+def test_do_install_preserves_nested_official_optional_path(
+    monkeypatch, tmp_path, hub_env
+):
+    class _OfficialNestedSource:
+        def inspect(self, identifier):
+            return type("Meta", (), {
+                "extra": {},
+                "identifier": "official/mlops/training/trl-fine-tuning",
+            })()
+
+        def fetch(self, identifier):
+            return type("Bundle", (), {
+                "name": "trl-fine-tuning",
+                "files": {"SKILL.md": "# TRL"},
+                "source": "official",
+                "identifier": "official/mlops/training/trl-fine-tuning",
+                "trust_level": "builtin",
+                "metadata": {},
+            })()
+
+    installs = _install_mocks(monkeypatch, tmp_path, _OfficialNestedSource)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_install(
+        "official/mlops/training/trl-fine-tuning",
+        console=console,
+        skip_confirm=True,
+    )
+
+    assert installs == [{"name": "trl-fine-tuning", "category": "mlops/training"}]
 
 
 # ---------------------------------------------------------------------------
@@ -524,3 +610,174 @@ def test_existing_categories_returns_empty_when_skills_dir_missing(monkeypatch, 
 
     from hermes_cli.skills_hub import _existing_categories
     assert _existing_categories() == []
+
+
+# ---------------------------------------------------------------------------
+# browse_skills — dedup by identifier, not name
+# ---------------------------------------------------------------------------
+
+
+def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
+    """browse_skills() must not collapse browse-sh skills that share a task name.
+
+    Airbnb and Booking.com both publish a 'search-listings' skill. Before the
+    fix, both were keyed by name so only one survived deduplication. After the
+    fix, each unique identifier produces a distinct result.
+    """
+    from tools.skills_hub import SkillMeta
+    from hermes_cli.skills_hub import browse_skills
+
+    airbnb = SkillMeta(
+        name="search-listings", description="Airbnb search", source="browse-sh",
+        identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+    )
+    booking = SkillMeta(
+        name="search-listings", description="Booking.com search", source="browse-sh",
+        identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+    )
+
+    mock_src = type("S", (), {
+        "source_id": lambda self: "browse-sh",
+        "search": lambda self, q, limit=500: [airbnb, booking],
+    })()
+
+    # browse_skills() imports create_source_router locally from tools.skills_hub,
+    # so the patch must target the source module, not hermes_cli.skills_hub.
+    with patch("tools.skills_hub.create_source_router", return_value=[mock_src]):
+        result = browse_skills(page=1, page_size=50)
+
+    names = [item["name"] for item in result["items"]]
+    assert names.count("search-listings") == 2, (
+        "browse_skills() must not deduplicate browse-sh skills with the same name "
+        "but different identifiers"
+    )
+
+
+def test_do_browse_reports_live_per_source_progress():
+    """do_browse must pass an on_source_done callback so the status line ticks
+    off each source as it resolves, instead of showing a frozen spinner while
+    a slow source blocks. The page is still rendered once, after the full
+    result set is merged and trust-sorted."""
+    from hermes_cli.skills_hub import do_browse
+    from tools.skills_hub import SkillMeta
+
+    meta = SkillMeta(
+        name="demo", description="d", source="official",
+        identifier="official/demo", trust_level="builtin",
+    )
+
+    captured = {}
+
+    def fake_parallel(sources, query="", per_source_limits=None,
+                      source_filter="all", overall_timeout=30,
+                      on_source_done=None):
+        # Simulate two sources completing — the callback must be wired through.
+        assert on_source_done is not None, "do_browse must pass on_source_done"
+        on_source_done("official", 1)
+        on_source_done("clawhub", 0)
+        captured["called"] = True
+        return [meta], {"official": 1, "clawhub": 0}, []
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=120)
+
+    with patch("tools.skills_hub.create_source_router", return_value=[]), \
+         patch("tools.skills_hub.GitHubAuth"), \
+         patch("tools.skills_hub.parallel_search_sources", side_effect=fake_parallel):
+        do_browse(page=1, page_size=20, console=console)
+
+    assert captured.get("called"), "parallel_search_sources was not invoked"
+    # The rendered page still shows the (single) merged result.
+    assert "demo" in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Regression: full identifier must be recoverable from `hermes skills search`
+# even when the slug is too long to fit the terminal width (issue #33674).
+# ---------------------------------------------------------------------------
+
+# A real browse-sh-style slug whose trailing -XXXXXX hash matters for install
+_LONG_SLUG = "browse-sh/weather.gov/get-forecast-1uezib"
+
+_LONG_RESULT = type("R", (), {
+    "name": "get-forecast",
+    "description": "Fetch the forecast",
+    "source": "browse-sh",
+    "trust_level": "community",
+    "identifier": _LONG_SLUG,
+})()
+
+
+def test_do_search_identifier_column_does_not_truncate_long_slug():
+    """The Identifier column must use overflow='fold', not the default ellipsis.
+
+    Renders into a deliberately narrow Console; the full slug (including the
+    trailing -1uezib hash) must still appear in the output. Before the fix,
+    Rich would render `browse-sh/weather…` and lose the hash.
+    """
+    from hermes_cli.skills_hub import do_search
+
+    sink = StringIO()
+    # Narrow width forces Rich to apply overflow rules — exactly the scenario
+    # the issue reports. width=40 is too small for the slug; we want the slug
+    # wrapped (not ellipsis-truncated).
+    console = Console(file=sink, force_terminal=False, color_system=None, width=40)
+
+    with patch("tools.skills_hub.unified_search", return_value=[_LONG_RESULT]), \
+         patch("tools.skills_hub.create_source_router", return_value={}), \
+         patch("tools.skills_hub.GitHubAuth"):
+        do_search("weather", console=console)
+
+    output = sink.getvalue()
+
+    # The fix is working when the Identifier column wraps the slug across
+    # multiple lines (folded chunks) rather than emitting ONE line with an
+    # ellipsis. Extract every chunk that appears in the rightmost cell of
+    # the table by walking lines that look like table rows ("│ ... │") and
+    # taking the last `│...│` cell. Concatenating those chunks must yield
+    # the full slug.
+    chunks = []
+    for line in output.splitlines():
+        # Table data rows start and end with the box-drawing vertical bar.
+        if not line.startswith("│") or not line.rstrip().endswith("│"):
+            continue
+        # Last `│ ... │` cell on the row is the Identifier column.
+        last_cell = line.rstrip().rsplit("│", 2)[-2].strip()
+        if last_cell:
+            chunks.append(last_cell)
+    reconstructed = "".join(chunks)
+    assert _LONG_SLUG in reconstructed, (
+        f"Expected full slug {_LONG_SLUG!r} to be recoverable from the "
+        f"folded Identifier column; got chunks {chunks!r}\n"
+        f"Full output:\n{output}"
+    )
+    # And the truncating ellipsis must NOT appear in the Identifier column.
+    # Rich uses U+2026 HORIZONTAL ELLIPSIS for the default overflow="ellipsis".
+    assert "\u2026" not in reconstructed, (
+        f"Identifier column still ellipsis-truncated: {reconstructed!r}"
+    )
+
+
+def test_do_search_json_flag_emits_full_identifiers(capsys):
+    """`--json` must print a parseable array with full identifiers and skip the table."""
+    from hermes_cli.skills_hub import do_search
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=40)
+
+    with patch("tools.skills_hub.unified_search", return_value=[_LONG_RESULT]), \
+         patch("tools.skills_hub.create_source_router", return_value={}), \
+         patch("tools.skills_hub.GitHubAuth"):
+        do_search("weather", console=console, as_json=True)
+
+    # JSON goes to stdout via print(), not the Rich console sink.
+    captured = capsys.readouterr().out
+    import json as _json
+    payload = _json.loads(captured)
+    assert isinstance(payload, list) and len(payload) == 1
+    assert payload[0]["identifier"] == _LONG_SLUG
+    assert payload[0]["name"] == "get-forecast"
+    assert payload[0]["source"] == "browse-sh"
+    # Table render must be suppressed — sink should be empty (no "Searching for:" header).
+    assert "Searching for:" not in sink.getvalue()
+

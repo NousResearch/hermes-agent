@@ -458,6 +458,51 @@ class TestExtractMedia:
         assert [p for p, _ in media] == ["/r/a.png"]
         assert "`MEDIA:/ex/b.png`" in cleaned
 
+    # --- Markdown emphasis wrapping tolerance ---
+    # Models routinely present a file as **MEDIA:/path** / *MEDIA:/path* /
+    # _MEDIA:/path_. The old pattern only tolerated a single quote/backtick, so
+    # the emphasis prevented the match and the file was silently never
+    # delivered (the literal MEDIA: text leaked into the chat instead).
+
+    def test_media_bold_wrapped_extracted(self):
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "**MEDIA:/home/u/report.pptx**"
+        )
+        assert media == [("/home/u/report.pptx", False)]
+        assert "MEDIA:" not in cleaned
+
+    def test_media_italic_asterisk_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("*MEDIA:/home/u/report.pdf*")
+        assert media == [("/home/u/report.pdf", False)]
+
+    def test_media_italic_underscore_extracted(self):
+        media, _ = BasePlatformAdapter.extract_media("_MEDIA:/home/u/report.pdf_")
+        assert media == [("/home/u/report.pdf", False)]
+
+    def test_media_bold_mid_prose_extracted_and_stripped(self):
+        media, cleaned = BasePlatformAdapter.extract_media(
+            "Voici votre fichier **MEDIA:/tmp/r.pdf** bonne lecture"
+        )
+        assert media == [("/tmp/r.pdf", False)]
+        assert "MEDIA:" not in cleaned
+        assert "bonne lecture" in cleaned
+
+    def test_media_bold_wrapped_html_extracted(self):
+        # .html is a recognised extension; emphasis was the only blocker.
+        media, _ = BasePlatformAdapter.extract_media("**MEDIA:/srv/page.html**")
+        assert media == [("/srv/page.html", False)]
+
+    def test_media_underscore_in_filename_unaffected(self):
+        # Emphasis tolerance must not eat a legitimate '_' inside the path.
+        media, _ = BasePlatformAdapter.extract_media("MEDIA:/tmp/my_report_v2.pptx")
+        assert media == [("/tmp/my_report_v2.pptx", False)]
+
+    def test_media_bold_relative_path_still_ignored(self):
+        # The absolute-path anchor must still reject relative paths even when
+        # wrapped in emphasis.
+        media, _ = BasePlatformAdapter.extract_media("**MEDIA:report.html**")
+        assert media == []
+
 
 class TestMediaInsideSerializedJson:
     """Regression coverage for #34375 — MEDIA: embedded in serialized JSON

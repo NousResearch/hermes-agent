@@ -22,8 +22,9 @@ Custom command providers:
   See the Local Command section of ``website/docs/user-guide/features/tts.md``.
 
 Output formats:
-- Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
-- MP3 (.mp3) for everything else (CLI, Discord, WhatsApp)
+- Opus (.ogg) for native voice bubbles/notes on Telegram and WhatsApp
+  surfaces (requires ffmpeg for providers that only emit MP3/WAV)
+- MP3 (.mp3) for everything else (CLI, Discord)
 
 Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
 The user chooses the provider and voice; the model just sends text.
@@ -390,6 +391,7 @@ DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
+OPUS_VOICE_PLATFORMS = frozenset({"telegram", "whatsapp", "whatsapp_cloud"})
 
 
 def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -2059,12 +2061,13 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Telegram voice bubbles and WhatsApp voice notes require Opus (.ogg).
+    # OpenAI, ElevenLabs, Mistral, and Gemini can produce Opus natively
+    # (no ffmpeg needed). Edge TTS always outputs MP3 and needs ffmpeg
+    # for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in OPUS_VOICE_PLATFORMS
 
     # Determine output path
     if output_path:
@@ -2702,7 +2705,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble/note on Telegram and WhatsApp; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
     "parameters": {
         "type": "object",
         "properties": {

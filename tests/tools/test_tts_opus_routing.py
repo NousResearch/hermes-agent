@@ -44,7 +44,8 @@ def test_edge_cli_preserves_native_mp3(tmp_path, monkeypatch):
     convert.assert_not_called()
 
 
-def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["telegram", "whatsapp", "whatsapp_cloud"])
+def test_edge_voice_platforms_convert_to_opus_voice(tmp_path, monkeypatch, platform):
     out = tmp_path / "speech.mp3"
     opus = tmp_path / "speech.ogg"
 
@@ -55,7 +56,7 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
 
     convert = Mock(side_effect=fake_convert)
 
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
     monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "edge"})
     monkeypatch.setattr(tts_tool, "_import_edge_tts", lambda: object())
     monkeypatch.setattr(tts_tool, "_generate_edge_tts", _write_edge_output)

@@ -63,7 +63,7 @@ import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
-import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
+import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -100,6 +100,7 @@ import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { notifyThreadEditClose, notifyThreadEditOpen } from '@/store/thread-scroll'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -202,7 +203,7 @@ export const Thread: FC<{
   return (
     <GeneratedImageProvider>
       <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-        <VirtualizedThread
+        <ThreadMessageList
           clampToComposer={clampToComposer}
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
@@ -956,7 +957,10 @@ const UserMessage: FC<{
     // backtick `code` and ``` fenced ``` blocks, with directive chips
     // (`@file:` etc.) still resolved inside the plain-text spans.
     <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
-      <div ref={clampInnerRef}>
+      {/* Match the edit composer's collapsed line box (min-h-[1.25rem]) so
+          clicking to edit can't grow the bubble by a sub-pixel and reflow the
+          turn 1px. */}
+      <div className="min-h-[1.25rem]" ref={clampInnerRef}>
         <UserMessageText className="wrap-anywhere" text={messageText} />
       </div>
     </div>
@@ -986,6 +990,7 @@ const UserMessage: FC<{
                   aria-label={copy.editMessage}
                   className={bubbleClassName}
                   onClick={() => triggerHaptic('selection')}
+                  onPointerDown={() => notifyThreadEditOpen()}
                   title={copy.editMessage}
                   type="button"
                 >
@@ -1174,6 +1179,8 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
   const slash = useSlashCompletions({ gateway })
+
+  useEffect(() => () => notifyThreadEditClose(), [])
 
   const focusEditor = useCallback(() => {
     const editor = editorRef.current
@@ -1700,7 +1707,6 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               aria-label={copy.editMessage}
               autoCapitalize="off"
               autoCorrect="off"
-              autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
                 'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',

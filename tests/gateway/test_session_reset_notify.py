@@ -277,3 +277,63 @@ class TestSessionEntryAutoResetRoundtrip:
         assert reloaded.was_auto_reset is False
         assert reloaded.auto_reset_reason is None
         assert reloaded.reset_had_activity is False
+
+
+# ---------------------------------------------------------------------------
+# Timezone-awareness: _now() uses Hermes-configured timezone, not server clock
+# ---------------------------------------------------------------------------
+
+class TestShouldResetTimezone:
+    """Verify that _should_reset honours the configured Hermes timezone.
+
+    When the server's local timezone differs from the user's configured
+    timezone, daily reset boundaries must be evaluated in the user's
+    timezone, not the server's.
+    """
+
+    def test_daily_reset_fires_after_at_hour_in_configured_tz(self, tmp_path, monkeypatch):
+        """_should_reset() fires once the at_hour boundary is crossed in the
+        configured timezone, regardless of what time the server clock shows.
+        """
+        import gateway.session as session_mod
+
+        # Mock time: 04:30 in configured timezone — past the at_hour=4 boundary.
+        # updated_at is the previous day, so the daily check should fire.
+        configured_tz_now = datetime(2024, 1, 2, 4, 30, 0)
+        monkeypatch.setattr(session_mod, "_now", lambda: configured_tz_now)
+
+        store = _make_store(
+            SessionResetPolicy(mode="daily", at_hour=4),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="tz-test",
+            session_id="s-tz",
+            created_at=datetime(2024, 1, 1, 10, 0, 0),
+            updated_at=datetime(2024, 1, 1, 23, 59, 0),
+        )
+        source = _make_source()
+        assert store._should_reset(entry, source) == "daily"
+
+    def test_daily_reset_suppressed_before_at_hour_in_configured_tz(self, tmp_path, monkeypatch):
+        """_should_reset() does not fire before the at_hour boundary in the
+        configured timezone, even if updated_at is from a previous day.
+        """
+        import gateway.session as session_mod
+
+        # Mock time: 03:45 in configured timezone — before the at_hour=4 boundary.
+        configured_tz_now = datetime(2024, 1, 2, 3, 45, 0)
+        monkeypatch.setattr(session_mod, "_now", lambda: configured_tz_now)
+
+        store = _make_store(
+            SessionResetPolicy(mode="daily", at_hour=4),
+            tmp_path,
+        )
+        entry = SessionEntry(
+            session_key="tz-test-before",
+            session_id="s-tz-before",
+            created_at=datetime(2024, 1, 1, 10, 0, 0),
+            updated_at=datetime(2024, 1, 1, 23, 59, 0),
+        )
+        source = _make_source()
+        assert store._should_reset(entry, source) is None

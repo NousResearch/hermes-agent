@@ -2350,7 +2350,16 @@ function resolveHermesBackend(dashboardArgs) {
           command: hermesCommand,
           args: dashboardArgs,
           bootstrap: false,
-          env: {},
+          // Step 4 (existing Hermes CLI on PATH) needs the same PATH and
+          // PYTHONPATH augmentation as the other backend paths. Without it,
+          // pip-generated console_scripts .exe stubs (zipapp launchers) on
+          // Windows resolve the wrong Python interpreter and fail with
+          // `No module named 'fastapi'` when running `hermes dashboard`.
+          env: buildDesktopBackendEnv({
+            hermesHome: HERMES_HOME,
+            pythonPathEntries: [ACTIVE_HERMES_ROOT],
+            venvRoot: VENV_ROOT
+          }),
           kind: 'command',
           shell: shellForProbe
         }

@@ -15,6 +15,7 @@ Or via $HERMES_HOME/mem0.json.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
@@ -23,10 +24,15 @@ import re
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+
+# Local modules (Pattern 1: BM25, Pattern 3: Supersession)
+from .bm25_index import BM25Index, rrf_fuse
+from . import supersession
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +379,9 @@ class Mem0MemoryProvider(MemoryProvider):
         # Circuit breaker state
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
+        # BM25 local index (Pattern 1: dual-path search)
+        self._bm25 = BM25Index()
+        self._bm25_ready = False
 
     @property
     def name(self) -> str:
@@ -494,6 +503,11 @@ class Mem0MemoryProvider(MemoryProvider):
             self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
+        # BM25: try loading cache (non-blocking, will rebuild if stale)
+        if self._bm25.is_available:
+            self._bm25_ready = self._bm25.load_cache()
+            if self._bm25_ready:
+                logger.info("BM25 index ready from cache (%d docs)", self._bm25.doc_count)
 
     def _read_filters(self) -> Dict[str, Any]:
         """Filters for search/get_all — scoped to user only for cross-session recall."""
@@ -646,26 +660,70 @@ class Mem0MemoryProvider(MemoryProvider):
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
-                results = self._unwrap_results(client.search(
+                # --- Vector search via API ---
+                vector_results = self._unwrap_results(client.search(
                     query=query,
                     filters=self._read_filters(),
                     rerank=rerank,
-                    top_k=top_k,
+                    top_k=top_k * 2,  # Fetch more for RRF fusion
                 ))
                 self._record_success()
+
+                # --- BM25 local search (Pattern 1) ---
+                bm25_results = []
+                if self._bm25.is_available:
+                    # Lazy-build BM25 index if not ready
+                    if not self._bm25_ready:
+                        try:
+                            all_memories = self._unwrap_results(
+                                client.get_all(filters=self._read_filters())
+                            )
+                            self._bm25.build_from_memories(all_memories)
+                            self._bm25_ready = True
+                        except Exception as e:
+                            logger.debug("BM25 index build failed: %s", e)
+                    if self._bm25_ready:
+                        bm25_results = self._bm25.search(query, top_k=top_k * 2)
+
+                # --- RRF Fusion ---
+                if vector_results and bm25_results:
+                    # Both paths returned: fuse with RRF
+                    results = rrf_fuse(vector_results, bm25_results, top_k=top_k)
+                    search_mode = "hybrid"
+                elif bm25_results and not vector_results:
+                    # Vector failed, BM25 fallback
+                    results = bm25_results[:top_k]
+                    search_mode = "bm25_only"
+                else:
+                    results = vector_results[:top_k]
+                    search_mode = "vector_only"
+
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
+
                 # Enrich with Ebbinghaus freshness tags
                 enriched = self._enrich_results(results)
+                # Annotate with supersession info (Pattern 3)
+                enriched = [supersession.annotate_result(r) for r in enriched]
+
                 items = []
                 for r in enriched:
-                    item = {"memory": r.get("memory", ""), "score": r.get("score", 0)}
+                    item = {"memory": r.get("memory", ""), "score": r.get("score", r.get("rrf_score", 0))}
                     if r.get("freshness"):
                         item["freshness"] = r["freshness"]
                     if r.get("domain") and r["domain"] != "normal":
                         item["domain"] = r["domain"]
+                    if r.get("source"):
+                        item["source"] = r["source"]
+                    if r.get("supersession"):
+                        item["supersession"] = r["supersession"]
                     items.append(item)
-                return json.dumps({"results": items, "count": len(items)})
+                return json.dumps({
+                    "results": items,
+                    "count": len(items),
+                    "mode": search_mode,
+                    "bm25_docs": self._bm25.doc_count if self._bm25_ready else 0,
+                })
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Search failed: {e}")
@@ -685,6 +743,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
                 # Detect contradictions
                 contradictions = []
+                superseded_ids = []
                 for existing in similar_memories:
                     existing_text = existing.get("memory", existing.get("data", ""))
                     existing_id = existing.get("id", "")
@@ -698,18 +757,56 @@ class Mem0MemoryProvider(MemoryProvider):
                             "contradiction_type": contradiction_type,
                             "similarity": round(_calculate_text_similarity(conclusion, existing_text), 2),
                         })
+                        if contradiction_type == "SUPERSEDE":
+                            superseded_ids.append((existing_id, existing_text))
 
                 # Store the new fact
-                client.add(
+                add_response = client.add(
                     [{"role": "user", "content": conclusion}],
                     **self._write_filters(),
                     infer=False,
                 )
                 self._record_success()
 
+                # Extract new memory ID from response
+                new_mem0_id = ""
+                if isinstance(add_response, dict):
+                    new_mem0_id = add_response.get("id", "")
+                    if not new_mem0_id:
+                        results = add_response.get("results", [])
+                        if results and isinstance(results[0], dict):
+                            new_mem0_id = results[0].get("id", "")
+
+                # Pattern 3: Create supersession chains for SUPERSEDE contradictions
+                chain_ids = []
+                for old_id, old_text in superseded_ids:
+                    if new_mem0_id and old_id:
+                        try:
+                            chain_id = supersession.create_supersession(
+                                old_mem0_id=old_id,
+                                old_text=old_text,
+                                new_mem0_id=new_mem0_id,
+                                new_text=conclusion,
+                                reason="SUPERSEDE",
+                            )
+                            chain_ids.append(chain_id)
+                        except Exception as e:
+                            logger.debug("Supersession chain creation failed: %s", e)
+
+                # Pattern 1: Add to BM25 index incrementally
+                if self._bm25_ready and self._bm25.is_available:
+                    self._bm25.add_document(
+                        doc_id=new_mem0_id or "pending",
+                        text=conclusion,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                    )
+
                 # Return result with contradiction warnings
                 result = {"result": "Fact stored."}
-                if contradictions:
+                if chain_ids:
+                    result["supersession_chains"] = chain_ids
+                    result["result"] = f"Fact stored. Superseded {len(chain_ids)} previous version(s)."
+                elif contradictions:
                     result["warnings"] = {
                         "contradictions_detected": contradictions,
                         "note": f"Found {len(contradictions)} similar memories. "

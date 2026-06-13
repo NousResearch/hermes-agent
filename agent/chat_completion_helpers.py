@@ -733,6 +733,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            # Outbound orchestration metadata
+            hermes_outbound_metadata=getattr(agent, "hermes_outbound_metadata", False),
+            hermes_gateway_platform=getattr(agent, "platform", None),
+            hermes_chat_id=getattr(agent, "_chat_id", None),
+            hermes_user_id=getattr(agent, "_user_id", None),
+            hermes_command_origin=getattr(agent, "_command_origin", None),
         )
 
     # ── Legacy flag path ────────────────────────────────────────────
@@ -780,6 +786,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         lmstudio_reasoning_options=agent._lmstudio_reasoning_options_cached() if _is_lmstudio else None,
         anthropic_max_output=_ant_max,
         provider_name=agent.provider,
+        # Outbound orchestration metadata
+        hermes_outbound_metadata=getattr(agent, "hermes_outbound_metadata", False),
+        hermes_gateway_platform=getattr(agent, "platform", None),
+        hermes_chat_id=getattr(agent, "_chat_id", None),
+        hermes_user_id=getattr(agent, "_user_id", None),
+        hermes_command_origin=getattr(agent, "_command_origin", None),
     )
 
 
@@ -1414,6 +1426,19 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                         {"id": "pareto-router", "min_coding_score": _ps}
                     ]
 
+            from agent.transports.chat_completions import _add_hermes_metadata
+
+            _add_hermes_metadata(
+                summary_extra_body,
+                {
+                    "hermes_outbound_metadata": getattr(agent, "hermes_outbound_metadata", False),
+                    "session_id": getattr(agent, "session_id", None),
+                    "hermes_gateway_platform": getattr(agent, "platform", None),
+                    "hermes_chat_id": getattr(agent, "chat_id", None),
+                    "hermes_user_id": getattr(agent, "user_id", None),
+                    "hermes_command_origin": getattr(agent, "_command_origin", None),
+                },
+            )
             if summary_extra_body:
                 summary_kwargs["extra_body"] = summary_extra_body
 

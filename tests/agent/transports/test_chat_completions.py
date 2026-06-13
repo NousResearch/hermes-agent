@@ -1,7 +1,12 @@
 """Tests for the ChatCompletionsTransport."""
 
+import asyncio
+import sys
+import threading
+import types
 import pytest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from agent.transports import get_transport
 from agent.transports.types import NormalizedResponse
@@ -859,8 +864,6 @@ class TestChatCompletionsCacheStats:
         r = SimpleNamespace(usage=SimpleNamespace(prompt_tokens_details=details))
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
-
-
 class TestChatCompletionsGeminiNativeExtraBodyStrip:
     """Profile extra_body (e.g. Nous portal tags) must not reach a native
     Gemini endpoint — Google's REST API rejects unknown fields with HTTP 400.
@@ -909,3 +912,332 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestHermesOutboundMetadata:
+    """extra_body.hermes opt-in orchestration hints."""
+
+    def test_default_off_profile_path(self, transport):
+        """No extra_body.hermes emitted when flag is absent (default off)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, provider_profile=profile,
+        )
+        assert "hermes" not in (kw.get("extra_body") or {})
+
+    def test_default_off_legacy_path(self, transport):
+        """No extra_body.hermes emitted on the legacy (unregistered provider) path."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(model="gpt-4o", messages=msgs)
+        assert "hermes" not in (kw.get("extra_body") or {})
+
+    def test_all_fields_profile_path(self, transport):
+        """When enabled with all five fields, they appear correctly in extra_body.hermes."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, provider_profile=profile,
+            hermes_outbound_metadata=True,
+            session_id="sess-abc",
+            hermes_gateway_platform="matrix",
+            hermes_chat_id="!room:example.org",
+            hermes_user_id="@alice:example.org",
+            hermes_command_origin="user",
+        )
+        h = kw["extra_body"]["hermes"]
+        assert h["session_id"] == "sess-abc"
+        assert h["gateway_platform"] == "matrix"
+        assert h["chat_id"] == "!room:example.org"
+        assert h["user_id"] == "@alice:example.org"
+        assert h["command_origin"] == "user"
+
+    def test_all_fields_legacy_path(self, transport):
+        """Legacy path also emits extra_body.hermes when enabled."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            hermes_outbound_metadata=True,
+            session_id="sess-xyz",
+            hermes_gateway_platform="discord",
+            hermes_chat_id="12345",
+            hermes_user_id="67890",
+            hermes_command_origin="scheduled",
+        )
+        h = kw["extra_body"]["hermes"]
+        assert h["session_id"] == "sess-xyz"
+        assert h["gateway_platform"] == "discord"
+        assert h["chat_id"] == "12345"
+        assert h["user_id"] == "67890"
+        assert h["command_origin"] == "scheduled"
+
+    def test_none_fields_omitted(self, transport):
+        """Fields whose value is None are omitted so strict servers stay compatible."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, provider_profile=profile,
+            hermes_outbound_metadata=True,
+            session_id="sess-123",
+            # hermes_gateway_platform, hermes_chat_id, hermes_user_id,
+            # hermes_command_origin all absent → omitted from output
+        )
+        h = kw["extra_body"]["hermes"]
+        assert h == {"session_id": "sess-123"}
+        assert "gateway_platform" not in h
+        assert "chat_id" not in h
+        assert "user_id" not in h
+        assert "command_origin" not in h
+
+    def test_no_hermes_block_when_all_none(self, transport):
+        """If all values are None, extra_body.hermes is not emitted at all."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, provider_profile=profile,
+            hermes_outbound_metadata=True,
+            # all fields absent
+        )
+        assert "hermes" not in (kw.get("extra_body") or {})
+
+    def test_coexists_with_other_extra_body_fields(self, transport):
+        """extra_body.hermes doesn't clobber existing extra_body entries."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs, provider_profile=profile,
+            provider_preferences={"only": ["openai"]},
+            hermes_outbound_metadata=True,
+            session_id="s1",
+            hermes_gateway_platform="telegram",
+        )
+        eb = kw["extra_body"]
+        assert eb["provider"] == {"only": ["openai"]}
+        assert eb["hermes"]["session_id"] == "s1"
+        assert eb["hermes"]["gateway_platform"] == "telegram"
+
+
+class TestHermesOutboundMetadataSummaryPath:
+    """Iteration-limit summary calls must mirror the transport metadata path."""
+
+    def test_iteration_limit_summary_includes_hermes_metadata(self):
+        from agent.chat_completion_helpers import handle_max_iterations
+
+        captured = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return object()
+
+        fake_transport = SimpleNamespace(
+            normalize_response=lambda response: NormalizedResponse(
+                content="summary ok",
+                tool_calls=None,
+                finish_reason="stop",
+            )
+        )
+        fake_agent = SimpleNamespace(
+            model="gpt-4o",
+            provider="openrouter",
+            api_mode="chat_completions",
+            base_url="https://openrouter.ai/api/v1",
+            _base_url_lower="https://openrouter.ai/api/v1",
+            max_tokens=None,
+            max_iterations=1,
+            reasoning_config=None,
+            providers_allowed=None,
+            providers_ignored=None,
+            providers_order=None,
+            provider_sort=None,
+            openrouter_min_coding_score=None,
+            hermes_outbound_metadata=True,
+            session_id="sess-123",
+            platform="matrix",
+            chat_id="!room:example.org",
+            user_id="@alice:example.org",
+            _command_origin="user",
+            _cached_system_prompt="",
+            ephemeral_system_prompt="",
+            prefill_messages=[],
+            _is_anthropic_oauth=False,
+            _should_sanitize_tool_calls=lambda: False,
+            _copy_reasoning_content_for_api=lambda msg, api_msg: None,
+            _sanitize_api_messages=lambda messages: messages,
+            _drop_thinking_only_and_merge_users=lambda messages: messages,
+            _supports_reasoning_extra_body=lambda: False,
+            _resolve_lmstudio_summary_reasoning_effort=lambda: None,
+            _is_openrouter_url=lambda: True,
+            _max_tokens_param=lambda max_tokens: {},
+            _get_transport=lambda: fake_transport,
+            _ensure_primary_openai_client=lambda reason=None: SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=SimpleNamespace(create=_create)
+                )
+            ),
+        )
+
+        final_response = handle_max_iterations(
+            fake_agent,
+            [{"role": "user", "content": "Hi"}],
+            api_call_count=1,
+        )
+
+        assert final_response == "summary ok"
+        assert captured["extra_body"]["hermes"] == {
+            "session_id": "sess-123",
+            "gateway_platform": "matrix",
+            "chat_id": "!room:example.org",
+            "user_id": "@alice:example.org",
+            "command_origin": "user",
+        }
+
+
+class _CapturingAgent:
+    """Fake gateway agent that records init kwargs for assertions."""
+
+    last_init = None
+
+    def __init__(self, *args, **kwargs):
+        type(self).last_init = dict(kwargs)
+        self.tools = []
+
+    def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
+        return {
+            "final_response": "ok",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+def _make_gateway_runner():
+    import gateway.run as gateway_run
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = None
+    runner.config = None
+    runner._voice_mode = {}
+    runner._ephemeral_system_prompt = ""
+    runner._prefill_messages = []
+    runner._reasoning_config = None
+    runner._show_reasoning = False
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._service_tier = None
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._background_tasks = set()
+    runner._session_db = None
+    runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
+    runner._pending_model_notes = {}
+    runner._pending_approvals = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.hooks.loaded_hooks = []
+    return runner
+
+
+def _gateway_override():
+    return {
+        "model": "gpt-4o",
+        "provider": "openrouter",
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_mode": "chat_completions",
+    }
+
+
+class TestGatewayHermesOutboundMetadata:
+    """Gateway config must plumb the opt-in flag into AIAgent creation."""
+
+    @pytest.mark.asyncio
+    async def test_run_agent_passes_enabled_flag_and_user_origin(self, monkeypatch):
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_config",
+            lambda: {"extras": {"hermes_metadata": {"enabled": True}}},
+        )
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _CapturingAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        _CapturingAgent.last_init = None
+        runner = _make_gateway_runner()
+
+        source = SessionSource(
+            platform=Platform.LOCAL,
+            chat_id="cli",
+            chat_name="CLI",
+            chat_type="dm",
+            user_id="user-1",
+        )
+        session_key = "agent:main:local:dm"
+        runner._session_model_overrides[session_key] = _gateway_override()
+
+        result = await runner._run_agent(
+            message="ping",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key=session_key,
+        )
+
+        assert result["final_response"] == "ok"
+        assert _CapturingAgent.last_init is not None
+        assert _CapturingAgent.last_init["hermes_outbound_metadata"] is True
+        assert _CapturingAgent.last_init["command_origin"] == "user"
+
+    @pytest.mark.asyncio
+    async def test_background_task_passes_enabled_flag_and_scheduled_origin(self, monkeypatch):
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        monkeypatch.setattr(
+            gateway_run,
+            "_load_gateway_config",
+            lambda: {"extras": {"hermes_metadata": {"enabled": True}}},
+        )
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _CapturingAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        _CapturingAgent.last_init = None
+        runner = _make_gateway_runner()
+
+        adapter = AsyncMock()
+        adapter.send = AsyncMock()
+        adapter.extract_media = MagicMock(return_value=([], "ok"))
+        adapter.extract_images = MagicMock(return_value=([], "ok"))
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+        session_key = runner._session_key_for_source(source)
+        runner._session_model_overrides[session_key] = _gateway_override()
+
+        await runner._run_background_task("say hello", source, "bg_test")
+
+        assert _CapturingAgent.last_init is not None
+        assert _CapturingAgent.last_init["hermes_outbound_metadata"] is True
+        assert _CapturingAgent.last_init["command_origin"] == "scheduled"

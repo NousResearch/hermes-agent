@@ -115,6 +115,30 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _add_hermes_metadata(extra_body: dict, params: dict) -> None:
+    """Inject extra_body.hermes orchestration hints when opt-in flag is set.
+
+    Fields whose value is None are omitted so strict-validating servers
+    (vLLM strict mode, certain proxies) stay compatible when the flag is on.
+    Enabled via extras.hermes_metadata.enabled in the gateway config.yaml.
+    """
+    if not params.get("hermes_outbound_metadata"):
+        return
+    hermes: dict[str, Any] = {}
+    for key, param in (
+        ("session_id", "session_id"),
+        ("gateway_platform", "hermes_gateway_platform"),
+        ("chat_id", "hermes_chat_id"),
+        ("user_id", "hermes_user_id"),
+        ("command_origin", "hermes_command_origin"),
+    ):
+        val = params.get(param)
+        if val is not None:
+            hermes[key] = val
+    if hermes:
+        extra_body["hermes"] = hermes
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -445,6 +469,9 @@ class ChatCompletionsTransport(ProviderTransport):
         if additions:
             extra_body.update(additions)
 
+        # Hermes outbound metadata — opt-in, default off
+        _add_hermes_metadata(extra_body, params)
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
@@ -560,6 +587,9 @@ class ChatCompletionsTransport(ProviderTransport):
         additions = params.get("extra_body_additions")
         if additions:
             extra_body.update(additions)
+
+        # Hermes outbound metadata — opt-in, default off
+        _add_hermes_metadata(extra_body, params)
 
         # Request overrides (user config)
         overrides = params.get("request_overrides")

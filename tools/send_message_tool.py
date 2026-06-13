@@ -40,6 +40,11 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# WhatsApp JIDs — individual chats use <number>@s.whatsapp.net, groups use
+# <number>@g.us, and LID-addressed contacts use <number>@lid.  These are
+# explicit send targets that should NOT fall through to home-channel
+# resolution.  See issue #18646.
+_WHATSAPP_JID_RE = re.compile(r"^\d+@(s\.whatsapp\.net|g\.us|lid)$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.
@@ -507,6 +512,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return topic, None, True
     if platform_name == "email":
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return target_ref.strip(), None, True
+    if platform_name == "whatsapp":
+        match = _WHATSAPP_JID_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:

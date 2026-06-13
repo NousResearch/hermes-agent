@@ -1107,6 +1107,28 @@ def _validate_fallback_model(fb: Any, issues: List[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
+def _validate_nested_model_fallback(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """Fallback keys nested under ``model:`` are still read (compatibility) but deprecated."""
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        return
+    for nested_key in ("fallback_providers", "fallback_model"):
+        if nested_key not in model_cfg:
+            continue
+        if nested_key == "fallback_providers":
+            example = (f"  {nested_key}:\n"
+                       "    - provider: ...\n"
+                       "      model: ...")
+        else:
+            example = (f"  {nested_key}:\n"
+                       "    provider: ...\n"
+                       "    model: ...")
+        _issue(issues, "warning",
+               f"{nested_key} is nested under model: - move it to the top level",
+               f"Move {nested_key} to the top level of config.yaml:\n{example}\n"
+               "It still works for compatibility, but this placement is deprecated.")
+
+
 def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
     """A stale web backend selection otherwise fails only at the first web_search/web_extract
     call with a generic "no registered provider" error; warn at startup instead."""
@@ -1192,6 +1214,8 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
         if value is not None:
             validator(value, issues)
+
+    _validate_nested_model_fallback(config, issues)
 
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         _issue(issues, "error", "fallback_model appears inside custom_providers instead of at root level",

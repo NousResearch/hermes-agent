@@ -70,8 +70,7 @@ import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { GeneratedImageProvider, useGeneratedImageContext } from '@/components/chat/generated-image-context'
-import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-placeholder'
+import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
@@ -200,18 +199,16 @@ export const Thread: FC<{
   ) : undefined
 
   return (
-    <GeneratedImageProvider>
-      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-        <VirtualizedThread
-          clampToComposer={clampToComposer}
-          components={messageComponents}
-          emptyPlaceholder={emptyPlaceholder}
-          loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
-          sessionKey={sessionKey}
-        />
-        {loading === 'session' && <CenteredThreadSpinner />}
-      </div>
-    </GeneratedImageProvider>
+    <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+      <VirtualizedThread
+        clampToComposer={clampToComposer}
+        components={messageComponents}
+        emptyPlaceholder={emptyPlaceholder}
+        loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
+        sessionKey={sessionKey}
+      />
+      {loading === 'session' && <CenteredThreadSpinner />}
+    </div>
   )
 }
 
@@ -404,21 +401,12 @@ const StreamStallIndicator: FC = () => {
   )
 }
 
-const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
-  const generatedImage = useGeneratedImageContext()
-  const running = result === undefined
-
-  useEffect(() => {
-    generatedImage?.setPending(running)
-  }, [generatedImage, running])
-
-  if (!running) {
-    return null
-  }
+const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
+  const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
 
   return (
     <div className="mt-1.5">
-      <ImageGenerationPlaceholder />
+      <GeneratedImage aspectRatio={aspectRatio} result={result} />
     </div>
   )
 }

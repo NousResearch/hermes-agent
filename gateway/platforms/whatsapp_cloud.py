@@ -1098,20 +1098,23 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Send an audio file as a WhatsApp voice message.
 
         WhatsApp renders ``audio/ogg; codecs=opus`` as the green
-        voice-note bubble; other audio types (MP3, AAC, etc.) appear as
-        a generic audio attachment. Hermes TTS produces MP3, so we try
-        ffmpeg conversion to opus first and fall back to sending the
-        MP3 as-is when ffmpeg is unavailable.
+        voice-note bubble; other audio types (MP3, WAV, AAC, etc.) appear as
+        a generic audio attachment. Hermes TTS providers may produce any
+        supported audio container, so we try ffmpeg conversion to Opus first
+        for local non-Opus files and fall back to sending the original audio
+        when ffmpeg is unavailable.
         """
         source = audio_path
         mime_type: Optional[str] = None
 
-        is_local_mp3 = (
+        is_local_file = (
             not audio_path.startswith(("http://", "https://"))
-            and audio_path.lower().endswith(".mp3")
             and os.path.exists(audio_path)
         )
-        if is_local_mp3:
+        suffix = Path(audio_path).suffix.lower()
+        is_opus_voice = suffix in {".ogg", ".opus"}
+
+        if is_local_file and not is_opus_voice:
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:
@@ -1129,9 +1132,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     except OSError:
                         pass
                 return result
-            # Will deliver as MP3 attachment, not voice bubble.
+            # Will deliver as a plain audio attachment, not a voice bubble.
             # Warn-once is logged inside _convert_to_opus.
-            mime_type = "audio/mpeg"
+            if suffix == ".mp3":
+                mime_type = "audio/mpeg"
+        elif is_local_file and is_opus_voice:
+            mime_type = "audio/ogg; codecs=opus"
 
         return await self._send_media_from_path_or_link(
             chat_id, source, "audio",
@@ -1156,12 +1162,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------ opus conversion
-    async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """Convert an MP3 to ``audio/ogg; codecs=opus`` for voice bubbles.
+    async def _convert_to_opus(self, audio_path: str) -> Optional[str]:
+        """Convert an audio file to ``audio/ogg; codecs=opus`` for voice bubbles.
 
         Returns the path to the converted file, or None if ffmpeg is
         missing / conversion fails (caller falls back to sending the
-        original MP3 as an audio file).
+        original audio file).
 
         ``-application voip`` tunes the opus encoder for speech.
         ``-b:a 32k -vbr on`` matches the bitrate WhatsApp produces for
@@ -1171,10 +1177,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._warn_once_no_ffmpeg()
             return None
 
-        out_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+        out_path = audio_path.rsplit(".", 1)[0] + ".ogg"
         try:
             proc = await asyncio.create_subprocess_exec(
-                _FFMPEG_PATH, "-y", "-i", mp3_path,
+                _FFMPEG_PATH, "-y", "-i", audio_path,
                 "-c:a", "libopus", "-b:a", "32k", "-vbr", "on",
                 "-application", "voip", out_path,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -1200,7 +1206,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._warned_no_ffmpeg = True
         logger.warning(
             "[whatsapp_cloud] ffmpeg not found on PATH — voice messages will "
-            "be delivered as MP3 audio attachments instead of native voice "
+            "be delivered as audio attachments instead of native voice "
             "notes (green waveform bubble). Install ffmpeg to enable: "
             "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, "
             "Linux package manager."

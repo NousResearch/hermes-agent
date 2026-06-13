@@ -873,6 +873,46 @@ def _emit_post_tool_call_hook(
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
+def _runtime_guard_tool_block_for_dispatch(
+    *,
+    function_name: str,
+    function_args: Dict[str, Any],
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
+    api_request_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    try:
+        from agent.runtime_guard import (
+            guard_tool_action_for_current_context,
+            tool_block_result,
+        )
+
+        decision = guard_tool_action_for_current_context(
+            function_name,
+            function_args,
+            task_id=task_id or "",
+            session_id=session_id or "",
+            tool_call_id=tool_call_id or "",
+            turn_id=turn_id or "",
+            api_request_id=api_request_id or "",
+        )
+        if decision.allowed:
+            return None, None
+        return tool_block_result(decision), decision.message or decision.reason
+    except Exception as exc:
+        logger.debug("runtime_guard tool guard error: %s", exc)
+        from agent.runtime_guard_fallback import (
+            runtime_guard_tool_block_for_current_guard_error,
+        )
+
+        return runtime_guard_tool_block_for_current_guard_error(
+            exc,
+            guard_name="tool_action",
+        )
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -1017,6 +1057,32 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        runtime_guard_block, runtime_guard_reason = _runtime_guard_tool_block_for_dispatch(
+            function_name=function_name,
+            function_args=function_args,
+            task_id=task_id,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            turn_id=turn_id,
+            api_request_id=api_request_id,
+        )
+        if runtime_guard_block is not None:
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=runtime_guard_block,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="runtime_guard",
+                error_message=runtime_guard_reason,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            return runtime_guard_block
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to

@@ -103,6 +103,38 @@ def _cancelled_tool_result(reason: str = "user interrupt") -> str:
     )
 
 
+def _runtime_guard_tool_block(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    effective_task_id: str,
+    tool_call_id: str,
+) -> tuple[str | None, str | None]:
+    try:
+        from agent.runtime_guard import guard_tool_action_for_agent, tool_block_result
+
+        decision = guard_tool_action_for_agent(
+            agent,
+            function_name,
+            function_args,
+            task_id=effective_task_id or "",
+            tool_call_id=tool_call_id or "",
+        )
+        if decision.allowed:
+            return None, None
+        return tool_block_result(decision), decision.message or decision.reason
+    except Exception as exc:
+        logger.debug("runtime_guard tool guard error: %s", exc)
+        from agent.runtime_guard_fallback import runtime_guard_tool_block_for_agent_guard_error
+
+        return runtime_guard_tool_block_for_agent_guard_error(
+            agent,
+            exc,
+            guard_name="tool_action",
+        )
+
+
 def _emit_cancelled_terminal_post_tool_call(
     agent,
     *,
@@ -372,10 +404,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             else:
-                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-                if not guardrail_decision.allows_execution:
-                    block_result = agent._guardrail_block_result(guardrail_decision)
-                    blocked_by_guardrail = True
+                runtime_guard_block, runtime_guard_reason = _runtime_guard_tool_block(
+                    agent,
+                    function_name=function_name,
+                    function_args=function_args,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tool_call, "id", "") or "",
+                )
+                if runtime_guard_block is not None:
+                    block_result = runtime_guard_block
                     _emit_terminal_post_tool_call(
                         agent,
                         function_name=function_name,
@@ -384,10 +421,30 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         effective_task_id=effective_task_id,
                         tool_call_id=getattr(tool_call, "id", "") or "",
                         status="blocked",
-                        error_type="guardrail_block",
-                        error_message=getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy",
+                        error_type="runtime_guard",
+                        error_message=runtime_guard_reason,
                         middleware_trace=list(middleware_trace),
                     )
+                else:
+                    guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                    if not guardrail_decision.allows_execution:
+                        block_result = agent._guardrail_block_result(guardrail_decision)
+                        blocked_by_guardrail = True
+                        _emit_terminal_post_tool_call(
+                            agent,
+                            function_name=function_name,
+                            function_args=function_args,
+                            result=block_result,
+                            effective_task_id=effective_task_id,
+                            tool_call_id=getattr(tool_call, "id", "") or "",
+                            status="blocked",
+                            error_type="guardrail_block",
+                            error_message=(
+                                getattr(guardrail_decision, "message", None)
+                                or "Tool blocked by guardrail policy"
+                            ),
+                            middleware_trace=list(middleware_trace),
+                        )
 
         # ── Checkpoint preflight (only for tools that will execute) ──
         if block_result is None:
@@ -829,6 +886,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
+        _structured_block_result: str | None = None
         if _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
@@ -850,9 +908,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-            if not guardrail_decision.allows_execution:
-                _guardrail_block_decision = guardrail_decision
+            _runtime_block_result, _runtime_block_reason = _runtime_guard_tool_block(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
+            if _runtime_block_result is not None:
+                _block_msg = _runtime_block_reason or "runtime_guard blocked this action"
+                _block_error_type = "runtime_guard"
+                _structured_block_result = _runtime_block_result
+            else:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    _guardrail_block_decision = guardrail_decision
 
         _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
 
@@ -930,7 +1000,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
-            function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+            function_result = _structured_block_result or json.dumps(
+                {"error": _block_msg},
+                ensure_ascii=False,
+            )
             tool_duration = 0.0
             _emit_terminal_post_tool_call(
                 agent,

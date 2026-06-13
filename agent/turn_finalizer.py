@@ -284,6 +284,34 @@ def finalize_turn(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # Runtime guard: validate final text after existing response transforms and
+    # before downstream observers or delivery code consume it.
+    if final_response and not interrupted:
+        try:
+            from agent.runtime_guard import guarded_final_output_for_agent
+
+            _guarded_response = guarded_final_output_for_agent(agent, final_response)
+            if _guarded_response != final_response:
+                final_response = _guarded_response
+                _response_transformed = True
+        except Exception as exc:
+            logger.debug("runtime_guard final-output guard failed: %s", exc)
+            try:
+                from agent.runtime_guard_fallback import (
+                    runtime_guard_final_text_for_agent_guard_error,
+                )
+
+                _fallback_response = runtime_guard_final_text_for_agent_guard_error(
+                    agent,
+                    exc,
+                    guard_name="final_output",
+                )
+                if _fallback_response is not None:
+                    final_response = _fallback_response
+                    _response_transformed = True
+            except Exception:
+                pass
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync

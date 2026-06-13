@@ -4799,7 +4799,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
-    def format_message(self, content: str) -> str:
+    def format_message(self, content: str, *, rewrite_tables: bool = True) -> str:
         """
         Convert standard markdown to Telegram MarkdownV2 format.
 
@@ -4807,6 +4807,11 @@ class TelegramAdapter(BasePlatformAdapter):
         their contents are never modified.  Standard markdown constructs
         (headers, bold, italic, links) are translated to MarkdownV2 syntax,
         and all remaining special characters are escaped.
+
+        When *rewrite_tables* is True (the default), GFM pipe tables are
+        rewritten into Telegram-friendly bullet groups before escaping.
+        Set to False when the caller wants to preserve raw table syntax
+        (e.g. rich Telegram sends, standalone send_message tool).
         """
         if not content:
             return content
@@ -4825,7 +4830,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
         #    before the normal MarkdownV2 conversions run.
-        text = _wrap_markdown_tables(text)
+        if rewrite_tables:
+            text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.

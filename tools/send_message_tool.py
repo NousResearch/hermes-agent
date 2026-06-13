@@ -967,7 +967,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             try:
                 from gateway.platforms.telegram import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
-                formatted = _adapter.format_message(message)
+                formatted = _adapter.format_message(message, rewrite_tables=False)
             except Exception:
                 # Fallback: send as-is if formatting unavailable
                 formatted = message

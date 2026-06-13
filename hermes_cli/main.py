@@ -388,9 +388,25 @@ def _apply_profile_override() -> None:
             return None
         return None
 
+    def _inside_cron_edit(index: int) -> bool:
+        """True once argv reaches ``cron edit`` sub-subcommand.
+
+        ``cron edit`` has its own ``--profile`` argument that sets the job's
+        profile field — it does NOT mean "switch the active profile context".
+        So we must NOT consume ``--profile`` after ``cron edit``.
+        """
+        try:
+            cron_idx = argv.index("cron", 0, index)
+            argv.index("edit", cron_idx + 1, index)
+        except ValueError:
+            return False
+        return True
+
     # 1. Check for explicit -p / --profile flag. Historically this worked even
     # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
-    # The exception is command-argv passthrough regions such as `mcp add --args`.
+    # The exception is command-argv passthrough regions such as `mcp add --args`
+    # and ``cron edit`` which uses ``--profile`` as a job field.
+    # Exempt ``cron edit`` — ``--profile`` there sets the job's profile field.
     value_flags = {
         "-z", "--oneshot",
         "-m", "--model",
@@ -407,12 +423,15 @@ def _apply_profile_override() -> None:
             break
         if arg == "--args" and _inside_mcp_add_args(i):
             break
-        if arg in {"--profile", "-p"} and i + 1 < len(argv):
+        # Don't consume --profile after ``cron edit`` — it sets the job's
+        # profile field, not the active Hermes profile context.
+        if arg in {"--profile", "-p"} and i + 1 < len(argv) and not _inside_cron_edit(i):
             profile_name = argv[i + 1]
             consume = 2
             profile_index = i
             break
-        if arg.startswith("--profile="):
+        # Also handle ``--profile=value`` form — same cron edit exception.
+        if arg.startswith("--profile=") and not _inside_cron_edit(i):
             profile_name = arg.split("=", 1)[1]
             consume = 1
             profile_index = i

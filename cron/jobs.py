@@ -865,6 +865,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1016,6 +1017,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "profile": str(profile).strip() if isinstance(profile, str) and profile.strip() else None,
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
@@ -1113,6 +1115,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = _normalize_workdir(_wd)
 
             previous_inference_axes = _normalized_inference_axes(job)
+
+            # Normalize profile — empty string clears the field.
+            if "profile" in updates:
+                _p = updates["profile"]
+                updates["profile"] = str(_p).strip() if isinstance(_p, str) and _p.strip() else None
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(

@@ -140,6 +140,133 @@ class TestCronCommandLifecycle:
         assert "Deliver:   local" in out
 
 
+class TestCronEditProfile:
+    """Profile field on cron edit: create → set → verify → clear."""
+
+    def test_edit_sets_profile_on_job(self, tmp_cron_dir, capsys):
+        """``cron edit <id> --profile trading`` must persist profile in job record."""
+        job = create_job(prompt="Check status", schedule="every 1h")
+        assert job.get("profile") is None
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                script=None,
+                workdir=None,
+                no_agent=None,
+                profile="trading",
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Profile: trading" in out
+
+        updated = get_job(job["id"])
+        assert updated["profile"] == "trading"
+
+    def test_edit_clears_profile_with_empty_string(self, tmp_cron_dir, capsys):
+        """``cron edit <id> --profile \"\"`` must clear profile."""
+        job = create_job(prompt="Check status", schedule="every 1h", profile="trading")
+        assert job["profile"] == "trading"
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                script=None,
+                workdir=None,
+                no_agent=None,
+                profile="",
+            )
+        )
+        updated = get_job(job["id"])
+        assert updated.get("profile") is None
+
+    def test_list_shows_profile(self, tmp_cron_dir, capsys):
+        """``cron list`` must show profile field when present."""
+        create_job(prompt="P1", schedule="every 1h", profile="trading")
+        create_job(prompt="P2", schedule="every 2h", profile="research")
+        create_job(prompt="P3", schedule="every 3h")  # no profile
+
+        cron_command(Namespace(cron_command="list", all=True))
+        out = capsys.readouterr().out
+
+        assert "Profile:" in out
+        assert "trading" in out
+        assert "research" in out
+        assert out.count("Profile:") == 2
+
+
+class TestCronCreateProfile:
+    """Profile field on cron create."""
+
+    def test_create_with_profile(self, tmp_cron_dir, capsys):
+        """``cron create --profile trading`` must persist profile."""
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Trading check",
+                name="Trading Job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+                profile="trading",
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Profile: trading" in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["profile"] == "trading"
+
+    def test_create_without_profile_has_no_profile_field(self, tmp_cron_dir, capsys):
+        """Creating a job without ``--profile`` must not set profile."""
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Plain task",
+                name="Plain Job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+                profile=None,
+            )
+        )
+        out = capsys.readouterr().out
+        assert "Profile:" not in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].get("profile") is None
+
+
 class TestGatewayNotRunningWarning:
     """`cron create` / `cron list` must warn when the gateway (and thus the
     cron ticker) isn't running, since jobs only fire inside the gateway.
@@ -213,8 +340,6 @@ class TestExternalCronProviderStatus:
         monkeypatch.setattr(
             "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
         )
-        # Even with NO gateway process and NO ticker heartbeat, Chronos status
-        # must NOT report a stall / "not firing".
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="status"))
         out = capsys.readouterr().out
@@ -223,7 +348,6 @@ class TestExternalCronProviderStatus:
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
         assert "Gateway is not running" not in out
-        # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
     def test_status_unchanged_for_builtin(self, tmp_cron_dir, capsys, monkeypatch):
@@ -234,15 +358,12 @@ class TestExternalCronProviderStatus:
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="status"))
         out = capsys.readouterr().out
-        # Built-in path is the historical ticker-based report.
         assert "Gateway is not running" in out
         assert "managed scheduler" not in out
 
     def test_create_silent_for_chronos_even_without_gateway(
         self, tmp_cron_dir, capsys, monkeypatch
     ):
-        # The create-time "gateway not running" nag is a ticker-only concern;
-        # an external provider doesn't depend on a live in-process ticker.
         monkeypatch.setattr(
             "hermes_cli.cron._active_cron_provider_name", lambda: "chronos"
         )

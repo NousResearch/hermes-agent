@@ -320,6 +320,25 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_with_profile(self, tmp_cron_dir):
+        """create_job with profile must store it."""
+        job = create_job(prompt="Profile job", schedule="every 1h", profile="trading")
+        assert job["profile"] == "trading"
+        # Verify persisted to disk
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["profile"] == "trading"
+
+    def test_create_without_profile_has_no_profile(self, tmp_cron_dir):
+        """create_job without profile must not set profile."""
+        job = create_job(prompt="Noprofile job", schedule="every 1h")
+        assert job.get("profile") is None
+
+    def test_create_with_empty_profile_clears(self, tmp_cron_dir):
+        """create_job with empty string profile must store None."""
+        job = create_job(prompt="Empty profile", schedule="every 1h", profile="")
+        assert job.get("profile") is None
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -365,6 +384,40 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_profile(self, tmp_cron_dir):
+        """update_job can set profile."""
+        job = create_job(prompt="Profile job", schedule="every 1h")
+        assert job.get("profile") is None
+
+        updated = update_job(job["id"], {"profile": "trading"})
+        assert updated is not None
+        assert updated["profile"] == "trading"
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["profile"] == "trading"
+
+    def test_update_profile_clears_with_empty_string(self, tmp_cron_dir):
+        """update_job with empty string profile must clear it."""
+        job = create_job(prompt="Profile job", schedule="every 1h", profile="trading")
+        assert job["profile"] == "trading"
+
+        updated = update_job(job["id"], {"profile": ""})
+        assert updated is not None
+        assert updated.get("profile") is None
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched.get("profile") is None
+
+    def test_update_profile_preserves_other_fields(self, tmp_cron_dir):
+        """Setting profile must not clobber existing fields."""
+        job = create_job(prompt="Preserve check", schedule="every 1h", name="Keep Me")
+        updated = update_job(job["id"], {"profile": "research"})
+        assert updated["name"] == "Keep Me"
+        assert updated["prompt"] == "Preserve check"
+        assert updated["profile"] == "research"
 
     def test_update_rejects_id_change(self, tmp_cron_dir):
         """Job IDs are filesystem path components — must be immutable."""

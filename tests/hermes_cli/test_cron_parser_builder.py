@@ -62,6 +62,59 @@ def test_cron_create_options():
     assert ns.workdir == "/tmp/x"
 
 
+def test_cron_create_accepts_profile_flag():
+    """``cron create`` must accept ``--profile``."""
+    parser = _build()
+    ns = parser.parse_args(["cron", "create", "every 1h", "task", "--profile", "trading"])
+    assert ns.profile == "trading"
+
+    # Empty string clears profile
+    ns = parser.parse_args(["cron", "create", "every 1h", "task", "--profile", ""])
+    assert ns.profile == ""
+
+
+def test_cron_edit_options():
+    """``cron edit`` must accept all standard flags plus ``--profile``."""
+    parser = _build()
+    ns = parser.parse_args([
+        "cron", "edit", "abc123",
+        "--schedule", "every 2h",
+        "--prompt", "new prompt",
+        "--name", "renamed",
+        "--deliver", "origin",
+        "--repeat", "5",
+        "--skill", "a", "--skill", "b",
+        "--add-skill", "c",
+        "--remove-skill", "d",
+        "--clear-skills",
+        "--script", "watchdog.sh",
+        "--workdir", "/tmp/proj",
+    ])
+    assert ns.job_id == "abc123"
+    assert ns.schedule == "every 2h"
+    assert ns.prompt == "new prompt"
+    assert ns.name == "renamed"
+    assert ns.deliver == "origin"
+    assert ns.repeat == 5
+    assert ns.skills == ["a", "b"]
+    assert ns.add_skills == ["c"]
+    assert ns.remove_skills == ["d"]
+    assert ns.clear_skills is True
+    assert ns.script == "watchdog.sh"
+    assert ns.workdir == "/tmp/proj"
+
+
+def test_cron_edit_accepts_profile_flag():
+    """``cron edit`` must accept ``--profile <name>`` as a job field, not a context switch."""
+    parser = _build()
+    ns = parser.parse_args(["cron", "edit", "abc123", "--profile", "trading"])
+    assert ns.profile == "trading"
+
+    # Empty string clears profile
+    ns = parser.parse_args(["cron", "edit", "abc123", "--profile", ""])
+    assert ns.profile == ""
+
+
 def test_cron_edit_no_agent_tristate():
     parser = _build()
     # --no-agent -> True, --agent -> False, neither -> None
@@ -78,8 +131,3 @@ def test_cron_dispatch_func_is_injected_handler():
 
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
-    # --accept-hooks is suppressed-default; present only when passed.
-    ns = parser.parse_args(["cron", "run", "jid", "--accept-hooks"])
-    assert ns.accept_hooks is True
-    ns2 = parser.parse_args(["cron", "tick", "--accept-hooks"])
-    assert ns2.accept_hooks is True

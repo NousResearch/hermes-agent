@@ -8,9 +8,7 @@ reduce context_length to 200k and compress instead of retrying.
 Only Sonnet is affected — Opus 1M is general access.
 """
 
-import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------

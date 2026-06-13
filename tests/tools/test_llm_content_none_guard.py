@@ -12,7 +12,6 @@ reasoning fields when content is empty.
 
 import asyncio
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

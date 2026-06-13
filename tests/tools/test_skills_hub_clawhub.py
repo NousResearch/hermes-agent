@@ -298,6 +298,254 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNone(bundle)
         self.assertEqual(mock_get.call_count, 3)
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_search_empty_query_paginates_full_catalog(
+        self, mock_get, _mock_read_cache, _mock_write_cache
+    ):
+        """Empty query must walk the cursor-paginated catalog.
+
+        Regression for the silent 200-skill truncation: ClawHub's listing
+        endpoint caps any single page at 200 items + returns a `nextCursor`.
+        The build_skills_index.py crawler calls `search("", limit=N)` with a
+        large N to dump the full catalog. Before the fix, that hit a single
+        unpaginated request and silently dropped 99% of the catalog.
+        """
+        # Three pages: 200 + 200 + 50 items, then no cursor → stop.
+        page_calls = {"n": 0}
+        pages = [
+            {
+                "items": [{"slug": f"a-skill-{i}", "displayName": f"A {i}"} for i in range(200)],
+                "nextCursor": "cursor-page-2",
+            },
+            {
+                "items": [{"slug": f"b-skill-{i}", "displayName": f"B {i}"} for i in range(200)],
+                "nextCursor": "cursor-page-3",
+            },
+            {
+                "items": [{"slug": f"c-skill-{i}", "displayName": f"C {i}"} for i in range(50)],
+                "nextCursor": None,
+            },
+        ]
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                idx = page_calls["n"]
+                page_calls["n"] += 1
+                if idx < len(pages):
+                    return _MockResponse(status_code=200, json_data=pages[idx])
+                return _MockResponse(status_code=200, json_data={"items": []})
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        results = self.src.search("", limit=10_000)
+
+        # 200 + 200 + 50 = 450 unique skills, all retrieved via cursor pagination.
+        self.assertEqual(len(results), 450)
+        self.assertEqual(page_calls["n"], 3, "expected exactly 3 cursor-paginated pages")
+        identifiers = {meta.identifier for meta in results}
+        self.assertIn("a-skill-0", identifiers)
+        self.assertIn("b-skill-199", identifiers)
+        self.assertIn("c-skill-49", identifiers)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_catalog_walk_aborts_on_budget_and_does_not_poison_cache(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """A walk truncated by the wall-clock budget must stop early and must
+        NOT write the (partial) result to the cache. Before the budget guard
+        the walk ran up to 750 pages and cached unconditionally — a truncated
+        walk poisoned the cache with incomplete catalog data."""
+        page_calls = {"n": 0}
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                idx = page_calls["n"]
+                page_calls["n"] += 1
+                # Always advertise another page so the walk would never stop
+                # on its own — only the budget can break it.
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": f"skill-{idx}", "displayName": f"Skill {idx}"}
+                        ],
+                        "nextCursor": f"cursor-{idx + 1}",
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        # Force the deadline to be in the past immediately. Budget only applies
+        # to bounded browse walks (max_items > 0), not the index builder path.
+        with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
+            results = self.src._load_catalog_index(max_items=10)
+
+        # Walk broke well before the 750-page cap.
+        self.assertLess(page_calls["n"], 750)
+        # Truncated walk must not poison the cache.
+        mock_write_cache.assert_not_called()
+        # Whatever was gathered is still returned to the caller.
+        self.assertIsInstance(results, list)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_catalog_walk_caches_when_terminating_naturally_within_budget(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """Happy path: a walk that exhausts the cursor within the budget DOES
+        write the cache."""
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": "only-skill", "displayName": "Only Skill"}
+                        ],
+                        # No nextCursor -> natural termination.
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        results = self.src._load_catalog_index()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].identifier, "only-skill")
+        mock_write_cache.assert_called_once()
+
+
+class TestClawHubCatalogWalkBounded(unittest.TestCase):
+    """max_items bounds the walk so browse's cold-start fallback renders one
+    page without walking the entire 50k+ catalog. The offline index builder
+    keeps max_items=0 (unbounded) and walks to exhaustion."""
+
+    def setUp(self):
+        self.src = ClawHubSource()
+        self._safe_patcher = patch("tools.skills_hub.is_safe_url", return_value=True)
+        self._policy_patcher = patch("tools.skills_hub.check_website_access", return_value=None)
+        self._safe_patcher.start()
+        self._policy_patcher.start()
+
+    def tearDown(self):
+        self._policy_patcher.stop()
+        self._safe_patcher.stop()
+
+    def _infinite_pages(self, page_calls):
+        """A side_effect that always advertises another cursor — the walk would
+        never stop on its own, so only max_items / budget can break it."""
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                idx = page_calls["n"]
+                page_calls["n"] += 1
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": f"skill-{idx}", "displayName": f"Skill {idx}"}
+                        ],
+                        "nextCursor": f"cursor-{idx + 1}",
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        return side_effect
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_max_items_stops_walk_early_and_does_not_cache(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """A bounded walk stops as soon as it has >= max_items skills and must
+        NOT poison the shared full-catalog cache with the partial slice."""
+        page_calls = {"n": 0}
+        mock_get.side_effect = self._infinite_pages(page_calls)
+
+        results = self.src._load_catalog_index(max_items=5)
+
+        # Each mocked page yields exactly 1 item, so ~5 pages cover the bound.
+        self.assertGreaterEqual(len(results), 5)
+        self.assertLess(page_calls["n"], 750, "bounded walk should stop well before the cap")
+        self.assertLess(page_calls["n"], 20, "should stop within a few pages of the bound")
+        # Partial (bounded) walk must not be cached.
+        mock_write_cache.assert_not_called()
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_max_items_zero_ignores_wall_clock_budget(
+        self, mock_get, _mock_read_cache, _mock_write_cache
+    ):
+        """Index builder path (max_items=0) must not truncate on the browse budget."""
+        page_calls = {"n": 0}
+        mock_get.side_effect = self._infinite_pages(page_calls)
+
+        with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
+            results = self.src._load_catalog_index(max_items=0)
+
+        # No budget -> walks until the 750-page safety cap, not ~14 pages in 12s.
+        self.assertEqual(page_calls["n"], 750)
+        self.assertEqual(len(results), 750)
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_max_items_zero_is_unbounded_and_caches(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """max_items=0 (the index builder's path) walks to natural termination
+        and DOES cache the complete catalog."""
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": "a", "displayName": "A"},
+                            {"slug": "b", "displayName": "B"},
+                            {"slug": "c", "displayName": "C"},
+                        ],
+                        # No nextCursor -> natural termination.
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        results = self.src._load_catalog_index(max_items=0)
+
+        self.assertEqual(len(results), 3)
+        mock_write_cache.assert_called_once()
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_empty_query_browse_bounds_walk_to_limit(
+        self, mock_get, _mock_read_cache, _mock_write_cache
+    ):
+        """search("", limit=N) is the browse cold-start path — it must bound the
+        catalog walk to N rather than walking the whole 50k+ catalog."""
+        page_calls = {"n": 0}
+        mock_get.side_effect = self._infinite_pages(page_calls)
+
+        results = self.src.search("", limit=10)
+
+        self.assertEqual(len(results), 10, "browse page should be exactly `limit` items")
+        # Walk stopped near the bound, not at the 750-page cap.
+        self.assertLess(page_calls["n"], 30)
+
 
 if __name__ == "__main__":
     unittest.main()

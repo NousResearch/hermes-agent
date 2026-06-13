@@ -219,12 +219,23 @@ gateway:
 
   resume:
     db_unavailable:        "会话数据库不可用。"
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "未找到已命名的会话。\n使用 `/title 我的会话` 为当前会话命名，然后用 `/resume 我的会话` 返回。"
     list_header:           "📋 **已命名会话**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\n用法：`/resume <会话名称>`"
+    list_footer_numbered:  "\n用法：`/resume <会话名称>` 或 `/resume <编号>`（例如，`/resume 1` 表示最近的会话）"
     list_failed:           "无法列出会话：{error}"
+    out_of_range:          "恢复索引 {index} 超出范围。\n请使用不带参数的 `/resume` 查看可用会话。"
     not_found:             "未找到匹配 '**{name}**' 的会话。\n使用不带参数的 `/resume` 查看可用会话。"
     already_on:            "📌 已在会话 **{name}** 上。"
     switch_failed:         "切换会话失败。"
@@ -248,6 +259,12 @@ gateway:
 
   status:
     header:                "📊 **Hermes 网关状态**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**会话 ID：** `{session_id}`"
     title:                 "**标题：** {title}"
     created:               "**创建时间：** {timestamp}"
@@ -287,7 +304,8 @@ gateway:
 
   undo:
     nothing:               "没有可撤销的内容。"
-    removed:               "↩️ 已撤销 {count} 条消息。\n已移除：「{preview}」"
+    removed:               "↩️ 已撤销 {turns} 个回合（{count} 条消息）。\n已备份到：「{preview}」\n复制/编辑上面的文本并发送，即可从此处重新提问。"
+    invalid_count:         "无效的数量「{arg}」—— 请使用 /undo 或 /undo N。"
 
   update:
     platform_not_messaging:  "✗ /update 仅在消息平台可用。请在终端运行 `hermes update`。"
@@ -316,6 +334,9 @@ gateway:
     detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
     no_data:                  "此会话暂无使用数据。"
 
+  credits:
+    not_logged_in:            "未登录 Nous Portal。登录后即可查看额度余额并充值。"
+
   verbose:
     not_enabled:           "`/verbose` 命令未在消息平台启用。\n\n请在 `config.yaml` 中启用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ 工具进度：**OFF** — 不显示任何工具活动。"
@@ -339,6 +360,8 @@ gateway:
     label_off:             "关闭（仅文本）"
     label_voice_only:      "开启（仅对语音消息进行语音回复）"
     label_all:             "TTS（对所有消息进行语音回复）"
+    help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 当你发送语音消息时用语音回复\n• `/voice tts` — 对*每条*消息都用语音回复\n• `/voice off` — 恢复为纯文本回复\n• `/voice status` — 显示当前模式\n• `/voice`（无参数）— 在开启和关闭之间快速切换{channels}"
+    help_channels:         "\n\n**实时语音频道 (Discord)**\n• 先加入一个语音频道，然后 `/voice channel` — 我会加入、聆听并用语音回复\n• `/voice leave` — 断开语音频道"
 
   yolo:
     disabled:                   "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"

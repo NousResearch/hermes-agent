@@ -24,6 +24,10 @@ That's it. `coder` is now its own Hermes profile with its own config, memory, an
 
 ## Creating a profile
 
+:::tip
+Quickest setup: run `hermes setup --portal` inside the new profile to wire up models + tools at once. See [Nous Portal](/integrations/nous-portal).
+:::
+
 ### Blank profile
 
 ```bash
@@ -54,7 +58,7 @@ Copies your current profile's `config.yaml`, `.env`, and `SOUL.md` into the new 
 hermes profile create backup --clone-all
 ```
 
-Copies **everything** — config, API keys, personality, all memories, full session history, skills, cron jobs, plugins. A complete snapshot. Useful for backups or forking an agent that already has context.
+Copies **everything** — config, API keys, personality, all memories, skills, cron jobs, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. For a full backup including history, use `hermes profile export` or `hermes backup` instead.
 
 ### Clone from a specific profile
 
@@ -172,6 +176,10 @@ assistant gateway install     # creates hermes-gateway-assistant service
 
 Each profile gets its own service name. They run independently.
 
+:::note Inside the official Docker image
+Per-profile gateways are supervised by [s6-overlay](https://github.com/just-containers/s6-overlay) (PID 1 in the container), so `hermes profile create <name>` automatically registers an s6 service slot at `/run/service/gateway-<name>/`. `hermes -p <name> gateway start/stop/restart` dispatches to `s6-svc` instead of spawning a bare process — crashes are auto-restarted and `docker restart` preserves the previously-running set of gateways. See [Per-profile gateway supervision](/user-guide/docker#per-profile-gateway-supervision) for details.
+:::
+
 ## Configuring profiles
 
 Each profile has its own:
@@ -190,6 +198,20 @@ If you want this profile to work in a specific project by default, also set its 
 ```bash
 coder config set terminal.cwd /absolute/path/to/project
 ```
+
+### From the dashboard
+
+The [web dashboard](features/web-dashboard.md#managing-multiple-profiles)
+is a machine-level surface that can manage **any** profile's config, API
+keys, skills, MCPs, and model via the profile switcher in its sidebar — no
+per-profile dashboard needed. `coder dashboard` routes to the machine
+dashboard with the `coder` profile preselected. The dashboard's Chat tab
+also follows the switcher, spawning a conversation under the selected
+profile's home.
+
+Note: "Set as active" on the dashboard's Profiles page is the sticky
+default for **future CLI/gateway runs** (same as `hermes profile use`) —
+to edit a profile from the dashboard, use the switcher instead.
 
 ## Updating
 

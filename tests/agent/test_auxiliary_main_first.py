@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
@@ -161,6 +160,35 @@ class TestResolveAutoMainFirst:
         # Runtime override wins
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
+
+    def test_runtime_base_url_passed_for_named_api_key_provider(self):
+        """Named API-key providers inherit the live session endpoint for aux work."""
+        token_plan_url = "https://token-plan-sgp.xiaomimimo.com/v1"
+        with patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="openrouter",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="config-model",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_resolve.return_value = (MagicMock(), "mimo-v2.5-pro")
+
+            from agent.auxiliary_client import _resolve_auto
+
+            _resolve_auto(main_runtime={
+                "provider": "xiaomi",
+                "model": "mimo-v2.5-pro",
+                "base_url": token_plan_url,
+                "api_key": "tp-test-key",
+                "api_mode": "chat_completions",
+            })
+
+        assert mock_resolve.call_args.args[0] == "xiaomi"
+        assert mock_resolve.call_args.args[1] == "mimo-v2.5-pro"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] == token_plan_url
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == "tp-test-key"
+        assert mock_resolve.call_args.kwargs["api_mode"] == "chat_completions"
 
 
 # ── Vision — resolve_vision_provider_client ─────────────────────────────────

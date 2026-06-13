@@ -154,7 +154,33 @@ class TestCliApprovalUi:
         assert "Dangerous Command" not in lines[0]
         assert any("Dangerous Command" in line for line in lines[1:3])
         assert "Show full command" in rendered
-        assert "githubcli-archive-keyring.gpg" not in rendered
+        assert "githubcli-archive-" in rendered
+        assert "keyring.gpg" in rendered
+        assert "status=progress" in rendered
+
+    def test_approval_display_wraps_preview_hint_on_narrow_terminal(self):
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "sudo " + ("very-long-command-segment-" * 8),
+            "description": "shell command via -c/-lc flag",
+            "choices": ["once", "session", "always", "deny", "view"],
+            "selected": 0,
+            "response_queue": queue.Queue(),
+        }
+
+        import shutil as _shutil
+
+        with patch("cli.shutil.get_terminal_size",
+                   return_value=_shutil.os.terminal_size((30, 24))):
+            fragments = cli._get_approval_display_fragments()
+
+        rendered = "".join(text for _style, text in fragments)
+        lines = rendered.splitlines()
+        border_width = len(lines[0])
+
+        assert "Show full" in rendered
+        assert "command)" in rendered
+        assert all(len(line) == border_width for line in lines)
 
     def test_approval_display_shows_full_command_after_view(self):
         cli = _make_cli_stub()
@@ -339,6 +365,123 @@ class TestCliApprovalUi:
         assert not cli._background_tasks
 
 
+def _make_real_paint_cli_stub():
+    """A stub whose modal repaint path runs the REAL _paint_now / _invalidate.
+
+    Both gates are set adversarially: _resize_recovery_pending=True and a recent
+    _last_invalidate inside the throttle window. A throttled _invalidate() would
+    be dropped under these conditions — _paint_now must paint regardless.
+    """
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._approval_state = None
+    cli._approval_deadline = 0
+    cli._approval_lock = threading.Lock()
+    cli._sudo_state = None
+    cli._sudo_deadline = 0
+    cli._clarify_state = None
+    cli._clarify_freetext = False
+    cli._clarify_deadline = 0
+    cli._modal_input_snapshot = None
+    # Real methods, not mocks.
+    cli._paint_now = HermesCLI._paint_now.__get__(cli, HermesCLI)
+    cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)
+    cli._resize_recovery_pending = True       # gate 1: resize in flight
+    cli._last_invalidate = time.monotonic()   # gate 2: inside throttle window
+    cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
+    return cli
+
+
+class TestModalPaintNow:
+    """Regression for #41098 — modal prompts must paint immediately.
+
+    The dangerous-command approval, clarify, and sudo prompts run their wait
+    loop on a background thread, set modal state a ConditionalContainer reads,
+    then must repaint so the panel becomes visible. They used the throttled
+    _invalidate(), whose paint is silently dropped on a 250ms window collision
+    or while a resize is pending — so the prompt timed out unseen. They now use
+    _paint_now(), which paints directly like the modal key-binding handlers.
+    """
+
+    def test_paint_now_bypasses_throttle_and_resize_guard(self):
+        cli = _make_real_paint_cli_stub()
+        # A bare _invalidate() is suppressed under both gates...
+        cli._invalidate()
+        assert not cli._app.invalidate.called
+        # ...but _paint_now() always paints.
+        cli._paint_now()
+        assert cli._app.invalidate.called
+
+    def test_paint_now_no_app_is_safe(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._app = None
+        cli._paint_now()  # must not raise
+
+    def _drive(self, cli, target, state_attr):
+        result = {}
+
+        def _run():
+            result["value"] = target()
+
+        with patch.object(cli_module, "_cprint"):
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            deadline = time.time() + 2
+            while getattr(cli, state_attr) is None and time.time() < deadline:
+                time.sleep(0.01)
+            assert getattr(cli, state_attr) is not None
+            assert cli._app.invalidate.called, (
+                f"{state_attr} panel was not painted despite throttle + resize gates"
+            )
+            # Reset so we can prove the response-received teardown also repaints
+            # (the panel must clear at once, not be held by the throttle).
+            cli._app.invalidate.reset_mock()
+            getattr(cli, state_attr)["response_queue"].put(
+                "deny" if state_attr == "_approval_state" else
+                ("a" if state_attr == "_clarify_state" else "pw")
+            )
+            thread.join(timeout=2)
+            # clarify returns immediately on a response (no teardown repaint);
+            # approval and sudo repaint to tear the panel down.
+            if state_attr != "_clarify_state":
+                assert cli._app.invalidate.called, (
+                    f"{state_attr} panel was not repainted on teardown"
+                )
+        assert not thread.is_alive()
+        return result["value"]
+
+    def test_approval_prompt_paints_under_both_gates(self):
+        cli = _make_real_paint_cli_stub()
+        value = self._drive(
+            cli, lambda: cli._approval_callback("rm -rf /tmp/scratch", "danger"),
+            "_approval_state",
+        )
+        assert value == "deny"
+
+    def test_clarify_prompt_paints_under_both_gates(self):
+        cli = _make_real_paint_cli_stub()
+        value = self._drive(
+            cli, lambda: cli._clarify_callback("Pick one", ["a", "b"]),
+            "_clarify_state",
+        )
+        assert value == "a"
+
+    def test_sudo_prompt_paints_under_both_gates(self):
+        cli = _make_real_paint_cli_stub()
+        value = self._drive(cli, cli._sudo_password_callback, "_sudo_state")
+        assert value == "pw"
+
+    def test_secret_response_teardown_paints(self):
+        """_submit_secret_response tears the secret panel down via _paint_now,
+        so the panel clears immediately rather than being held by the throttle."""
+        cli = _make_real_paint_cli_stub()
+        cli._secret_state = {"response_queue": queue.Queue()}
+        cli._secret_deadline = 0
+        cli._submit_secret_response("hunter2")
+        assert cli._secret_state is None
+        assert cli._app.invalidate.called
+        assert cli._secret_state is None  # cleared
+
+
 class TestApprovalCallbackThreadLocalWiring:
     """Regression guard for the thread-local callback freeze (#13617 / #13618).
 
@@ -422,3 +565,80 @@ class TestApprovalCallbackThreadLocalWiring:
         # would hold a stale reference to a disposed CLI instance.
         assert seen["approval_after"] is None
         assert seen["sudo_after"] is None
+
+
+class TestPersistPromptSummary:
+    """display.persist_prompts — one-line scrollback record of resolved modals."""
+
+    def _resolve_approval(self, cli, answer, command="rm -rf /tmp/scratch"):
+        result = {}
+
+        def _run():
+            result["value"] = cli._approval_callback(command, "danger")
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        deadline = time.time() + 2
+        while cli._approval_state is None and time.time() < deadline:
+            time.sleep(0.01)
+        cli._approval_state["response_queue"].put(answer)
+        t.join(timeout=2)
+        return result["value"]
+
+    def test_approval_resolution_prints_summary_line(self):
+        cli = _make_cli_stub()
+        printed = []
+        with patch.object(cli_module, "_cprint", printed.append):
+            verdict = self._resolve_approval(cli, "session")
+        assert verdict == "session"
+        summary = "\n".join(printed)
+        assert "Approval" in summary
+        assert "rm -rf /tmp/scratch" in summary
+        assert "allowed for session" in summary
+
+    def test_approval_summary_truncates_long_command(self):
+        cli = _make_cli_stub()
+        printed = []
+        long_cmd = "sudo " + ("x" * 300)
+        with patch.object(cli_module, "_cprint", printed.append):
+            self._resolve_approval(cli, "deny", command=long_cmd)
+        summary = "\n".join(printed)
+        assert "denied" in summary
+        assert "…" in summary
+        # The raw 300-char tail must not be dumped wholesale.
+        assert "x" * 200 not in summary
+
+    def test_persist_prompts_false_suppresses_summary(self):
+        cli = _make_cli_stub()
+        printed = []
+        with patch.dict(cli_module.CLI_CONFIG.get("display", {}), {"persist_prompts": False}), \
+             patch.object(cli_module, "_cprint", printed.append):
+            verdict = self._resolve_approval(cli, "once")
+        assert verdict == "once"
+        assert not any("Approval" in p for p in printed)
+
+    def test_clarify_resolution_prints_summary_line(self):
+        cli = _make_cli_stub()
+        cli._clarify_state = None
+        cli._clarify_freetext = False
+        cli._clarify_deadline = 0
+        printed = []
+        result = {}
+
+        def _run():
+            result["value"] = cli._clarify_callback("Pick a path?", ["A", "B"])
+
+        with patch.object(cli_module, "_cprint", printed.append):
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            deadline = time.time() + 2
+            while cli._clarify_state is None and time.time() < deadline:
+                time.sleep(0.01)
+            cli._clarify_state["response_queue"].put("B")
+            t.join(timeout=2)
+
+        assert result["value"] == "B"
+        summary = "\n".join(printed)
+        assert "Clarify" in summary
+        assert "Pick a path?" in summary
+        assert "B" in summary

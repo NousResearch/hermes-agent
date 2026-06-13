@@ -104,7 +104,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
 
         <span className="font-mono font-medium shrink-0">{tool.name}</span>
 
-        <span className="font-mono text-muted-foreground/80 truncate min-w-0 flex-1">
+        <span className="font-mono text-text-secondary truncate min-w-0 flex-1">
           {tool.context ?? ""}
         </span>
 
@@ -128,7 +128,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
         )}
 
         {elapsed && (
-          <span className="font-mono text-[0.65rem] text-muted-foreground tabular-nums shrink-0">
+          <span className="font-mono text-xs text-text-tertiary tabular-nums shrink-0">
             {elapsed}
           </span>
         )}
@@ -186,8 +186,8 @@ function Section({
   return (
     <div className="flex gap-3">
       <span
-        className={`uppercase tracking-wider text-[0.6rem] shrink-0 w-14 pt-0.5 ${
-          tone === "error" ? "text-destructive/80" : "text-muted-foreground/60"
+        className={`text-display font-mondwest tracking-wider text-xs shrink-0 w-20 pt-0.5 ${
+          tone === "error" ? "text-destructive" : "text-text-tertiary"
         }`}
       >
         {label}
@@ -220,9 +220,9 @@ function colorizeDiff(diff: string): React.ReactNode {
 
 function diffLineClass(line: string): string {
   if (line.startsWith("+") && !line.startsWith("+++"))
-    return "text-emerald-500 dark:text-emerald-400";
+    return "text-success";
   if (line.startsWith("-") && !line.startsWith("---"))
     return "text-destructive";
   if (line.startsWith("@@")) return "text-primary";
-  return "text-muted-foreground/80";
+  return "text-text-secondary";
 }

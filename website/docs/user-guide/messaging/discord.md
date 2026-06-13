@@ -680,8 +680,39 @@ Hermes Agent supports Discord voice messages:
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
 
 For the full setup and operational guide, see:
-- [Voice Mode](/docs/user-guide/features/voice-mode)
-- [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes)
+- [Voice Mode](/user-guide/features/voice-mode)
+- [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
+
+### Voice Channel Audio Effects (ambient + verbal acks)
+
+When the bot is in a voice channel, you can give it a more conversational feel: a short verbal acknowledgement ("let me look into that") before it starts working, and a subtle ambient "thinking" bed that plays underneath while tools run — the speech ducks the ambient down and swells it back when finished, similar to Grok voice mode.
+
+discord.py plays only one audio stream per connection, so Hermes installs a software mixer on the outgoing stream that sums an ambient loop, acknowledgements, and TTS replies into that single stream — they overlap instead of cutting each other off.
+
+This is **off by default**. Enable it in `config.yaml`:
+
+```yaml
+discord:
+  voice_fx:
+    enabled: true          # master switch
+    ambient_enabled: true  # idle "thinking" bed while tools run
+    ambient_path: ""       # custom loop file (any audio format); "" = built-in synthesised pad
+    ambient_gain: 0.18     # idle bed loudness (0.0–1.0)
+    duck_gain: 0.06        # ambient loudness while the bot is speaking
+    speech_gain: 1.0       # TTS / acknowledgement loudness
+    ack_enabled: true      # speak a short phrase before the first tool call of a turn
+    ack_phrases:           # picked at random; set to [] to disable the spoken ack
+      - "Let me look into that."
+      - "One moment."
+      - "Checking on that now."
+```
+
+Notes:
+- The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
+- `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
+- All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.
+- When `voice_fx.enabled` is `false`, voice playback uses the original one-shot path and nothing changes.
+
 
 ## Forum Channels
 

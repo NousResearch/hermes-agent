@@ -3,7 +3,6 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -26,9 +25,9 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    Platform,
     SessionSource,
     build_session_key,
 )
@@ -65,8 +64,11 @@ def _make_runner():
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
     runner._draining = False
+    runner._busy_text_mode = "interrupt"
     runner.adapters = {}
     runner.config = MagicMock()
+    runner.config.group_sessions_per_user = True
+    runner.config.thread_sessions_per_user = False
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -84,6 +86,8 @@ def _make_adapter(platform_val="telegram"):
     adapter.config = MagicMock()
     adapter.config.extra = {}
     adapter.platform = MagicMock(value=platform_val)
+    adapter._text_debounce = {}
+    adapter._busy_text_debounce_seconds = 0.6
     return adapter
 
 
@@ -117,6 +121,55 @@ class TestBusySessionAck:
         assert adapter._pending_messages[sk] is event
         assert sk not in runner._pending_messages
         running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
+        """Rapid Telegram text follow-ups in queue mode must not merge."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="user1",
+        )
+        sk = build_session_key(source)
+        runner.adapters[source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "seconds_since_activity": 0.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+
+        events = [
+            MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=f"m-{idx}",
+            )
+            for idx, text in enumerate(("first", "second", "third"), start=1)
+        ]
+
+        for event in events:
+            result = await GatewayRunner._handle_message(runner, event)
+            assert result is None
+
+        assert adapter._pending_messages[sk].text == "first"
+        assert [event.text for event in runner._queued_events[sk]] == [
+            "second",
+            "third",
+        ]
+        agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
@@ -185,6 +238,32 @@ class TestBusySessionAck:
         assert "Queued for the next turn" in content
         assert "respond once the current task finishes" in content
         assert "Interrupting" not in content
+
+    @pytest.mark.asyncio
+    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
+        """busy_text_mode=queue lets the adapter debounce text silently."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._busy_text_mode = "queue"
+        adapter = _make_adapter()
+
+        first = _make_event(text="part one")
+        second = _make_event(text="part two")
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[first.source.platform] = adapter
+        runner.adapters[second.source.platform] = adapter
+
+        result1 = await runner._handle_active_session_busy_message(first, sk)
+        result2 = await runner._handle_active_session_busy_message(second, sk)
+
+        assert result1 is False
+        assert result2 is False
+        assert sk not in adapter._pending_messages
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
@@ -349,8 +428,15 @@ class TestBusySessionAck:
         assert adapter._send_with_retry.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_includes_status_detail(self):
+    async def test_includes_status_detail_when_opted_in(self, monkeypatch):
         """Ack message should include iteration and tool info when available."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(
+            _gr,
+            "_load_gateway_config",
+            lambda: {"display": {"platforms": {"telegram": {"busy_ack_detail": True}}}},
+        )
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
@@ -378,6 +464,37 @@ class TestBusySessionAck:
         assert "21/60" in content  # iteration
         assert "terminal" in content  # current tool
         assert "10 min" in content  # elapsed
+
+    @pytest.mark.asyncio
+    async def test_telegram_omits_status_detail_by_default(self):
+        """Telegram busy acks stay concise unless busy_ack_detail is enabled."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="yo")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 21,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "terminal",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 600
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Interrupting current task" in content
+        assert "21/60" not in content
+        assert "terminal" not in content
+        assert "10 min" not in content
 
     @pytest.mark.asyncio
     async def test_draining_still_works(self):

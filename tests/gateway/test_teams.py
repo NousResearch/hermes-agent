@@ -1,13 +1,10 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
-import asyncio
 import json
-import os
 import sys
 import types
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -714,6 +711,152 @@ class TestTeamsMessageHandling:
         await adapter._on_message(ctx)
 
         assert adapter.handle_message.await_count == 1
+
+
+class TestTeamsAttachmentClassification:
+    """Document attachments must set MessageType.DOCUMENT so run.py's
+    document-context injection surfaces the cached file to the agent
+    (same bug class as Signal/Email/SimpleX, PR #44695)."""
+
+    def _make_adapter(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+        return adapter
+
+    def _make_activity(self, attachments, text="see attached"):
+        activity = MagicMock()
+        activity.text = text
+        activity.id = "activity-att-001"
+        activity.from_ = MagicMock()
+        activity.from_.id = "user-123"
+        activity.from_.aad_object_id = "aad-456"
+        activity.from_.name = "Test User"
+        activity.conversation = MagicMock()
+        activity.conversation.id = "19:abc@thread.v2"
+        activity.conversation.conversation_type = "personal"
+        activity.conversation.name = "Test Chat"
+        activity.conversation.tenant_id = "tenant-789"
+        activity.attachments = attachments
+        return activity
+
+    def _make_ctx(self, activity):
+        ctx = MagicMock()
+        ctx.activity = activity
+        return ctx
+
+    def _file_download_attachment(self, name="report.pdf", file_type="pdf"):
+        att = MagicMock()
+        att.content_type = "application/vnd.microsoft.teams.file.download.info"
+        att.content_url = None
+        att.name = name
+        att.content = {
+            "downloadUrl": "https://contoso.sharepoint.com/download/x",
+            "fileType": file_type,
+        }
+        return att
+
+    def _image_attachment(self):
+        att = MagicMock()
+        att.content_type = "image/png"
+        att.content_url = "https://smba.example.com/img.png"
+        att.name = "img.png"
+        return att
+
+    def _html_body_attachment(self):
+        # Teams mirrors the message body as a text/html attachment
+        att = MagicMock()
+        att.content_type = "text/html"
+        att.content_url = None
+        att.name = ""
+        return att
+
+    @pytest.mark.anyio
+    async def test_file_download_info_sets_document_type(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+
+        activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "Documents must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/pdf"]
+
+    @pytest.mark.anyio
+    async def test_mixed_image_and_document_prefers_document(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(return_value=b"%PDF-1.4 fake")
+
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.png"
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
+            activity = self._make_activity([
+                self._image_attachment(),
+                self._file_download_attachment(),
+            ])
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 2
+
+    @pytest.mark.anyio
+    async def test_html_body_attachment_stays_text(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        activity = self._make_activity([self._html_body_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
+
+    @pytest.mark.anyio
+    async def test_image_only_still_photo(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+
+        async def fake_cache_image(url, *a, **kw):
+            return "/tmp/img.png"
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_teams_mod, "cache_image_from_url", fake_cache_image)
+            activity = self._make_activity([self._image_attachment()])
+            await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/img.png"]
+
+    @pytest.mark.anyio
+    async def test_download_failure_degrades_to_text(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._make_adapter()
+        adapter._fetch_attachment_bytes = AsyncMock(side_effect=Exception("boom"))
+
+        activity = self._make_activity([self._file_download_attachment()])
+        await adapter._on_message(self._make_ctx(activity))
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.TEXT
+        assert event.media_urls == []
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────

@@ -7,11 +7,7 @@ nothing after the colon, making debugging impossible.
 Fix: ``_exc_str()`` falls back to ``repr(exc)`` when ``str(exc)`` is empty.
 """
 
-import json
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
-import pytest
 
 from tools.mcp_tool import _exc_str, _sanitize_error
 

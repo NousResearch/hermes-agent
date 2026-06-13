@@ -11,7 +11,6 @@ dispatcher like Telegram — the auth + resolution path is the same:
   · already-resolved or unauthorized → ephemeral "this prompt..." reply
 """
 
-import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +25,7 @@ if _repo not in sys.path:
 
 # Triggers the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
-from gateway.platforms.discord import (  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
     ClarifyChoiceView,
     DiscordAdapter,
 )
@@ -170,13 +169,12 @@ class TestClarifyChoiceResolve:
     async def test_choice_falls_back_to_label_text_when_entry_missing(self):
         """If the gateway entry vanished (race / stale view), the button's
         own choice text is used as the response."""
-        from tools import clarify_gateway as cm
         # Note: no cm.register() — entry intentionally absent
 
         view = ClarifyChoiceView(
             choices=["alpha"],
             clarify_id="cidGone",
-            allowed_user_ids=set(),
+            allowed_user_ids={"42"},  # matches _make_interaction's user; empty = fail-closed
         )
         interaction = _make_interaction()
         # Doesn't raise; resolve_gateway_clarify returns False quietly
@@ -247,7 +245,7 @@ class TestClarifyOtherButton:
         view = ClarifyChoiceView(
             choices=["x", "y"],
             clarify_id="cidD",
-            allowed_user_ids=set(),
+            allowed_user_ids={"42"},  # matches _make_interaction's user; empty = fail-closed
         )
 
         interaction = _make_interaction()

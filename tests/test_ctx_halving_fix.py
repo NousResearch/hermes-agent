@@ -25,7 +25,7 @@ separate.
 
 import sys
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -360,3 +360,57 @@ class TestContextNotHalvedOnOutputCapError:
         available_out = parse_available_output_tokens_from_error(error_msg)
         safe_out = max(1, available_out - 64)
         assert safe_out == 1
+
+
+# ---------------------------------------------------------------------------
+# Proactive compression threshold reserves the outgoing output-token budget
+# ---------------------------------------------------------------------------
+
+
+class TestOutputReservationAwareCompressionThreshold:
+    """Proactive compaction must leave room for max_tokens in the same window."""
+
+    def test_output_reservation_reduces_threshold_without_minimum_floor(self):
+        from agent.context_compressor import ContextCompressor
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=131_072):
+            compressor = ContextCompressor(
+                model="local/gemma",
+                quiet_mode=True,
+                threshold_percent=0.50,
+                output_reservation_tokens=65_536,
+            )
+
+        assert compressor.context_length == 131_072
+        assert compressor.output_reservation_tokens == 65_536
+        assert compressor.threshold_tokens == 32_768
+        assert compressor.should_compress(43_089) is True
+
+    def test_custom_provider_default_max_tokens_updates_compressor_threshold(self):
+        from agent.context_compressor import ContextCompressor
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        agent.model = "local/gemma"
+        agent.provider = "custom"
+        agent.base_url = "http://localhost:8000/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "chat_completions"
+        agent.max_tokens = None
+        agent.request_overrides = {}
+        agent._ephemeral_max_output_tokens = None
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=131_072):
+            agent.context_compressor = ContextCompressor(
+                model=agent.model,
+                provider=agent.provider,
+                base_url=agent.base_url,
+                quiet_mode=True,
+                threshold_percent=0.50,
+            )
+
+        output_reservation = agent._sync_context_compressor_output_reservation()
+
+        assert output_reservation == 65_536
+        assert agent.context_compressor.output_reservation_tokens == 65_536
+        assert agent.context_compressor.threshold_tokens == 32_768

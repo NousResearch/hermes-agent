@@ -640,6 +640,48 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
 
+    @staticmethod
+    def _coerce_output_reservation_tokens(value: Any) -> int:
+        """Return a positive output-token reservation, or 0 when unset."""
+        if isinstance(value, bool):
+            return 0
+        try:
+            coerced = int(value)
+        except (OverflowError, TypeError, ValueError):
+            return 0
+        return max(coerced, 0)
+
+    def _calculate_threshold_tokens(self) -> int:
+        """Calculate the prompt-token threshold for proactive compression."""
+        context_length = max(int(self.context_length or 0), 1)
+        output_reservation = self._coerce_output_reservation_tokens(
+            getattr(self, "output_reservation_tokens", 0)
+        )
+        if output_reservation > 0:
+            input_budget = max(context_length - output_reservation, 1)
+            return max(int(input_budget * self.threshold_percent), 1)
+        return max(
+            int(context_length * self.threshold_percent),
+            MINIMUM_CONTEXT_LENGTH,
+        )
+
+    def _recalculate_token_budgets(self) -> None:
+        self.threshold_tokens = self._calculate_threshold_tokens()
+        self.tail_token_budget = int(
+            self.threshold_tokens * self.summary_target_ratio
+        )
+        self.max_summary_tokens = min(
+            int(max(int(self.context_length or 0), 1) * 0.05),
+            _SUMMARY_TOKENS_CEILING,
+        )
+
+    def set_output_reservation_tokens(self, output_reservation_tokens: int) -> None:
+        """Update reserved response-token budget and derived thresholds."""
+        self.output_reservation_tokens = self._coerce_output_reservation_tokens(
+            output_reservation_tokens
+        )
+        self._recalculate_token_budgets()
+
     def update_model(
         self,
         model: str,
@@ -656,17 +698,10 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
+
+        self._recalculate_token_budgets()
 
     def __init__(
         self,
@@ -683,6 +718,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        output_reservation_tokens: int = 0,
     ):
         self.model = model
         self.base_url = base_url
@@ -705,30 +741,22 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
+        self.output_reservation_tokens = self._coerce_output_reservation_tokens(
+            output_reservation_tokens
         )
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
+        self._recalculate_token_budgets()
 
         if not quiet_mode:
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
+                "threshold=%d (%.0f%%) output_reservation=%d "
+                "target_ratio=%.0f%% tail_budget=%d provider=%s base_url=%s",
                 model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
+                threshold_percent * 100, self.output_reservation_tokens,
+                self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )

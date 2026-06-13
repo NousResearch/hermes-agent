@@ -1289,6 +1289,102 @@ class AIAgent:
                 return value
         return None
 
+    @staticmethod
+    def _positive_output_token_cap(value: Any) -> Optional[int]:
+        """Return a positive integer output cap, or None when unset."""
+        if isinstance(value, bool):
+            return None
+        try:
+            cap = int(value)
+        except (OverflowError, TypeError, ValueError):
+            return None
+        return cap if cap > 0 else None
+
+    def _resolved_output_reservation_tokens(self) -> int:
+        """Resolve the response-token budget the next request will reserve."""
+        override_cap = self._requested_output_cap_from_api_kwargs(
+            getattr(self, "request_overrides", None)
+        )
+        if override_cap is not None:
+            return override_cap
+
+        ephemeral_cap = self._positive_output_token_cap(
+            getattr(self, "_ephemeral_max_output_tokens", None)
+        )
+        if ephemeral_cap is not None:
+            return ephemeral_cap
+
+        user_cap = self._positive_output_token_cap(getattr(self, "max_tokens", None))
+        if user_cap is not None:
+            return user_cap
+
+        api_mode = (getattr(self, "api_mode", "") or "").strip().lower()
+        model = getattr(self, "model", "") or ""
+        if api_mode == "anthropic_messages":
+            try:
+                from agent.anthropic_adapter import _resolve_anthropic_messages_max_tokens
+
+                cap = _resolve_anthropic_messages_max_tokens(
+                    None,
+                    model,
+                    context_length=getattr(
+                        getattr(self, "context_compressor", None),
+                        "context_length",
+                        None,
+                    ),
+                )
+                context_length = getattr(
+                    getattr(self, "context_compressor", None),
+                    "context_length",
+                    None,
+                )
+                if context_length and cap >= context_length:
+                    cap = max(int(context_length) - 1, 1)
+                return cap
+            except Exception:
+                return 0
+
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(getattr(self, "provider", ""))
+        except Exception:
+            profile = None
+        if profile is not None:
+            profile_cap = self._positive_output_token_cap(
+                profile.get_max_tokens(model)
+            )
+            if profile_cap is not None:
+                return profile_cap
+
+        base_lower = (getattr(self, "_base_url_lower", None) or getattr(
+            self, "base_url", ""
+        ) or "").lower()
+        is_nous = "nousresearch" in base_lower
+        try:
+            is_openrouter = self._is_openrouter_url()
+        except Exception:
+            is_openrouter = "openrouter.ai" in base_lower
+        if (is_openrouter or is_nous) and "claude" in model.lower():
+            try:
+                from agent.anthropic_adapter import _get_anthropic_max_output
+
+                return _get_anthropic_max_output(model)
+            except Exception:
+                return 0
+
+        return 0
+
+    def _sync_context_compressor_output_reservation(self) -> int:
+        """Push the outgoing output-token reservation into the compressor."""
+        compressor = getattr(self, "context_compressor", None)
+        setter = getattr(compressor, "set_output_reservation_tokens", None)
+        if not callable(setter):
+            return 0
+        output_reservation = self._resolved_output_reservation_tokens()
+        setter(output_reservation)
+        return output_reservation
+
     def _has_content_after_think_block(self, content: str) -> bool:
         """
         Check if content has actual text after any reasoning/thinking blocks.

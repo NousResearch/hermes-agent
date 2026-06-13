@@ -1611,6 +1611,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        _sync_output_reservation = getattr(
+            agent, "_sync_context_compressor_output_reservation", None
+        )
+        if callable(_sync_output_reservation):
+            _sync_output_reservation()
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None

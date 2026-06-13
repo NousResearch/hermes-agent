@@ -1540,6 +1540,11 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
+    _sync_output_reservation = getattr(
+        agent, "_sync_context_compressor_output_reservation", None
+    )
+    if callable(_sync_output_reservation):
+        _sync_output_reservation()
     agent.compression_enabled = compression_enabled
 
     # Reject models whose context window is below the minimum required

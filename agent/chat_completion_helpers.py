@@ -1286,6 +1286,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
+            _sync_output_reservation = getattr(
+                agent, "_sync_context_compressor_output_reservation", None
+            )
+            if callable(_sync_output_reservation):
+                _sync_output_reservation()
 
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "

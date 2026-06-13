@@ -251,6 +251,12 @@ def build_turn_context(
         and len(messages) > agent.context_compressor.protect_first_n
                             + agent.context_compressor.protect_last_n + 1
     ):
+        _sync_output_reservation = getattr(
+            agent, "_sync_context_compressor_output_reservation", None
+        )
+        if callable(_sync_output_reservation):
+            _sync_output_reservation()
+
         _preflight_tokens = estimate_request_tokens_rough(
             messages,
             system_prompt=active_system_prompt or "",

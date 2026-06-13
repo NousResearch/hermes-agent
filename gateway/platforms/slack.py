@@ -2527,8 +2527,66 @@ class SlackAdapter(BasePlatformAdapter):
                         )
                     continue
 
+            # Slack sometimes fires the message event before file processing
+            # completes — the file object has an id/name but no download URL.
+            # When this happens, retry via files.info with backoff to let Slack
+            # finish processing.  This is the same approach used for Slack
+            # Connect files (file_access == "check_file_info") but for regular
+            # uploads that arrive as stubs due to the race condition.
             mimetype = f.get("mimetype", "unknown")
             url = f.get("url_private_download") or f.get("url_private", "")
+            if not url and f.get("id"):
+                file_id = f["id"]
+                _race_resolved = False
+                for _retry in range(3):
+                    _delay = 0.5 * (2 ** _retry)  # 0.5s, 1s, 2s
+                    logger.debug(
+                        "[Slack] File %s has no URL yet (race condition), "
+                        "retrying via files.info in %.1fs (attempt %d/3)",
+                        file_id, _delay, _retry + 1,
+                    )
+                    await asyncio.sleep(_delay)
+                    try:
+                        info_resp = await self._get_client(channel_id).files_info(
+                            file=file_id
+                        )
+                        if info_resp.get("ok"):
+                            resolved_file = info_resp["file"]
+                            url = (
+                                resolved_file.get("url_private_download")
+                                or resolved_file.get("url_private", "")
+                            )
+                            if url:
+                                # Update mimetype from the resolved file object
+                                # in case the stub had a missing/generic type.
+                                mimetype = resolved_file.get("mimetype", mimetype)
+                                f = resolved_file
+                                _race_resolved = True
+                                logger.info(
+                                    "[Slack] File %s URL resolved after %d retries",
+                                    file_id, _retry + 1,
+                                )
+                                break
+                        else:
+                            logger.debug(
+                                "[Slack] files.info returned error for %s: %s",
+                                file_id, info_resp.get("error"),
+                            )
+                    except Exception as _e:
+                        logger.debug(
+                            "[Slack] files.info call failed for %s: %s",
+                            file_id, _e,
+                        )
+                if not _race_resolved:
+                    file_label = f.get("name") or file_id
+                    notice = (
+                        f"Slack attachment '{file_label}' was not yet available "
+                        f"for download (file still processing). Try re-sending "
+                        f"the file or send a follow-up message referencing it."
+                    )
+                    attachment_notices.append(notice)
+                    logger.warning("[Slack] %s", notice)
+                    continue
             if mimetype.startswith("image/") and url:
                 try:
                     ext = "." + mimetype.split("/")[-1].split(";")[0]

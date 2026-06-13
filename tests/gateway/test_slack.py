@@ -1673,6 +1673,192 @@ class TestIncomingDocumentHandling:
 
 
 # ---------------------------------------------------------------------------
+# TestFileAttachmentRaceCondition
+# ---------------------------------------------------------------------------
+
+
+class TestFileAttachmentRaceCondition:
+    """Verify that files arriving without url_private (Slack race condition)
+    are resolved via files.info retries."""
+
+    def _make_event(
+        self, files=None, text="hello", channel_type="im", blocks=None, attachments=None
+    ):
+        return {
+            "text": text,
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": channel_type,
+            "ts": "1234567890.000001",
+            "files": files or [],
+            "blocks": blocks or [],
+            "attachments": attachments or [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_file_race_resolves_after_retry(self, adapter):
+        """File without url_private should be resolved via files.info retry."""
+        # Stub file object: has id but no URL (simulates race condition)
+        stub_file = {
+            "id": "F_RACE1",
+            "mimetype": "image/png",
+            "name": "screenshot.png",
+            # no url_private_download or url_private
+        }
+        resolved_file = {
+            "id": "F_RACE1",
+            "mimetype": "image/png",
+            "name": "screenshot.png",
+            "url_private_download": "https://files.slack.com/screenshot.png",
+            "size": 4096,
+        }
+
+        client = adapter._get_client("D123")
+        client.files_info = AsyncMock(
+            return_value={"ok": True, "file": resolved_file}
+        )
+
+        with patch.object(
+            adapter, "_download_slack_file", new_callable=AsyncMock
+        ) as dl, patch("gateway.platforms.slack.asyncio.sleep", new_callable=AsyncMock):
+            dl.return_value = "/tmp/hermes/cache/images/img_test.png"
+            event = self._make_event(files=[stub_file])
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.PHOTO
+        assert len(msg_event.media_urls) == 1
+        # files.info was called at least once
+        client.files_info.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_file_race_fails_after_all_retries(self, adapter):
+        """File that never gets a URL after 3 retries should produce an
+        attachment notice, not a silent skip."""
+        stub_file = {
+            "id": "F_RACE2",
+            "mimetype": "image/jpeg",
+            "name": "photo.jpg",
+        }
+        # files.info always returns a file without URL
+        still_no_url = {
+            "id": "F_RACE2",
+            "mimetype": "image/jpeg",
+            "name": "photo.jpg",
+            # still no url_private_download
+        }
+
+        client = adapter._get_client("D123")
+        client.files_info = AsyncMock(
+            return_value={"ok": True, "file": still_no_url}
+        )
+
+        with patch("gateway.platforms.slack.asyncio.sleep", new_callable=AsyncMock):
+            event = self._make_event(
+                text="check this", files=[stub_file]
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "photo.jpg" in msg_event.text
+        assert "not yet available" in msg_event.text
+        assert "check this" in msg_event.text
+        # 3 retries should have been attempted
+        assert client.files_info.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_file_race_resolves_on_second_retry(self, adapter):
+        """files.info returns no URL on first try, then succeeds on second."""
+        stub_file = {
+            "id": "F_RACE3",
+            "name": "doc.pdf",
+            "mimetype": "application/pdf",
+        }
+        no_url_file = {
+            "id": "F_RACE3",
+            "name": "doc.pdf",
+            "mimetype": "application/pdf",
+        }
+        resolved_file = {
+            "id": "F_RACE3",
+            "name": "doc.pdf",
+            "mimetype": "application/pdf",
+            "url_private_download": "https://files.slack.com/doc.pdf",
+            "size": 2048,
+        }
+
+        client = adapter._get_client("D123")
+        # First call: no URL; second call: has URL
+        client.files_info = AsyncMock(
+            side_effect=[
+                {"ok": True, "file": no_url_file},
+                {"ok": True, "file": resolved_file},
+            ]
+        )
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl, patch("gateway.platforms.slack.asyncio.sleep", new_callable=AsyncMock):
+            dl.return_value = b"%PDF-1.4 fake content"
+            event = self._make_event(files=[stub_file])
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert client.files_info.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_file_with_url_skips_race_retry(self, adapter):
+        """Files that already have url_private should NOT trigger files.info."""
+        normal_file = {
+            "id": "F_NORMAL",
+            "mimetype": "image/png",
+            "name": "normal.png",
+            "url_private_download": "https://files.slack.com/normal.png",
+            "size": 1024,
+        }
+
+        client = adapter._get_client("D123")
+        client.files_info = AsyncMock()
+
+        with patch.object(
+            adapter, "_download_slack_file", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = "/tmp/hermes/cache/images/img_normal.png"
+            event = self._make_event(files=[normal_file])
+            await adapter._handle_slack_message(event)
+
+        # files.info should NOT have been called — file already had a URL
+        client.files_info.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_file_race_files_info_api_error(self, adapter):
+        """When files.info returns an API error during race retry,
+        should still produce a notice after exhausting retries."""
+        stub_file = {
+            "id": "F_RACE_ERR",
+            "mimetype": "image/png",
+            "name": "broken.png",
+        }
+
+        client = adapter._get_client("D123")
+        client.files_info = AsyncMock(
+            return_value={"ok": False, "error": "file_not_found"}
+        )
+
+        with patch("gateway.platforms.slack.asyncio.sleep", new_callable=AsyncMock):
+            event = self._make_event(text="look at this", files=[stub_file])
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "broken.png" in msg_event.text
+
+
+# ---------------------------------------------------------------------------
 # TestMessageRouting
 # ---------------------------------------------------------------------------
 

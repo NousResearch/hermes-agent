@@ -184,6 +184,18 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        # Virtual environment leakage (issue #23473): gateway/scheduler
+        # set VIRTUAL_ENV for their own process but must not pass it
+        # to subprocesses — package managers treat it as an implicit
+        # activation marker and may reinstall the Hermes venv against
+        # a project's dependencies, silently destroying the runtime.
+        "VIRTUAL_ENV",
+        "VIRTUAL_ENV_PROMPT",
+        "UV_PROJECT_ENVIRONMENT",
+        "POETRY_ACTIVE",
+        "PIPENV_ACTIVE",
+        "CONDA_PREFIX",
+        "CONDA_DEFAULT_ENV",
     })
     return frozenset(blocked)
 

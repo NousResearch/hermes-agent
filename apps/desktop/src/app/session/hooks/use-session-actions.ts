@@ -43,6 +43,7 @@ import {
   workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
+import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
@@ -406,13 +407,17 @@ export function useSessionActions({
       creatingSessionRef.current = true
 
       try {
-        // Route the new chat to the chosen profile's backend (null = primary,
-        // so single-profile users are unaffected).
-        await ensureGatewayProfile($newChatProfile.get())
+        // A plain new session (top "New Session", /new, keybind) leaves
+        // $newChatProfile null to mean "use the live context"; the per-profile
+        // "+" sets it explicitly. Resolve null to the active gateway profile so
+        // session.create always carries it: in global-remote mode one backend
+        // serves every profile, so an omitted profile param silently lands the
+        // chat on the launch (default) profile — the "rubberbands back to
+        // default" bug. This is a no-op for single-profile/local-pooled users:
+        // a backend resolves its own launch profile to None (_profile_home).
+        const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+        await ensureGatewayProfile(newChatProfile)
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
-        // Pass the owning profile so a new chat under a non-launch profile (global
-        // remote mode) builds its agent + persists against THAT profile's home/db.
-        const newChatProfile = $newChatProfile.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
@@ -534,6 +539,7 @@ export function useSessionActions({
 
       if (cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
+
         const cachedViewState =
           !cachedState.model && stored?.model != null
             ? {
@@ -606,26 +612,23 @@ export function useSessionActions({
         }))
       }
 
+      let resumedRunning = false
+
       try {
-        // Load the local snapshot first, then ask the gateway to resume.
-        // Previously these raced:
-        //   1. clear messages to []
-        //   2. local getSessionMessages -> 45 msgs
-        //   3. a second resume path cleared [] again
-        //   4. gateway resume -> 43 msgs
-        // That is the ctrl+R flash chain. Avoid showing an empty thread
-        // while we already have a route-scoped session id, and don't race the
-        // local snapshot against gateway resume.
+        const watchWindow = isWatchWindow()
         let localSnapshot = $messages.get()
 
         try {
-          const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
+          // Watch windows skip REST prefetch — lazy resume attaches the live mirror.
+          if (!watchWindow) {
+            const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
-          if (isCurrentResume()) {
-            localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+            if (isCurrentResume()) {
+              localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
 
-            if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
-              setMessages(localSnapshot)
+              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+                setMessages(localSnapshot)
+              }
             }
           }
         } catch {
@@ -635,9 +638,7 @@ export function useSessionActions({
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
-          // Owning profile: in app-global remote mode one backend serves every
-          // profile, so the gateway opens this profile's state.db + home to
-          // resume + persist the right session (no-op for single/launch profile).
+          ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 
@@ -651,15 +652,7 @@ export function useSessionActions({
           reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
           currentMessages
         )
-        // Avoid a second visible transcript rebuild on resume/switch.
-        // `getSessionMessages()` is the stable stored transcript snapshot and
-        // paints first; `session.resume` can return a slightly different
-        // runtime-shaped projection (e.g. tool/system coalescing), which was
-        // causing a second full message-list replacement a second later.
-        // Keep the already-painted local snapshot for the view/cache when it
-        // exists; use gateway messages only as a fallback when no local
-        // snapshot was available.
-
+        // Keep the local snapshot when resume would only reshuffle runtime projection.
         const preferredMessages =
           localSnapshot.length > 0
             ? localSnapshot
@@ -675,14 +668,16 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
+        resumedRunning = Boolean((resumed as { running?: boolean }).running)
+
         updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
-            busy: false,
-            awaitingResponse: false
+            busy: resumedRunning,
+            awaitingResponse: resumedRunning
           }),
           storedSessionId
         )
@@ -701,9 +696,9 @@ export function useSessionActions({
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
-          busyRef.current = false
-          setBusy(false)
-          setAwaitingResponse(false)
+          busyRef.current = resumedRunning
+          setBusy(resumedRunning)
+          setAwaitingResponse(resumedRunning)
         }
       }
     },

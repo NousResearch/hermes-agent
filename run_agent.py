@@ -169,7 +169,7 @@ from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
     _split_responses_tool_id as _codex_split_responses_tool_id,
-    _summarize_user_message_for_log,  # noqa: F401  # re-exported for tests
+    _summarize_user_message_for_log,  # also used by _sync_external_memory_for_turn (memory boundary)
 )
 from agent.tool_guardrails import (
     ToolGuardrailDecision,
@@ -1560,7 +1560,12 @@ class AIAgent:
             if not self._session_db_created:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
-            flush_from = max(start_idx, self._last_flushed_db_idx)
+            # Guard against the flush cursor overshooting the message list.
+            # This can happen when repair_message_sequence compacts the list
+            # (merging consecutive users, dropping stray tools) after the
+            # cursor was set.  Fall back to start_idx so we don't skip
+            # persisting the assistant/tool chain (#44837).
+            flush_from = max(start_idx, min(self._last_flushed_db_idx, len(messages)))
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -2827,6 +2832,8 @@ class AIAgent:
         """
         if getattr(self, "notice_callback", None) is None and getattr(self, "notice_clear_callback", None) is None:
             return
+        if not self._credits_notices_enabled():
+            return
         state = getattr(self, "_credits_state", None)
         if state is None:
             return
@@ -2849,6 +2856,29 @@ class AIAgent:
                 self._emit_notice(notice)
         except Exception:
             logger.warning("credits notice evaluation/emit failed", exc_info=True)
+
+    def _credits_notices_enabled(self) -> bool:
+        """Whether credits notices are enabled (config display.credits_notices).
+
+        Read once per agent and cached — the policy runs after every API
+        response, and the setting governs UI noise, not correctness, so a
+        config flip applying on the next session is fine.  Fail-open True
+        (preserve current behaviour) on any config error.
+        """
+        cached = getattr(self, "_credits_notices_enabled_cache", None)
+        if cached is not None:
+            return cached
+        enabled = True
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config() or {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "credits_notices" in _display:
+                enabled = bool(_display.get("credits_notices"))
+        except Exception:
+            enabled = True
+        self._credits_notices_enabled_cache = enabled
+        return enabled
 
     def get_credits_state(self):
         """Return the last captured CreditsState, or None."""
@@ -2990,17 +3020,24 @@ class AIAgent:
             return
         if not (self._memory_manager and final_response and original_user_message):
             return
+        # Multimodal turns carry content as a list of typed parts; providers
+        # expect plain strings, so flatten to text first (newline-joined for
+        # memory, vs the default space-join used for log/trajectory previews).
+        user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
+        response_text = _summarize_user_message_for_log(final_response, sep="\n")
+        if not (user_text and response_text):
+            return
         try:
             sync_kwargs = {"session_id": self.session_id or ""}
             if messages is not None:
                 sync_kwargs["messages"] = messages
             self._memory_manager.sync_all(
-                original_user_message,
-                final_response,
+                user_text,
+                response_text,
                 **sync_kwargs,
             )
             self._memory_manager.queue_prefetch_all(
-                original_user_message,
+                user_text,
                 session_id=self.session_id or "",
             )
         except Exception:

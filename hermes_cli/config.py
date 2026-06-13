@@ -1429,6 +1429,10 @@ DEFAULT_CONFIG = {
         # behaves badly with replayed scrollback.
         "persistent_output": True,
         "persistent_output_max_lines": 200,
+        # Print a one-line summary of resolved modal prompts (approval /
+        # clarify) into scrollback so the question and decision survive the
+        # panel repaint. Set false to keep scrollback untouched.
+        "persist_prompts": True,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
@@ -1438,6 +1442,11 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Nous credits status-bar notices (usage bands, grant-spent, depleted /
+        # restored).  When false, no credits notices are emitted — balance data
+        # is still captured and /usage keeps working.  Off switch for sub +
+        # top-up users who find the gauge noisy.
+        "credits_notices": True,
         # Turn-completion explainer.  When true (default), the agent appends a
         # one-line explanation to its final response whenever a turn ends
         # abnormally with no usable reply — empty content after retries, a
@@ -1751,10 +1760,11 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
-        "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
-                                       # no ceiling). High-reasoning models on large tasks
-                                       # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
-                                       # raise if children time out before producing output.
+        "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
+                                     # = no timeout: children fail only from real errors
+                                     # (API, tools, iteration budget), never a delegation
+                                     # stopwatch. Set a positive number of seconds
+                                     # (floor 30s) to enforce a hard cap.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling

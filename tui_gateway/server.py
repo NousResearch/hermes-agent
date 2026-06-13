@@ -605,7 +605,9 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     if session.get("running") or _session_pending_kind(sid):
         return False
     ready = session.get("agent_ready")
-    if ready is not None and not ready.is_set():  # still starting
+    # Lazy watch sessions (subagent spectator windows) never start a build,
+    # so their forever-unset agent_ready must not make them immortal.
+    if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
     if not _transport_is_dead(session.get("transport")):
         return False
@@ -902,6 +904,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
         if ready.is_set() or session.get("agent_build_started"):
             return
         session["agent_build_started"] = True
+        # An upgrading lazy session is now genuinely mid-construction — restore
+        # its "still starting" eviction exemption.
+        session.pop("lazy", None)
     key = session["session_key"]
 
     def _build() -> None:
@@ -930,13 +935,22 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 except Exception:
                     session_db = None
             try:
-                agent = _make_agent(sid, key, session_db=session_db)
+                # Lazy-resumed (watch) sessions carry the stored conversation
+                # id — pass it through so the upgrade continues that session
+                # instead of starting a fresh one under the same key.
+                kw = {"session_db": session_db}
+                if resume_sid := current.get("resume_session_id"):
+                    kw["session_id"] = resume_sid
+                agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
 
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
+            # Baseline for the per-turn config sync; the profile home
+            # override is still active here.
+            current["config_model_seen"] = _config_model_target()
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -1401,6 +1415,31 @@ def _resolve_model() -> str:
     if isinstance(m, str) and m:
         return m.strip()
     return "anthropic/claude-sonnet-4"
+
+
+def _config_model_target() -> tuple[str, str]:
+    """(model, provider) currently selected by config (env as fallback).
+
+    config.yaml wins over HERMES_MODEL / HERMES_INFERENCE_MODEL here, the
+    reverse of `_resolve_model()`'s startup order. Those env vars are a
+    provision-time seed (hosted instances set HERMES_INFERENCE_MODEL in the
+    container env); if they outranked config.yaml, the per-turn sync would
+    stay pinned to the seed forever and dashboard/CLI model changes would
+    never reach an open chat — the exact bug this sync exists to fix.
+    """
+    cfg_model = _load_cfg().get("model")
+    model = ""
+    provider = ""
+    if isinstance(cfg_model, dict):
+        model = str(cfg_model.get("default", "") or "").strip()
+        provider = str(cfg_model.get("provider") or "").strip()
+        if provider.lower() == "auto":
+            provider = ""
+    elif isinstance(cfg_model, str):
+        model = cfg_model.strip()
+    if not model:
+        model = _resolve_model()
+    return model, provider
 
 
 def _resolve_startup_runtime() -> tuple[str, str | None]:
@@ -1872,6 +1911,7 @@ def _apply_model_switch(
     raw_input: str,
     *,
     confirm_expensive_model: bool = False,
+    pin_session_override: bool = True,
 ) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1975,7 +2015,7 @@ def _apply_model_switch(
     # contamination bug). agent.switch_model() above already mutated the right
     # agent in place; the override dict makes that choice survive a rebuild
     # without touching shared process state.
-    if isinstance(session, dict):
+    if pin_session_override and isinstance(session, dict):
         session["model_override"] = {
             "model": result.new_model,
             "provider": result.target_provider,
@@ -1990,6 +2030,47 @@ def _apply_model_switch(
         "warning": result.warning_message or "",
         "confirm_required": False,
     }
+
+
+def _sync_agent_model_with_config(sid: str, session: dict) -> None:
+    """Adopt a config.yaml model change at turn start, like gateways do per
+    message. Sessions pinned with /model keep their choice; a failed switch
+    keeps the current model and never blocks the turn.
+    """
+    agent = session.get("agent")
+    if agent is None or session.get("model_override"):
+        return
+    target = _config_model_target()
+    if not target[0]:
+        return
+    seen = session.get("config_model_seen")
+    # Record first so a broken config gets one attempt per edit, not per turn.
+    session["config_model_seen"] = target
+    if target == seen:
+        return
+    model, provider = target
+    # Already running the configured model (branched/resumed session before
+    # its first sync, or a config revert after a failed switch): adopt the
+    # baseline without a redundant switch.
+    if model == getattr(agent, "model", "") and (
+        not provider or provider == getattr(agent, "provider", "")
+    ):
+        return
+    raw = f"{model} --provider {provider}" if provider else model
+    try:
+        _apply_model_switch(
+            sid,
+            session,
+            raw,
+            confirm_expensive_model=True,
+            pin_session_override=False,
+        )
+    except Exception as e:
+        _emit(
+            "error",
+            sid,
+            {"message": f"Could not switch to configured model {model}: {e}"},
+        )
 
 
 def _compress_session_history(
@@ -2580,6 +2661,8 @@ def _on_tool_progress(
             payload["subagent_id"] = str(_kwargs["subagent_id"])
         if _kwargs.get("parent_id"):
             payload["parent_id"] = str(_kwargs["parent_id"])
+        if _kwargs.get("child_session_id"):
+            payload["child_session_id"] = str(_kwargs["child_session_id"])
         if _kwargs.get("depth") is not None:
             payload["depth"] = int(_kwargs["depth"])
         if _kwargs.get("model"):
@@ -2626,6 +2709,91 @@ def _on_tool_progress(
             payload["tool_preview"] = str(preview)
             payload["text"] = str(preview)
         _emit(event_type, sid, payload)
+        _mirror_subagent_to_child(event_type, payload)
+
+
+# ── Child-session live mirror ────────────────────────────────────────
+# A delegated child is not a live gateway session — it runs synchronously
+# inside the parent's turn, and its activity reaches the gateway only as
+# relayed ``subagent.*`` events on the PARENT sid. When a UI opens the child's
+# own session (session.resume on ``child_session_id``, e.g. the desktop's
+# open-in-new-window), that window would otherwise sit silent until the run
+# persists. Translate the relayed events into the native stream events the
+# window already renders — emitted on the CHILD sid, routed to its transport
+# by write_json — so the window shows a real midstream turn.
+_child_mirrors: dict[str, dict] = {}
+_child_mirrors_lock = threading.Lock()
+# Stored child session ids with a delegation run currently in flight (refreshed
+# on every relayed subagent.* event, popped on subagent.complete). Lets a lazy
+# watch resume report running=true so the window shows a busy indicator even
+# while the child is silent inside a long tool call (no events for 25s+).
+_active_child_runs: dict[str, float] = {}
+# Staleness bound for the registry: entries refresh on every relayed event, so
+# anything this quiet means the completion event was lost (callback raised,
+# parent crashed) — don't let a leaked entry pin "running" forever.
+_CHILD_RUN_STALE_S = 3600.0
+
+
+def _child_run_active(child_key: str) -> bool:
+    ts = _active_child_runs.get(child_key)
+    return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
+
+
+def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+    child_key = str(payload.get("child_session_id") or "")
+    if not child_key:
+        return
+    # Liveness registry first — it must be accurate even when no window is
+    # open, so a window opened mid-run can immediately know the child is busy.
+    if event_type == "subagent.complete":
+        _active_child_runs.pop(child_key, None)
+    else:
+        _active_child_runs[child_key] = time.time()
+    # Mirror only into a live watch session (keyed by session_key; its live sid
+    # differs from the stored id) that has NOT been upgraded to a full agent.
+    # No window / closed → nothing to mirror; an upgraded session owns a real
+    # native stream and mirroring on top would interleave two turns on one sid.
+    # Either way drop state so a reopened window starts a fresh synthetic turn.
+    live = _find_live_session_by_key(child_key)
+    if live is None or live[1].get("agent") is not None:
+        with _child_mirrors_lock:
+            _child_mirrors.pop(child_key, None)
+        return
+    csid = live[0]
+    with _child_mirrors_lock:
+        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        if not st["started"]:
+            st["started"] = True
+            _emit("message.start", csid)
+        if event_type == "subagent.thinking":
+            if text := str(payload.get("text") or ""):
+                _emit("reasoning.delta", csid, {"text": text})
+        elif event_type in {"subagent.start", "subagent.progress"}:
+            # Mirror branch-level progress lines so a just-opened child window
+            # shows immediate activity instead of waiting for the next tool or
+            # completion event. This matches the TUI /agents "live branch log"
+            # feel that users expect.
+            if text := str(payload.get("text") or ""):
+                _emit("message.delta", csid, {"text": f"{text}\n"})
+        elif event_type == "subagent.tool":
+            if st["open_tool"]:
+                _emit("tool.complete", csid, st["open_tool"])
+            st["seq"] += 1
+            tool = {
+                "name": str(payload.get("tool_name") or "tool"),
+                "tool_id": f"submirror:{child_key}:{st['seq']}",
+                "args": {},
+            }
+            if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
+                tool["preview"] = preview
+            st["open_tool"] = tool
+            _emit("tool.start", csid, tool)
+        elif event_type == "subagent.complete":
+            if st["open_tool"]:
+                _emit("tool.complete", csid, st["open_tool"])
+            summary = str(payload.get("summary") or payload.get("text") or "")
+            _emit("message.complete", csid, {"text": summary})
+            _child_mirrors.pop(child_key, None)
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -3042,6 +3210,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
+    session["config_model_seen"] = _config_model_target()
     session["attached_images"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
@@ -3790,20 +3959,124 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    def _reuse_live_payload(sid: str, session: dict) -> dict:
+        payload = _live_session_payload(
+            sid,
+            session,
+            cols=cols,
+            touch=True,
+            transport=current_transport() or _stdio_transport,
+        )
+        payload["resumed"] = target
+        # A lazy watch session never owns a run loop, so its payload's running
+        # flag is always False — overlay the child-run registry so a reconnecting
+        # watch window keeps its busy indicator while the child is still mid-run.
+        if session.get("agent") is None and _child_run_active(target):
+            payload["running"] = True
+            payload["status"] = "streaming"
+        return payload
+
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
         if live is not None:
-            sid, session = live
-            payload = _live_session_payload(
-                sid,
-                session,
-                cols=cols,
-                touch=True,
-                transport=current_transport() or _stdio_transport,
-            )
-            payload["resumed"] = target
-            return _ok(rid, payload)
+            return _ok(rid, _reuse_live_payload(*live))
+
+    # Lazy/watch resume: register the live session WITHOUT building an agent.
+    # Used by the desktop's subagent windows — the child runs inside the
+    # parent's turn, so its window only needs the stored history plus a
+    # transport for the child-mirror's live events. Skipping _make_agent here
+    # is what keeps the window cheap while the backend is busy running the
+    # delegation. A later prompt.submit upgrades it via _start_agent_build
+    # (resume_session_id keeps the upgrade on the stored conversation).
+    if is_truthy_value(params.get("lazy", False)):
+        sid = uuid.uuid4().hex[:8]
+        lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
+        if limit_message is not None:
+            return _err(rid, 4090, limit_message)
+        try:
+            db.reopen_session(target)
+            # The child's OWN conversation only. Delegation children are
+            # parent-linked rows, so include_ancestors would prepend the
+            # parent's entire transcript — a watch window opened on a subagent
+            # must show the subagent's branch, not the parent's prompt.
+            history = db.get_messages_as_conversation(target)
+        except Exception as e:
+            if lease is not None:
+                lease.release()
+            return _err(rid, 5000, f"resume failed: {e}")
+        messages = _history_to_messages(history)
+        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        now = time.time()
+        # A delegated child mid-run emits no native session events of its own —
+        # report its liveness from the relay registry so the window paints a
+        # busy indicator instead of a dead idle transcript.
+        child_running = _child_run_active(target)
+        with _session_resume_lock:
+            live = _find_live_session_by_key(target)
+            if live is not None:
+                if lease is not None:
+                    lease.release()
+                return _ok(rid, _reuse_live_payload(*live))
+            with _sessions_lock:
+                _sessions[sid] = {
+                    "agent": None,
+                    "agent_error": None,
+                    "agent_ready": threading.Event(),
+                    "attached_images": [],
+                    "close_on_disconnect": is_truthy_value(
+                        params.get("close_on_disconnect", False)
+                    ),
+                    "active_session_lease": lease,
+                    "cols": cols,
+                    "created_at": now,
+                    "display_history_prefix": [],
+                    "edit_snapshots": {},
+                    "explicit_cwd": False,
+                    "history": history,
+                    "history_lock": threading.Lock(),
+                    "history_version": 0,
+                    "image_counter": 0,
+                    "cwd": cwd,
+                    "inflight_turn": None,
+                    "last_active": now,
+                    "lazy": True,
+                    "pending_title": None,
+                    "profile_home": str(profile_home) if profile_home is not None else None,
+                    "resume_session_id": target,
+                    "running": False,
+                    "session_key": target,
+                    "show_reasoning": _load_show_reasoning(),
+                    "slash_worker": None,
+                    "tool_progress_mode": _load_tool_progress_mode(),
+                    "tool_started_at": {},
+                    "transport": current_transport() or _stdio_transport,
+                }
+                _register_session_cwd(_sessions[sid])
+        return _ok(
+            rid,
+            {
+                "session_id": sid,
+                "resumed": target,
+                "message_count": len(messages),
+                "messages": messages,
+                "info": {
+                    "cwd": cwd,
+                    "branch": _git_branch_for_cwd(cwd),
+                    "model": _resolve_model(),
+                    "tools": {},
+                    "skills": {},
+                    "lazy": True,
+                    "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                    "profile_name": _current_profile_name(),
+                },
+                "inflight": None,
+                "running": child_running,
+                "session_key": target,
+                "started_at": now,
+                "status": "streaming" if child_running else "idle",
+            },
+        )
 
     # Build the agent OUTSIDE the lock — _make_agent can block for seconds
     # (MCP discovery, prompt/skill build, AIAgent construction). Holding
@@ -3939,7 +4212,9 @@ def _session_live_status(sid: str, session: dict) -> str:
     if _session_pending_kind(sid):
         return "waiting"
     ready = session.get("agent_ready")
-    if ready is not None and not ready.is_set():
+    # Unset + build never started = a lazy watch session sitting idle, not a
+    # session stuck mid-construction.
+    if ready is not None and not ready.is_set() and session.get("agent_build_started"):
         return "starting"
     if session.get("running"):
         return "working"
@@ -4377,6 +4652,37 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("credits.view")
+def _(rid, params: dict) -> dict:
+    """Structured Nous credit view for the TUI /credits command.
+
+    Account-independent (a portal fetch gated on "a Nous account is logged in"),
+    so it works with no live agent / on a resumed session — same as the /usage
+    credits block. Returns the surface-agnostic CreditsView fields so the TUI can
+    render a clickable top-up <Link>. Fail-open: a portal hiccup or logged-out
+    account yields {logged_in: false}, never an error the user has to parse.
+    """
+    try:
+        from agent.account_usage import build_credits_view
+
+        view = build_credits_view()
+        return _ok(
+            rid,
+            {
+                "logged_in": bool(view.logged_in),
+                "balance_lines": [
+                    line for line in view.balance_lines if not line.lstrip().startswith("📈")
+                ],
+                "identity_line": view.identity_line,
+                "topup_url": view.topup_url,
+                "depleted": bool(view.depleted),
+            },
+        )
+    except Exception:
+        # Fail-open: TUI treats this as "not logged in" and shows the prompt.
+        return _ok(rid, {"logged_in": False, "balance_lines": [], "identity_line": None, "topup_url": None, "depleted": False})
 
 
 @method("session.status")
@@ -5039,6 +5345,13 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
+        # A watch session's run lives in the PARENT turn, so its own running
+        # flag is False — without this, typing mid-run builds a second agent
+        # racing the in-flight child on the same stored session (interleaved
+        # transcript, stale fork). After the run completes, submitting is fine:
+        # the upgrade resumes the child's transcript as a normal conversation.
+        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            return _err(rid, 4009, "subagent still running — wait for it to finish")
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
@@ -5311,6 +5624,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
+            _sync_agent_model_with_config(sid, session)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
@@ -7226,6 +7540,58 @@ def _(rid, params: dict) -> dict:
         from tools.process_registry import process_registry
 
         return _ok(rid, {"killed": process_registry.kill_all()})
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
+def _session_processes(session: dict) -> list:
+    """Background processes owned by this session (registry session_key match)."""
+    from tools.process_registry import process_registry
+
+    key = str(session.get("session_key") or "")
+    owned = []
+    for entry in process_registry.list_sessions():
+        proc = process_registry.get(entry["session_id"])
+        if proc is None or str(getattr(proc, "session_key", "") or "") != key:
+            continue
+        # The 200-char list preview is too thin for the desktop's inline
+        # terminal viewer — ship a real tail alongside it.
+        entry["output_tail"] = (proc.output_buffer or "")[-4000:]
+        owned.append(entry)
+    return owned
+
+
+@method("process.list")
+def _(rid, params: dict) -> dict:
+    """Session-scoped view of the background process registry (desktop status stack)."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        return _ok(rid, {"processes": _session_processes(session)})
+    except Exception as e:
+        return _err(rid, 5010, str(e))
+
+
+@method("process.kill")
+def _(rid, params: dict) -> dict:
+    """Kill ONE background process — scoped to the caller's session so one
+    window can't reap another session's work (unlike process.stop's kill_all)."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    proc_id = str(params.get("process_id") or "")
+    if not proc_id:
+        return _err(rid, 4012, "process_id required")
+    try:
+        from tools.process_registry import process_registry
+
+        proc = process_registry.get(proc_id)
+        if proc is None or str(getattr(proc, "session_key", "") or "") != str(
+            session.get("session_key") or ""
+        ):
+            return _err(rid, 4044, f"no such process: {proc_id}")
+        return _ok(rid, process_registry.kill_process(proc_id))
     except Exception as e:
         return _err(rid, 5010, str(e))
 

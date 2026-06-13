@@ -1,10 +1,7 @@
-import { useState } from 'react'
-
+import { StatusRow } from '@/components/chat/status-row'
+import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { ArrowUp, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import type { QueuedPromptEntry } from '@/store/composer-queue'
 
@@ -23,108 +20,70 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
 export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
-  const [collapsed, setCollapsed] = useState(true)
 
   if (entries.length === 0) {
     return null
   }
 
   return (
-    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1 mx-1">
-      <button
-        className="flex w-full items-center gap-1.5 px-2 text-left text-[0.6rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
-        onClick={() => setCollapsed(open => !open)}
-        type="button"
-      >
-        <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
-        <span className="truncate">{c.queued(entries.length)}</span>
-      </button>
+    <StatusSection label={c.queued(entries.length)}>
+      {entries.map(entry => {
+        const isEditing = editingId === entry.id
+        const attachmentsCount = entry.attachments.length
 
-      {!collapsed && (
-        <div className="space-y-0.5 px-1 pb-0.5">
-          {entries.map(entry => {
-            const isEditing = editingId === entry.id
-            const attachmentsCount = entry.attachments.length
-            const sendLabel = busy ? c.sendQueuedNext : c.sendQueuedNow
-
-            return (
-              <div
-                className={cn(
-                  'group/queue-row flex items-center gap-1.5 rounded-lg border border-transparent px-1.5 py-0.5',
-                  'transition-colors duration-300 ease-out hover:bg-(--chrome-action-hover) hover:transition-none',
-                  isEditing && 'border-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
-                )}
-                key={entry.id}
-              >
-                <span
-                  aria-hidden
-                  className="h-3.5 w-3.5 shrink-0 rounded-full border border-foreground/35 bg-transparent"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
-                  {(attachmentsCount > 0 || isEditing) && (
-                    <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
-                      {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
-                      {isEditing && (
-                        <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
-                          {c.editingInComposer}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div
-                  className={cn(
-                    'flex shrink-0 items-center gap-0 transition-opacity',
-                    isEditing
-                      ? 'opacity-100'
-                      : 'opacity-0 group-hover/queue-row:opacity-100 group-focus-within/queue-row:opacity-100'
-                  )}
+        return (
+          <StatusRow
+            className={cn(
+              'border border-transparent',
+              isEditing && 'border-[color-mix(in_srgb,var(--dt-composer-ring)_40%,transparent)] bg-accent/25'
+            )}
+            key={entry.id}
+            leading={
+              <span aria-hidden className="size-3.5 shrink-0 rounded-full border border-foreground/35 bg-transparent" />
+            }
+            trailing={
+              <>
+                <Button
+                  disabled={Boolean(editingId) && !isEditing}
+                  onClick={() => onEdit(entry)}
+                  size="micro"
+                  type="button"
+                  variant="text"
                 >
-                  <Tip label={c.editQueued}>
-                    <Button
-                      aria-label={c.editQueued}
-                      className="h-5 w-5 rounded-md"
-                      disabled={Boolean(editingId) && !isEditing}
-                      onClick={() => onEdit(entry)}
-                      size="icon-xs"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Pencil size={11} />
-                    </Button>
-                  </Tip>
-                  <Tip label={sendLabel}>
-                    <Button
-                      aria-label={sendLabel}
-                      className="h-5 w-5 rounded-md"
-                      disabled={isEditing}
-                      onClick={() => onSendNow(entry.id)}
-                      size="icon-xs"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <ArrowUp size={11} />
-                    </Button>
-                  </Tip>
-                  <Tip label={c.deleteQueued}>
-                    <Button
-                      aria-label={c.deleteQueued}
-                      className="h-5 w-5 rounded-md"
-                      onClick={() => onDelete(entry.id)}
-                      size="icon-xs"
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Trash2 size={11} />
-                    </Button>
-                  </Tip>
+                  {c.queueEdit}
+                </Button>
+                <Button
+                  disabled={isEditing}
+                  onClick={() => onSendNow(entry.id)}
+                  size="micro"
+                  type="button"
+                  variant="secondary"
+                >
+                  {busy ? c.queueSendNext : c.queueSend}
+                </Button>
+                <Button onClick={() => onDelete(entry.id)} size="micro" type="button" variant="text">
+                  {c.queueDelete}
+                </Button>
+              </>
+            }
+            trailingVisible={isEditing}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
+              {(attachmentsCount > 0 || isEditing) && (
+                <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
+                  {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
+                  {isEditing && (
+                    <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">
+                      {c.editingInComposer}
+                    </span>
+                  )}
                 </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
+              )}
+            </div>
+          </StatusRow>
+        )
+      })}
+    </StatusSection>
   )
 }

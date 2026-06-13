@@ -33,6 +33,7 @@ from hermes_cli.profiles import (
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
+    backfill_profile_envs,
 )
 
 
@@ -158,6 +159,30 @@ class TestCreateProfile:
                         "plans", "workspace", "cron"]:
             assert (profile_dir / subdir).is_dir(), f"Missing subdir: {subdir}"
 
+    def test_seeds_placeholder_env_file(self, profile_env):
+        """Fresh profiles get their own .env (owner-only) so channel/env
+        writes are profile-scoped from day one instead of falling through
+        to the shell environment / root install."""
+        import stat
+        profile_dir = create_profile("coder", no_alias=True)
+        env_path = profile_dir / ".env"
+        assert env_path.exists()
+        content = env_path.read_text(encoding="utf-8")
+        # Placeholder only — no credentials leak in from anywhere.
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+        mode = stat.S_IMODE(env_path.stat().st_mode)
+        assert mode == 0o600
+
+    def test_seeded_env_does_not_clobber_cloned_env(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / ".env").write_text("KEY=val")
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        assert (profile_dir / ".env").read_text() == "KEY=val"
+
     def test_duplicate_raises_file_exists(self, profile_env):
         create_profile("coder", no_alias=True)
         with pytest.raises(FileExistsError):
@@ -244,9 +269,9 @@ class TestCreateProfile:
     def test_clone_all_excludes_default_infrastructure(self, profile_env):
         """--clone-all from default profile excludes hermes-agent, .worktrees,
         bin, node_modules at root, plus __pycache__/*.pyc/*.pyo/*.sock/*.tmp
-        at any depth.  Profile data (config, env, skills, sessions, logs,
-        state.db) must be preserved — clone-all means "complete snapshot
-        minus infrastructure."
+        at any depth.  Profile data (config, env, skills, logs) must be
+        preserved — clone-all means "complete snapshot minus infrastructure
+        and per-profile history."
         """
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -272,8 +297,6 @@ class TestCreateProfile:
         (default_home / "skills" / "my-skill" / "SKILL.md").write_text("skill")
         (default_home / "config.yaml").write_text("model: gpt-4")
         (default_home / ".env").write_text("KEY=val")
-        (default_home / "state.db").write_text("sessions-data")
-        (default_home / "sessions").mkdir(exist_ok=True)
         (default_home / "logs").mkdir(exist_ok=True)
         (default_home / "logs" / "gateway.log").write_text("log")
 
@@ -295,16 +318,48 @@ class TestCreateProfile:
         assert (profile_dir / "skills" / "my-skill" / "SKILL.md").read_text() == "skill"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
         assert (profile_dir / ".env").read_text() == "KEY=val"
-        assert (profile_dir / "state.db").read_text() == "sessions-data"
-        assert (profile_dir / "sessions").exists()
         assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
+
+    def test_clone_all_excludes_history_artifacts(self, profile_env):
+        """--clone-all excludes the source's session history, backups, and
+        snapshots — a clone is a fresh workspace, and these can reach tens
+        of GB.  Applies to ANY source profile, not just default.
+        """
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "state.db").write_text("sessions-data")
+        (default_home / "state.db-wal").write_text("wal")
+        (default_home / "state.db-shm").write_text("shm")
+        (default_home / "sessions" / "20260101_old").mkdir(parents=True)
+        (default_home / "backups").mkdir(exist_ok=True)
+        (default_home / "backups" / "backup.tar.gz").write_text("archive")
+        (default_home / "state-snapshots" / "snap1").mkdir(parents=True)
+        (default_home / "checkpoints" / "cp1").mkdir(parents=True)
+        # Data that should still copy
+        (default_home / "config.yaml").write_text("model: gpt-4")
+        # Nested dirs with the same names must NOT be excluded (root-only)
+        (default_home / "workspace" / "backups").mkdir(parents=True)
+        (default_home / "workspace" / "backups" / "user-data.txt").write_text("mine")
+
+        profile_dir = create_profile("fresh", clone_all=True, no_alias=True)
+
+        for history in (
+            "state.db", "state.db-wal", "state.db-shm",
+            "sessions", "backups", "state-snapshots", "checkpoints",
+        ):
+            assert not (profile_dir / history).exists(), history
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        # Root-only: nested same-name dirs survive
+        assert (profile_dir / "workspace" / "backups" / "user-data.txt").read_text() == "mine"
 
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
         # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
-        assert not (profile_dir / ".env").exists()
+        # .env is always seeded (placeholder) so the profile has its own
+        # credentials file even when the clone source lacked one.
+        assert (profile_dir / ".env").exists()
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
 
@@ -417,6 +472,60 @@ class TestNoSkillsOptOut:
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
         assert len(called) == 1
+
+
+# ===================================================================
+# TestBackfillProfileEnvs
+# ===================================================================
+
+class TestBackfillProfileEnvs:
+    """Tests for backfill_profile_envs() — the `hermes update` pass that
+    gives pre-#44792 profiles (created before .env seeding) their own
+    .env, copied from the default install so credentials don't break."""
+
+    def test_copies_default_env_into_envless_profiles(self, profile_env):
+        import stat
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n")
+        p1 = create_profile("old1", no_alias=True)
+        p2 = create_profile("old2", no_alias=True)
+        # Simulate pre-#44792 profiles: no .env
+        (p1 / ".env").unlink()
+        (p2 / ".env").unlink()
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert sorted(backfilled) == ["old1", "old2"]
+        for p in (p1, p2):
+            assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
+            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+
+    def test_never_overwrites_existing_profile_env(self, profile_env):
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("KEY=root\n")
+        p = create_profile("hasenv", no_alias=True)
+        (p / ".env").write_text("KEY=mine\n")
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert backfilled == []
+        assert (p / ".env").read_text() == "KEY=mine\n"
+
+    def test_placeholder_when_default_has_no_env(self, profile_env):
+        p = create_profile("noroot", no_alias=True)
+        (p / ".env").unlink()
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert backfilled == ["noroot"]
+        content = (p / ".env").read_text(encoding="utf-8")
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+
+    def test_no_profiles_root_is_noop(self, profile_env):
+        assert backfill_profile_envs(quiet=True) == []
 
 
 # ===================================================================

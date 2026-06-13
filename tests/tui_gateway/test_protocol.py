@@ -394,6 +394,121 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     ]
 
 
+def test_session_resume_lazy_registers_watch_session_without_agent(server, monkeypatch):
+    """``lazy: true`` (subagent watch windows) must register the live session
+    — keyed for the child mirror, on this transport — WITHOUT building an
+    agent. The eager build is what made opening a subagent window contend
+    with the already-running parent turn."""
+
+    target = "20260612_000000_child99"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "delegated goal"},
+            ]
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("lazy resume must not build an agent")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", _boom)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+    assert result["messages"] == [{"role": "user", "text": "delegated goal"}]
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    assert session["agent"] is None
+    # The child mirror finds the watch window by stored key.
+    assert server._find_live_session_by_key(target) == (sid, session)
+    # A later prompt.submit upgrade must continue THIS stored conversation.
+    assert session["resume_session_id"] == target
+    # No build started: the idle reaper must still be able to evict it, and
+    # the live status must not report a never-ending "starting".
+    assert not session["agent_ready"].is_set()
+    assert server._session_live_status(sid, session) != "starting"
+    session["transport"] = server._detached_ws_transport
+    far_future = time.time() + 999999
+    assert server._session_is_evictable(sid, session, far_future)
+
+    # Resuming again (window refresh) reuses the same live session.
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" not in resp2
+    assert resp2["result"]["session_id"] == sid
+    assert len(server._sessions) == 1
+
+
+def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypatch):
+    """A watch window attaching to a child mid-delegation must learn the run is
+    live from the resume response itself — the child can sit silent inside a
+    long tool call, so waiting for the next stream event leaves the window
+    looking dead."""
+
+    target = "20260612_000000_child42"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [{"role": "user", "content": "delegated goal"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    assert "error" not in resp
+    assert resp["result"]["running"] is True
+    assert resp["result"]["status"] == "streaming"
+
+
 def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     """Repeated resume must not allocate duplicate live agents."""
 

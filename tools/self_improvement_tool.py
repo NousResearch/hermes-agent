@@ -5358,6 +5358,13 @@ def _coerce_path(value: Optional[Path | str], default: Path) -> Path:
     return Path(value).expanduser() if value else default
 
 
+def _self_improvement_runtime_metadata() -> dict[str, str]:
+    return {
+        "module": __name__,
+        "file": str(Path(__file__).resolve()),
+    }
+
+
 def _pipeline_benchmark_summary(benchmark: dict[str, Any]) -> dict[str, Any]:
     summary = {
         "score": benchmark.get("score"),
@@ -6101,6 +6108,7 @@ def evaluate_self_improvement_pipeline(
         "contract_version": BENCHMARK_CONTRACT_VERSION,
         "evaluated_at": current.isoformat(),
         "runtime_surface": "hermes-agent-core",
+        "runtime": _self_improvement_runtime_metadata(),
         "benchmark_before": _pipeline_benchmark_summary(benchmark),
         "benchmark": benchmark,
         "reporting_contract": benchmark.get("journal_reporting_contract"),

@@ -1935,6 +1935,116 @@ def test_operator_value_alignment_links_top_level_journal_context_run_ids_when_f
         )
 
 
+def test_pipeline_recognizes_live_had_1168_followthrough_issue_links(tmp_path):
+    now = datetime(2026, 6, 13, 10, 30, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+    run_issue_pairs = [
+        ("codex_c5bc43777a63", "HAD-271"),
+        ("codex_e68593a634d7", "HAD-1319"),
+        ("codex_1017425508da", "HAD-1322"),
+        ("codex_90d9f3d806bc", "HAD-1326"),
+        ("codex_5bff4cc6fcf3", "HAD-1327"),
+    ]
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    history_path = tmp_path / "history.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        [
+            {
+                "id": f"2026-06-10-had-1168-follow-through-{issue_id.lower()}",
+                "occurredAt": recent,
+                "summary": (
+                    f"Backfilled operator decision-support evidence for completed "
+                    f"Codex run {run_id} ({issue_id})."
+                ),
+                "notes": (
+                    f"Source record: /home/david/.hermes/codex/runs.json run {run_id} "
+                    f"with external_key linear:{issue_id}, status completed, and "
+                    "merged PR verification. Boundary for this row: keep HAD-1168 "
+                    "open until a fresh pipeline pass clears execution_loop."
+                ),
+                "selfImprovementFocus": [
+                    {
+                        "title": f"Preserve {issue_id} delivery as operator decision support",
+                        "activeLinearIssueIds": [issue_id],
+                        "outcomeNote": (
+                            "Merged PR evidence is durable and focused verification "
+                            "passed; execution_loop health remains the aggregate blocker."
+                        ),
+                        "operatorDecisionSupport": (
+                            "Operator decision: count this completed Codex delivery as "
+                            "journal follow-through while keeping HAD-1168 closure gated "
+                            "on a fresh execution_loop pass."
+                        ),
+                    }
+                ],
+            }
+            for run_id, issue_id in run_issue_pairs
+        ],
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                run_id: {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "external_key": f"linear:{issue_id}",
+                    "completed_at": recent,
+                    "final_message": (
+                        "CHANGED_FILES\n"
+                        "- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n"
+                        "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        "COMMIT\n"
+                        "- abcdef1234567890abcdef1234567890abcdef12\n"
+                        "PULL_REQUEST\n"
+                        "- https://github.com/taboularasa/hermes-agent/pull/1168\n"
+                    ),
+                    "exit_code": 0,
+                }
+                for run_id, issue_id in run_issue_pairs
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {}})
+
+    pipeline = self_improvement_tool.evaluate_self_improvement_pipeline(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=history_path,
+        now=now,
+        persist=False,
+        candidate_limit=5,
+        available_capacity=0,
+    )
+
+    metrics = pipeline["benchmark"]["checks"]["operator_value_alignment"]["metrics"]
+    target_run_ids = {run_id for run_id, _issue_id in run_issue_pairs}
+    missing_ids = {
+        item["id"] for item in metrics["missing_operator_decision_support_examples"]
+    }
+    assert missing_ids.isdisjoint(target_run_ids)
+    assert target_run_ids.issubset(
+        set(metrics["journal_operator_support_codex_run_ids"])
+    )
+    assert all(
+        item["id"] not in target_run_ids
+        for item in pipeline["benchmark"]["operator_value_checks"][
+            "missing_operator_decision_support"
+        ]
+    )
+    assert pipeline["runtime"]["module"] == "tools.self_improvement_tool"
+    assert pipeline["runtime"]["file"].endswith("tools/self_improvement_tool.py")
+
+
 def test_operator_value_alignment_links_entry_context_run_id_to_single_supported_focus(tmp_path):
     now = datetime(2026, 6, 13, 9, 45, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

@@ -2560,6 +2560,24 @@ def _collect_journal_codex_operator_support(
             if key != _JOURNAL_REPORTING_FOCUS_FIELD
         }
         entry_context_run_ids = _collect_codex_run_ids_from_value(entry_context)
+        direct_focus_evidence_by_index: dict[int, list[dict[str, str]]] = {}
+        for focus_index, focus_item in enumerate(focus_items):
+            if not isinstance(focus_item, dict):
+                continue
+            title = _journal_reporting_string(focus_item.get("title"))
+            outcome_note = _journal_reporting_string(focus_item.get("outcomeNote"))
+            focus_evidence = _collect_operator_decision_support_evidence(focus_item)
+            if not focus_evidence:
+                focus_evidence = _operator_decision_support_text_evidence(
+                    " ".join(part for part in (title, outcome_note) if part)
+                )
+            if focus_evidence:
+                direct_focus_evidence_by_index[focus_index] = focus_evidence
+        entry_context_support_focus_index = (
+            next(iter(direct_focus_evidence_by_index))
+            if len(direct_focus_evidence_by_index) == 1
+            else None
+        )
 
         entry_id = _journal_reporting_string(entry.get("id"))
         occurred_at = _journal_reporting_entry_time_text(entry)
@@ -2572,11 +2590,7 @@ def _collect_journal_codex_operator_support(
             if not title and not outcome_note:
                 continue
 
-            focus_evidence = _collect_operator_decision_support_evidence(focus_item)
-            if not focus_evidence:
-                focus_evidence = _operator_decision_support_text_evidence(
-                    " ".join(part for part in (title, outcome_note) if part)
-                )
+            focus_evidence = list(direct_focus_evidence_by_index.get(focus_index) or [])
             if not focus_evidence:
                 focus_evidence = entry_evidence
             if not focus_evidence:
@@ -2605,7 +2619,10 @@ def _collect_journal_codex_operator_support(
                 normalized_issue_id = _normalize_linear_issue_id(issue_id)
                 if normalized_issue_id:
                     focus_run_ids.update(codex_issue_run_ids.get(normalized_issue_id, set()))
-            if len(focus_items) == 1:
+            if (
+                len(focus_items) == 1
+                or focus_index == entry_context_support_focus_index
+            ):
                 focus_run_ids.update(entry_context_run_ids)
             for segment in _journal_focus_note_segments(title, outcome_note):
                 segment_run_ids = set(_CODEX_RUN_ID_PATTERN.findall(segment))

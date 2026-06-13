@@ -1935,6 +1935,193 @@ def test_operator_value_alignment_links_top_level_journal_context_run_ids_when_f
         )
 
 
+def test_operator_value_alignment_links_entry_context_run_id_to_single_supported_focus(tmp_path):
+    now = datetime(2026, 6, 13, 9, 45, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+    run_id = "codex_abcd1234ef56"
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "entry-context-single-supported-focus",
+                    "occurredAt": recent,
+                    "summary": "Backfilled follow-through for a completed Codex delivery.",
+                    "notes": (
+                        f"Source record: /home/david/.hermes/codex/runs.json run {run_id}. "
+                        "The run is complete, but the journal entry also carries an unrelated "
+                        "focus item."
+                    ),
+                    "laneLinks": [
+                        {
+                            "lane": "maintenance",
+                            "supportingRefs": [
+                                run_id,
+                                "operator decision boundary: keep aggregate gate open",
+                            ],
+                        }
+                    ],
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Keep unrelated planning note visible",
+                            "outcomeNote": "Recorded only backlog context for a later pass.",
+                        },
+                        {
+                            "title": "Preserve completed delivery for operator review",
+                            "activeLinearIssueIds": ["HAD-1168"],
+                            "outcomeNote": (
+                                "Merged PR evidence is durable, but broader throughput "
+                                "recovery still needs a fresh benchmark pass."
+                            ),
+                            "operatorDecisionSupport": (
+                                "Operator can count the referenced Codex delivery as "
+                                "journal follow-through while keeping the aggregate "
+                                "execution-loop gate open."
+                            ),
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                run_id: {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "external_key": "linear:HAD-271",
+                    "completed_at": recent,
+                    "final_message": (
+                        "CHANGED_FILES\n"
+                        "- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n"
+                        "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        "COMMIT\n"
+                        "- abcdef1234567890abcdef1234567890abcdef12\n"
+                        "PULL_REQUEST\n"
+                        "- https://github.com/taboularasa/hermes-agent/pull/1168\n"
+                    ),
+                    "exit_code": 0,
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    operator_value = benchmark["checks"]["operator_value_alignment"]
+    metrics = operator_value["metrics"]
+    missing_ids = {
+        item["id"] for item in metrics["missing_operator_decision_support_examples"]
+    }
+    assert run_id not in missing_ids
+    assert run_id in metrics["journal_operator_support_codex_run_ids"]
+    support_by_id = {
+        item["run_id"]: item for item in metrics["journal_operator_support_examples"]
+    }
+    assert support_by_id[run_id]["evidence"][0]["journal_focus_path"].endswith(
+        "selfImprovementFocus[1]"
+    )
+    assert any(item["id"] == run_id for item in metrics["aligned_examples"])
+
+
+def test_operator_value_alignment_keeps_ambiguous_entry_context_runs_missing(tmp_path):
+    now = datetime(2026, 6, 13, 9, 50, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+    run_id = "codex_feed1234abcd"
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "entry-context-ambiguous-supported-focuses",
+                    "occurredAt": recent,
+                    "summary": "Backfilled follow-through for a completed Codex delivery.",
+                    "notes": f"Source record names completed Codex run {run_id}.",
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Preserve first operator decision",
+                            "operatorDecisionSupport": (
+                                "Operator can count a different completed delivery after "
+                                "checking its merge evidence."
+                            ),
+                        },
+                        {
+                            "title": "Preserve second operator decision",
+                            "operatorDecisionSupport": (
+                                "Operator can count another completed delivery after "
+                                "checking its verification evidence."
+                            ),
+                        },
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                run_id: {
+                    "run_id": run_id,
+                    "status": "completed",
+                    "external_key": "linear:HAD-271",
+                    "completed_at": recent,
+                    "final_message": (
+                        "CHANGED_FILES\n"
+                        "- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n"
+                        "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        "COMMIT\n"
+                        "- abcdef1234567890abcdef1234567890abcdef12\n"
+                    ),
+                    "exit_code": 0,
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    metrics = benchmark["checks"]["operator_value_alignment"]["metrics"]
+    assert run_id not in metrics["journal_operator_support_codex_run_ids"]
+    assert run_id in {
+        item["id"] for item in metrics["missing_operator_decision_support_examples"]
+    }
+
+
 def test_operator_value_alignment_links_focus_issue_ids_to_codex_external_keys(tmp_path):
     now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

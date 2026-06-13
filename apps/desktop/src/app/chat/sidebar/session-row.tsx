@@ -137,7 +137,15 @@ export function SidebarSessionRow({
     onToggleSelect?.(mode)
   }
 
-  const handleSessionDragStart = (event: React.DragEvent<HTMLButtonElement>) => {
+  const handleSessionDragStart = (event: React.DragEvent<HTMLElement>) => {
+    const target = event.target instanceof HTMLElement ? event.target : null
+
+    if (target?.closest('[data-session-row-actions]')) {
+      event.preventDefault()
+
+      return
+    }
+
     const payload: SessionDragPayload = {
       archived,
       id: session.id,
@@ -178,21 +186,24 @@ export function SidebarSessionRow({
             (isSelected || checked) && 'bg-(--ui-row-active-background)',
             isWorking && 'text-foreground',
             dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
+            '[-webkit-app-region:no-drag]',
             className
           )}
           data-actions-visible={actionsVisible ? 'true' : undefined}
+          data-session-drag-source
           data-selected={checked ? 'true' : undefined}
           data-session-row-chrome
           data-working={isWorking ? 'true' : undefined}
+          draggable
           layout="position"
           onDoubleClick={selectionActive ? () => onResume() : undefined}
+          onDragEndCapture={() => onSessionDragEnd?.()}
+          onDragStartCapture={handleSessionDragStart}
           transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
         >
           {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
           <button
             className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
-            data-session-drag-source
-            draggable
             onClick={event => {
               const canSelect = Boolean(selectable && onToggleSelect)
 
@@ -260,8 +271,6 @@ export function SidebarSessionRow({
 
               onResume()
             }}
-            onDragEnd={() => onSessionDragEnd?.()}
-            onDragStart={handleSessionDragStart}
             type="button"
           >
             {selectionActive ? (
@@ -305,7 +314,7 @@ export function SidebarSessionRow({
             but its width is still reserved (opacity-0, not unmounted) so the
             menu lands in the same spot and the row height never shifts.
             Transform/opacity only — no layout reflow. */}
-          <div className="relative flex h-full items-center justify-end self-stretch pl-1 pr-1.5">
+          <div className="relative flex h-full min-w-14 items-center justify-end self-stretch pl-1 pr-7">
             <span
               className={cn(
                 'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',

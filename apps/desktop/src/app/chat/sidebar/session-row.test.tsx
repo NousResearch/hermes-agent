@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { readSessionDrag } from '@/app/chat/composer/inline-refs'
@@ -292,14 +292,18 @@ describe('SidebarSessionRow gestures', () => {
 
     const transfer = fakeTransfer()
     const dragAnchor = container.querySelector('[data-session-id]') as HTMLElement
+    const dragSource = container.querySelector('[data-session-row-chrome]') as HTMLElement
+    const timestamp = container.querySelector('[data-session-row-age]') as HTMLElement
 
     expect(container.querySelector('[data-reorder-handle]')).toBeNull()
     expect(container.querySelector('[data-drop-indicator]')).toBeNull()
     expect(dragAnchor.draggable).toBe(false)
-    expect(rowButton.dataset.sessionDragSource).toBe('true')
-    expect(rowButton.draggable).toBe(true)
+    expect(dragSource.dataset.sessionDragSource).toBe('true')
+    expect(dragSource.draggable).toBe(true)
+    expect(dragSource.className).toContain('[-webkit-app-region:no-drag]')
+    expect(rowButton.draggable).toBe(false)
 
-    fireEvent.dragStart(rowButton, { dataTransfer: transfer })
+    fireEvent.dragStart(dragSource, { dataTransfer: transfer })
 
     expect(readSessionDrag(transfer)).toMatchObject({
       archived: false,
@@ -317,7 +321,32 @@ describe('SidebarSessionRow gestures', () => {
     )
     expect(onSessionDragStart).toHaveBeenCalledTimes(1)
 
-    fireEvent.dragEnd(rowButton)
+    fireEvent.dragEnd(dragSource)
     expect(onSessionDragEnd).toHaveBeenCalledTimes(1)
+
+    const timestampTransfer = fakeTransfer()
+
+    fireEvent.dragStart(timestamp, { dataTransfer: timestampTransfer })
+
+    expect(readSessionDrag(timestampTransfer)).toMatchObject({
+      id: 's1',
+      pinned: true
+    })
+    expect(onSessionDragStart).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not turn the row actions menu into a session drag source', () => {
+    const onSessionDragStart = vi.fn()
+    const { container } = renderRow({ onSessionDragStart, reorderable: true })
+    const actionsButton = container.querySelector('[data-session-row-actions]') as HTMLButtonElement
+    const transfer = fakeTransfer()
+    const event = createEvent.dragStart(actionsButton, { dataTransfer: transfer })
+
+    const notCanceled = fireEvent(actionsButton, event)
+
+    expect(notCanceled).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    expect(readSessionDrag(transfer)).toBeNull()
+    expect(onSessionDragStart).not.toHaveBeenCalled()
   })
 })

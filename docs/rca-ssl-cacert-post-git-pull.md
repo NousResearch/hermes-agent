@@ -1,47 +1,54 @@
 # RCA: SSL CA cert bundle corruption after `hermes update`
 
-**Status:** resolved by `fix(agent,gateway): add SSL CA cert bundle fail-fast guard`
-**Severity:** P2 — degrades the agent into a crash-loop until the user re-installs deps.
+**Status:** resolved by `fix(ssl): surface broken CA bundles before provider calls`
+**Severity:** P2 — degrades the agent into opaque provider/client failures until the user repairs deps or CA configuration.
 
 ## Summary
 
-A `git pull` (or `hermes update`) that lands new code without finishing `uv pip install -e .` leaves the certifi CA bundle stale or missing on disk. The first outbound HTTPS call (OpenAI, Telegram, Discord, etc.) then crashes with a raw `ssl.SSLCertVerificationError` and Hermes enters a crash-loop, surfacing only a traceback to the user.
+A partial `hermes update`, interrupted venv repair, or stale CA-bundle environment variable can leave Python TLS configuration pointing at a missing, empty, or unloadable CA bundle. The first outbound HTTPS client creation or request can then fail with a raw `FileNotFoundError: [Errno 2] No such file or directory` or a low-level SSL error that does not name the broken CA path.
 
 ## Root cause
 
-`certifi.where()` returns the path to the CA bundle shipped by the `certifi` package inside the active venv. When the venv is partially refreshed (new `certifi` files copied but old certs in the wheel cache, or a half-deleted install), the bundle can be:
+Hermes uses OpenAI/httpx and requests-based clients for provider calls, model metadata, gateway delivery, and web tools. Those clients inherit CA bundle settings from:
 
-- **missing** (file removed but Python still imports the package),
-- **empty / truncated** (partial write),
-- **unloadable** (cert format mismatch on a Python upgrade).
+- `HERMES_CA_BUNDLE`
+- `SSL_CERT_FILE`
+- `REQUESTS_CA_BUNDLE`
+- `CURL_CA_BUNDLE`
+- the bundled `certifi` package's `cacert.pem`
 
-Hermes used to let those failures bubble up uncaught, so the gateway would log a stacktrace and the agent would retry the same broken network call on the next turn.
+When the venv is partially refreshed, or when one of those env vars points at a file that no longer exists, provider client construction can fail before Hermes has enough context to produce a useful message.
 
 ## Fix
 
-`agent/ssl_guard.py` runs a `verify_ca_bundle()` pre-flight right after the `hermes_bootstrap` import in both `run_agent.py` and `gateway/run.py`. It:
+`agent/ssl_guard.py` validates CA bundle configuration before the OpenAI-compatible provider client is created in `agent/agent_init.py`. It:
 
-1. Resolves the certifi bundle path,
-2. Asserts the file exists and is at least 1 KB,
-3. Builds an `ssl.SSLContext` from it,
-4. Falls back to the system trust store on macOS when the bundle is empty but the system store works (covers corporate proxies / MDM setups),
-5. Raises a typed `SSLConfigurationError` with a clear remediation hint otherwise.
+1. Checks explicit CA bundle env vars and reports the exact broken variable/path,
+2. Verifies `certifi` is importable,
+3. Verifies `certifi.where()` points at an existing file of plausible size,
+4. Builds an `ssl.SSLContext` from each checked bundle,
+5. Raises a typed `SSLConfigurationError` with a repair hint before httpx/OpenAI can raise a raw low-level error.
 
-`run_agent.py` and `gateway/run.py` import the guard in a guarded `try/except` so a bug in the guard itself cannot prevent startup — we log a warning and continue.
-
-`hermes_cli doctor` now exposes a `SSL / CA Certificates` section so users can detect the failure with a single command.
+`hermes_cli doctor` exposes the same check under `SSL / CA Certificates`, so users can diagnose the problem without starting a model session.
 
 ## Recovery
 
-When the guard fires, the user sees:
+When the guard fires during agent init, the user sees a message like:
 
-```
-⚠️ SSL certificate bundle issue detected.
-   Run: pip install -e .
+```text
+Failed to initialize OpenAI client: SSL_CERT_FILE points to a missing CA bundle: C:\path\to\missing\cacert.pem
+Repair: python -m pip install --force-reinstall certifi openai httpx
+If you configured a custom corporate CA bundle, fix or unset the broken CA bundle environment variable.
 ```
 
-`pip install -e .` (or the equivalent `uv pip install -e .`) reinstalls certifi and restores the bundle.
+For a normal corrupted Hermes venv, reinstall the affected client dependencies:
+
+```bash
+python -m pip install --force-reinstall certifi openai httpx
+```
+
+For a custom/corporate CA setup, fix the env var so it points at a real PEM bundle, or unset it if Hermes should use the bundled `certifi` store.
 
 ## Environment escape hatch
 
-Set `HERMES_SKIP_SSL_GUARD=1` to bypass the check. Intended for sandboxed environments that ship their own trust store.
+Set `HERMES_SKIP_SSL_GUARD=1` to bypass the preflight check. This is intended only for sandboxed or managed-trust environments where the Python CA path looks unusual but downstream clients are known to work.

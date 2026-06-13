@@ -4544,6 +4544,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if entry.session_key in self._running_agents:
                 continue
 
+            # Place a sentinel NOW, before the async task is created.
+            # The check above passed, but an inbound message arriving in the
+            # ~same 160 ms window can also pass the check in _handle_message
+            # (which places its own sentinel deeper in the call chain).  By
+            # reserving the slot eagerly we close the gap — the inbound
+            # message sees the session as busy and follows the busy-handler
+            # path (queue / interrupt) instead of creating a duplicate
+            # AIAgent.  (#45456)
+            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
+
             source = entry.origin
             adapter = self.adapters.get(source.platform)
             if adapter is None:

@@ -82,7 +82,11 @@ class TestRedactToolResultIntegration:
         """Real redaction should catch private keys."""
         from model_tools import _redact_tool_result
 
-        result = _redact_tool_result("-----BEGIN RSA PRIVATE KEY-----\nMIIE...")
+        result = _redact_tool_result(
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEpAIBAAKCAQEA7Vx9k2mF3pQzL8nR4tYwGcHb2sJvN6xK1aD5eP0oQ\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
         assert "PRIVATE KEY" not in result
 
     def test_real_redaction_preserves_safe_text(self):

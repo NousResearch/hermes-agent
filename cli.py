@@ -12798,6 +12798,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             style=style,
             full_screen=False,
             mouse_support=False,
+            # The status bar contains wall-clock read-outs (live prompt elapsed
+            # and idle-since-last-turn). Once a turn finishes there may be no
+            # further events to invalidate the app, so prompt_toolkit would keep
+            # rendering the first post-turn value (usually ``✓ 0s``) forever.
+            # A low-rate refresh keeps the clock honest without reintroducing a
+            # custom repaint thread or touching conversation state.
+            refresh_interval=1.0,
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints

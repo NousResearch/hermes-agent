@@ -773,6 +773,7 @@ export const ja = defineLocale({
     back: '戻る',
     searchPlaceholder: 'セッション、ビュー、アクションを検索',
     goTo: '移動',
+    goToSession: 'セッションへ移動',
     commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
@@ -1348,6 +1349,8 @@ export const ja = defineLocale({
     queueSendNext: '次に送信',
     queueSend: '送信',
     queueDelete: '削除',
+    queueStuckTitle: 'キュー内のメッセージを送信できません',
+    queueStuckBody: 'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1794,6 +1797,7 @@ export const ja = defineLocale({
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
+      showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
       thinking: '考え中',
       today: time => `今日 ${time}`,
@@ -1823,6 +1827,7 @@ export const ja = defineLocale({
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
       sendFailed: '承認応答を送信できませんでした',
       run: '実行',
+      command: 'コマンド',
       moreOptions: 'その他の承認オプション',
       allowSession: 'このセッションで許可',
       alwaysAllowMenu: '常に許可…',

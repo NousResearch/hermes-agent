@@ -467,6 +467,10 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           aria-label={p.actionsFor(label)}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+          // Menu close refocuses the trigger — which doubles as the popover
+          // anchor — so the picker reads it as focus-outside and dies on open.
+          // Suppress the refocus and the picker survives.
+          onCloseAutoFocus={event => event.preventDefault()}
         >
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />

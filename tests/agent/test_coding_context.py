@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -449,3 +450,84 @@ class TestDetection:
     def test_bare_dir_is_not_coding(self, tmp_path):
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
+
+
+# ── deleted-CWD tolerance (caller-side getcwd guard) ─────────────────────────
+
+class TestDeletedCwdTolerance:
+    """resolve_agent_cwd() propagates OSError when the process CWD is deleted
+    (no TERMINAL_CWD / session override) — by contract coding_context owns the
+    guard. The fallback must NOT re-call os.getcwd(): that re-raises the same
+    error and blows up posture resolution / workspace-block building.
+    """
+
+    @staticmethod
+    def _kill_getcwd(monkeypatch):
+        def _raise(*args, **kwargs):
+            raise FileNotFoundError("cwd gone")
+
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        # os is the same module object across coding_context and runtime_cwd,
+        # so this kills os.getcwd() everywhere — exactly what a deleted CWD does.
+        monkeypatch.setattr(os, "getcwd", _raise)
+
+    def test_resolve_runtime_mode_survives_getcwd_failure(self, monkeypatch, tmp_path):
+        # Home is a bare dir (no git/markers) so detection deterministically
+        # settles on general — and, critically, never raises.
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._kill_getcwd(monkeypatch)
+        mode = cc.resolve_runtime_mode(
+            platform="cli", config={"agent": {"coding_context": "auto"}}
+        )
+        assert mode.is_coding is False
+        assert mode.kind == "general"
+
+    def test_resolve_runtime_mode_off_survives_getcwd_failure(self, monkeypatch):
+        # The candidate's exact repro: off-mode posture resolution must not raise.
+        self._kill_getcwd(monkeypatch)
+        mode = cc.resolve_runtime_mode(
+            platform="cli", config={"agent": {"coding_context": "off"}}
+        )
+        assert mode.is_coding is False
+
+    def test_build_workspace_block_survives_getcwd_failure(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._kill_getcwd(monkeypatch)
+        # No workspace can be detected for a vanished CWD → empty block, no raise.
+        assert cc.build_coding_workspace_block() == ""
+
+    def test_explicit_cwd_unaffected_by_getcwd_failure(self, monkeypatch, tmp_path):
+        # An explicit cwd never touches os.getcwd(), so a dead getcwd is irrelevant.
+        _git_init(tmp_path)
+        self._kill_getcwd(monkeypatch)
+        mode = cc.resolve_runtime_mode(
+            platform="cli", cwd=tmp_path, config={"agent": {"coding_context": "auto"}}
+        )
+        assert mode.is_coding is True
+        assert "Branch: main" in cc.build_coding_workspace_block(tmp_path)
+
+    def test_resolve_cwd_degrades_to_home(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        self._kill_getcwd(monkeypatch)
+        # Degrades to home (not the temp dir) — compared via the same getcwd-free
+        # resolve the production path uses, so the assertion holds on Windows too
+        # (where even Path.resolve() of an absolute path would call os.getcwd()).
+        result = cc._resolve_cwd(None)
+        assert result == cc._home()
+        assert result.name == "home"
+
+    def test_resolve_cwd_degrades_to_tempdir_when_home_also_dead(self, monkeypatch):
+        def _no_home():
+            raise RuntimeError("no home")
+
+        monkeypatch.setattr(Path, "home", _no_home)
+        self._kill_getcwd(monkeypatch)
+        result = cc._resolve_cwd(None)
+        assert result.is_absolute()
+        assert result == Path(tempfile.gettempdir())

@@ -56,6 +56,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -298,7 +299,33 @@ def _coding_mode(config: Optional[dict[str, Any]]) -> str:
     return "auto"
 
 
+def _safe_resolve(path: Path) -> Path:
+    """``Path.resolve()`` that tolerates a vanished/inaccessible CWD.
+
+    On Windows ``resolve()`` calls ``os.getcwd()`` even for *absolute* paths, so
+    a deleted or unreachable CWD makes it raise ``OSError`` (POSIX only re-reads
+    the CWD for *relative* inputs). Posture detection runs on every prompt build
+    and must degrade rather than crash, so fall back to a getcwd-free
+    normalization. Behaviour is unchanged whenever ``resolve()`` succeeds.
+    """
+    try:
+        return path.resolve()
+    except OSError:
+        return Path(os.path.normpath(path))
+
+
 def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
+    """Resolve the cwd posture detection runs against — never raises.
+
+    ``resolve_agent_cwd()`` deliberately *propagates* ``OSError`` when the
+    process CWD has been deleted (no ``TERMINAL_CWD``/session override); by
+    contract the caller owns the guard (see ``tests/agent/test_runtime_cwd.py``
+    and ``build_environment_hints`` in ``agent/prompt_builder.py``). This is
+    that guard. Re-running ``os.getcwd()`` in the fallback would re-raise the
+    very same error, so a deleted CWD degrades to an absolute, getcwd-free
+    directory (home, then the temp dir) that detection reads as "not a
+    workspace" — posture settles on general instead of crashing prompt build.
+    """
     if cwd:
         return Path(cwd).expanduser()
     try:
@@ -306,11 +333,15 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
 
         return resolve_agent_cwd()
     except Exception:
+        pass
+    try:
         return Path(os.getcwd())
+    except OSError:
+        return _home() or Path(tempfile.gettempdir())
 
 
 def _git_root(cwd: Path) -> Optional[Path]:
-    current = cwd.resolve()
+    current = _safe_resolve(cwd)
     for parent in [current, *current.parents]:
         if (parent / ".git").exists():
             return parent
@@ -319,7 +350,7 @@ def _git_root(cwd: Path) -> Optional[Path]:
 
 def _home() -> Optional[Path]:
     try:
-        return Path.home().resolve()
+        return _safe_resolve(Path.home())
     except (OSError, RuntimeError):
         return None
 
@@ -332,7 +363,7 @@ def _marker_root(cwd: Path) -> Optional[Path]:
     Makefile or AGENTS.md sitting in the home directory is global user config,
     not a project-root signal.
     """
-    current = cwd.resolve()
+    current = _safe_resolve(cwd)
     home = _home()
     for depth, parent in enumerate([current, *current.parents]):
         if depth > 6:
@@ -720,7 +751,7 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
         # giving the model a second absolute path causes it to sometimes run commands
         # in the wrong directory.
         git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
-        if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
+        if git_dir and common_dir and _safe_resolve(Path(git_dir)) != _safe_resolve(Path(common_dir)):
             lines.append("- Worktree: linked (git state shared with primary tree)")
 
         dirty = [f"{n} {label}" for label, n in (

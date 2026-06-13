@@ -350,7 +350,8 @@ TOOLSETS = {
         "includes": [
             "web", "vision", "image_gen",
             "skills", "memory", "session_search",
-            "messaging", "todo", "clarify", "cronjob",
+            "messaging",  # outbound send_message — Time's primary output channel
+            "todo", "clarify", "cronjob",
         ],
     },
 
@@ -604,9 +605,13 @@ TOOLSETS = {
 #   browser        — browser automation (acts as the user)
 #   homeassistant  — controls physical smart-home devices
 #   delegation     — a subagent could regain dangerous tools
+#   kanban         — kanban_create fans out tasks a dispatcher runs with FULL tools
+#   discord_admin  — delete messages, manage roles — privileged org actions
 CORP_DANGEROUS_TOOLSETS = frozenset({
     "terminal", "file", "code_execution",
     "computer_use", "browser", "homeassistant", "delegation",
+    "kanban",        # kanban_create fans out tasks a dispatcher runs with FULL tools
+    "discord_admin", # delete messages, manage roles — privileged org actions
 })
 
 

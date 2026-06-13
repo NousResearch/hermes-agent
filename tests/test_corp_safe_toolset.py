@@ -6,6 +6,8 @@ DANGEROUS_TOOL_NAMES = {
     "execute_code", "computer_use",
     "browser_navigate", "browser_click", "browser_type",
     "ha_call_service", "delegate_task",
+    "kanban_create", "kanban_unblock",
+    "discord_admin",
 }
 
 def test_corp_safe_has_no_dangerous_tools():
@@ -21,6 +23,7 @@ def test_corp_safe_keeps_core_tools():
 
 def test_dangerous_toolsets_listed():
     for ts in ("terminal", "file", "code_execution", "computer_use",
-               "browser", "homeassistant", "delegation"):
+               "browser", "homeassistant", "delegation",
+               "kanban", "discord_admin"):
         assert ts in CORP_DANGEROUS_TOOLSETS
         assert ts in TOOLSETS  # name is real

@@ -1411,12 +1411,15 @@ class TestDoctorStaleMaxIterationsDrift:
 def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path):
     """`hermes doctor` must not hand users `npm audit fix --workspace <name>`:
     that exact form crashes npm with "Cannot read properties of null (reading
-    'edgesOut')" (an arborist bug with workspace-filtered audit fix). The
-    remediation hint for a workspace vulnerability must be the root-level
-    `npm audit fix`, which works.
+    'edgesOut')" (an arborist bug with workspace-filtered audit fix).
 
-    Regression for the Docker reports (Pinched-Nerve / lynch1972) where doctor
-    flagged the web/ui-tui workspaces and the suggested fix command errored out.
+    It must not recommend root-level `npm audit fix` for workspace advisories
+    either: current npm can crash there too with "Cannot read properties of null
+    (reading 'isDescendantOf')" on this tree. The safe guidance is that these
+    build-tool advisories clear via the lockfile/package bump.
+
+    Regression for user reports where doctor flagged the web/ui-tui workspaces
+    and the suggested fix command errored out.
     """
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
@@ -1434,12 +1437,18 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     )
 
     def mock_run(cmd, **kwargs):
-        if "audit" in cmd:
+        if "audit" in cmd and "--workspace" in cmd:
             payload = (
                 '{"metadata": {"vulnerabilities": '
                 '{"critical": 0, "high": 2, "moderate": 0}}}'
             )
             return SimpleNamespace(returncode=1, stdout=payload, stderr="")
+        if "audit" in cmd:
+            payload = (
+                '{"metadata": {"vulnerabilities": '
+                '{"critical": 0, "high": 0, "moderate": 0}}}'
+            )
+            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     import subprocess
@@ -1454,14 +1463,15 @@ def test_npm_audit_fix_hint_avoids_crashing_workspace_flag(monkeypatch, tmp_path
     # The workspace vulnerability is still reported ...
     assert "web workspace" in out
     # ... but the remediation must NOT use the npm-crashing per-workspace form
-    # (`npm audit fix --workspace web` / `--workspace ui-tui`). The unrelated
-    # root target's `--workspaces=false` is a different, non-crashing command.
+    # (`npm audit fix --workspace web` / `--workspace ui-tui`).
     assert "npm audit fix --workspace web" not in out
     assert "npm audit fix --workspace ui-tui" not in out
-    # ... it offers the safe root-level command instead.
-    assert "&& npm audit fix)" in out
+    # ... and it must not point at the root-level form either: npm can crash
+    # there too with `isDescendantOf` on this monorepo tree.
+    assert "npm audit fix" not in out
     # ... and explains the workspace advisories are build-time tooling whose
-    # `npm audit fix` may itself hit a known npm arborist crash, so the user
-    # isn't left thinking a crashing command means a broken Hermes install.
+    # manual remediation may hit a known npm arborist crash, so the user isn't
+    # left thinking a crashing command means a broken Hermes install.
     assert "build-time tooling" in out
     assert "known npm bug" in out
+    assert "lockfile bump" in out

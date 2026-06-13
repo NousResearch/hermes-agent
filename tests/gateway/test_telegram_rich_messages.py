@@ -35,6 +35,7 @@ def _make_adapter(extra=None):
     # so _bot_supports_rich() is satisfied (real Bot.do_api_request is async too).
     bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.edit_message_text = AsyncMock(return_value=MagicMock(message_id=123))
     bot.send_chat_action = AsyncMock()  # keeps the post-send typing re-trigger quiet
     bot.send_message_draft = AsyncMock(return_value=True)  # legacy draft fallback
     adapter._bot = bot
@@ -260,6 +261,54 @@ async def test_rich_gate_tolerates_minimal_bot_without_raw_endpoint():
 
     assert result.success is True
     assert result.message_id == "42"
+
+
+# ── Streaming edits: editMessageText.rich_message ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_happy_path_sends_raw_markdown_for_streaming():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message("12345", "123", RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    call = adapter._bot.do_api_request.call_args
+    assert call.args[0] == "editMessageText"
+    api_kwargs = call.kwargs["api_kwargs"]
+    assert api_kwargs["chat_id"] == 12345
+    assert api_kwargs["message_id"] == 123
+    assert api_kwargs["rich_message"]["markdown"] == RICH_CONTENT
+    # Rich edit must preserve tables/task lists instead of flattening through
+    # the legacy text + MarkdownV2 edit path.
+    assert "text" not in api_kwargs
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_final_also_uses_raw_markdown():
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message("12345", "123", RICH_CONTENT, finalize=True)
+
+    assert result.success is True
+    call = adapter._bot.do_api_request.call_args
+    assert call.args[0] == "editMessageText"
+    assert call.kwargs["api_kwargs"]["rich_message"]["markdown"] == RICH_CONTENT
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_bad_request_falls_back_to_legacy_edit():
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("can't parse rich message"))
+
+    result = await adapter.edit_message("12345", "123", RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.edit_message_text.assert_awaited_once()
 
 
 # ── Streaming drafts: sendRichMessageDraft ─────────────────────────────

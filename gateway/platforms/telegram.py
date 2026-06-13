@@ -1134,6 +1134,57 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._bot_supports_rich()
         )
 
+    async def _try_edit_rich(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> Optional[SendResult]:
+        """Attempt a single ``editMessageText`` rich edit.
+
+        Bot API 10.1 extends ``editMessageText`` with a ``rich_message``
+        parameter. Use that raw endpoint for Telegram streaming edits so tables,
+        task lists, details blocks, formulas, etc. persist instead of being
+        flattened through the legacy ``text`` + MarkdownV2 path.
+
+        Returns a :class:`SendResult`, or ``None`` to signal "fall back to the
+        legacy edit path" for per-message parser failures or missing endpoint
+        capability.
+        """
+        payload: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "rich_message": self._rich_message_payload(content),
+        }
+        try:
+            await self._bot.do_api_request(
+                "editMessageText", api_kwargs=payload, return_type=Message
+            )
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "not modified" in err_str:
+                return SendResult(success=True, message_id=message_id)
+            if self._is_rich_fallback_error(exc):
+                if self._is_rich_capability_error(exc):
+                    self._rich_send_disabled = True
+                logger.debug(
+                    "[%s] editMessageText.rich_message rejected (%s) — falling back to legacy edit",
+                    self.name, exc,
+                )
+                return None
+            is_timeout = "timed out" in err_str
+            is_connect_timeout = self._looks_like_connect_timeout(exc)
+            logger.warning(
+                "[%s] editMessageText.rich_message transient failure: %s",
+                self.name, exc,
+            )
+            return SendResult(
+                success=False,
+                error=str(exc),
+                retryable=(is_connect_timeout or not is_timeout),
+            )
+        return SendResult(success=True, message_id=message_id)
+
     async def _try_send_rich_draft(
         self,
         chat_id: str,
@@ -2469,6 +2520,14 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        # Bot API 10.1 rich edits preserve structured streaming output. Try
+        # this before the legacy 4096-char split path because rich messages have
+        # a larger 32768 UTF-8 character budget and understand tables/task lists.
+        if self._should_attempt_rich(content):
+            rich_result = await self._try_edit_rich(chat_id, message_id, content)
+            if rich_result is not None:
+                return rich_result
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
         # without round-tripping a doomed edit.

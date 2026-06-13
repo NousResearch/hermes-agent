@@ -751,6 +751,9 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    if normalized_base_url:
+        import re as _re
+        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),

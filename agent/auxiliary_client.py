@@ -1144,7 +1144,8 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     normalized = (base_url or "").strip().lower().rstrip("/")
     if not normalized:
         return False
-    if normalized.endswith("/anthropic"):
+    path = urlparse(normalized).path.rstrip("/")
+    if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return True
     hostname = base_url_hostname(normalized)
     if hostname == "api.anthropic.com":

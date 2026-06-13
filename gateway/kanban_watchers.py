@@ -295,6 +295,28 @@ class GatewayKanbanWatchersMixin:
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
+                        if platform_str == "telegram" and kind == "blocked":
+                            metadata["telegram_reply_markup"] = {
+                                "inline_keyboard": [[
+                                    {
+                                        "text": "✅ Approve",
+                                        "callback_data": f"kb:approve:{sub['task_id']}:{board_slug or ''}",
+                                    },
+                                    {
+                                        "text": "❌ Reject",
+                                        "callback_data": f"kb:reject:{sub['task_id']}:{board_slug or ''}",
+                                    },
+                                ], [
+                                    {
+                                        "text": "⏸ Park",
+                                        "callback_data": f"kb:park:{sub['task_id']}:{board_slug or ''}",
+                                    },
+                                    {
+                                        "text": "▶️ Resume",
+                                        "callback_data": f"kb:resume:{sub['task_id']}:{board_slug or ''}",
+                                    },
+                                ]]
+                            }
                         sub_key = (
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",

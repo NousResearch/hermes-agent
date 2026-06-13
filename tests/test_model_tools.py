@@ -12,6 +12,7 @@ from model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     _READ_ONLY_TOOLSET_MAP,
+    _PROFILE_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
 
@@ -555,6 +556,123 @@ class TestVeraReadOnlyToolset:
 
         assert {"read_file", "search_files", "write_file", "patch"} <= file_tool_names
         assert "write_file" in hermes_cli_tool_names
+
+
+# =========================================================================
+# Bob/Steve profile tool schemas
+# =========================================================================
+
+class TestBobSteveProfileToolsets:
+    def _stub_schema_assembly(self, monkeypatch):
+        def fake_get_definitions(tool_names, quiet=False):
+            return [
+                {"type": "function", "function": {"name": name, "parameters": {}}}
+                for name in sorted(tool_names)
+            ]
+
+        monkeypatch.setattr("model_tools.registry.get_definitions", fake_get_definitions)
+        monkeypatch.setattr("tools.schema_sanitizer.sanitize_tool_schemas", lambda tools: tools)
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: type("Cfg", (), {"enabled": "off"})())
+
+    def _tool_names_for(self, enabled_toolsets):
+        return {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(enabled_toolsets, quiet_mode=True)
+        }
+
+    def test_profile_toolsets_reference_registered_tools(self):
+        """MAT-527 B4: profile aliases must use real registry tool names."""
+        registered = set(get_all_tool_names())
+        for profile_name, tool_names in _PROFILE_TOOLSET_MAP.items():
+            missing = set(tool_names) - registered
+            assert not missing, f"{profile_name} references unregistered tools: {sorted(missing)}"
+
+    def test_bob_profile_has_routing_read_only_and_comms_tools(self, monkeypatch):
+        """Bob is a routing/review/comms profile, not an implementation worker."""
+        expected = {
+            "delegate_task",
+            "web_search", "web_extract",
+            "read_file", "search_files",
+            "memory", "todo", "clarify",
+            "skills_list", "skill_view", "skill_manage",
+        }
+        assert set(_PROFILE_TOOLSET_MAP["bob-profile"]) == expected
+
+        denied = {
+            "write_file", "patch",
+            "terminal", "process", "execute_code",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images", "browser_vision",
+            "browser_console", "browser_cdp", "browser_dialog",
+            "image_generate", "video_generate", "text_to_speech",
+            "cronjob", "send_message", "computer_use",
+            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            "discord", "discord_admin",
+            "feishu_drive_reply_comment", "feishu_drive_add_comment",
+            "yb_send_dm", "yb_send_sticker",
+        }
+        assert denied.isdisjoint(_PROFILE_TOOLSET_MAP["bob-profile"])
+
+        self._stub_schema_assembly(monkeypatch)
+        bob_tool_names = self._tool_names_for(["bob-profile"])
+        layered_tool_names = self._tool_names_for(["bob-profile", "hermes-cli"])
+
+        assert bob_tool_names == expected
+        assert layered_tool_names == expected
+        assert denied.isdisjoint(bob_tool_names)
+        assert denied.isdisjoint(layered_tool_names)
+
+    def test_steve_profile_has_implementation_tools_without_generators_or_routing(self, monkeypatch):
+        """Steve is an implementation/QA worker profile with no generators."""
+        expected = {
+            "read_file", "write_file", "patch", "search_files",
+            "terminal", "process",
+            "execute_code", "web_search",
+            # Read-only procedural recall for debugging and post-mortems.
+            "skills_list", "skill_view",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "todo", "memory",
+        }
+        assert set(_PROFILE_TOOLSET_MAP["steve-profile"]) == expected
+
+        denied = {
+            "delegate_task", "clarify",
+            "skill_manage",
+            "web_extract",
+            "image_generate", "video_generate", "text_to_speech",
+            "cronjob", "send_message", "computer_use",
+            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+            "discord", "discord_admin",
+            "feishu_drive_reply_comment", "feishu_drive_add_comment",
+            "yb_send_dm", "yb_send_sticker",
+        }
+        assert denied.isdisjoint(_PROFILE_TOOLSET_MAP["steve-profile"])
+
+        self._stub_schema_assembly(monkeypatch)
+        steve_tool_names = self._tool_names_for(["steve-profile"])
+        layered_tool_names = self._tool_names_for(["steve-profile", "hermes-cli"])
+
+        assert steve_tool_names == expected
+        assert layered_tool_names == expected
+        assert denied.isdisjoint(steve_tool_names)
+        assert denied.isdisjoint(layered_tool_names)
+
+    def test_bob_and_steve_profiles_contrast_with_broad_hermes_cli(self, monkeypatch):
+        """Regression must bite if either profile falls back to hermes-cli."""
+        self._stub_schema_assembly(monkeypatch)
+
+        hermes_cli_tool_names = self._tool_names_for(["hermes-cli"])
+        bob_tool_names = self._tool_names_for(["bob-profile"])
+        steve_tool_names = self._tool_names_for(["steve-profile"])
+
+        assert {"write_file", "terminal", "image_generate", "text_to_speech"} <= hermes_cli_tool_names
+        assert {"write_file", "terminal", "image_generate", "text_to_speech"}.isdisjoint(bob_tool_names)
+        assert {"image_generate", "text_to_speech", "delegate_task", "clarify"}.isdisjoint(steve_tool_names)
+        assert {"write_file", "terminal", "execute_code"} <= steve_tool_names
 
 
 # =========================================================================

@@ -236,10 +236,11 @@ _LEGACY_TOOLSET_MAP = {
 }
 
 
-# Profile-level read-only aliases.  These live in model_tools.py rather than
-# toolsets.py so locked-down verifier profiles can opt into a schema filter
-# without making the alias visible as a general-purpose interactive toolset in
-# `hermes tools`.  MAT-521 A1 uses `vera-read-only` for Vera.
+# Profile-level aliases.  These live in model_tools.py rather than toolsets.py
+# so locked-down or role-scoped profiles can opt into an authoritative schema
+# filter without making the alias visible as a general-purpose interactive
+# toolset in `hermes tools`.  MAT-521 A1 uses `vera-read-only` for Vera; MAT-527
+# B4 extends the same config-driven pattern to Bob and Steve.
 _READ_ONLY_TOOLSET_MAP = {
     "read-only": [
         "web_search", "web_extract",
@@ -259,6 +260,42 @@ _READ_ONLY_TOOLSET_MAP = {
         "browser_navigate", "browser_snapshot", "browser_scroll",
         "browser_back", "browser_get_images", "browser_vision",
     ],
+}
+
+_PROFILE_TOOLSET_MAP = {
+    "bob-profile": [
+        # Routing + delegation
+        "delegate_task",
+        # Read-only inspection
+        "web_search", "web_extract",
+        "read_file", "search_files",
+        # Persistent context + planning/comms
+        "memory", "todo", "clarify",
+        # Skills access and maintenance
+        "skills_list", "skill_view", "skill_manage",
+    ],
+    "steve-profile": [
+        # Implementation files
+        "read_file", "write_file", "patch", "search_files",
+        # Shell/process execution
+        "terminal", "process",
+        # Programmatic execution + web search
+        "execute_code", "web_search",
+        # Read-only procedural recall
+        "skills_list", "skill_view",
+        # Browser QA
+        "browser_navigate", "browser_snapshot", "browser_click",
+        "browser_type", "browser_scroll", "browser_back",
+        "browser_press", "browser_get_images",
+        "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+        # Planning + durable context
+        "todo", "memory",
+    ],
+}
+
+_AUTHORITATIVE_PROFILE_TOOLSET_MAP = {
+    **_READ_ONLY_TOOLSET_MAP,
+    **_PROFILE_TOOLSET_MAP,
 }
 
 
@@ -385,15 +422,16 @@ def _compute_tool_definitions(
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
-        read_only_requested = [
-            ts for ts in effective_enabled_toolsets if ts in _READ_ONLY_TOOLSET_MAP
+        authoritative_profile_requested = [
+            ts for ts in effective_enabled_toolsets if ts in _AUTHORITATIVE_PROFILE_TOOLSET_MAP
         ]
-        if read_only_requested:
-            # Read-only profile aliases are authoritative locks, not additive
-            # convenience aliases.  If a profile/platform accidentally layers
-            # MCP/plugin/default toolsets alongside `vera-read-only`, ignore
-            # those extras so mutating tools cannot leak back into the schema.
-            effective_enabled_toolsets = read_only_requested
+        if authoritative_profile_requested:
+            # Profile aliases are authoritative locks, not additive convenience
+            # aliases.  If a profile/platform accidentally layers MCP/plugin/
+            # default toolsets alongside `vera-read-only`, `bob-profile`, or
+            # `steve-profile`, ignore those extras so out-of-contract tools
+            # cannot leak back into the schema.
+            effective_enabled_toolsets = authoritative_profile_requested
         elif os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
             # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
             # must always receive the lifecycle handoff tools. Assignee
@@ -412,11 +450,11 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif toolset_name in _READ_ONLY_TOOLSET_MAP:
-                read_only_tools = _READ_ONLY_TOOLSET_MAP[toolset_name]
-                tools_to_include.update(read_only_tools)
+            elif toolset_name in _AUTHORITATIVE_PROFILE_TOOLSET_MAP:
+                profile_tools = _AUTHORITATIVE_PROFILE_TOOLSET_MAP[toolset_name]
+                tools_to_include.update(profile_tools)
                 if not quiet_mode:
-                    print(f"✅ Enabled read-only toolset '{toolset_name}': {', '.join(read_only_tools)}")
+                    print(f"✅ Enabled profile toolset '{toolset_name}': {', '.join(profile_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
@@ -441,11 +479,11 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
-            elif toolset_name in _READ_ONLY_TOOLSET_MAP:
-                read_only_tools = _READ_ONLY_TOOLSET_MAP[toolset_name]
-                tools_to_include.difference_update(read_only_tools)
+            elif toolset_name in _AUTHORITATIVE_PROFILE_TOOLSET_MAP:
+                profile_tools = _AUTHORITATIVE_PROFILE_TOOLSET_MAP[toolset_name]
+                tools_to_include.difference_update(profile_tools)
                 if not quiet_mode:
-                    print(f"🚫 Disabled read-only toolset '{toolset_name}': {', '.join(read_only_tools)}")
+                    print(f"🚫 Disabled profile toolset '{toolset_name}': {', '.join(profile_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 

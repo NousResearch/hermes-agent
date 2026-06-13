@@ -7197,26 +7197,7 @@ def _install_psutil_android_compat(
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(psutil_url, archive)
         with tarfile.open(archive) as tar:
-            # Zip slip / symlink-escape guard. Mirrors agent/curator_backup.py.
-            # `pythonhosted.org` is trusted, but a compromised CDN or MITM could
-            # still ship a tarball whose members try to traverse out of tmp_path
-            # via absolute names, `..` segments, or hardlinks/symlinks.
-            for member in tar.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(
-                        f"refusing to extract unsafe path: {name!r}"
-                    )
-                if member.issym() or member.islnk():
-                    raise tarfile.TarError(
-                        f"refusing to extract link member: {name!r}"
-                    )
-            try:
-                tar.extractall(tmp_path, filter="data")  # type: ignore[call-arg]  # nosec B202  -- manual path/link guard above
-            except TypeError:
-                # Python < 3.12 — no filter kwarg; the manual checks above already
-                # cover the main classes of path-traversal abuse.
-                tar.extractall(tmp_path)  # nosec B202  -- manual path/link guard above
+            tar.extractall(tmp_path)
 
         src_root = next(
             p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")

@@ -702,6 +702,42 @@ class TestSensitiveCopyMovePattern:
         assert dangerous is False
 
 
+class TestSensitiveInPlaceEditPattern:
+    """Detect in-place edits to user startup and credential files."""
+
+    def test_sed_in_place_bashrc(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' ~/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_long_in_place_ssh_authorized_keys(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "sed --in-place 's/key/newkey/' ~/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_perl_in_place_netrc(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "perl -i -pe 's/pass/pass2/' ~/.netrc"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_ruby_in_place_absolute_home_zshrc(self):
+        zshrc = Path.home() / ".zshrc"
+        dangerous, key, desc = detect_dangerous_command(
+            f"ruby -i -pe 'gsub(/a/, \"b\")' {zshrc}"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_sed_in_place_regular_file_safe(self):
+        dangerous, key, desc = detect_dangerous_command("sed -i 's/a/b/' notes.txt")
+        assert dangerous is False
+        assert key is None
+
+
 class TestProjectSensitiveTeePattern:
     def test_tee_to_local_dotenv_requires_approval(self):
         dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")

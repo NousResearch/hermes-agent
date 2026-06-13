@@ -2313,6 +2313,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         else:
             _stream_stale_timeout = _stream_stale_timeout_base
 
+    # Bound the stale-stream recovery so a provider connection that goes
+    # silent can never wedge the turn forever.  After the stale timeout the
+    # detector aborts the live transport (which makes the worker's blocked
+    # recv() raise so the inner retry loop reconnects); if the worker is
+    # STILL alive after _max_stale_kills aborts spaced _stale_kill_grace
+    # apart, we synthesize a timeout and abandon the daemon worker — the
+    # same escape hatch the non-streaming stale path uses.
+    _stale_kill_grace = max(1.0, float(os.getenv("HERMES_STREAM_STALE_KILL_GRACE", 10.0)))
+    _max_stale_kills = max(1, int(os.getenv("HERMES_STREAM_STALE_MAX_KILLS", 3)))
+    _stale_kill_count = 0
+    _last_stale_kill_at = 0.0
+    _chunk_time_at_last_kill = 0.0
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()
@@ -2336,40 +2349,105 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
             )
 
-        # Detect stale streams: connections kept alive by SSE pings
-        # but delivering no real chunks.  Kill the client so the
-        # inner retry loop can start a fresh connection.
-        _stale_elapsed = time.time() - last_chunk_time["t"]
-        if _stale_elapsed > _stream_stale_timeout:
+        # Detect stale streams: connections kept alive by SSE pings / TCP
+        # keepalive ACKs but delivering no real chunks.  Abort the ACTIVE
+        # transport so the worker's blocked recv() raises and the inner
+        # retry loop can reconnect.  This MUST target whichever client owns
+        # the live stream: for anthropic_messages that is the Anthropic
+        # client, NOT the OpenAI request client.  The old code only ever
+        # touched the OpenAI client, so an Anthropic stream that went silent
+        # was never aborted — the worker thread stayed blocked, the detector
+        # reset its own timer, and the turn hung forever (timer kept ticking
+        # in the UI while nothing happened).
+        _now = time.time()
+        _stale_elapsed = _now - last_chunk_time["t"]
+        if (
+            _stale_elapsed > _stream_stale_timeout
+            and (_now - _last_stale_kill_at) >= _stale_kill_grace
+        ):
+            # A post-abort retry resets last_chunk_time at the start of its
+            # fresh attempt; if that happened since our last kill the worker
+            # recovered the connection, so reset the kill budget.
+            if _last_stale_kill_at and last_chunk_time["t"] > _chunk_time_at_last_kill:
+                _stale_kill_count = 0
+            _stale_kill_count += 1
+            _last_stale_kill_at = _now
+            _chunk_time_at_last_kill = last_chunk_time["t"]
             _est_ctx = estimate_request_context_tokens(api_kwargs)
             logger.warning(
-                "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
-                "model=%s context=~%s tokens. Killing connection.",
-                _stale_elapsed, _stream_stale_timeout,
-                api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                "Stream stale for %.0fs (threshold %.0fs, abort %d/%d) — no "
+                "chunks received. model=%s context=~%s tokens. "
+                "Aborting connection.",
+                _stale_elapsed, _stream_stale_timeout, _stale_kill_count,
+                _max_stale_kills, api_kwargs.get("model", "unknown"),
+                f"{_est_ctx:,}",
             )
-            agent._buffer_status(
-                f"⚠️ No response from provider for {int(_stale_elapsed)}s "
-                f"(model: {api_kwargs.get('model', 'unknown')}, "
-                f"context: ~{_est_ctx:,} tokens). "
-                f"Reconnecting..."
-            )
+            # Emit LIVE (not buffered): the buffered status channel only
+            # flushes once the turn resolves, which never happens while the
+            # worker is wedged — so the desktop/TUI would otherwise see
+            # nothing.  This gives the UI a real "provider not responding"
+            # signal it can surface and act on.
             try:
-                _close_request_client_once("stale_stream_kill")
+                agent._emit_status(
+                    f"⚠️ No response from provider for {int(_stale_elapsed)}s "
+                    f"(model: {api_kwargs.get('model', 'unknown')}, "
+                    f"context: ~{_est_ctx:,} tokens). Reconnecting…"
+                )
             except Exception:
                 pass
-            # Rebuild the primary client too — its connection pool
-            # may hold dead sockets from the same provider outage.
             try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                if agent.api_mode == "anthropic_messages":
+                    # Cross-thread-safe: shutdown(SHUT_RDWR) the live
+                    # stream's sockets (FD-safe, see #29507) so the worker's
+                    # recv() unblocks with EOF/EPIPE, then rebuild the client
+                    # for the next attempt.
+                    agent._force_close_tcp_sockets(agent._anthropic_client)
+                    agent._rebuild_anthropic_client()
+                else:
+                    _close_request_client_once("stale_stream_kill")
+                    # Rebuild the primary client too — its connection pool
+                    # may hold dead sockets from the same provider outage.
+                    try:
+                        agent._replace_primary_openai_client(
+                            reason="stale_stream_pool_cleanup"
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
-            # Reset the timer so we don't kill repeatedly while
-            # the inner thread processes the closure.
-            last_chunk_time["t"] = time.time()
             agent._touch_activity(
-                f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
+                f"stale stream aborted after {int(_stale_elapsed)}s, reconnecting"
             )
+            # Give the worker a moment to notice the aborted socket and
+            # either raise (→ inner retry reconnects, resetting the timer) or
+            # finish.  We deliberately do NOT reset last_chunk_time here: the
+            # _last_stale_kill_at grace gate prevents re-killing every tick,
+            # and leaving the true last-chunk timestamp intact is what lets
+            # the escalation below detect a worker that never unblocks.
+            t.join(timeout=_stale_kill_grace)
+            if not t.is_alive():
+                continue
+            # Worker is STILL blocked after the abort.  If we've spent the
+            # whole reconnect budget, stop the unbounded hang: synthesize a
+            # timeout so the turn surfaces an error (the daemon worker is
+            # abandoned — same contract as the non-streaming stale path).
+            if _stale_kill_count >= _max_stale_kills:
+                if result["error"] is None and result["response"] is None:
+                    result["error"] = TimeoutError(
+                        f"Streaming API call stalled: no chunks for "
+                        f"{int(_stale_elapsed)}s across {_stale_kill_count} "
+                        f"reconnect attempts (stale threshold "
+                        f"{int(_stream_stale_timeout)}s)."
+                    )
+                try:
+                    agent._emit_status(
+                        "❌ Provider stopped responding and could not be "
+                        f"reconnected after {_stale_kill_count} attempts — "
+                        "ending this turn. Please try again."
+                    )
+                except Exception:
+                    pass
+                break
 
         if agent._interrupt_requested:
             try:

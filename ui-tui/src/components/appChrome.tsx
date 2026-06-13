@@ -18,12 +18,40 @@ import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
+const BUSY_STATUS_SHIMMER_MS = 180
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-// Keep verb segment width stable so status-bar content to the right doesn't
-// jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
+export const BUSY_STATUS_TEXT = 'working'
+// Keep the busy-text segment width stable so status-bar content to the right
+// doesn't jitter.  The reservation intentionally matches the old rotating-verb
+// slot (longest verb + ellipsis) even though the visible word is now static.
+export const BUSY_STATUS_PAD_LEN = Math.max(
+  BUSY_STATUS_TEXT.length,
+  VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1
+)
+export const padBusyStatusText = (text = BUSY_STATUS_TEXT) => text.padEnd(BUSY_STATUS_PAD_LEN, ' ')
+
+export type BusyStatusTone = 'base' | 'peak' | 'soft'
+export interface BusyStatusSegment {
+  char: string
+  tone: BusyStatusTone
+}
+
+const BUSY_STATUS_WAVE_LEAD = 2
+const BUSY_STATUS_WAVE_TRAIL = 2
+
+export const busyStatusShimmerSegments = (frame: number): BusyStatusSegment[] => {
+  const chars = [...BUSY_STATUS_TEXT]
+  const cycle = chars.length + BUSY_STATUS_WAVE_LEAD + BUSY_STATUS_WAVE_TRAIL
+  const center = (((Math.floor(frame) % cycle) + cycle) % cycle) - BUSY_STATUS_WAVE_LEAD
+
+  return chars.map((char, index) => {
+    const distance = Math.abs(index - center)
+    const tone = distance === 0 ? 'peak' : distance === 1 ? 'soft' : 'base'
+
+    return { char, tone }
+  })
+}
 
 const COMPOSER_DIVIDER_INSET = 2
 export const composerDividerLine = (cols: number) => '─'.repeat(Math.max(1, Math.floor(cols) - COMPOSER_DIVIDER_INSET))
@@ -40,23 +68,22 @@ const SPINNER_TICK_MS = 100
 interface IndicatorRender {
   frame: string
   intervalMs: number
-  // When false, FaceTicker hides the rotating verb and just shows the
-  // glyph + duration.  Lets `unicode` stay minimal while the other
-  // styles keep the verb-rotation flavour users associate with the
-  // running… status.
-  showVerb: boolean
+  // When false, FaceTicker hides the busy text and just shows the glyph +
+  // duration.  Lets `unicode` stay minimal while the other styles keep the
+  // visible working indicator.
+  showBusyText: boolean
 }
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showBusyText: true }
   }
 
   if (style === 'emoji') {
     return {
       frame: EMOJI_FRAMES[tick % EMOJI_FRAMES.length] ?? '⚕ ',
       intervalMs: SPINNER_TICK_MS * 6,
-      showVerb: true
+      showBusyText: true
     }
   }
 
@@ -64,7 +91,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
     return {
       frame: ASCII_FRAMES[tick % ASCII_FRAMES.length] ?? '|',
       intervalMs: SPINNER_TICK_MS,
-      showVerb: true
+      showBusyText: true
     }
   }
 
@@ -75,7 +102,7 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   const spinner = unicodeSpinners.braille
   const frame = spinner.frames[tick % spinner.frames.length] ?? '⠋'
 
-  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
+  return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showBusyText: false }
 }
 
 // `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
@@ -105,61 +132,117 @@ export const MAX_DURATION_WIDTH = Math.max(
   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
 )
 
-// Display width to reserve for the busy indicator so its verb + elapsed-time
+// Display width to reserve for the busy indicator so its text + elapsed-time
 // tail can't shove the model off-screen on narrow terminals. Style-aware:
-// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
-// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
-// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
+// `unicode` is a bare 1-col braille spinner with no busy text, while
+// kaomoji/emoji/ascii add a fixed-width `working` slot; any style adds a
+// bounded elapsed-time tail.  Mirrors FaceTicker's
+// `frame + busyStatusSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
+  const { showBusyText } = renderIndicator(style, 0)
+  const busyText = showBusyText ? 1 + BUSY_STATUS_PAD_LEN : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
-  return indicatorFrameWidth(style) + verb + duration
+  return indicatorFrameWidth(style) + busyText + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function BusyStatusWord({
+  baseColor,
+  frame,
+  highlightColor,
+  softHighlightColor
+}: {
+  baseColor: string
+  frame: number
+  highlightColor: string
+  softHighlightColor: string
+}) {
+  const padding = padBusyStatusText().slice(BUSY_STATUS_TEXT.length)
+
+  return (
+    <>
+      {busyStatusShimmerSegments(frame).map(({ char, tone }, index) => (
+        <Text
+          bold={tone === 'peak'}
+          color={tone === 'peak' ? highlightColor : tone === 'soft' ? softHighlightColor : baseColor}
+          key={`${index}-${char}`}
+        >
+          {char}
+        </Text>
+      ))}
+      {padding}
+    </>
+  )
+}
+
+function FaceTicker({
+  color,
+  highlightColor,
+  softHighlightColor,
+  startedAt,
+  style
+}: {
+  color: string
+  highlightColor: string
+  softHighlightColor: string
+  startedAt?: null | number
+  style: IndicatorStyle
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [shimmerTick, setShimmerTick] = useState(BUSY_STATUS_WAVE_LEAD)
   const [now, setNow] = useState(() => Date.now())
 
-  // Pre-compute cadence + verb-visibility for the active style so an
-  // `/indicator` switch re-arms the interval (and skips the verb timer
-  // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+  // Pre-compute cadence + busy-text visibility for the active style so an
+  // `/indicator` switch re-arms the interval (and skips the shimmer timer for
+  // text-less styles like `unicode`) without leaving the previous timer
+  // dangling.
+  const { intervalMs, showBusyText } = renderIndicator(style, 0)
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+
+    // Shimmer timer is gated on `showBusyText` — `unicode` style hides the
+    // text entirely, so cycling the wave would be an avoidable re-render.
+    const shimmer = showBusyText
+      ? setInterval(() => setShimmerTick(n => n + 1), BUSY_STATUS_SHIMMER_MS)
+      : null
 
     return () => {
       clearInterval(glyph)
       clearInterval(clock)
 
-      if (verb !== null) {
-        clearInterval(verb)
+      if (shimmer !== null) {
+        clearInterval(shimmer)
       }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, showBusyText])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+
+  const busyStatusSegment = showBusyText ? (
+    <>
+      {' '}
+      <BusyStatusWord
+        baseColor={color}
+        frame={shimmerTick}
+        highlightColor={highlightColor}
+        softHighlightColor={softHighlightColor}
+      />
+    </>
+  ) : null
   // Leading space keeps a gap between the frame and the duration when the
-  // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
+  // busy text is hidden (e.g. `unicode` spinner style).  When the busy text
   // IS shown, its trailing padding already provides the gap, so the extra
   // space is harmless.
+
   const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
 
   return (
     <Text color={color}>
       {frame}
-      {verbSegment}
+      {busyStatusSegment}
       {durationSegment}
     </Text>
   )
@@ -528,7 +611,13 @@ export function StatusRule({
           <Text color={t.color.border}>{'─ '}</Text>
           {hasField('status') ? (
             busy ? (
-              <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+              <FaceTicker
+                color={statusColor}
+                highlightColor={t.color.accent}
+                softHighlightColor={t.color.label}
+                startedAt={turnStartedAt}
+                style={indicatorStyle}
+              />
             ) : showNotice ? null : (
               <Text color={statusColor} wrap="truncate-end">
                 {status}

@@ -1,14 +1,19 @@
+import { PassThrough } from 'stream'
+
+import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { StatusRule } from '../components/appChrome.js'
 import { ZERO } from '../domain/usage.js'
+import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type ElementProps = {
   children?: React.ReactNode
   onClick?: unknown
 }
+type StatusRulePropsForTest = Parameters<typeof StatusRule>[0]
 
 type ReactNodeLike = React.ReactNode
 
@@ -98,7 +103,7 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
   return textContent(node).includes(needle) ? node : null
 }
 
-const baseProps = {
+const baseProps: StatusRulePropsForTest = {
   bgCount: 0,
   busy: false,
   cols: 100,
@@ -110,8 +115,34 @@ const baseProps = {
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
   turnStartedAt: null,
-  usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+  usage: { ...ZERO, context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
   voiceLabel: ''
+}
+
+const renderStatusRuleText = (overrides: Partial<StatusRulePropsForTest>) => {
+  const stdout = new PassThrough()
+  const stdin = new PassThrough()
+  const stderr = new PassThrough()
+  let output = ''
+
+  Object.assign(stdout, { columns: 120, isTTY: false, rows: 24 })
+  Object.assign(stdin, { isTTY: false })
+  Object.assign(stderr, { isTTY: false })
+  stdout.on('data', chunk => {
+    output += chunk.toString()
+  })
+
+  const instance = renderSync(React.createElement(StatusRule, { ...baseProps, ...overrides }), {
+    patchConsole: false,
+    stderr: stderr as NodeJS.WriteStream,
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream
+  })
+
+  instance.unmount()
+  instance.cleanup()
+
+  return stripAnsi(output)
 }
 
 describe('StatusRule background-subagent indicator', () => {
@@ -175,8 +206,8 @@ describe('StatusRule background-subagent indicator', () => {
   })
 
   it('drops the subagent segment before the bg segment on a narrow terminal', () => {
-    // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
-    // (88) too — both gone. Assert the lower-priority subagent indicator is
+    // cols=44 is below the subagents breakpoint (92) and the bg breakpoint
+    // (88), so both drop. Assert the lower-priority subagent indicator is
     // not shown when space is tight even with a live count.
     const element = StatusRule({
       ...baseProps,
@@ -188,6 +219,36 @@ describe('StatusRule background-subagent indicator', () => {
     expect(textContent(element)).not.toContain('⛓')
   })
 })
+
+describe('StatusRule busy indicator', () => {
+  it('renders the static working label with spinner, elapsed duration, model, and context', () => {
+    const text = renderStatusRuleText({
+      busy: true,
+      indicatorStyle: 'ascii',
+      turnStartedAt: Date.now() - 2500
+    })
+
+    expect(text).toContain('working')
+    expect(text).toMatch(/ · \d+s/)
+    expect(text).toContain('opus 4.8')
+    expect(text).toContain('50k')
+    expect(text).not.toMatch(/pondering|contemplating|reasoning|synthesizing/)
+  })
+
+  it('keeps unicode style textless while still showing spinner, duration, model, and context', () => {
+    const text = renderStatusRuleText({
+      busy: true,
+      indicatorStyle: 'unicode',
+      turnStartedAt: Date.now() - 2500
+    })
+
+    expect(text).not.toContain('working')
+    expect(text).toMatch(/ · \d+s/)
+    expect(text).toContain('opus 4.8')
+    expect(text).toContain('50k')
+  })
+})
+
 
 describe('StatusRule live session count', () => {
   it('hides the live session count from the status bar', () => {

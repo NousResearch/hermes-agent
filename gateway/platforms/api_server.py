@@ -53,6 +53,18 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.ingress import (
+    _coerce_request_bool,
+    _content_has_visible_payload,
+    _multimodal_validation_error,
+    _normalize_chat_completions_request,
+    _normalize_chat_content,
+    _normalize_multimodal_content,
+    _normalize_responses_request,
+    _normalize_run_request,
+    _normalize_session_chat_request,
+    _openai_error,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -90,8 +102,6 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
-MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
-MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -101,266 +111,6 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     except (TypeError, ValueError):
         return default
 
-
-_TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
-_FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
-
-
-def _coerce_request_bool(value: Any, default: bool = False) -> bool:
-    """Normalize boolean-like API payload values.
-
-    External clients should send real JSON booleans, but some OpenAI-compatible
-    frontends and middleware serialize flags like ``stream`` as strings.  Using
-    Python truthiness on those values misroutes requests because ``"false"`` is
-    still truthy.  Treat only explicit bool-ish scalars as booleans; everything
-    else falls back to the caller's default.
-    """
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in _TRUE_REQUEST_BOOL_STRINGS:
-            return True
-        if normalized in _FALSE_REQUEST_BOOL_STRINGS:
-            return False
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    return default
-
-
-def _normalize_chat_content(
-    content: Any, *, _max_depth: int = 10, _depth: int = 0,
-) -> str:
-    """Normalize OpenAI chat message content into a plain text string.
-
-    Some clients (Open WebUI, LobeChat, etc.) send content as an array of
-    typed parts instead of a plain string::
-
-        [{"type": "text", "text": "hello"}, {"type": "input_text", "text": "..."}]
-
-    This function flattens those into a single string so the agent pipeline
-    (which expects strings) doesn't choke.
-
-    Defensive limits prevent abuse: recursion depth, list size, and output
-    length are all bounded.
-    """
-    if _depth > _max_depth:
-        return ""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
-
-    if isinstance(content, list):
-        parts: List[str] = []
-        total_len = 0
-        items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
-        for item in items:
-            if isinstance(item, str):
-                if item:
-                    part = item[:MAX_NORMALIZED_TEXT_LENGTH]
-                    parts.append(part)
-                    total_len += len(part)
-            elif isinstance(item, dict):
-                item_type = str(item.get("type") or "").strip().lower()
-                if item_type in {"text", "input_text", "output_text"}:
-                    text = item.get("text", "")
-                    if text:
-                        try:
-                            part = str(text)[:MAX_NORMALIZED_TEXT_LENGTH]
-                            parts.append(part)
-                            total_len += len(part)
-                        except Exception:
-                            pass
-                # Silently skip image_url / other non-text parts
-            elif isinstance(item, list):
-                nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
-                if nested:
-                    parts.append(nested)
-                    total_len += len(nested)
-            # Check accumulated size
-            if total_len >= MAX_NORMALIZED_TEXT_LENGTH:
-                break
-        result = "\n".join(parts)
-        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
-
-    # Fallback for unexpected types (int, float, bool, etc.)
-    try:
-        result = str(content)
-        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
-    except Exception:
-        return ""
-
-
-# Content part type aliases used by the OpenAI Chat Completions and Responses
-# APIs.  We accept both spellings on input and emit a single canonical internal
-# shape (``{"type": "text", ...}`` / ``{"type": "image_url", ...}``) that the
-# rest of the agent pipeline already understands.
-_TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
-_IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
-_FILE_PART_TYPES = frozenset({"file", "input_file"})
-
-
-def _normalize_multimodal_content(content: Any) -> Any:
-    """Validate and normalize multimodal content for the API server.
-
-    Returns a plain string when the content is text-only, or a list of
-    ``{"type": "text"|"image_url", ...}`` parts when images are present.
-    The output shape is the native OpenAI Chat Completions vision format,
-    which the agent pipeline accepts verbatim (OpenAI-wire providers) or
-    converts (``_preprocess_anthropic_content`` for Anthropic).
-
-    Raises ``ValueError`` with an OpenAI-style code on invalid input:
-      * ``unsupported_content_type`` — file/input_file/file_id parts, or
-        non-image ``data:`` URLs.
-      * ``invalid_image_url`` — missing URL or unsupported scheme.
-      * ``invalid_content_part`` — malformed text/image objects.
-
-    Callers translate the ValueError into a 400 response.
-    """
-    # Scalar passthrough mirrors ``_normalize_chat_content``.
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
-    if not isinstance(content, list):
-        # Mirror the legacy text-normalizer's fallback so callers that
-        # pre-existed image support still get a string back.
-        return _normalize_chat_content(content)
-
-    items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
-    normalized_parts: List[Dict[str, Any]] = []
-    text_accum_len = 0
-
-    for part in items:
-        if isinstance(part, str):
-            if part:
-                trimmed = part[:MAX_NORMALIZED_TEXT_LENGTH]
-                normalized_parts.append({"type": "text", "text": trimmed})
-                text_accum_len += len(trimmed)
-            continue
-
-        if not isinstance(part, dict):
-            # Ignore unknown scalars for forward compatibility with future
-            # Responses API additions (e.g. ``refusal``).  The same policy
-            # the text normalizer applies.
-            continue
-
-        raw_type = part.get("type")
-        part_type = str(raw_type or "").strip().lower()
-
-        if part_type in _TEXT_PART_TYPES:
-            text = part.get("text")
-            if text is None:
-                continue
-            if not isinstance(text, str):
-                text = str(text)
-            if text:
-                trimmed = text[:MAX_NORMALIZED_TEXT_LENGTH]
-                normalized_parts.append({"type": "text", "text": trimmed})
-                text_accum_len += len(trimmed)
-            continue
-
-        if part_type in _IMAGE_PART_TYPES:
-            detail = part.get("detail")
-            image_ref = part.get("image_url")
-            # OpenAI Responses sends ``input_image`` with a top-level
-            # ``image_url`` string; Chat Completions sends ``image_url`` as
-            # ``{"url": "...", "detail": "..."}``.  Support both.
-            if isinstance(image_ref, dict):
-                url_value = image_ref.get("url")
-                detail = image_ref.get("detail", detail)
-            else:
-                url_value = image_ref
-            if not isinstance(url_value, str) or not url_value.strip():
-                raise ValueError("invalid_image_url:Image parts must include a non-empty image URL.")
-            url_value = url_value.strip()
-            lowered = url_value.lower()
-            if lowered.startswith("data:"):
-                if not lowered.startswith("data:image/") or "," not in url_value:
-                    raise ValueError(
-                        "unsupported_content_type:Only image data URLs are supported. "
-                        "Non-image data payloads are not supported."
-                    )
-            elif not (lowered.startswith("http://") or lowered.startswith("https://")):
-                raise ValueError(
-                    "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
-                )
-            image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
-            if detail is not None:
-                if not isinstance(detail, str) or not detail.strip():
-                    raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
-                image_part["image_url"]["detail"] = detail.strip()
-            normalized_parts.append(image_part)
-            continue
-
-        if part_type in _FILE_PART_TYPES:
-            raise ValueError(
-                "unsupported_content_type:Inline image inputs are supported, "
-                "but uploaded files and document inputs are not supported on this endpoint."
-            )
-
-        # Unknown part type — reject explicitly so clients get a clear error
-        # instead of a silently dropped turn.
-        raise ValueError(
-            f"unsupported_content_type:Unsupported content part type {raw_type!r}. "
-            "Only text and image_url/input_image parts are supported."
-        )
-
-    if not normalized_parts:
-        return ""
-
-    # Text-only: collapse to a plain string so downstream logging/trajectory
-    # code sees the native shape and prompt caching on text-only turns is
-    # unaffected.
-    if all(p.get("type") == "text" for p in normalized_parts):
-        return "\n".join(p["text"] for p in normalized_parts if p.get("text"))
-
-    return normalized_parts
-
-
-def _content_has_visible_payload(content: Any) -> bool:
-    """True when content has any text or image attachment.  Used to reject empty turns."""
-    if isinstance(content, str):
-        return bool(content.strip())
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict):
-                ptype = str(part.get("type") or "").strip().lower()
-                if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
-                    return True
-                if ptype in _IMAGE_PART_TYPES:
-                    return True
-    return False
-
-
-def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Response":
-    """Translate a ``_normalize_multimodal_content`` ValueError into a 400 response."""
-    raw = str(exc)
-    code, _, message = raw.partition(":")
-    if not message:
-        code, message = "invalid_content_part", raw
-    return web.json_response(
-        _openai_error(message, code=code, param=param),
-        status=400,
-    )
-
-
-def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
-    """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
-    user_message = body.get("message") or body.get("input")
-    if not _content_has_visible_payload(user_message):
-        return None, web.json_response(
-            _openai_error("Missing 'message' field", code="missing_message"),
-            status=400,
-        )
-    try:
-        return _normalize_multimodal_content(user_message), None
-    except ValueError as exc:
-        return None, _multimodal_validation_error(exc, param=param)
 
 
 def check_api_server_requirements() -> bool:
@@ -1556,17 +1306,15 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        user_message, err = _session_chat_user_message(body)
+        normalized_request, err = _normalize_session_chat_request(body)
         if err is not None:
             return err
-        system_prompt = body.get("system_message") or body.get("instructions")
-        if system_prompt is not None and not isinstance(system_prompt, str):
-            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        assert normalized_request is not None
         history = self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
-            user_message=user_message,
+            user_message=normalized_request.user_message,
             conversation_history=history,
-            ephemeral_system_prompt=system_prompt,
+            ephemeral_system_prompt=normalized_request.system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
         )
@@ -1600,12 +1348,10 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        user_message, err = _session_chat_user_message(body)
+        normalized_request, err = _normalize_session_chat_request(body)
         if err is not None:
             return err
-        system_prompt = body.get("system_message") or body.get("instructions")
-        if system_prompt is not None and not isinstance(system_prompt, str):
-            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        assert normalized_request is not None
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -1649,13 +1395,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         async def _run_and_signal() -> None:
             try:
-                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
+                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": normalized_request.user_message}}))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
-                    user_message=user_message,
+                    user_message=normalized_request.user_message,
                     conversation_history=history,
-                    ephemeral_system_prompt=system_prompt,
+                    ephemeral_system_prompt=normalized_request.system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
@@ -1663,7 +1409,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
-                turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
+                turn_messages = self._turn_transcript_messages(history, normalized_request.user_message, result) if isinstance(result, dict) else []
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -1738,49 +1484,16 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
-        messages = body.get("messages")
-        if not messages or not isinstance(messages, list):
-            return web.json_response(
-                {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
-                status=400,
-            )
+        normalized_request, err = _normalize_chat_completions_request(body)
+        if err is not None:
+            return err
+        assert normalized_request is not None
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
-
-        # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
-        system_prompt = None
-        conversation_messages: List[Dict[str, str]] = []
-
-        for idx, msg in enumerate(messages):
-            role = msg.get("role", "")
-            raw_content = msg.get("content", "")
-            if role == "system":
-                # System messages don't support images (Anthropic rejects, OpenAI
-                # text-model systems don't render them).  Flatten to text.
-                content = _normalize_chat_content(raw_content)
-                if system_prompt is None:
-                    system_prompt = content
-                else:
-                    system_prompt = system_prompt + "\n" + content
-            elif role in {"user", "assistant"}:
-                try:
-                    content = _normalize_multimodal_content(raw_content)
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
-                conversation_messages.append({"role": role, "content": content})
-
-        # Extract the last user message as the primary input
-        user_message: Any = ""
-        history = []
-        if conversation_messages:
-            user_message = conversation_messages[-1].get("content", "")
-            history = conversation_messages[:-1]
-
-        if not _content_has_visible_payload(user_message):
-            return web.json_response(
-                {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
-                status=400,
-            )
+        system_prompt = normalized_request.system_prompt
+        conversation_messages = list(normalized_request.conversation_messages)
+        user_message = normalized_request.user_message
+        history = list(normalized_request.history)
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
@@ -2815,67 +2528,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        raw_input = body.get("input")
-        if raw_input is None:
-            return web.json_response(_openai_error("Missing 'input' field"), status=400)
+        normalized_request, err = _normalize_responses_request(body)
+        if err is not None:
+            return err
+        assert normalized_request is not None
 
-        instructions = body.get("instructions")
-        previous_response_id = body.get("previous_response_id")
-        conversation = body.get("conversation")
-        store = _coerce_request_bool(body.get("store"), default=True)
-
-        # conversation and previous_response_id are mutually exclusive
-        if conversation and previous_response_id:
-            return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
+        instructions = normalized_request.instructions
+        previous_response_id = normalized_request.previous_response_id
+        conversation = normalized_request.conversation
+        store = normalized_request.store
+        conversation_history = list(normalized_request.conversation_history)
+        input_messages = list(normalized_request.input_messages)
+        user_message = normalized_request.user_message
+        history_from_input_messages = normalized_request.history_from_input_messages
 
         # Resolve conversation name to latest response_id
         if conversation:
             previous_response_id = self._response_store.get_conversation(conversation)
             # No error if conversation doesn't exist yet — it's a new conversation
 
-        # Normalize input to message list
-        input_messages: List[Dict[str, Any]] = []
-        if isinstance(raw_input, str):
-            input_messages = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            for idx, item in enumerate(raw_input):
-                if isinstance(item, str):
-                    input_messages.append({"role": "user", "content": item})
-                elif isinstance(item, dict):
-                    role = item.get("role", "user")
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": role, "content": content})
-        else:
-            return web.json_response(_openai_error("'input' must be a string or array"), status=400)
-
-        # Accept explicit conversation_history from the request body.
-        # This lets stateless clients supply their own history instead of
-        # relying on server-side response chaining via previous_response_id.
-        # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, Any]] = []
-        raw_history = body.get("conversation_history")
-        if raw_history:
-            if not isinstance(raw_history, list):
-                return web.json_response(
-                    _openai_error("'conversation_history' must be an array of message objects"),
-                    status=400,
-                )
-            for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
-                        status=400,
-                    )
-                try:
-                    entry_content = _normalize_multimodal_content(entry["content"])
-                except ValueError as exc:
-                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
-                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+        if conversation_history and previous_response_id:
+            logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
         stored_session_id = None
         if not conversation_history and previous_response_id:
@@ -2889,11 +2562,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 instructions = stored.get("instructions")
 
         # Append new input messages to history (all but the last become history)
-        for msg in input_messages[:-1]:
-            conversation_history.append(msg)
+        if not history_from_input_messages:
+            for msg in input_messages[:-1]:
+                conversation_history.append(msg)
 
-        # Last input message is the user_message
-        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        # Last input message is the user_message, already normalized above.
         if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
@@ -3651,38 +3324,19 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
-        raw_input = body.get("input")
-        if not raw_input:
-            return web.json_response(_openai_error("Missing 'input' field"), status=400)
+        normalized_request, err = _normalize_run_request(body)
+        if err is not None:
+            return err
+        assert normalized_request is not None
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
-
-        instructions = body.get("instructions")
-        previous_response_id = body.get("previous_response_id")
-
-        # Accept explicit conversation_history from the request body.
-        # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
-        raw_history = body.get("conversation_history")
-        if raw_history:
-            if not isinstance(raw_history, list):
-                return web.json_response(
-                    _openai_error("'conversation_history' must be an array of message objects"),
-                    status=400,
-                )
-            for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
-                        status=400,
-                    )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+        instructions = normalized_request.instructions
+        previous_response_id = normalized_request.previous_response_id
+        conversation_history: List[Dict[str, str]] = list(normalized_request.conversation_history)
+        user_message = normalized_request.user_message
 
         stored_session_id = None
+        if conversation_history and previous_response_id:
+            logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
@@ -3693,21 +3347,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # When input is a multi-message array, extract all but the last
         # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-            for msg in raw_input[:-1]:
-                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                    content = msg["content"]
-                    if isinstance(content, list):
-                        # Flatten multi-part content blocks to text
-                        content = " ".join(
-                            part.get("text", "") for part in content
-                            if isinstance(part, dict) and part.get("type") == "text"
-                        )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+        # Done inside _normalize_run_request when no explicit history exists.
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
+        session_id = normalized_request.session_id or stored_session_id or run_id
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()

@@ -1,9 +1,9 @@
-import type { ScrollBoxHandle } from '@hermes/ink'
+import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ImageAttachResponse } from '../gatewayTypes.js'
+import type { ImageAttachResponse, SessionCloseResponse } from '../gatewayTypes.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -29,6 +29,22 @@ export interface StateSetter<T> {
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
+
+export type NoticeLevel = 'error' | 'info' | 'success' | 'warn'
+
+// Credits/usage notice surfaced in the status bar. Shape is snake_case to
+// match the gateway WS wire (`notification.show` payload) and the existing
+// `Usage` type — no camelCase mapping layer. The `text` already carries its
+// own leading glyph (⚠ • ✕ ✓) from the Python policy, so the renderer only
+// colours it by `level` and never adds another glyph.
+export interface Notice {
+  id?: string
+  key?: string
+  kind?: 'sticky' | 'ttl'
+  level?: NoticeLevel
+  text: string
+  ttl_ms?: null | number
+}
 
 // Single source of truth for indicator style names.  Union type is
 // derived from this tuple so adding/removing a style only touches one
@@ -77,8 +93,9 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
-  picker: boolean
+  pluginsHub: boolean
   secret: null | SecretReq
+  sessions: boolean
   skillsHub: boolean
   sudo: null | SudoReq
 }
@@ -103,9 +120,15 @@ export interface UiState {
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   info: null | SessionInfo
+  liveSessionCount: number
   inlineDiffs: boolean
-  mouseTracking: boolean
+  mouseTracking: MouseTrackingMode
+  notice: Notice | null
+  pasteCollapseLines: number
+  pasteCollapseChars: number
+
   sections: SectionVisibility
+  sessionTitle: string
   showCost: boolean
   showReasoning: boolean
   indicatorStyle: IndicatorStyle
@@ -216,6 +239,7 @@ export interface InputHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
   wheelStep: number
 }
@@ -233,6 +257,10 @@ export interface GatewayEventHandlerContext {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
     newSession: (msg?: string, title?: string) => void
+    // Set by useMainApp's exit handler to the session that was live when the
+    // gateway died unexpectedly; consumed once by the next `gateway.ready` so a
+    // respawn resumes that session instead of forging a fresh one.
+    recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -254,6 +282,7 @@ export interface GatewayEventHandlerContext {
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -277,7 +306,9 @@ export interface SlashHandlerContext {
   session: {
     closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
+    dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
+    newLiveSession: (msg?: string, title?: string) => void
     newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
@@ -295,6 +326,7 @@ export interface SlashHandlerContext {
   voice: {
     setVoiceEnabled: StateSetter<boolean>
     setVoiceRecordKey: (v: ParsedVoiceRecordKey) => void
+    setVoiceTts: StateSetter<boolean>
   }
 }
 
@@ -304,6 +336,10 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
+  activateLiveSession: (id: string) => void
+  closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
+  newLiveSession: () => void
+  newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void
@@ -332,6 +368,7 @@ export interface AppLayoutProgressProps {
 export interface AppLayoutStatusProps {
   cwdLabel: string
   goodVibesTick: number
+  lastTurnEndedAt: null | number
   sessionStartedAt: null | number
   showStickyPrompt: boolean
   statusColor: string
@@ -350,7 +387,7 @@ export interface AppLayoutTranscriptProps {
 export interface AppLayoutProps {
   actions: AppLayoutActions
   composer: AppLayoutComposerProps
-  mouseTracking: boolean
+  mouseTracking: MouseTrackingMode
   progress: AppLayoutProgressProps
   status: AppLayoutStatusProps
   transcript: AppLayoutTranscriptProps
@@ -362,8 +399,12 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
+  onActiveSessionSelect: (sessionId: string) => void
+  onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void
-  onPickerSelect: (sessionId: string) => void
+  onNewLiveSession: () => void
+  onNewPromptSession: (prompt: string, modelArg?: string) => void
+  onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number

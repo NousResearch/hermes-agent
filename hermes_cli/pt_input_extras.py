@@ -81,3 +81,40 @@ def install_ctrl_enter_alias() -> int:
             ANSI_SEQUENCES[seq] = alt_enter
             changed += 1
     return changed
+
+
+def install_ignored_terminal_sequences() -> int:
+    """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they
+    are consumed by the VT100 parser before they reach key bindings or
+    the input buffer.
+
+    Currently covers focus reports:
+      - ``\\x1b[I`` — terminal regained focus (focus in)
+      - ``\\x1b[O`` — terminal lost focus (focus out)
+
+    Ghostty, iTerm2, and some xterm builds can emit these sequences when
+    the user switches tabs / windows or when a multiplexer toggles focus
+    tracking upstream. prompt_toolkit does not map these by default, so
+    its parser falls back to literal key presses (ESC, ``[``, ``I``/``O``)
+    and inserts ``[I``/``[O`` into the prompt buffer after the ESC byte
+    is handled.
+
+    Registering them as ``Keys.Ignore`` is parser-level — strictly
+    cleaner than post-hoc regex stripping in the input sanitizer because
+    the bytes never reach the buffer. ``setdefault`` is used so any user
+    or downstream registration wins.
+
+    Returns the number of sequences whose mapping was changed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    changed = 0
+    for seq in ("\x1b[I", "\x1b[O"):
+        if seq not in ANSI_SEQUENCES:
+            ANSI_SEQUENCES[seq] = Keys.Ignore
+            changed += 1
+    return changed

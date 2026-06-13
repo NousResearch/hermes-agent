@@ -23,12 +23,25 @@ from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+# Freeze YOLO mode at module import time. Reading os.environ on every call
+# would allow any skill running inside the process to set this variable and
+# instantly bypass all approval checks — a prompt-injection escalation path.
+_YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
+
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
 # process-global env var for session identity is racy. Keep env fallback for
 # legacy single-threaded callers, but prefer the context-local value when set.
 _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
+    default="",
+)
+_approval_turn_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_turn_id",
+    default="",
+)
+_approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_tool_call_id",
     default="",
 )
 
@@ -50,6 +63,8 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         # (e.g. bare tool-only imports, minimal test environments).
         return
     try:
+        kwargs.setdefault("turn_id", _approval_turn_id.get())
+        kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() already swallows per-callback errors, so reaching here
@@ -67,6 +82,27 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_current_observability_context(
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+) -> tuple[contextvars.Token[str], contextvars.Token[str]]:
+    """Bind active tool correlation IDs to approval hooks."""
+    return (
+        _approval_turn_id.set(turn_id or ""),
+        _approval_tool_call_id.set(tool_call_id or ""),
+    )
+
+
+def reset_current_observability_context(
+    tokens: tuple[contextvars.Token[str], contextvars.Token[str]],
+) -> None:
+    """Restore prior approval hook correlation IDs."""
+    turn_token, tool_token = tokens
+    _approval_tool_call_id.reset(tool_token)
+    _approval_turn_id.reset(turn_token)
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -115,13 +151,33 @@ def _is_gateway_approval_context() -> bool:
     return bool(_get_session_platform())
 
 # Sensitive write targets that should trigger approval even when referenced
-# via shell expansions like $HOME or $HERMES_HOME.
+# via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
+# active profile home path such as /home/hermes/.hermes/config.yaml. The
+# resolved-absolute form is folded into the ~/.hermes/ patterns at detection
+# time by _normalize_command_for_detection() — see the rewrite step there — so
+# these static patterns stay free of any import-time path snapshot (which would
+# go stale when HERMES_HOME is set after this module is imported, e.g. under the
+# hermetic test conftest or any deferred-profile-resolution path).
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|'
     r'(?:\$home|\$\{home\})/\.hermes/|'
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
+)
+# ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
+# permanent-approval allowlist live here, and the config cache is mtime-keyed
+# so a write takes effect mid-session (the agent could flip approvals.mode=off
+# and immediately bypass the gate). Pair the write_file/patch deny (file_tools
+# _check_sensitive_path) with terminal-side coverage so `sed -i`, `tee`, `>`,
+# `cp`, etc. targeting it are gated too — otherwise the deny is unpaired
+# theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
+# well as ~/.hermes/.
+_HERMES_CONFIG_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'config\.yaml\b'
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
@@ -148,6 +204,7 @@ _SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
+    rf'{_HERMES_CONFIG_PATH}|'
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
@@ -344,7 +401,7 @@ DANGEROUS_PATTERNS = [
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
-    (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -362,6 +419,13 @@ DANGEROUS_PATTERNS = [
     # terminates all running agents mid-work.
     (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # Docker container lifecycle — any user with docker.sock mounted (a common
+    # Docker Compose pattern) gives the agent the ability to restart/stop/kill
+    # containers without approval.  These are agent-initiated lifecycle operations
+    # that should always require user consent, just like `hermes gateway restart`
+    # already does for the gateway process.
+    (r'\bdocker\s+compose\s+(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
+    (r'\bdocker\s+(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
@@ -379,6 +443,21 @@ DANGEROUS_PATTERNS = [
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
+    # .env). sed -i bypasses the redirection/tee patterns above because it
+    # mutates the file directly. Pairs the file_tools write_file/patch deny so
+    # the terminal side is not an open door. See #14639.
+    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
+    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    # perl -i and ruby -i perform the same in-place mutation as sed -i but are
+    # not caught by the -e/-c script-execution pattern above (which targets code
+    # evaluation, not file mutation). Pairs the sed -i coverage from #14639.
+    # The -i flag can appear as its own token after other flags
+    # (`perl -p -i -e ... config.yaml`), combined (`perl -pi -e`), or with a
+    # backup suffix (`perl -i.bak`). Match any flag token containing `i`
+    # anywhere in the args, not just the first token — `perl -e '...'` (code
+    # eval, no -i) does not trip because it has no `-...i` flag token.
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
@@ -464,6 +543,51 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
+    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
+    command = re.sub(r"''|\"\"", '', command)
+    # Fold the resolved absolute active-profile home path into the canonical
+    # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
+    # gateway deployments the agent often references the resolved absolute path
+    # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
+    # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
+    # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
+    # after this module is imported — as the hermetic test conftest does.
+    command = _rewrite_resolved_hermes_home(command)
+    return command
+
+
+def _rewrite_resolved_hermes_home(command: str) -> str:
+    """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
+
+    Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
+    form) and replaces an occurrence of ``<home>/`` in *command* with
+    ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
+    patterns match. No-op when the path can't be resolved or doesn't appear.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home().expanduser()
+        candidates = [
+            str(home).rstrip("/"),
+            str(home.resolve(strict=False)).rstrip("/"),
+        ]
+    except Exception:
+        return command
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
+        # unrelated paths: require an absolute path with at least one non-root
+        # component. The active profile home is always a real directory like
+        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
+        normalized = path.rstrip("/")
+        if not normalized.startswith("/") or normalized.count("/") < 2:
+            continue
+        command = command.replace(normalized + "/", "~/.hermes/")
     return command
 
 
@@ -898,9 +1022,9 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 
         answer = (response.choices[0].message.content or "").strip().upper()
 
-        if "APPROVE" in answer:
+        if answer == "APPROVE":
             return "approve"
-        elif "DENY" in answer:
+        elif answer == "DENY":
             return "deny"
         else:
             return "escalate"
@@ -925,7 +1049,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    if env_type in {"docker", "singularity", "modal", "daytona"}:
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -940,7 +1064,7 @@ def check_dangerous_command(command: str, env_type: str,
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -968,6 +1092,11 @@ def check_dangerous_command(command: str, env_type: str,
                         "approvals.cron_mode: approve in config.yaml."
                     ),
                 }
+        logger.warning(
+            "AUTO-APPROVED dangerous command in non-interactive non-gateway context "
+            "(pattern: %s): %s — set HERMES_INTERACTIVE or HERMES_GATEWAY_SESSION to require approval.",
+            description, command[:200],
+        )
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
@@ -1040,6 +1169,107 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
+                            *, surface: str = "gateway") -> dict:
+    """Enqueue *approval_data*, notify the user, and block the calling agent
+    thread until the request is resolved or the gateway approval timeout
+    elapses — firing pre/post approval hooks and cleaning up the queue entry.
+
+    Shared by the terminal command guard (``check_all_command_guards``) and
+    the execute_code guard (``check_execute_code_guard``) so the fiddly
+    heartbeat-polling wait loop lives in one place.
+
+    Returns ``{"resolved": bool, "choice": str|None}`` on completion, or
+    ``{"resolved": False, "choice": None, "notify_failed": True}`` if the
+    notify callback raised.  Persistence of an approved choice and building
+    the final tool-facing result dict remain the caller's responsibility.
+    """
+    command = approval_data.get("command", "")
+    description = approval_data.get("description", "")
+    primary_key = approval_data.get("pattern_key", "")
+    all_keys = approval_data.get("pattern_keys", [primary_key])
+
+    entry = _ApprovalEntry(approval_data)
+    with _lock:
+        _gateway_queues.setdefault(session_key, []).append(entry)
+
+    def _drop_entry() -> None:
+        with _lock:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+
+    # Notify plugins that an approval is being requested. Fires before the
+    # gateway notify callback so observers get the event in real time.
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=command,
+        description=description,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface=surface,
+    )
+
+    # Notify the user (bridges sync agent thread → async gateway)
+    try:
+        notify_cb(approval_data)
+    except Exception as exc:
+        logger.warning("Gateway approval notify failed: %s", exc)
+        _drop_entry()
+        return {"resolved": False, "choice": None, "notify_failed": True}
+
+    # Block until the user responds or timeout (default 5 min). Poll in short
+    # slices so we can fire activity heartbeats every ~10s to the agent's
+    # inactivity tracker — otherwise the gateway watchdog kills the agent
+    # while the user is still responding. Mirrors _wait_for_process() cadence.
+    timeout = _get_approval_config().get("gateway_timeout", 300)
+    try:
+        timeout = int(timeout)
+    except (ValueError, TypeError):
+        timeout = 300
+
+    try:
+        from tools.environments.base import touch_activity_if_due
+    except Exception:  # pragma: no cover
+        touch_activity_if_due = None
+
+    _now = time.monotonic()
+    _deadline = _now + max(timeout, 0)
+    _activity_state = {"last_touch": _now, "start": _now}
+    resolved = False
+    while True:
+        _remaining = _deadline - time.monotonic()
+        if _remaining <= 0:
+            break
+        if entry.event.wait(timeout=min(1.0, _remaining)):
+            resolved = True
+            break
+        if touch_activity_if_due is not None:
+            touch_activity_if_due(_activity_state, "waiting for user approval")
+
+    _drop_entry()
+
+    choice = entry.result
+    # Normalize outcome for the post hook. Unresolved (timeout) and None both
+    # mean the user never responded; report that explicitly so plugins can
+    # distinguish timeout from explicit deny.
+    _outcome = "timeout" if not resolved else (choice if choice else "timeout")
+    _fire_approval_hook(
+        "post_approval_response",
+        command=command,
+        description=description,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        session_key=session_key,
+        surface=surface,
+        choice=_outcome,
+    )
+    return {"resolved": resolved, "choice": choice}
+
+
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
@@ -1050,7 +1280,7 @@ def check_all_command_guards(command: str, env_type: str,
     other was shown to the user.
     """
     # Skip containers for both checks
-    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+    if env_type in {"docker", "singularity", "modal", "daytona"}:
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1076,7 +1306,7 @@ def check_all_command_guards(command: str, env_type: str,
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
@@ -1190,121 +1420,60 @@ def check_all_command_guards(command: str, env_type: str,
 
         if notify_cb is not None:
             # --- Blocking gateway approval (queue-based) ---
-            # Each call gets its own _ApprovalEntry so parallel subagents
-            # and execute_code threads can block concurrently.
+            # Block the agent thread until the user responds; the notify +
+            # heartbeat wait loop is shared with check_execute_code_guard via
+            # _await_gateway_decision().
             approval_data = {
                 "command": command,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
+                # "always" to session scope below, so the UI must not offer it.
+                "allow_permanent": not has_tirith,
             }
-            entry = _ApprovalEntry(approval_data)
-            with _lock:
-                _gateway_queues.setdefault(session_key, []).append(entry)
-
-            # Notify plugins that an approval is being requested. Fires before
-            # the gateway notify callback so observers (e.g. macOS notifier
-            # plugins, audit logs, Slack alerts) get the event in real time.
-            _fire_approval_hook(
-                "pre_approval_request",
-                command=command,
-                description=combined_desc,
-                pattern_key=primary_key,
-                pattern_keys=list(all_keys),
-                session_key=session_key,
-                surface="gateway",
+            decision = _await_gateway_decision(
+                session_key, notify_cb, approval_data, surface="gateway"
             )
-
-            # Notify the user (bridges sync agent thread → async gateway)
-            try:
-                notify_cb(approval_data)
-            except Exception as exc:
-                logger.warning("Gateway approval notify failed: %s", exc)
-                with _lock:
-                    queue = _gateway_queues.get(session_key, [])
-                    if entry in queue:
-                        queue.remove(entry)
-                    if not queue:
-                        _gateway_queues.pop(session_key, None)
+            if decision.get("notify_failed"):
                 return {
                     "approved": False,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
-
-            # Block until the user responds or timeout (default 5 min).
-            # Poll in short slices so we can fire activity heartbeats every
-            # ~10s to the agent's inactivity tracker.  Without this, the
-            # blocking event.wait() never touches activity, and the
-            # gateway's inactivity watchdog (agent.gateway_timeout, default
-            # 1800s) kills the agent while the user is still responding to
-            # the approval prompt.  Mirrors the _wait_for_process() cadence
-            # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
-            try:
-                timeout = int(timeout)
-            except (ValueError, TypeError):
-                timeout = 300
-
-            try:
-                from tools.environments.base import touch_activity_if_due
-            except Exception:  # pragma: no cover
-                touch_activity_if_due = None
-
-            _now = time.monotonic()
-            _deadline = _now + max(timeout, 0)
-            _activity_state = {"last_touch": _now, "start": _now}
-            resolved = False
-            while True:
-                _remaining = _deadline - time.monotonic()
-                if _remaining <= 0:
-                    break
-                # 1s poll slice — the event is set immediately when the
-                # user responds, so slice length only controls heartbeat
-                # cadence, not user-visible responsiveness.
-                if entry.event.wait(timeout=min(1.0, _remaining)):
-                    resolved = True
-                    break
-                if touch_activity_if_due is not None:
-                    touch_activity_if_due(
-                        _activity_state, "waiting for user approval"
-                    )
-
-            # Clean up this entry from the queue
-            with _lock:
-                queue = _gateway_queues.get(session_key, [])
-                if entry in queue:
-                    queue.remove(entry)
-                if not queue:
-                    _gateway_queues.pop(session_key, None)
-
-            choice = entry.result
-            # Normalize outcome for the post hook. Unresolved (timeout) and
-            # None both mean the user never responded; report that explicitly
-            # so plugins can distinguish timeout from explicit deny.
-            _outcome = (
-                "timeout" if not resolved
-                else (choice if choice else "timeout")
-            )
-            _fire_approval_hook(
-                "post_approval_response",
-                command=command,
-                description=combined_desc,
-                pattern_key=primary_key,
-                pattern_keys=list(all_keys),
-                session_key=session_key,
-                surface="gateway",
-                choice=_outcome,
-            )
+            resolved = decision["resolved"]
+            choice = decision["choice"]
 
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                # Consent contract: silence is NOT consent, and an explicit
+                # deny is also a hard halt — both produce a BLOCKED outcome
+                # that names the agent's most common evasion paths (retry,
+                # rephrase, achieve the same outcome via a different command).
+                # See issue #24912 for the original incident.
+                if not resolved:
+                    reason = "timed out without user response"
+                    timeout_addendum = " Silence is not consent."
+                    outcome = "timeout"
+                else:
+                    reason = "denied by user"
+                    timeout_addendum = ""
+                    outcome = "denied"
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": (
+                        f"BLOCKED: Command {reason}. The user has NOT consented "
+                        f"to this action. Do NOT retry this command, do NOT "
+                        f"rephrase it, and do NOT attempt the same outcome via "
+                        f"a different command. Stop the current workflow and "
+                        f"wait for the user to respond before taking any "
+                        f"further destructive or irreversible action."
+                        f"{timeout_addendum}"
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": outcome,
+                    "user_consent": False,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
@@ -1332,7 +1501,8 @@ def check_all_command_guards(command: str, env_type: str,
         return {
             "approved": False,
             "pattern_key": primary_key,
-            "status": "approval_required",
+            "status": "pending_approval",
+            "approval_pending": True,
             "command": command,
             "description": combined_desc,
             "message": (
@@ -1368,9 +1538,18 @@ def check_all_command_guards(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": (
+                "BLOCKED: User denied this command. The user has NOT consented "
+                "to this action. Do NOT retry this command, do NOT rephrase "
+                "it, and do NOT attempt the same outcome via a different "
+                "command. Stop the current workflow and wait for the user "
+                "to respond before taking any further destructive or "
+                "irreversible action."
+            ),
             "pattern_key": primary_key,
             "description": combined_desc,
+            "outcome": "denied",
+            "user_consent": False,
         }
 
     # Persist approval for each warning individually
@@ -1386,6 +1565,186 @@ def check_all_command_guards(command: str, env_type: str,
 
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
+
+
+def check_execute_code_guard(code: str, env_type: str) -> dict:
+    """Approve an execute_code script before its child process is spawned.
+
+    execute_code runs arbitrary local Python — the script can call
+    ``subprocess``, ``os.system``, ``ctypes``, or other process/file APIs
+    directly, none of which pass through ``terminal()`` /
+    ``DANGEROUS_PATTERNS``. In gateway/ask contexts we fail closed by approving
+    the script as a whole before it runs (#30882). Returns the same dict
+    contract as ``check_all_command_guards``.
+
+    Scope (documented limitation, #30882): in a purely local non-interactive
+    non-gateway session (no TTY, not gateway, not cron-deny) this returns
+    approved — matching the existing terminal auto-approve contract. The
+    hardline floor still blocks catastrophic ``terminal()`` commands the script
+    issues; running arbitrary code headlessly without any approval surface is
+    trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode`` to
+    require approval).
+    """
+    pattern_key = "execute_code"
+    description = (
+        "execute_code script execution. The script can spawn subprocesses or "
+        "mutate files without passing through terminal command approval; "
+        "approval is one-shot for this run."
+    )
+
+    # Isolated backends already sandbox the child — matches the container skip
+    # in check_all_command_guards / check_dangerous_command.
+    if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        return {"approved": True, "message": None}
+
+    # --yolo or approvals.mode=off: bypass (session- or process-scoped).
+    approval_mode = _get_approval_mode()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+
+    is_gateway = _is_gateway_approval_context()
+    is_ask = env_var_enabled("HERMES_EXEC_ASK")
+
+    # Cron: no user is present to approve arbitrary code.
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        if _get_cron_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). Cron jobs run without a user present "
+                    "to approve it. Use normal tools instead, or set "
+                    "approvals.cron_mode: approve only if this cron profile "
+                    "is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
+
+    # Only gateway/ask contexts get the one-shot whole-script approval.
+    #   * CLI interactive: the script's terminal() calls are guarded per-call
+    #     (context now propagates into the RPC thread, #33057); a whole-script
+    #     prompt would fire on every execute_code call.
+    #   * Local non-interactive non-gateway: documented limitation above.
+    if not is_gateway and not is_ask:
+        return {"approved": True, "message": None}
+
+    session_key = get_current_session_key()
+    # Built only now (past the early-return gates) so the common non-approval
+    # paths don't pay to copy a potentially-large script into this string.
+    command = f"execute_code <<'PY'\n{code}\nPY"
+
+    # Check session/permanent approval — same gate as check_all_command_guards.
+    # Without this, "Approve session" / "Always" choices are stored but never
+    # consulted, so every execute_code call re-prompts the user (#39275).
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
+    # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
+    # suppresses the redundant whole-script prompt; the per-call terminal()
+    # guards (restored by context propagation) still run independently.
+    if approval_mode == "smart":
+        verdict = _smart_approve(command, description)
+        if verdict == "approve":
+            logger.debug("Smart approval: auto-approved execute_code for session %s",
+                         session_key)
+            return {"approved": True, "message": None,
+                    "smart_approved": True, "description": description}
+        if verdict == "deny":
+            return {
+                "approved": False,
+                "message": ("BLOCKED by smart approval: execute_code script "
+                            "execution was assessed as genuinely dangerous. "
+                            "Do NOT retry."),
+                "smart_denied": True,
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+        # verdict == "escalate" → fall through to manual approval
+
+    notify_cb = None
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+
+    if notify_cb is None:
+        # No gateway callback registered (e.g. ask-mode without a notifier):
+        # surface a pending approval for backward compatibility.
+        submit_pending(session_key, {
+            "command": command,
+            "pattern_key": pattern_key,
+            "pattern_keys": [pattern_key],
+            "description": description,
+        })
+        return {
+            "approved": False,
+            "pattern_key": pattern_key,
+            "status": "pending_approval",
+            "approval_pending": True,
+            "command": command,
+            "description": description,
+            "message": (
+                f"⚠️ {description}. Asking the user for approval.\n\n"
+                f"**Code:**\n```python\n{code}\n```"
+            ),
+        }
+
+    approval_data = {
+        "command": command,
+        "pattern_key": pattern_key,
+        "pattern_keys": [pattern_key],
+        "description": description,
+    }
+    decision = _await_gateway_decision(
+        session_key, notify_cb, approval_data, surface="gateway"
+    )
+    if decision.get("notify_failed"):
+        return {
+            "approved": False,
+            "message": ("BLOCKED: Failed to send execute_code approval request "
+                        "to user. Do NOT retry."),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "notify_failed",
+            "user_consent": False,
+        }
+
+    resolved = decision["resolved"]
+    choice = decision["choice"]
+
+    if not resolved or choice is None or choice == "deny":
+        reason = "timed out without user response" if not resolved else "denied by user"
+        addendum = " Silence is not consent." if not resolved else ""
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: execute_code script {reason}. The user has NOT "
+                f"consented to running this code. Do NOT retry, do NOT rephrase "
+                f"the script, and do NOT attempt the same outcome via a "
+                f"different tool.{addendum}"
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "timeout" if not resolved else "denied",
+            "user_consent": False,
+        }
+
+    # Approved — persist based on scope (same logic as check_all_command_guards).
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+    # choice == "once": no persistence — approval lasts this single call only.
+
+    return {"approved": True, "message": None,
+            "user_approved": True, "description": description}
 
 
 # Load permanent allowlist from config on module import

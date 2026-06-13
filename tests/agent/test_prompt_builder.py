@@ -18,7 +18,6 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
-    build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -277,6 +276,54 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
+        """Posture-driven demotion keeps every skill NAME visible.
+
+        Demoted categories lose their descriptions, never their entries —
+        full pruning caused silent capability loss in a real workflow
+        (agent-created skills are the model's project memory, and models
+        don't rediscover them via skills_list once the index goes quiet).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things\n---\n"
+            )
+
+        result = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+        # Coding-adjacent category keeps its full entry.
+        assert "pr-review" in result and "Does pr-review things" in result
+        # Demoted category: name stays visible, description is dropped.
+        assert "tweet-stuff" in result
+        assert "Does tweet-stuff things" not in result
+        assert "social-media [names only]" in result
+        # Disclosure note explains the demotion and how to load.
+        assert "skill_view" in result
+
+    def test_compact_categories_demote_nested_and_miss_cache_separately(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: thread-writer\ndescription: Write threads\n---\n"
+        )
+        # Nested category ("social-media/twitter") demoted via its parent:
+        # name visible, description gone.
+        compact = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
+        )
+        assert "thread-writer" in compact
+        assert "Write threads" not in compact
+        # Unfiltered call must not be served from the compacted cache entry.
+        full = build_skills_system_prompt()
+        assert "Write threads" in full
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -441,7 +488,9 @@ class TestBuildNousSubscriptionPrompt:
                 features={
                     "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
+                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
                 },
@@ -452,7 +501,7 @@ class TestBuildNousSubscriptionPrompt:
 
         assert "Browser Use" in prompt
         assert "Modal execution is optional" in prompt
-        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -465,7 +514,9 @@ class TestBuildNousSubscriptionPrompt:
                 features={
                     "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
                 },
@@ -784,12 +835,29 @@ class TestPromptBuilderConstants:
 
     def test_platform_hints_known_platforms(self):
         assert "whatsapp" in PLATFORM_HINTS
+        assert "whatsapp_cloud" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
+
+    def test_whatsapp_cloud_hint_mentions_24h_window(self):
+        """The Cloud API's 24-hour conversation window is a hard rule the
+        agent should know about. Phase 5 (template fallback) was deferred,
+        so the model needs to know free-form replies outside the window
+        will fail with Graph error 131047 — otherwise it'll cheerfully
+        try to schedule delayed messages that silently break."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
+        assert "131047" in hint
+
+    def test_whatsapp_cloud_hint_advertises_media(self):
+        """Cloud adapter supports the same MEDIA:/path/ convention as
+        Baileys for outbound attachments."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "MEDIA:" in hint
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
@@ -926,6 +994,29 @@ class TestEnvironmentHints:
         assert "Terminal backend: docker" in result
         assert "inside" in result.lower()
 
+    def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
+        """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
+        (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        configured = tmp_path / "workspace"
+        configured.mkdir()
+        monkeypatch.setenv("TERMINAL_CWD", str(configured))
+        monkeypatch.chdir(tmp_path)
+        _pb._clear_backend_probe_cache()
+        assert f"Current working directory: {configured}" in _pb.build_environment_hints()
+
+    def test_build_environment_hints_falls_back_to_launch_dir(self, monkeypatch, tmp_path):
+        """The #19242 local-CLI contract: no TERMINAL_CWD → the launch dir."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.chdir(tmp_path)
+        _pb._clear_backend_probe_cache()
+        assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
+
     def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
         """When the probe succeeds, its output must appear in the hint block."""
         import agent.prompt_builder as _pb
@@ -942,11 +1033,63 @@ class TestEnvironmentHints:
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb
-        for backend in ("docker", "singularity", "modal", "daytona", "ssh", "vercel_sandbox"):
+        for backend in ("docker", "singularity", "modal", "daytona", "ssh"):
             assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
                 f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
                 f"info is suppressed in the system prompt"
             )
+
+    def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
+        """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Running inside an OpenShell sandbox." in result
+        # The factual host block must still come first.
+        assert result.index("Host:") < result.index("OpenShell")
+
+    def test_environment_hint_env_var_overrides_config(self, monkeypatch):
+        """Env var wins over config.yaml agent.environment_hint."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "ENV-WINS")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "ENV-WINS" in result
+        assert "CONFIG-VALUE" not in result
+
+    def test_environment_hint_falls_back_to_config(self, monkeypatch):
+        """With no env var, the config.yaml value is used."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"environment_hint": "CONFIG-VALUE"}},
+        )
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "CONFIG-VALUE" in result
+
+    def test_environment_hint_empty_by_default(self, monkeypatch):
+        """No hint configured anywhere → no embedder text, host block intact."""
+        import agent.prompt_builder as _pb
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"agent": {}})
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host:" in result
 
 
 # =========================================================================
@@ -1144,6 +1287,12 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_grok(self):
         assert "grok" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_qwen(self):
+        assert "qwen" in TOOL_USE_ENFORCEMENT_MODELS
+
+    def test_enforcement_models_includes_deepseek(self):
+        assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
 
@@ -1186,6 +1335,5 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 
 

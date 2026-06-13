@@ -2,7 +2,6 @@
 
 import sys
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch, call
 
 import pytest
 
@@ -237,11 +236,13 @@ def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monk
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
 
     calls = []
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question, default)) or True)
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append(("install", force, system, run_as_user, enable_on_startup)),
     )
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start", system)))
 
     args = SimpleNamespace(
         gateway_command="install",
@@ -251,7 +252,12 @@ def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monk
     )
     gateway.gateway_command(args)
 
-    assert calls == [(False, False, None)]
+    assert calls == [
+        ("prompt", "Start the gateway now after installing the service?", True),
+        ("prompt", "Start the gateway automatically on login/boot with systemd?", True),
+        ("install", False, False, None, True),
+        ("start", False),
+    ]
 
 
 def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkeypatch):
@@ -266,6 +272,67 @@ def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkey
     gateway.gateway_command(args)
 
     assert calls == [False]
+
+
+def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkeypatch):
+    """Windows manual restart must not fall back to foreground run_gateway().
+
+    A Telegram-hosted agent may run `hermes gateway restart` via the terminal
+    tool. The generic manual fallback stops the gateway and then calls
+    run_gateway() in the same foreground subprocess; on Windows that subprocess
+    can be reaped when its gateway parent is terminated, leaving the gateway
+    down. The Windows backend restarts via detached pythonw.exe even when no
+    Scheduled Task / Startup item is installed.
+    """
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "restart", lambda: calls.append("restart"))
+    monkeypatch.setattr(
+        gateway,
+        "run_gateway",
+        lambda *args, **kwargs: pytest.fail("Windows restart must not use foreground run_gateway()"),
+    )
+    monkeypatch.setattr(
+        gateway,
+        "stop_profile_gateway",
+        lambda: pytest.fail("Windows restart must not use generic manual stop fallback"),
+    )
+
+    args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == ["restart"]
+
+
+def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
+    """If the Windows backend cannot launch, keep the existing fallback."""
+    import hermes_cli.gateway_windows as gateway_windows
+
+    calls = []
+
+    def fail_restart():
+        calls.append("restart")
+        raise OSError("simulated detached backend failure")
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: False)
+    monkeypatch.setattr(gateway_windows, "restart", fail_restart)
+    monkeypatch.setattr(gateway, "stop_profile_gateway", lambda: calls.append("stop") or False)
+    monkeypatch.setattr(gateway, "_wait_for_gateway_exit", lambda *args, **kwargs: calls.append("wait"))
+    monkeypatch.setattr(gateway, "run_gateway", lambda *args, **kwargs: calls.append("run"))
+
+    args = SimpleNamespace(gateway_command="restart", system=False, all=False)
+    gateway.gateway_command(args)
+
+    assert calls == ["restart", "stop", "wait", "run"]
 
 
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):
@@ -302,6 +369,16 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Synthetic unit with a non-temp home: the real generator bakes the
+    # hermetic test HERMES_HOME (a tmp dir), which the temp-home write
+    # guard correctly refuses.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []
@@ -323,6 +400,43 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     ]
     assert helper_calls == [True]
     assert "User service installed and enabled" in out
+
+
+def test_systemd_install_can_skip_enable_on_startup(monkeypatch, tmp_path, capsys):
+    unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
+
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Non-temp home so the temp-home write guard (which trips on the
+    # hermetic test HERMES_HOME) stays out of the way.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
+
+    calls = []
+    helper_calls = []
+
+    def fake_run(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+    monkeypatch.setattr(gateway, "_ensure_user_systemd_env", lambda: None)
+    monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+
+    gateway.systemd_install(force=False, enable_on_startup=False)
+
+    out = capsys.readouterr().out
+    assert unit_path.exists()
+    assert [cmd for cmd, _ in calls] == [
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+    assert helper_calls == [True]
+    assert "User service installed!" in out
+    assert "installed and enabled" not in out
 
 
 def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):
@@ -405,13 +519,55 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None: calls.append((force, system, run_as_user)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append((force, system, run_as_user, enable_on_startup)),
     )
 
     scope, did_install = gateway.install_linux_gateway_from_setup(force=True)
 
     assert (scope, did_install) == ("system", True)
-    assert calls == [(True, True, "alice")]
+    assert calls == [(True, True, "alice", True)]
+
+
+def test_install_linux_gateway_from_setup_passes_startup_choice(monkeypatch):
+    monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "user")
+
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append((force, system, run_as_user, enable_on_startup)),
+    )
+
+    scope, did_install = gateway.install_linux_gateway_from_setup(force=False, enable_on_startup=False)
+
+    assert (scope, did_install) == ("user", True)
+    assert calls == [(False, False, None, False)]
+
+
+def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "is_managed", lambda: False)
+
+    answers = iter([False, False])
+    calls = []
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question, default)) or next(answers))
+    monkeypatch.setattr(
+        gateway,
+        "systemd_install",
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append(("install", force, system, run_as_user, enable_on_startup)),
+    )
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start", system)))
+
+    args = SimpleNamespace(gateway_command="install", force=True, system=False, run_as_user=None)
+    gateway.gateway_command(args)
+
+    assert calls == [
+        ("prompt", "Start the gateway now after installing the service?", True),
+        ("prompt", "Start the gateway automatically on login/boot with systemd?", True),
+        ("install", True, False, None, False),
+    ]
 
 
 def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkeypatch):
@@ -440,6 +596,28 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway.shutil, "which", lambda name: "wmic.exe" if name == "wmic" else None)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "CommandLine=C:\\Program Files\\Hermes\\Hermes.EXE gateway run --replace\n"
+                    "ProcessId=2468\n\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
 
 
 # ---------------------------------------------------------------------------

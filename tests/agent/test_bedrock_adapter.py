@@ -605,6 +605,74 @@ class TestBuildConverseKwargs:
         assert kwargs["inferenceConfig"]["temperature"] == 0.7
         assert kwargs["inferenceConfig"]["topP"] == 0.9
 
+    def test_omits_sampling_params_for_bedrock_opus_4_7(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-opus-4-7-20260101-v1:0",
+            "us.anthropic.claude-opus-4-7",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+            assert "temperature" not in kwargs["inferenceConfig"]
+            assert "topP" not in kwargs["inferenceConfig"]
+
+    def test_omits_sampling_params_for_bedrock_opus_4_8_variants(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-opus-4-8-20270101-v1:0",
+            "us.anthropic.claude-opus-4-8",
+            "anthropic.claude-opus-4.8",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.5,
+                top_p=0.95,
+            )
+
+            assert "temperature" not in kwargs["inferenceConfig"]
+            assert "topP" not in kwargs["inferenceConfig"]
+
+    def test_keeps_sampling_params_for_bedrock_non_restricted_models(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-sonnet-4-6-20250514-v1:0",
+            "anthropic.claude-haiku-4-5",
+            "test-model",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+            assert kwargs["inferenceConfig"].get("temperature") == 0.7
+            assert kwargs["inferenceConfig"].get("topP") == 0.9
+
+    def test_bedrock_opus_strips_sampling_params_but_keeps_stop_sequences(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-opus-4-8",
+            messages=[{"role": "user", "content": "Hi"}],
+            temperature=0.7,
+            top_p=0.9,
+            stop_sequences=["END"],
+        )
+
+        assert "temperature" not in kwargs["inferenceConfig"]
+        assert "topP" not in kwargs["inferenceConfig"]
+        assert kwargs["inferenceConfig"]["stopSequences"] == ["END"]
+
     def test_includes_guardrail_config(self):
         from agent.bedrock_adapter import build_converse_kwargs
         guardrail = {

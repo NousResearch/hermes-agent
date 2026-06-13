@@ -24,6 +24,7 @@ from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
@@ -612,6 +613,7 @@ def _pip_install(
                 [uv_bin, "pip", "install", *args],
                 capture_output=capture_output, text=True, timeout=timeout,
                 env=uv_env,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 return result

@@ -6645,6 +6645,8 @@ def _run_install_with_heartbeat(
     can stay quiet for minutes. Emit a simple elapsed-time heartbeat so users
     know ``hermes update`` is still progressing even if pip/uv itself is silent.
     """
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     done = threading.Event()
     start = _time.time()
 
@@ -6666,6 +6668,7 @@ def _run_install_with_heartbeat(
             cwd=PROJECT_ROOT,
             check=True,
             env=env,
+            creationflags=windows_hide_flags(),
         )
     finally:
         done.set()

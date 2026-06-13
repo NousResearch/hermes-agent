@@ -21,6 +21,7 @@ import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
@@ -1283,6 +1284,7 @@ def setup_terminal_backend(config: dict):
                         ],
                         capture_output=True,
                         text=True,
+                        creationflags=windows_hide_flags(),
                     )
                 else:
                     result = subprocess.run(
@@ -1336,6 +1338,7 @@ def setup_terminal_backend(config: dict):
                     [uv_bin, "pip", "install", "--python", sys.executable, "daytona"],
                     capture_output=True,
                     text=True,
+                    creationflags=windows_hide_flags(),
                 )
             else:
                 result = subprocess.run(
@@ -1986,6 +1989,7 @@ def _setup_matrix():
                     result = subprocess.run(
                         [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
                         capture_output=True, text=True,
+                        creationflags=windows_hide_flags(),
                     )
                 else:
                     result = subprocess.run(

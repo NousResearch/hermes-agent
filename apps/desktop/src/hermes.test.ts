@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getSessionMessages, listAllProfileSessions, listSessions, setApiRequestProfile, speakText } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -21,6 +21,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -55,6 +56,20 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('routes TTS requests through the active profile backend', async () => {
+    api.mockResolvedValue({ audio_url: 'file:///tmp/voice.mp3' })
+    setApiRequestProfile('fiona')
+
+    await speakText('Profile voice please')
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/audio/speak',
+      method: 'POST',
+      body: { text: 'Profile voice please' },
+      profile: 'fiona'
     })
   })
 })

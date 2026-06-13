@@ -286,8 +286,8 @@ export const af: Translations = {
     nameRequired: "Naam word vereis",
     nameRule:
       "Slegs kleinletters, syfers, _ en -; moet met 'n letter of syfer begin; tot 64 karakters.",
-    invalidName: "Ongeldige profielnaam",
-    cloneFromDefault: "Kloon konfigurasie vanaf verstekprofiel",
+    invalidName: "Ongeldige profielnaam",    cloneFrom: "Kloon konfigurasie vanaf profiel",
+    cloneFromNone: "Geen (leeg)",
     allProfiles: "Profiele",
     noProfiles: "Geen profiele gevind nie.",
     defaultBadge: "verstek",

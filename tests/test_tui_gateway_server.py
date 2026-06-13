@@ -847,6 +847,41 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_keeps_reasoning_only_assistant_turn():
+    # A thinking-only assistant turn (reasoning present, no visible text) is
+    # persisted and recallable, but was dropped from the resumed session view
+    # as "empty" -- so it vanished while the agent could still recall it from
+    # the transcript. Keep it (with reasoning) so the desktop "Thinking…"
+    # disclosure renders. (#44022)
+    history = [
+        {"role": "user", "content": "think about this"},
+        {"role": "assistant", "content": "", "reasoning": "step-by-step thoughts"},
+        {"role": "assistant", "content": "here is the answer"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "think about this"},
+        {"role": "assistant", "text": "", "reasoning": "step-by-step thoughts"},
+        {"role": "assistant", "text": "here is the answer"},
+    ]
+
+
+def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
+    # A genuinely empty assistant turn (no text, no reasoning, no tool calls)
+    # remains filtered out -- the fix only spares reasoning-bearing turns.
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "reasoning": ""},
+        {"role": "assistant", "content": "   "},
+        {"role": "assistant", "content": "real reply"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "real reply"},
+    ]
+
+
 def test_history_to_messages_renders_multimodal_content():
     # bb/gui preserves image URLs in the resume payload so the desktop
     # renderer's extractEmbeddedImages can pull them back out and display
@@ -971,6 +1006,35 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
+def test_stored_session_runtime_overrides_skips_bare_billing_provider():
+    """A bare billing bucket ("custom"/"auto"/"openrouter") must not be restored as the
+    provider identity on resume. A custom endpoint that never used `/model` persists only
+    `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
+    configured" (agent_init treats it as non-routable). A real provider, or an explicit
+    `model_config.provider`, is still restored.
+    """
+    # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
+    ov = server._stored_session_runtime_overrides({"model": "my-model", "billing_provider": "custom"})
+    assert "provider_override" not in ov
+    assert ov["model_override"]["provider"] is None
+
+    for bare in ("auto", "openrouter", "custom"):
+        ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
+        assert "provider_override" not in ov
+
+    # A real provider in billing_provider is still restored.
+    ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": "anthropic"})
+    assert ov["provider_override"] == "anthropic"
+    assert ov["model_override"]["provider"] == "anthropic"
+
+    # An explicit routable provider in model_config wins over the bare billing bucket.
+    ov = server._stored_session_runtime_overrides(
+        {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
+    )
+    assert ov["provider_override"] == "custom:myendpoint"
+    assert ov["model_override"]["provider"] == "custom:myendpoint"
+
+
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
     updates = {}
 
@@ -1049,6 +1113,160 @@ def test_resolve_model_strips_config_model(monkeypatch):
     )
 
     assert server._resolve_model() == "nous/hermes-test"
+
+
+def _sync_test_session(**extra):
+    session = {
+        "agent": types.SimpleNamespace(model="old/model"),
+        "session_key": "session-key",
+    }
+    session.update(extra)
+    return session
+
+
+def _patch_config_model(monkeypatch, model, provider=""):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    cfg_model = {"default": model}
+    if provider:
+        cfg_model["provider"] = provider
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": cfg_model})
+
+
+def test_config_sync_switches_unpinned_session(monkeypatch):
+    _patch_config_model(monkeypatch, "new/model", provider="nous")
+    session = _sync_test_session(config_model_seen=("old/model", "nous"))
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda sid, sess, raw, **kw: calls.append((sid, raw, kw)),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == [
+        (
+            "sid",
+            "new/model --provider nous",
+            {"confirm_expensive_model": True, "pin_session_override": False},
+        )
+    ]
+    assert session["config_model_seen"] == ("new/model", "nous")
+
+
+def test_config_sync_treats_auto_provider_as_unset(monkeypatch):
+    _patch_config_model(monkeypatch, "new/model", provider="auto")
+    session = _sync_test_session(config_model_seen=("old/model", ""))
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda sid, sess, raw, **kw: calls.append(raw),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == ["new/model"]
+
+
+def test_config_sync_skips_session_pinned_by_model_command(monkeypatch):
+    _patch_config_model(monkeypatch, "new/model")
+    session = _sync_test_session(
+        config_model_seen=("old/model", ""),
+        model_override={"model": "pinned/model"},
+    )
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("pinned session must not be switched"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+
+def test_config_sync_noop_when_config_unchanged(monkeypatch):
+    _patch_config_model(monkeypatch, "old/model")
+    session = _sync_test_session(config_model_seen=("old/model", ""))
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("unchanged config must not switch"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+
+def test_config_sync_adopts_baseline_when_agent_already_on_target(monkeypatch):
+    # Branched/resumed sessions reach their first sync with no snapshot but
+    # an agent already built from config; that must not trigger a switch.
+    _patch_config_model(monkeypatch, "old/model")
+    session = _sync_test_session()
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("agent already on target must not switch"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert session["config_model_seen"] == ("old/model", "")
+
+
+def test_config_sync_switches_when_only_provider_differs(monkeypatch):
+    _patch_config_model(monkeypatch, "old/model", provider="nous")
+    session = _sync_test_session(config_model_seen=("old/model", ""))
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda sid, sess, raw, **kw: calls.append(raw),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == ["old/model --provider nous"]
+
+
+def test_config_sync_failure_emits_error_once_per_edit(monkeypatch):
+    _patch_config_model(monkeypatch, "broken/model")
+    session = _sync_test_session(config_model_seen=("old/model", ""))
+
+    def boom(*a, **k):
+        raise ValueError("no such model")
+
+    monkeypatch.setattr(server, "_apply_model_switch", boom)
+    emits = []
+    monkeypatch.setattr(
+        server, "_emit", lambda ev, sid, payload: emits.append((ev, payload))
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+    server._sync_agent_model_with_config("sid", session)
+
+    assert len(emits) == 1
+    assert emits[0][0] == "error"
+    assert "broken/model" in emits[0][1]["message"]
+
+
+def test_config_sync_config_wins_over_env_seed(monkeypatch):
+    # Hosted instances set HERMES_INFERENCE_MODEL as a provision-time seed;
+    # the per-turn sync must follow config.yaml edits, not stay pinned to it.
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "seed/model")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "new/model"}})
+    session = _sync_test_session(config_model_seen=("seed/model", ""))
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda sid, sess, raw, **kw: calls.append(raw),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == ["new/model"]
+    assert session["config_model_seen"] == ("new/model", "")
 
 
 def test_startup_runtime_uses_tui_provider_env(monkeypatch):

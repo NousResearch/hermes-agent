@@ -51,7 +51,9 @@ export function StatusRow({
       role={onActivate ? 'button' : undefined}
       tabIndex={onActivate ? 0 : undefined}
     >
-      <span className="flex size-3.5 shrink-0 items-center justify-center">{leading}</span>
+      {leading !== undefined && (
+        <span className="flex size-3.5 shrink-0 items-center justify-center">{leading}</span>
+      )}
       <div className="flex min-w-0 flex-1 items-center gap-2">{children}</div>
       {trailing && (
         <div

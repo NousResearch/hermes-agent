@@ -2199,6 +2199,18 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    # --safe-mode: troubleshooting mode that disables ALL customizations.
+    # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
+    # pristine environment to isolate whether a problem comes from the user's
+    # setup (config, rules files, plugins, MCP servers) or from Hermes itself.
+    # Implemented as a superset of --ignore-user-config + --ignore-rules plus
+    # plugin/MCP discovery suppression (HERMES_SAFE_MODE is checked by
+    # hermes_cli/plugins.py and tools/mcp_tool.py).
+    if getattr(args, "safe_mode", False):
+        os.environ["HERMES_SAFE_MODE"] = "1"
+        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
+        os.environ["HERMES_IGNORE_RULES"] = "1"
+
     # --ignore-user-config: make load_cli_config() / load_config() skip the
     # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
     # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
@@ -2256,8 +2268,8 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
-        "ignore_rules": getattr(args, "ignore_rules", False),
-        "ignore_user_config": getattr(args, "ignore_user_config", False),
+        "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
+        "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
     }
     # Filter out None values
@@ -8018,6 +8030,182 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
+    """Write a planned-stop marker into a specific profile home."""
+    try:
+        from datetime import timezone
+
+        from gateway.status import _get_process_start_time
+        from utils import atomic_json_write
+
+        record = {
+            "target_pid": pid,
+            "target_start_time": _get_process_start_time(pid),
+            "stopper_pid": os.getpid(),
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_json_write(
+            Path(profile_path) / ".gateway-planned-stop.json",
+            record,
+            indent=None,
+            separators=(",", ":"),
+        )
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _wait_for_windows_update_gateway_exit(
+    pids: list[int], *, timeout: float
+) -> set[int]:
+    """Wait for the given gateway PIDs to exit, returning survivors."""
+    if not pids:
+        return set()
+
+    from gateway.status import _pid_exists
+
+    remaining = set(pids)
+    deadline = _time.monotonic() + max(timeout, 0.0)
+    while remaining and _time.monotonic() < deadline:
+        for pid in list(remaining):
+            try:
+                if not _pid_exists(pid):
+                    remaining.discard(pid)
+            except Exception:
+                remaining.discard(pid)
+        if remaining:
+            _time.sleep(0.25)
+
+    survivors: set[int] = set()
+    for pid in remaining:
+        try:
+            if _pid_exists(pid):
+                survivors.add(pid)
+        except Exception:
+            pass
+    return survivors
+
+
+def _pause_windows_gateways_for_update() -> dict | None:
+    """Stop running Windows gateways before mutating the checkout or venv.
+
+    Windows scheduled/startup gateways run through pythonw.exe, so the generic
+    hermes.exe concurrent-instance guard does not see them. They still import
+    from the checkout and can keep files locked while ``git`` or ``uv`` updates
+    the install. Stop only PIDs that the gateway discovery code identifies.
+    """
+    if not _is_windows():
+        return None
+
+    try:
+        from gateway.status import terminate_pid
+        from hermes_cli.gateway import (
+            _get_restart_drain_timeout,
+            find_gateway_pids,
+            find_profile_gateway_processes,
+        )
+    except Exception as exc:
+        logger.debug("Could not prepare Windows gateway pause for update: %s", exc)
+        return None
+
+    try:
+        running_pids = list(dict.fromkeys(find_gateway_pids(all_profiles=True)))
+    except Exception as exc:
+        logger.debug("Could not discover Windows gateway PIDs before update: %s", exc)
+        return None
+    if not running_pids:
+        return None
+
+    profile_processes = {}
+    try:
+        profile_processes = {
+            proc.pid: proc for proc in find_profile_gateway_processes()
+        }
+    except Exception as exc:
+        logger.debug("Could not map Windows gateway PIDs to profiles: %s", exc)
+
+    profiles: dict[str, int] = {}
+    mapped_pids = []
+    for pid in running_pids:
+        proc = profile_processes.get(pid)
+        if proc is None:
+            continue
+        profiles[str(proc.profile)] = int(pid)
+        mapped_pids.append(int(pid))
+        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+
+    print("→ Stopping Windows gateway process(es) before updating Hermes...")
+    try:
+        drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
+    except Exception:
+        drain_timeout = 10.0
+    survivors = _wait_for_windows_update_gateway_exit(
+        mapped_pids,
+        timeout=drain_timeout,
+    )
+    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
+
+    force_killed = []
+    for pid in sorted(set(survivors).union(unmapped_pids)):
+        try:
+            terminate_pid(int(pid), force=True)
+            force_killed.append(int(pid))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    if profiles:
+        print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
+    if force_killed:
+        print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
+
+    if unmapped_pids:
+        print(
+            f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping"
+        )
+        print("    Restart manually after update: hermes gateway run")
+
+    return {
+        "resume_needed": True,
+        "profiles": profiles,
+        "unmapped_pids": unmapped_pids,
+    }
+
+
+def _resume_windows_gateways_after_update(token: dict | None) -> None:
+    """Restart Windows profile gateways previously paused for update."""
+    if not token or not token.get("resume_needed"):
+        return
+    token["resume_needed"] = False
+    if not _is_windows():
+        return
+
+    profiles = token.get("profiles") or {}
+    if not profiles:
+        return
+
+    try:
+        from hermes_cli.gateway import launch_detached_profile_gateway_restart
+    except Exception as exc:
+        logger.debug("Could not load Windows gateway restart helper: %s", exc)
+        return
+
+    relaunched = []
+    for profile, old_pid in sorted(profiles.items()):
+        try:
+            if launch_detached_profile_gateway_restart(str(profile), int(old_pid)):
+                relaunched.append(str(profile))
+        except Exception as exc:
+            logger.debug(
+                "Could not restart Windows gateway profile %s after update: %s",
+                profile,
+                exc,
+            )
+
+    if relaunched:
+        print()
+        print(f"  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -8220,6 +8408,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
 
+    _windows_gateway_resume = _pause_windows_gateways_for_update()
+    if _windows_gateway_resume:
+        import atexit as _atexit
+
+        _atexit.register(
+            _resume_windows_gateways_after_update,
+            _windows_gateway_resume,
+        )
+
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
     use_zip_update = False
@@ -8282,7 +8479,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
+        try:
+            _update_via_zip(args)
+        finally:
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
         return
 
     # Fetch and pull
@@ -8419,6 +8619,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=False,
                 )
             print("✓ Already up to date!")
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
         print(f"→ Found {commit_count} new commit(s)")
@@ -8750,6 +8951,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             pass  # profiles module not available or no profiles
 
+        # Backfill per-profile .env files for profiles created before the
+        # .env-seeding fix (#44792). Copies the default install's .env so
+        # those profiles keep the credentials they were effectively using.
+        try:
+            from hermes_cli.profiles import backfill_profile_envs
+
+            backfilled = backfill_profile_envs(quiet=True)
+            if backfilled:
+                print()
+                print(
+                    f"→ Seeded .env for {len(backfilled)} profile(s) "
+                    f"(copied from default): {', '.join(backfilled)}"
+                )
+        except Exception:
+            pass  # profiles module not available or no profiles
+
         # Sync Honcho host blocks to all profiles
         try:
             from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
@@ -9065,6 +9282,66 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             break
                 return total if matched else default
 
+            _manage_cmd_cache: dict = {}
+
+            def _resolve_manage_cmd(scope_: str, scope_cmd_: list, svc_name_: str):
+                """Resolve the command prefix for manage-units operations.
+
+                Read-only systemctl calls (``is-active``, ``show``,
+                ``list-units``) work unprivileged, but manage-units verbs
+                (``reset-failed``, ``start``, ``restart``) on a *system*
+                service trigger a polkit ``org.freedesktop.systemd1.manage-units``
+                authentication prompt when run as a non-root user.  That
+                interactive prompt runs inside our captured subprocess with a
+                10-15s timeout — the user sees the prompt flash and "exit
+                directly" before they can answer, and the resulting
+                TimeoutExpired used to be swallowed silently.
+
+                Strategy: if root, plain systemctl.  If not root, try
+                non-interactive sudo (``sudo -n``) — first a blanket probe,
+                then a targeted ``systemctl reset-failed`` probe so a
+                least-privilege sudoers entry scoped to
+                ``systemctl ... hermes-gateway*`` also qualifies
+                (``reset-failed`` is an idempotent no-op we run before every
+                privileged restart anyway).  If neither works, return None —
+                the caller must SKIP the restart (without draining the
+                gateway first!) and tell the user how to restart manually.
+                ``--no-ask-password`` guarantees polkit can never hang a
+                captured subprocess on this path.
+                """
+                if scope_ in _manage_cmd_cache:
+                    return _manage_cmd_cache[scope_]
+                cmd = scope_cmd_ + ["--no-ask-password"]
+                if (
+                    scope_ == "system"
+                    and hasattr(os, "geteuid")
+                    and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
+                ):
+                    sudo_cmd = ["sudo", "-n"] + scope_cmd_ + ["--no-ask-password"]
+                    sudo_ok = False
+                    try:
+                        _probe = subprocess.run(
+                            ["sudo", "-n", "true"],
+                            capture_output=True,
+                            timeout=5,
+                        )
+                        sudo_ok = _probe.returncode == 0
+                        if not sudo_ok:
+                            # Blanket sudo refused — a targeted sudoers entry
+                            # (NOPASSWD for systemctl ... hermes-gateway*)
+                            # may still allow the exact commands we need.
+                            _probe = subprocess.run(
+                                sudo_cmd + ["reset-failed", svc_name_],
+                                capture_output=True,
+                                timeout=5,
+                            )
+                            sudo_ok = _probe.returncode == 0
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        sudo_ok = False
+                    cmd = sudo_cmd if sudo_ok else None
+                _manage_cmd_cache[scope_] = cmd
+                return cmd
+
             # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
             # for up to ``agent.restart_drain_timeout`` (default 60s) before
             # exiting with code 75; we wait slightly longer so the drain
@@ -9147,6 +9424,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             if check.stdout.strip() != "active":
                                 continue
 
+                            # Resolve how we may run manage-units verbs
+                            # (reset-failed/start/restart) for this scope.
+                            # None ⇒ no non-interactive privilege path; we
+                            # must avoid those verbs entirely or polkit will
+                            # throw an interactive auth prompt inside our
+                            # captured 10-15s subprocess (the user sees it
+                            # flash and "exit directly" — reported June 2026).
+                            _manage_cmd = _resolve_manage_cmd(
+                                scope, scope_cmd, svc_name
+                            )
+
                             # Prefer a graceful SIGUSR1 restart so in-flight
                             # agent runs drain instead of being SIGKILLed.
                             # The gateway's SIGUSR1 handler calls
@@ -9206,35 +9494,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # ``start`` is a no-op and we fall through to
                                 # the poll below. Either way we collapse the
                                 # 60s+ delay to a ~5s one.
-                                subprocess.run(
-                                    scope_cmd + ["reset-failed", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10,
-                                )
-                                subprocess.run(
-                                    scope_cmd + ["start", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=15,
-                                )
-                                # Short poll: the gateway should be up within
-                                # a few seconds now that we bypassed
-                                # RestartSec. Fall back to the longer
-                                # RestartSec + slack budget ONLY if the
-                                # explicit start failed and we need to rely
-                                # on systemd's auto-restart.
-                                if _wait_for_service_active(
-                                    scope_cmd,
-                                    svc_name,
-                                    timeout=10.0,
-                                ):
-                                    restarted_services.append(svc_name)
-                                    continue
-                                # Explicit start didn't take. Fall back to
-                                # the original passive poll (systemd's
-                                # auto-restart WILL fire after RestartSec
-                                # regardless).
+                                #
+                                # The shortcut needs manage-units privileges.
+                                # Without them (system service, non-root, no
+                                # passwordless sudo) skip it — systemd's own
+                                # auto-restart still relaunches the unit after
+                                # RestartSec, no privileges required.
+                                if _manage_cmd is not None:
+                                    subprocess.run(
+                                        _manage_cmd + ["reset-failed", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=10,
+                                    )
+                                    subprocess.run(
+                                        _manage_cmd + ["start", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=15,
+                                    )
+                                    # Short poll: the gateway should be up
+                                    # within a few seconds now that we
+                                    # bypassed RestartSec.
+                                    if _wait_for_service_active(
+                                        scope_cmd,
+                                        svc_name,
+                                        timeout=10.0,
+                                    ):
+                                        restarted_services.append(svc_name)
+                                        continue
+                                # Passive poll: systemd's auto-restart fires
+                                # after RestartSec regardless of privileges.
+                                # This is the primary path when _manage_cmd is
+                                # None, and the fallback when the explicit
+                                # start didn't take.
                                 _restart_sec = _service_restart_sec(
                                     scope_cmd,
                                     svc_name,
@@ -9244,6 +9537,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     10.0,
                                     _restart_sec + 10.0,
                                 )
+                                if _manage_cmd is None and _restart_sec > 5.0:
+                                    print(
+                                        f"  → {svc_name}: waiting for systemd "
+                                        f"auto-restart (~{int(_restart_sec)}s; "
+                                        "no root for an immediate restart)..."
+                                    )
                                 if _wait_for_service_active(
                                     scope_cmd,
                                     svc_name,
@@ -9258,6 +9557,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 print(
                                     f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
                                 )
+
+                            # Forcing a restart requires manage-units
+                            # privileges.  Without a non-interactive path,
+                            # running systemctl here would spawn a polkit
+                            # auth prompt inside a captured 10-15s subprocess
+                            # — it flashes and dies before the user can
+                            # answer.  Skip with clear instructions instead.
+                            if _manage_cmd is None:
+                                print(
+                                    f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
+                                    f"    Restart it manually to load the new version:\n"
+                                    f"      sudo systemctl restart {svc_name}\n"
+                                    f"    To let `hermes update` restart it automatically, allow\n"
+                                    f"    passwordless sudo for systemctl, or run updates with sudo."
+                                )
+                                continue
 
                             # Fallback: blunt systemctl restart.  This is
                             # what the old code always did; we get here only
@@ -9276,13 +9591,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # path in `hermes gateway restart`
                             # (`systemd_restart()`) as of PR #20949.
                             subprocess.run(
-                                scope_cmd + ["reset-failed", svc_name],
+                                _manage_cmd + ["reset-failed", svc_name],
                                 capture_output=True,
                                 text=True,
                                 timeout=10,
                             )
                             restart = subprocess.run(
-                                scope_cmd + ["restart", svc_name],
+                                _manage_cmd + ["restart", svc_name],
                                 capture_output=True,
                                 text=True,
                                 timeout=15,
@@ -9308,13 +9623,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
                                     subprocess.run(
-                                        scope_cmd + ["reset-failed", svc_name],
+                                        _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=10,
                                     )
                                     subprocess.run(
-                                        scope_cmd + ["restart", svc_name],
+                                        _manage_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=15,
@@ -9328,19 +9643,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         print(f"  ✓ {svc_name} recovered on retry")
                                     else:
                                         _scope_flag = "--user " if scope == "user" else ""
+                                        _sudo_hint = "sudo " if scope == "system" else ""
                                         print(
                                             f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                            f"    Check logs: journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
+                                            f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
                                             f"    Recover manually:\n"
-                                            f"      systemctl {_scope_flag}reset-failed {svc_name}\n"
-                                            f"      systemctl {_scope_flag}restart {svc_name}"
+                                            f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
+                                            f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
                                         )
                             else:
                                 print(
                                     f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
                                 )
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                    except FileNotFoundError:
                         pass
+                    except subprocess.TimeoutExpired as exc:
+                        # Don't swallow this silently — a wedged systemctl
+                        # call here used to make the whole restart phase
+                        # vanish with no output (June 2026 report).
+                        print(
+                            f"  ⚠ systemctl timed out during the {scope}-scope "
+                            f"gateway restart ({exc.cmd if exc.cmd else 'unknown command'}). "
+                            f"Check the gateway with: hermes gateway status"
+                        )
 
             # --- Launchd services (macOS) ---
             if is_macos():
@@ -9490,6 +9815,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
+
+        _resume_windows_gateways_after_update(_windows_gateway_resume)
 
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the
@@ -9724,31 +10051,35 @@ def cmd_profile(args):
 
         try:
             clone_from = getattr(args, "clone_from", None)
+            clone_config = clone or clone_from is not None
 
             profile_dir = create_profile(
                 name=name,
                 clone_from=clone_from,
                 clone_all=clone_all,
-                clone_config=clone,
+                clone_config=clone_config,
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
-            if clone or clone_all:
+            if clone_config or clone_all:
                 source_label = (
                     getattr(args, "clone_from", None) or get_active_profile_name()
                 )
                 if clone_all:
-                    print(f"Full copy from {source_label}.")
+                    print(
+                        f"Full copy from {source_label} "
+                        "(excluding session history, backups, and snapshots)."
+                    )
                 else:
                     print(
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."
                     )
 
-            # Auto-clone Honcho config for the new profile (only with --clone/--clone-all)
-            if clone or clone_all:
+            # Auto-clone Honcho config for the new profile (only with clone operations)
+            if clone_config or clone_all:
                 try:
                     from plugins.memory.honcho.cli import clone_honcho_for_profile
 
@@ -9757,10 +10088,10 @@ def cmd_profile(args):
                 except Exception:
                     pass  # Honcho plugin not installed or not configured
 
-            # Seed bundled skills (skip if --clone-all already copied them, or
-            # if --no-skills was passed — in which case seed_profile_skills()
-            # honors the marker file and returns skipped_opt_out=True).
-            if not clone_all:
+            # Seed bundled skills for fresh profiles only. Clone operations
+            # already copied the source profile's skills, including any
+            # user-installed or intentionally removed skills.
+            if not (clone_config or clone_all):
                 result = seed_profile_skills(profile_dir)
                 if result and result.get("skipped_opt_out"):
                     print(

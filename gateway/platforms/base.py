@@ -1128,8 +1128,11 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ini": "text/plain",
     ".cfg": "text/plain",
     ".zip": "application/zip",
+    ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".ts": "text/plain",
     ".py": "text/plain",
@@ -1913,16 +1916,21 @@ class BasePlatformAdapter(ABC):
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
 
-        The gateway's env-based allowlist check runs *after* the adapter, so for
-        these platforms a message arriving at ``_is_user_authorized`` has, by
-        definition, already been authorized by the adapter. Without this flag the
-        gateway would then deny it again (no env allowlist → default deny),
-        silently breaking ``dm_policy: open`` and config-only allowlists.
+        The gateway's env-based allowlist check runs *after* the adapter. When
+        no env allowlist is configured, the gateway consults this flag so it can
+        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
+        adapter already enforced) instead of double-denying it. Crucially, the
+        flag alone is NOT "already authorized": these adapters default
+        ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
+        sender, so the gateway trusts the adapter only when its effective policy
+        for the chat type is an actual ``"allowlist"`` restriction — never for
+        ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
+        forbids). Open access still requires an explicit
+        ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.
-        The gateway treats that as "already authorized at intake" and skips the
-        env-allowlist default-deny. Adapters that delegate access control to the
-        gateway leave it ``False`` (the default).
+        Adapters that delegate access control to the gateway leave it ``False``
+        (the default).
         """
         return False
 
@@ -3163,6 +3171,38 @@ class BasePlatformAdapter(ABC):
                     pass
             self._typing_paused.discard(chat_id)
 
+    async def _stop_typing_refresh(
+        self,
+        chat_id: str,
+        typing_task: asyncio.Task | None = None,
+        *,
+        timeout: float = 0.5,
+        stop_attempts: int = 2,
+    ) -> None:
+        """Stop the refresh task and platform typing state as one operation."""
+        self._typing_paused.add(chat_id)
+        try:
+            if typing_task is not None and not typing_task.done():
+                typing_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    # The task is cancelled; don't let a slow adapter-specific
+                    # cleanup block response delivery or shutdown.
+                    pass
+            if not hasattr(self, "stop_typing"):
+                return
+            attempts = max(1, stop_attempts)
+            for attempt in range(attempts):
+                try:
+                    await self.stop_typing(chat_id)
+                except Exception:
+                    pass
+                if attempt < attempts - 1:
+                    await asyncio.sleep(0)
+        finally:
+            self._typing_paused.discard(chat_id)
+
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
 
@@ -4092,14 +4132,10 @@ class BasePlatformAdapter(ABC):
         )
 
         async def _stop_typing_task() -> None:
-            typing_task.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                # Cancellation cleanup must not block adapter shutdown.  The
-                # typing task is already cancelled; if the parent task is also
-                # cancelling, let this message-processing task unwind now.
-                pass
+            await self._stop_typing_refresh(
+                event.source.chat_id,
+                typing_task,
+            )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -4486,11 +4522,6 @@ class BasePlatformAdapter(ABC):
             # callbacks may perform platform I/O; a stuck callback must not
             # leave the typing refresh task running indefinitely.
             await _stop_typing_task()
-            try:
-                if hasattr(self, "stop_typing"):
-                    await self.stop_typing(event.source.chat_id)
-            except Exception:
-                pass
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -4524,13 +4555,14 @@ class BasePlatformAdapter(ABC):
                         )
                 except (asyncio.TimeoutError, Exception):
                     pass
-            # Also cancel any platform-level persistent typing tasks (e.g. Discord)
-            # that may have been recreated by _keep_typing after the last stop_typing()
-            try:
-                if hasattr(self, "stop_typing"):
-                    await self.stop_typing(event.source.chat_id)
-            except Exception:
-                pass
+            # Some adapters keep platform-level typing tasks.  If callback
+            # work or a late refresh recreated one, make one final bounded stop
+            # before releasing the session guard.
+            await self._stop_typing_refresh(
+                event.source.chat_id,
+                None,
+                stop_attempts=1,
+            )
             # Final drain/release boundary: force-flush any timer that missed
             # the in-band drain before deciding whether the guard can clear.
             await self._flush_text_debounce_now(session_key)

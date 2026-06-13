@@ -40,6 +40,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
+  setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
@@ -53,6 +54,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
+  worktrees: cwds => ipcRenderer.invoke('hermes:fs:worktrees', cwds),
   terminal: {
     dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),
     resize: (id, size) => ipcRenderer.invoke('hermes:terminal:resize', id, size),

@@ -445,6 +445,45 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
+def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
+    """Run :func:`repair_message_sequence` and keep the SessionDB flush
+    cursor consistent with the compacted list (#44837).
+
+    ``repair_message_sequence`` merges/drops messages in place, shrinking
+    the list. ``_last_flushed_db_idx`` (the DB-write cursor) indexes into
+    that list, so after compaction it can point past the new end — the
+    turn-end flush would then skip the assistant/tool chain entirely — or
+    past unflushed messages shifted to lower indexes.
+
+    Repair preserves object identity for surviving messages, so counting
+    the survivors from the previously-flushed prefix gives the exact new
+    cursor even when messages are dropped/merged at indexes *before* the
+    cursor — a plain ``min()`` clamp would silently skip that many
+    unflushed rows. Falls back to the clamp when no prefix snapshot is
+    available.
+
+    Returns the number of repairs made (same as ``repair_message_sequence``).
+    """
+    pre_repair_flushed_ids = None
+    flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
+    if isinstance(flush_cursor, int) and flush_cursor > 0:
+        pre_repair_flushed_ids = {id(m) for m in messages[:flush_cursor]}
+
+    repairs = repair_message_sequence(agent, messages)
+
+    if repairs > 0 and hasattr(agent, "_last_flushed_db_idx"):
+        if pre_repair_flushed_ids is not None:
+            agent._last_flushed_db_idx = sum(
+                1 for m in messages if id(m) in pre_repair_flushed_ids
+            )
+        else:
+            agent._last_flushed_db_idx = min(
+                agent._last_flushed_db_idx, len(messages)
+            )
+
+    return repairs
+
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
@@ -579,12 +618,33 @@ def recover_with_credential_pool(
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if current_provider and pool_provider and current_provider != pool_provider:
-        _ra().logger.warning(
-            "Credential pool provider mismatch: pool=%s, agent=%s — "
-            "skipping pool mutation to avoid cross-provider contamination",
-            pool_provider, current_provider,
-        )
-        return False, has_retried_429
+        # Custom endpoints use two naming conventions for the SAME provider:
+        # the agent carries the generic ``custom`` label while the pool is
+        # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
+        # compare treats them as a mismatch and skips recovery for every
+        # custom-provider user — 401s/429s then burn the full retry cycle
+        # with no rotation or refresh. Accept the pair as matching only when
+        # the agent's CURRENT base_url actually resolves to this pool key,
+        # so a fallback provider (or a different custom endpoint) still
+        # triggers the guard.
+        _custom_match = False
+        if current_provider == "custom" and pool_provider.startswith("custom:"):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+                _agent_base = (getattr(agent, "base_url", "") or "").strip()
+                _custom_match = bool(_agent_base) and (
+                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
+                    == pool_provider
+                )
+            except Exception:
+                _custom_match = False
+        if not _custom_match:
+            _ra().logger.warning(
+                "Credential pool provider mismatch: pool=%s, agent=%s — "
+                "skipping pool mutation to avoid cross-provider contamination",
+                pool_provider, current_provider,
+            )
+            return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:

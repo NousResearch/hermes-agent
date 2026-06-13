@@ -330,7 +330,7 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:
-        system_instruction = {"parts": [{"text": joined_system}]}
+        system_instruction = {"role": "system", "parts": [{"text": joined_system}]}
     return contents, system_instruction
 
 

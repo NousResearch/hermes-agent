@@ -41,6 +41,7 @@ display:
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
+| `nautilus` | Ocean science theme — deep teal and seafoam | `Nautilus Agent` | Deep teal borders with seafoam accents. Research-themed spinners ("sounding depths", "calibrating instruments", "sequencing reads"). Custom nautilus-shell ASCII art banner. Purpose-built for scientific workflows. |
 
 ## Complete list of configurable keys
 

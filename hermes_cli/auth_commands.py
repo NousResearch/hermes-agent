@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sys
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 import uuid
 
@@ -14,6 +15,7 @@ from agent.credential_pool import (
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE,
+    STATUS_DEAD,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
@@ -499,6 +501,126 @@ def auth_remove_command(args) -> None:
         print(line)
 
 
+def _switch_codex_pool_and_singleton(
+    selected_id: str,
+) -> PooledCredential | None:
+    """Atomically promote a Codex OAuth pool entry and mirror singleton state.
+
+    Codex still has singleton-auth paths for token refresh and usage/status
+    checks.  If the user switches to an independent manual Codex account, the
+    selected entry must become the singleton-backed ``device_code`` entry rather
+    than merely copying its tokens into ``providers.openai-codex``. Otherwise
+    the next ``load_pool('openai-codex')`` would seed a duplicate device_code
+    entry and leave the old account mislabeled.
+    """
+    with auth_mod._auth_store_lock():
+        auth_store = auth_mod._load_auth_store()
+        pool_store = auth_store.get("credential_pool")
+        if not isinstance(pool_store, dict):
+            return None
+        payloads = pool_store.get("openai-codex")
+        if not isinstance(payloads, list):
+            return None
+        entries = [
+            PooledCredential.from_dict("openai-codex", payload)
+            for payload in payloads
+            if isinstance(payload, dict)
+        ]
+        selected = next((entry for entry in entries if entry.id == selected_id), None)
+        if selected is None or selected.auth_type != AUTH_TYPE_OAUTH:
+            return None
+        access_token = (selected.access_token or "").strip()
+        refresh_token = (selected.refresh_token or "").strip()
+        if not access_token:
+            return None
+        if not refresh_token:
+            raise SystemExit(
+                "Selected openai-codex OAuth credential is missing refresh_token. "
+                "Re-authenticate it with `hermes auth add openai-codex` before switching."
+            )
+
+        promoted_entries: list[PooledCredential] = []
+        for entry in entries:
+            updated = entry
+            if entry.id == selected_id:
+                updated = replace(entry, source="device_code")
+            elif entry.source == "device_code":
+                updated = replace(entry, source=SOURCE_MANUAL_DEVICE_CODE)
+            promoted_entries.append(updated)
+
+        selected_promoted = next(entry for entry in promoted_entries if entry.id == selected_id)
+        ordered = [
+            selected_promoted,
+            *[entry for entry in promoted_entries if entry.id != selected_id],
+        ]
+        ordered = [
+            replace(entry, priority=new_priority)
+            for new_priority, entry in enumerate(ordered)
+        ]
+        selected_promoted = ordered[0]
+        pool_store["openai-codex"] = [entry.to_dict() for entry in ordered]
+
+        state = auth_mod._load_provider_state(auth_store, "openai-codex") or {}
+        if not isinstance(state, dict):
+            state = {}
+        tokens = state.get("tokens")
+        if not isinstance(tokens, dict):
+            tokens = {}
+        tokens["access_token"] = access_token
+        tokens["refresh_token"] = refresh_token
+        state["tokens"] = tokens
+        state["auth_mode"] = state.get("auth_mode") or "chatgpt"
+        if selected_promoted.last_refresh:
+            state["last_refresh"] = selected_promoted.last_refresh
+        else:
+            state.pop("last_refresh", None)
+        if selected_promoted.label:
+            state["label"] = selected_promoted.label
+        auth_mod._store_provider_state(
+            auth_store,
+            "openai-codex",
+            state,
+            set_active=False,
+        )
+        auth_mod._save_auth_store(auth_store)
+    return selected_promoted
+
+
+def auth_switch_command(args) -> None:
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    target = getattr(args, "target", None)
+    pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(target)
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+
+    selected = None
+    synced_singleton = False
+    if provider == "openai-codex" and matched.auth_type == AUTH_TYPE_OAUTH:
+        selected = _switch_codex_pool_and_singleton(matched.id)
+        synced_singleton = selected is not None
+    else:
+        selected = pool.activate_index(index)
+    if selected is None:
+        raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
+
+    print(f"Switched {provider} to credential \"{selected.label}\" (now #1)")
+    strategy = get_pool_strategy(provider)
+    if strategy in {STRATEGY_ROUND_ROBIN, STRATEGY_RANDOM, STRATEGY_LEAST_USED}:
+        print(
+            f"Note: {provider} uses {strategy}; later requests may select "
+            "another credential according to that strategy."
+        )
+    if selected.last_status in {STATUS_EXHAUSTED, STATUS_DEAD}:
+        print(
+            "Note: selected credential is currently marked "
+            f"{selected.last_status}; run `hermes auth reset {provider}` "
+            "if you intentionally want to clear cooldown state."
+        )
+    if synced_singleton:
+        print("Synchronized openai-codex singleton auth state with the selected credential.")
+
+
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     pool = load_pool(provider)
@@ -785,6 +907,9 @@ def auth_command(args) -> None:
         return
     if action == "remove":
         auth_remove_command(args)
+        return
+    if action == "switch":
+        auth_switch_command(args)
         return
     if action == "reset":
         auth_reset_command(args)

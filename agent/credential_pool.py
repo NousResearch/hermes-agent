@@ -1515,6 +1515,29 @@ class CredentialPool:
             self._current_id = None
         return removed
 
+    def activate_index(self, index: int) -> Optional[PooledCredential]:
+        """Make the 1-based entry at *index* the first credential in the pool.
+
+        Credential-pool selection is intentionally priority/order based for the
+        default ``fill_first`` strategy and as the stable tie-breaker for lease
+        selection. Persisting the selected credential at priority 0 gives the
+        CLI a durable, profile-local way to choose the next credential without
+        introducing a second "active credential" state that could drift from
+        the on-disk pool order.
+        """
+        with self._lock:
+            if index < 1 or index > len(self._entries):
+                return None
+            selected = self._entries[index - 1]
+            ordered = [selected, *self._entries[: index - 1], *self._entries[index:]]
+            self._entries = [
+                replace(entry, priority=new_priority)
+                for new_priority, entry in enumerate(ordered)
+            ]
+            self._current_id = selected.id
+            self._persist()
+            return self._entries[0]
+
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:

@@ -360,12 +360,21 @@ def _format_exec_approval_fallback(
     *,
     allow_permanent: bool = True,
     smart_denied: bool = False,
+    contextual_reason: str = "",
 ) -> str:
     """Render the text fallback from approval capabilities, not platform names."""
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
     heading = "⚠️ **Dangerous command requires approval:**"
     if smart_denied:
         heading = "⚠️ **Smart DENY — owner override for one operation:**"
+
+    rationale_block = ""
+    if contextual_reason:
+        # Keep the fallback prompt bounded; share the budget with cmd/reason.
+        r = str(contextual_reason)
+        if len(r) > 1500:
+            r = r[:1497] + "..."
+        rationale_block = f"{r}\n\n"
 
     choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
     if not smart_denied:
@@ -376,7 +385,7 @@ def _format_exec_approval_fallback(
             choices.append(f"`{command_prefix}approve always` to approve permanently")
     choices.append(f"`{command_prefix}deny` to cancel")
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\nReason: {description}\n\n"
+        f"{heading}\n{rationale_block}```\n{cmd_preview}\n```\nReason: {description}\n\n"
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
@@ -18327,17 +18336,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            # Captures the agent's most recent interim assistant text so the
+            # exec-approval prompt can show *why* the command is being run
+            # (its contextual rationale), the way Codex surfaces reasoning.
+            # Keep only the last non-empty chunk so the approval card shows
+            # the most recent rationale, not an accumulation of every
+            # streaming segment.
+            _last_assistant_rationale = ""
+
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                nonlocal _last_assistant_rationale
                 if not _run_still_current():
                     return
                 display_text = text
+                _stripped = str(text or "").strip()
+                if _stripped:
+                    _last_assistant_rationale = _stripped
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
                         _stream_consumer.on_commentary(display_text)
                     return
-                if already_streamed or not _status_adapter or not str(display_text or "").strip():
+                if already_streamed or not _status_adapter or not _stripped:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
@@ -18820,6 +18841,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                # The agent's latest reasoning text — forwarded to the adapter
+                # so the approval card explains *why* the command needs to run.
+                _rationale = _last_assistant_rationale
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -18840,6 +18864,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
+                                contextual_reason=_rationale,
                                 metadata=_status_thread_metadata,
                                 allow_permanent=approval_data.get("allow_permanent", True),
                                 smart_denied=approval_data.get("smart_denied", False),
@@ -18873,6 +18898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _p,
                     allow_permanent=approval_data.get("allow_permanent", True),
                     smart_denied=approval_data.get("smart_denied", False),
+                    contextual_reason=_rationale,
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(

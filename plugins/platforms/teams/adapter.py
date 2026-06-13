@@ -1097,11 +1097,16 @@ class TeamsAdapter(BasePlatformAdapter):
         command: str,
         session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
-        """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
+        """Send an Adaptive Card approval prompt with Allow/Deny buttons.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
+        """
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
@@ -1133,9 +1138,16 @@ class TeamsAdapter(BasePlatformAdapter):
         ))
         body = [
             TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
+        ]
+        if contextual_reason:
+            _r = contextual_reason
+            if len(_r) > 1500:
+                _r = _r[:1497] + "..."
+            body.append(TextBlock(text=_r, wrap=True))
+        body.extend([
             TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
             TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
-        ]
+        ])
         if smart_denied:
             body.append(TextBlock(
                 text="Smart DENY: owner override applies to this one operation only.", wrap=True
@@ -1149,6 +1161,7 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
 
     async def send(
         self,

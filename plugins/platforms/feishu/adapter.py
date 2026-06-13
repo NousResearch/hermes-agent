@@ -1979,11 +1979,15 @@ class FeishuAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
 
         The buttons carry ``hermes_action`` in their value dict so that
         ``_handle_card_action_event`` can intercept them and call
@@ -1995,6 +1999,13 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             approval_id = next(self._approval_counter)
             cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            # Truncate the rationale so the card markdown stays reasonable.
+            _rationale_md = ""
+            if contextual_reason:
+                _r = contextual_reason
+                if len(_r) > 1500:
+                    _r = _r[:1497] + "..."
+                _rationale_md = f"{_r}\n\n"
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -2020,7 +2031,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
+                        "content": f"{_rationale_md}```\n{cmd_preview}\n```\n**Reason:** {description}{scope_note}",
                     },
                     {
                         "tag": "action",

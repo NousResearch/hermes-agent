@@ -4838,6 +4838,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
         smart_denied: bool = False,
@@ -4846,19 +4847,40 @@ class TelegramAdapter(BasePlatformAdapter):
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — same mechanism as the text ``/approve`` flow.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command so the user sees *why* approval is needed.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+            # Telegram caps a message at 4096 chars. Escape first so HTML
+            # expansion of chars like '<' into '&lt;' cannot blow past the budget after
+            # truncation, then leave room for command + framing.
+            TELEGRAM_MSG_CAP = 4096
+            header = "⚠️ <b>Command Approval Required</b>\n\n"
+            cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            cmd_block = f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
+            reason_block = f"Reason: {_html.escape(description)}"
+            smart_block = (
+                "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+                if smart_denied else ""
             )
-            if smart_denied:
-                text += "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
+            fixed_len = len(header) + len(cmd_block) + len(reason_block) + len(smart_block)
+            rationale_budget = max(0, TELEGRAM_MSG_CAP - fixed_len - 8)  # ellipse overhead
+            _rationale_html = ""
+            if contextual_reason:
+                escaped = _html.escape(str(contextual_reason))
+                if len(escaped) > rationale_budget:
+                    # Truncate escaped text carefully; keep it HTML-safe.
+                    if rationale_budget <= 3:
+                        escaped = "..."[:rationale_budget]
+                    else:
+                        escaped = escaped[: rationale_budget - 3] + "..."
+                if escaped:
+                    _rationale_html = f"{escaped}\n\n"
+            text = f"{header}{_rationale_html}{cmd_block}{reason_block}{smart_block}"
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)

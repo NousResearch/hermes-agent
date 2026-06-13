@@ -5570,12 +5570,17 @@ class DiscordAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
+        contextual_reason: str = "",
         metadata: Optional[dict] = None,
         allow_permanent: bool = True,
         smart_denied: bool = False,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
+
+        ``contextual_reason`` (optional) is the agent's latest rationale; it is
+        rendered above the command (within the embed description budget) so the
+        user sees *why* approval is needed.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
@@ -5603,8 +5608,16 @@ class DiscordAdapter(BasePlatformAdapter):
             if len(reason_display) > reason_budget:
                 reason_display = reason_display[: reason_budget - 15] + "... [truncated]"
 
+            rationale_plain = ""
+            if contextual_reason:
+                _r = str(contextual_reason)
+                if len(_r) > 800:
+                    _r = _r[:797] + "..."
+                rationale_plain = f"**Why:** {_r}\n\n"
+
             prompt_prefix = (
                 "⚠️ **Command Approval Required**\n\n"
+                f"{rationale_plain}"
                 "Do you want Hermes to run this command?\n\n"
                 "**Requested command:**\n```bash\n"
             )
@@ -5625,14 +5638,27 @@ class DiscordAdapter(BasePlatformAdapter):
             content = f"{prompt_prefix}{content_cmd_display}{prompt_tail}"
 
             # Preserve the richer embed path and its larger description budget
-            # for clients where embeds render correctly.
+            # for clients where embeds render correctly. Budget rationale +
+            # command so the embed description stays under Discord's 4096-char
+            # limit (use 4088 as a safety margin).
             max_embed_desc = 4088
+            _rationale_block = ""
+            if contextual_reason:
+                _r = str(contextual_reason)
+                if len(_r) > 1500:
+                    _r = _r[:1497] + "..."
+                _rationale_block = f"{_r}\n\n"
+            _cmd_budget = max_embed_desc - len(_rationale_block) - len("```\n\n```")
+            if _cmd_budget < 0:
+                _cmd_budget = 0
             embed_cmd_display = str(command or "")
-            if len(embed_cmd_display) > max_embed_desc:
-                embed_cmd_display = embed_cmd_display[: max_embed_desc - 3] + "..."
+            if len(embed_cmd_display) > _cmd_budget:
+                embed_cmd_display = (
+                    embed_cmd_display[: max(0, _cmd_budget - 3)] + "..."
+                )
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{embed_cmd_display}\n```",
+                description=f"{_rationale_block}```\n{embed_cmd_display}\n```",
                 color=discord.Color.orange(),
             )
             embed.add_field(name="Reason", value=reason_display, inline=False)

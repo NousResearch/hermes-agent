@@ -21,7 +21,7 @@ let
 
   # Single npm deps fetch from the workspace root lockfile.
   # All workspace packages share this derivation.
-  npmDepsHash = "sha256-Vr+6qeDD3F5a582f7GUhuKlU+CdMIzNJaI4li6/Z+W4=";
+  npmDepsHash = "sha256-zgxAtOy0eWhSMEE0SCaka8mStr/o0/7ExoEPB8kvKrY=";
 
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;

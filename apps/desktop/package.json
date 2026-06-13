@@ -112,7 +112,7 @@
     "@types/react-dom": "^19.2.3",
     "@typescript-eslint/eslint-plugin": "^8.59.1",
     "@typescript-eslint/parser": "^8.59.1",
-    "@vitejs/plugin-react": "^6.0.1",
+    "@vitejs/plugin-react": "^6.0.2",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
     "electron": "^40.9.3",
@@ -127,9 +127,9 @@
     "prettier": "^3.8.3",
     "rcedit": "^5.0.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10",
+    "vite": "^8.0.16",
     "vitest": "^4.1.5",
-    "wait-on": "^9.0.5"
+    "wait-on": "^9.0.10"
   },
   "build": {
     "electronVersion": "40.9.3",

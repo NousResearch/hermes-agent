@@ -1398,6 +1398,8 @@ export const zh: Translations = {
     queueSendNext: '下一个',
     queueSend: '发送',
     queueDelete: '删除',
+    queueStuckTitle: '排队消息未发送',
+    queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,

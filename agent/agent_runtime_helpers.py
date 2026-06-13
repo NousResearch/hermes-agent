@@ -618,12 +618,33 @@ def recover_with_credential_pool(
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if current_provider and pool_provider and current_provider != pool_provider:
-        _ra().logger.warning(
-            "Credential pool provider mismatch: pool=%s, agent=%s — "
-            "skipping pool mutation to avoid cross-provider contamination",
-            pool_provider, current_provider,
-        )
-        return False, has_retried_429
+        # Custom endpoints use two naming conventions for the SAME provider:
+        # the agent carries the generic ``custom`` label while the pool is
+        # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
+        # compare treats them as a mismatch and skips recovery for every
+        # custom-provider user — 401s/429s then burn the full retry cycle
+        # with no rotation or refresh. Accept the pair as matching only when
+        # the agent's CURRENT base_url actually resolves to this pool key,
+        # so a fallback provider (or a different custom endpoint) still
+        # triggers the guard.
+        _custom_match = False
+        if current_provider == "custom" and pool_provider.startswith("custom:"):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+                _agent_base = (getattr(agent, "base_url", "") or "").strip()
+                _custom_match = bool(_agent_base) and (
+                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
+                    == pool_provider
+                )
+            except Exception:
+                _custom_match = False
+        if not _custom_match:
+            _ra().logger.warning(
+                "Credential pool provider mismatch: pool=%s, agent=%s — "
+                "skipping pool mutation to avoid cross-provider contamination",
+                pool_provider, current_provider,
+            )
+            return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:

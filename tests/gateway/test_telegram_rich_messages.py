@@ -25,6 +25,20 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 # and a task list. Pipes / brackets must survive untouched into the payload.
 RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- [x] table renders"
 
+# PTB 22.6's real unknown-endpoint errors: do_api_request can raise
+# EndPointNotFound for Bot API 404s, and the request layer can wrap that same
+# missing endpoint as InvalidToken. Use class names here so the tests don't
+# depend on optional PTB internals.
+EndPointNotFound = type("EndPointNotFound", (Exception,), {})
+InvalidToken = type("InvalidToken", (Exception,), {})
+PTB_ENDPOINT_NOT_FOUND = EndPointNotFound(
+    "Endpoint 'sendRichMessage' not found in Bot API"
+)
+PTB_INVALID_TOKEN_404 = InvalidToken(
+    "Either the bot token was rejected by Telegram or the endpoint "
+    "'sendRichMessage' does not exist."
+)
+
 
 def _make_adapter(extra=None):
     """Build a TelegramAdapter with a mock bot wired for the rich path."""
@@ -46,6 +60,31 @@ def _rich_api_kwargs(adapter):
     call = adapter._bot.do_api_request.call_args
     assert call.args[0] == "sendRichMessage"
     return call.kwargs["api_kwargs"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "expected_id"),
+    [
+        (SimpleNamespace(message_id=123), "123"),
+        ({"message_id": 123}, "123"),
+        ({"result": {"message_id": 123}}, "123"),
+        ({"result": None}, None),
+    ],
+)
+async def test_rich_result_shapes_extract_message_id(raw, expected_id):
+    """The raw Bot API path may return either a PTB object or a raw dict."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(return_value=raw)
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    assert result.message_id == expected_id
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -101,9 +140,9 @@ async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
 @pytest.mark.asyncio
 async def test_oversized_content_skips_rich_and_chunks():
     adapter = _make_adapter()
-    # > 32,768 UTF-8 bytes -> rich pre-check fails, legacy chunking takes over.
+    # > 32,768 characters -> rich pre-check fails, legacy chunking takes over.
     oversized = "a" * 40000
-    assert len(oversized.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
+    assert len(oversized) > TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
     result = await adapter.send("12345", oversized)
 
@@ -111,6 +150,23 @@ async def test_oversized_content_skips_rich_and_chunks():
     adapter._bot.do_api_request.assert_not_called()
     # Oversized content is split into multiple legacy chunks.
     assert adapter._bot.send_message.await_count > 1
+
+
+@pytest.mark.asyncio
+async def test_rich_limit_is_characters_not_bytes():
+    """Telegram's rich limit is UTF-8 characters, not encoded bytes."""
+    adapter = _make_adapter()
+    cjk = "测" * 20000  # 20k chars, 60k UTF-8 bytes
+    assert len(cjk.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
+    assert len(cjk) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", cjk)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -162,6 +218,33 @@ async def test_capability_error_latches_rich_send_off():
     assert result2.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [PTB_ENDPOINT_NOT_FOUND, PTB_INVALID_TOKEN_404])
+async def test_real_ptb_endpoint_missing_falls_back_and_latches_off(exc):
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=exc)
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_awaited()
+    assert adapter._rich_send_disabled is True
+
+
+@pytest.mark.asyncio
+async def test_rich_payload_preserves_link_preview_disable():
+    adapter = _make_adapter(extra={"disable_link_previews": True})
+
+    result = await adapter.send("12345", "See https://example.com")
+
+    assert result.success is True
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["link_preview_options"] == {"is_disabled": True}
 
 
 @pytest.mark.asyncio

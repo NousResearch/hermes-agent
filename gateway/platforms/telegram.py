@@ -1022,16 +1022,19 @@ class TelegramAdapter(BasePlatformAdapter):
         rejections (BadRequest from a parser/limit issue) are NOT capability
         errors: the next message may be fine.
         """
+        name = exc.__class__.__name__.lower()
+        if name in {"endpointnotfound", "invalidtoken"}:
+            return True
         if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
             return True
         if getattr(exc, "error_code", None) == 404:
             return True
         s = str(exc).lower()
-        if ("method" in s and "not found" in s) or "no such method" in s:
+        if ("method" in s or "endpoint" in s) and (
+            "not found" in s or "does not exist" in s
+        ):
             return True
-        if "unsupported" in s or "not implemented" in s:
-            return True
-        return False
+        return "no such method" in s
 
     def _is_rich_fallback_error(self, exc: Exception) -> bool:
         """True ⇒ permanent/capability error ⇒ safe to fall back to legacy.
@@ -1043,7 +1046,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if self._is_bad_request_error(exc):
             return True
-        return self._is_rich_capability_error(exc)
+        if self._is_rich_capability_error(exc):
+            return True
+        s = str(exc).lower()
+        return "unsupported" in s or "not implemented" in s
 
     def _compute_single_send_routing(
         self,
@@ -1116,6 +1122,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # which must not be sent as a stray field on the raw endpoint.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
+        if getattr(self, "_disable_link_previews", False):
+            payload["link_preview_options"] = {"is_disabled": True}
         if reply_to_id is not None:
             # Spec: sendRichMessage takes reply_parameters (ReplyParameters
             # object), NOT the legacy reply_to_message_id scalar. Unknown
@@ -1124,8 +1132,12 @@ class TelegramAdapter(BasePlatformAdapter):
             payload["reply_parameters"] = {"message_id": reply_to_id}
 
         try:
+            # Take the raw Bot API result (dict under real PTB). Passing
+            # return_type=Message would make PTB deserialize a Bot API 10.1
+            # response shape it does not fully model yet; a post-delivery parse
+            # error must not be mistaken for a sendable failure.
             msg = await self._bot.do_api_request(
-                "sendRichMessage", api_kwargs=payload, return_type=Message
+                "sendRichMessage", api_kwargs=payload
             )
         except Exception as exc:
             if self._is_rich_fallback_error(exc):
@@ -1162,7 +1174,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(msg, dict):
             message_id = msg.get("message_id")
             if message_id is None:
-                message_id = msg.get("result", {}).get("message_id")
+                message_id = (msg.get("result") or {}).get("message_id")
         else:
             message_id = getattr(msg, "message_id", None)
         return SendResult(

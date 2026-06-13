@@ -236,6 +236,32 @@ _LEGACY_TOOLSET_MAP = {
 }
 
 
+# Profile-level read-only aliases.  These live in model_tools.py rather than
+# toolsets.py so locked-down verifier profiles can opt into a schema filter
+# without making the alias visible as a general-purpose interactive toolset in
+# `hermes tools`.  MAT-521 A1 uses `vera-read-only` for Vera.
+_READ_ONLY_TOOLSET_MAP = {
+    "read-only": [
+        "web_search", "web_extract",
+        "read_file", "search_files",
+        "vision_analyze",
+        "skills_list", "skill_view",
+        "session_search",
+        "browser_navigate", "browser_snapshot", "browser_scroll",
+        "browser_back", "browser_get_images", "browser_vision",
+    ],
+    "vera-read-only": [
+        "web_search", "web_extract",
+        "read_file", "search_files",
+        "vision_analyze",
+        "skills_list", "skill_view",
+        "session_search",
+        "browser_navigate", "browser_snapshot", "browser_scroll",
+        "browser_back", "browser_get_images", "browser_vision",
+    ],
+}
+
+
 # =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
@@ -359,7 +385,16 @@ def _compute_tool_definitions(
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
-        if os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
+        read_only_requested = [
+            ts for ts in effective_enabled_toolsets if ts in _READ_ONLY_TOOLSET_MAP
+        ]
+        if read_only_requested:
+            # Read-only profile aliases are authoritative locks, not additive
+            # convenience aliases.  If a profile/platform accidentally layers
+            # MCP/plugin/default toolsets alongside `vera-read-only`, ignore
+            # those extras so mutating tools cannot leak back into the schema.
+            effective_enabled_toolsets = read_only_requested
+        elif os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
             # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
             # must always receive the lifecycle handoff tools. Assignee
             # profiles may intentionally restrict their normal chat toolsets
@@ -377,6 +412,11 @@ def _compute_tool_definitions(
                 tools_to_include.update(legacy_tools)
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif toolset_name in _READ_ONLY_TOOLSET_MAP:
+                read_only_tools = _READ_ONLY_TOOLSET_MAP[toolset_name]
+                tools_to_include.update(read_only_tools)
+                if not quiet_mode:
+                    print(f"✅ Enabled read-only toolset '{toolset_name}': {', '.join(read_only_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
@@ -401,6 +441,11 @@ def _compute_tool_definitions(
                 tools_to_include.difference_update(legacy_tools)
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+            elif toolset_name in _READ_ONLY_TOOLSET_MAP:
+                read_only_tools = _READ_ONLY_TOOLSET_MAP[toolset_name]
+                tools_to_include.difference_update(read_only_tools)
+                if not quiet_mode:
+                    print(f"🚫 Disabled read-only toolset '{toolset_name}': {', '.join(read_only_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 

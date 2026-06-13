@@ -8,8 +8,10 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
+    get_tool_definitions,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
+    _READ_ONLY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
 
@@ -387,6 +389,172 @@ class TestLegacyToolsetMap:
             assert isinstance(tools, list), f"{name} is not a list"
             for tool in tools:
                 assert isinstance(tool, str), f"{name} contains non-string: {tool}"
+
+
+# =========================================================================
+# Vera read-only tool schema
+# =========================================================================
+
+class TestVeraReadOnlyToolset:
+    def test_vera_read_only_toolset_has_expected_read_tools(self, monkeypatch):
+        """MAT-521 A1: Vera's named read-only toolset should expose useful
+        inspection tools while keeping the tool schema non-mutating.
+        """
+        expected = {
+            "web_search",
+            "web_extract",
+            "read_file",
+            "search_files",
+            "vision_analyze",
+            "skills_list",
+            "skill_view",
+            "session_search",
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_scroll",
+            "browser_back",
+            "browser_get_images",
+            "browser_vision",
+        }
+        assert set(_READ_ONLY_TOOLSET_MAP["vera-read-only"]) == expected
+
+        def fake_get_definitions(tool_names, quiet=False):
+            return [
+                {"type": "function", "function": {"name": name, "parameters": {}}}
+                for name in sorted(tool_names)
+            ]
+
+        monkeypatch.setattr("model_tools.registry.get_definitions", fake_get_definitions)
+        monkeypatch.setattr("tools.schema_sanitizer.sanitize_tool_schemas", lambda tools: tools)
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: type("Cfg", (), {"enabled": "off"})())
+
+        tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["vera-read-only"], quiet_mode=True)
+        }
+
+        assert expected <= tool_names
+
+    def test_vera_read_only_toolset_excludes_mutating_and_generation_tools(self, monkeypatch):
+        denied = {
+            "write_file",
+            "patch",
+            "terminal",
+            "process",
+            "execute_code",
+            "delegate_task",
+            "skill_manage",
+            "todo",
+            "memory",
+            "cronjob",
+            "send_message",
+            "image_generate",
+            "video_generate",
+            "text_to_speech",
+            "computer_use",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_console",
+            "browser_cdp",
+            "browser_dialog",
+            "ha_call_service",
+            "discord",
+            "discord_admin",
+            "feishu_drive_reply_comment",
+            "feishu_drive_add_comment",
+            "yb_send_dm",
+            "yb_send_sticker",
+        }
+        assert denied.isdisjoint(_READ_ONLY_TOOLSET_MAP["vera-read-only"])
+
+        def fake_get_definitions(tool_names, quiet=False):
+            return [
+                {"type": "function", "function": {"name": name, "parameters": {}}}
+                for name in sorted(tool_names)
+            ]
+
+        monkeypatch.setattr("model_tools.registry.get_definitions", fake_get_definitions)
+        monkeypatch.setattr("tools.schema_sanitizer.sanitize_tool_schemas", lambda tools: tools)
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: type("Cfg", (), {"enabled": "off"})())
+
+        tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["vera-read-only"], quiet_mode=True)
+        }
+
+        assert denied.isdisjoint(tool_names)
+
+        layered_tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["vera-read-only", "hermes-cli"], quiet_mode=True)
+        }
+        assert denied.isdisjoint(layered_tool_names)
+        assert "read_file" in layered_tool_names
+
+    def test_vera_read_only_contrasts_with_mutating_hermes_cli(self, monkeypatch):
+        """MAT-521 A1: this regression must bite.
+
+        The broad hermes-cli composite intentionally exposes mutating file
+        tools, while vera-read-only must not. If Vera is pointed back at
+        hermes-cli, this test documents the exact regression vector.
+        """
+
+        def fake_get_definitions(tool_names, quiet=False):
+            return [
+                {"type": "function", "function": {"name": name, "parameters": {}}}
+                for name in sorted(tool_names)
+            ]
+
+        monkeypatch.setattr("model_tools.registry.get_definitions", fake_get_definitions)
+        monkeypatch.setattr("tools.schema_sanitizer.sanitize_tool_schemas", lambda tools: tools)
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: type("Cfg", (), {"enabled": "off"})())
+
+        hermes_cli_tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["hermes-cli"], quiet_mode=True)
+        }
+        vera_tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["vera-read-only"], quiet_mode=True)
+        }
+        layered_tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["vera-read-only", "hermes-cli"], quiet_mode=True)
+        }
+
+        assert "write_file" in hermes_cli_tool_names
+        assert "write_file" not in vera_tool_names
+        assert "write_file" not in layered_tool_names
+
+    def test_read_only_lock_does_not_neuter_non_read_only_toolsets(self, monkeypatch):
+        """The authoritative suppression is scoped to explicit read-only aliases.
+
+        Ordinary profiles that ask for file/hermes-cli without vera-read-only
+        still receive their normal tools.
+        """
+
+        def fake_get_definitions(tool_names, quiet=False):
+            return [
+                {"type": "function", "function": {"name": name, "parameters": {}}}
+                for name in sorted(tool_names)
+            ]
+
+        monkeypatch.setattr("model_tools.registry.get_definitions", fake_get_definitions)
+        monkeypatch.setattr("tools.schema_sanitizer.sanitize_tool_schemas", lambda tools: tools)
+        monkeypatch.setattr("tools.tool_search.load_config", lambda: type("Cfg", (), {"enabled": "off"})())
+
+        file_tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["file"], quiet_mode=True)
+        }
+        hermes_cli_tool_names = {
+            tool["function"]["name"]
+            for tool in get_tool_definitions(["hermes-cli"], quiet_mode=True)
+        }
+
+        assert {"read_file", "search_files", "write_file", "patch"} <= file_tool_names
+        assert "write_file" in hermes_cli_tool_names
 
 
 # =========================================================================

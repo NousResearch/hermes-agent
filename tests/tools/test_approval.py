@@ -369,6 +369,12 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
+    def test_tee_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo x | tee {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
     def test_tee_custom_hermes_home_env(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee $HERMES_HOME/.env")
         assert dangerous is True
@@ -560,10 +566,36 @@ class TestSensitiveRedirectPattern:
         assert dangerous is True
         assert key is not None
 
+    def test_append_to_absolute_home_ssh_authorized_keys(self):
+        authorized_keys = Path.home() / ".ssh" / "authorized_keys"
+        dangerous, key, desc = detect_dangerous_command(f"cat key >> {authorized_keys}")
+        assert dangerous is True
+        assert key is not None
+
     def test_append_to_tilde_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> ~/.ssh/authorized_keys")
         assert dangerous is True
         assert key is not None
+
+    def test_redirect_to_absolute_home_bashrc(self):
+        bashrc = Path.home() / ".bashrc"
+        dangerous, key, desc = detect_dangerous_command(f"echo 'alias ll=\"ls -la\"' > {bashrc}")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_home_set_after_import(self, monkeypatch, tmp_path):
+        late_home = tmp_path / "late-home"
+        late_home.mkdir()
+        monkeypatch.setenv("HOME", str(late_home))
+
+        dangerous, key, desc = detect_dangerous_command(f"echo x > {late_home}/.bashrc")
+        assert dangerous is True
+        assert key is not None
+
+    def test_redirect_to_other_absolute_home_bashrc_is_not_current_user_sensitive(self):
+        dangerous, key, desc = detect_dangerous_command("echo x > /tmp/not-current-home/.bashrc")
+        assert dangerous is False
+        assert key is None
 
     def test_redirect_to_safe_tmp_file(self):
         dangerous, key, desc = detect_dangerous_command("echo hello > /tmp/output.txt")

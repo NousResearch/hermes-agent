@@ -561,6 +561,11 @@ def _normalize_command_for_detection(command: str) -> str:
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
+    # Fold the current user's resolved absolute home path into ~/ at detection
+    # time so static user-sensitive patterns catch /home/alice/.bashrc the same
+    # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
+    # profile/session launchers can set HOME after this module is imported.
+    command = _rewrite_resolved_user_home(command)
     # Fold the resolved absolute active-profile home path into the canonical
     # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
     # gateway deployments the agent often references the resolved absolute path
@@ -569,6 +574,36 @@ def _normalize_command_for_detection(command: str) -> str:
     # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
     # after this module is imported — as the hermetic test conftest does.
     command = _rewrite_resolved_hermes_home(command)
+    return command
+
+
+def _rewrite_resolved_user_home(command: str) -> str:
+    """Rewrite the current user's absolute home prefix to ``~/``.
+
+    Resolves HOME at detection time, including its symlink-resolved form, so
+    terminal commands targeting absolute home paths are checked by the same
+    static patterns as tilde and $HOME forms. No-op when HOME is unset or
+    degenerate.
+    """
+    try:
+        home = os.path.expanduser("~")
+        candidates = [
+            home.rstrip("/"),
+            os.path.realpath(home).rstrip("/"),
+        ]
+    except Exception:
+        return command
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        # Require an absolute path below root so a bad HOME cannot rewrite the
+        # whole filesystem namespace.
+        normalized = path.rstrip("/")
+        if not normalized.startswith("/") or normalized.count("/") < 2:
+            continue
+        command = command.replace(normalized + "/", "~/")
     return command
 
 

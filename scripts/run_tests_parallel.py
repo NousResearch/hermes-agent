@@ -253,15 +253,15 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
-def _run_one_file(
-    file: Path,
-    pytest_args: List[str],
+def _spawn_pytest_once(
+    cmd: List[str],
     repo_root: Path,
     file_timeout: float,
-) -> Tuple[Path, int, str, dict[str, int], float]:
-    """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
+    timeout_note: str = "per-file timeout",
+) -> Tuple[int, str]:
+    """Run one pytest subprocess and return exit code plus combined output.
 
-    Returns (file, returncode, captured_combined_output, summary_counts, subprocess_wall_seconds).
+    The caller handles pytest exit-code interpretation and summary parsing.
 
     ``summary_counts`` is the result of ``_parse_pytest_summary(output)`` —
 
@@ -284,9 +284,6 @@ def _run_one_file(
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
-    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-
-    subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
         cmd,
@@ -296,6 +293,8 @@ def _run_one_file(
         text=True,
         encoding="utf-8",
         errors="replace",
+        # Avoid concurrent bytecode writes from many per-file pytest workers.
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -325,7 +324,7 @@ def _run_one_file(
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"({file_timeout:.0f}s exceeded; "
+            f"({timeout_note}: {file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:

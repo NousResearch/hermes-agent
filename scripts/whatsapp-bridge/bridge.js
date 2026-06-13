@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -48,6 +48,8 @@ const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.herme
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+const WHATSAPP_DIR = path.join(process.env.HOME || '~', '.hermes', 'whatsapp');
+const INBOUND_ARCHIVE_PATH = process.env.WHATSAPP_INBOUND_ARCHIVE || path.join(WHATSAPP_DIR, 'inbound.jsonl');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
@@ -136,6 +138,23 @@ function getMessageContent(msg) {
   return content;
 }
 
+function extractTextPreview(messageContent) {
+  if (!messageContent || typeof messageContent !== 'object') return '';
+  const candidates = [
+    messageContent.conversation,
+    messageContent.extendedTextMessage?.text,
+    messageContent.imageMessage?.caption,
+    messageContent.videoMessage?.caption,
+    messageContent.documentMessage?.caption,
+    messageContent.buttonsResponseMessage?.selectedDisplayText,
+    messageContent.listResponseMessage?.title,
+    messageContent.templateButtonReplyMessage?.selectedDisplayText,
+  ];
+  const text = candidates.find((value) => typeof value === 'string' && value.trim());
+  if (!text) return '';
+  return text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+}
+
 function getContextInfo(messageContent) {
   if (!messageContent || typeof messageContent !== 'object') return {};
   for (const value of Object.values(messageContent)) {
@@ -144,6 +163,15 @@ function getContextInfo(messageContent) {
     }
   }
   return {};
+}
+
+function archiveInboundMessage(event) {
+  try {
+    mkdirSync(path.dirname(INBOUND_ARCHIVE_PATH), { recursive: true });
+    appendFileSync(INBOUND_ARCHIVE_PATH, `${JSON.stringify(event)}\n`, { mode: 0o600 });
+  } catch (err) {
+    console.error('[bridge] Failed to archive inbound message:', err.message);
+  }
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -289,15 +317,23 @@ async function startSocket() {
       // themselves — stranger DMs / group pings must never reach the
       // Python gateway, otherwise a pairing-code reply fires in response
       // to arbitrary incoming messages (#8389).
+      const messageContent = getMessageContent(msg);
+
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
+          const archivedEvent = {
+            event: 'inbound_archived',
+            reason: 'self_chat_mode_rejects_non_self',
+            chatId,
+            senderId,
+            senderName: msg.pushName || senderNumber,
+            body: extractTextPreview(messageContent),
+            timestamp: msg.messageTimestamp,
+            messageId: msg.key.id,
+          };
+          archiveInboundMessage(archivedEvent);
           try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
+            console.log(JSON.stringify({ ...archivedEvent, event: 'ignored' }));
           } catch {}
           continue;
         }
@@ -308,13 +344,15 @@ async function startSocket() {
               reason: 'allowlist_mismatch',
               chatId,
               senderId,
+              senderName: msg.pushName || senderNumber,
+              body: extractTextPreview(messageContent),
+              timestamp: msg.messageTimestamp,
+              messageId: msg.key.id,
             }));
           } catch {}
           continue;
         }
       }
-
-      const messageContent = getMessageContent(msg);
       const contextInfo = getContextInfo(messageContent);
       const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
       const quotedMessageId = contextInfo?.stanzaId || null;

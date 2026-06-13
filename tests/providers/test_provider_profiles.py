@@ -147,6 +147,75 @@ class TestOpenRouterProfile:
             )
             assert "plugins" not in body, f"bad={bad!r}"
 
+    def test_fusion_disabled_omits_server_tool(self):
+        p = get_provider_profile("openrouter")
+        cfg = {"enabled": False, "analysis_models": ["openai/gpt-5-mini"]}
+        assert p.build_extra_body(openrouter_fusion=cfg) == {}
+        assert p.build_server_tools(openrouter_fusion=cfg) == []
+
+    def test_fusion_config_emits_server_tool(self):
+        p = get_provider_profile("openrouter")
+        cfg = {
+            "enabled": True,
+            "analysis_models": ["openai/gpt-5-mini", "anthropic/claude-sonnet-4.6"],
+            "judge_model": "openai/gpt-5.4",
+            "max_tool_calls": "3",
+            "max_completion_tokens": 1024,
+            "reasoning": {"effort": "high"},
+            "temperature": "0.2",
+        }
+        assert p.build_extra_body(openrouter_fusion=cfg) == {}
+        assert p.build_server_tools(openrouter_fusion=cfg) == [
+            {
+                "type": "openrouter:fusion",
+                "parameters": {
+                    "analysis_models": [
+                        "openai/gpt-5-mini",
+                        "anthropic/claude-sonnet-4.6",
+                    ],
+                    "model": "openai/gpt-5.4",
+                    "max_tool_calls": 3,
+                    "max_completion_tokens": 1024,
+                    "reasoning": {"effort": "high"},
+                    "temperature": 0.2,
+                },
+            }
+        ]
+
+    def test_fusion_config_drops_invalid_optional_values(self):
+        p = get_provider_profile("openrouter")
+        cfg = {
+            "enabled": "yes",
+            "analysis_models": [f"provider/model-{idx}" for idx in range(10)],
+            "max_tool_calls": 17,
+            "max_completion_tokens": 0,
+            "temperature": 2.5,
+        }
+        assert p.build_server_tools(openrouter_fusion=cfg) == [
+            {
+                "type": "openrouter:fusion",
+                "parameters": {
+                    "analysis_models": [f"provider/model-{idx}" for idx in range(8)]
+                },
+            }
+        ]
+
+    def test_fusion_force_sets_tool_choice_required(self):
+        p = get_provider_profile("openrouter")
+        _extra_body, top_level = p.build_api_kwargs_extras(
+            openrouter_fusion={"enabled": True, "force": True},
+        )
+        assert top_level["tool_choice"] == "required"
+
+    def test_fusion_does_not_append_to_pareto_plugin(self):
+        p = get_provider_profile("openrouter")
+        body = p.build_extra_body(
+            model="openrouter/pareto-code",
+            openrouter_min_coding_score=0.65,
+            openrouter_fusion={"enabled": True},
+        )
+        assert body["plugins"] == [{"id": "pareto-router", "min_coding_score": 0.65}]
+
     def test_reasoning_full_config(self):
         p = get_provider_profile("openrouter")
         eb, _ = p.build_api_kwargs_extras(

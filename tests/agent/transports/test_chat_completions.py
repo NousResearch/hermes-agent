@@ -236,6 +236,55 @@ class TestChatCompletionsBuildKwargs:
             {"id": "pareto-router", "min_coding_score": 0.8}
         ]
 
+    def test_openrouter_fusion_appends_server_tool(self, transport):
+        """Fusion is a provider-managed server tool, not a local function."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        msgs = [{"role": "user", "content": "Hi"}]
+        local_tool = {
+            "type": "function",
+            "function": {"name": "local_search", "parameters": {}},
+        }
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=msgs,
+            tools=[local_tool],
+            provider_profile=profile,
+            openrouter_fusion={
+                "enabled": True,
+                "analysis_models": "openai/gpt-5-mini, anthropic/claude-sonnet-4.6",
+                "judge": {"model": "openai/gpt-5.4"},
+                "force": True,
+            },
+        )
+        assert kw["tools"] == [
+            local_tool,
+            {
+                "type": "openrouter:fusion",
+                "parameters": {
+                    "analysis_models": [
+                        "openai/gpt-5-mini",
+                        "anthropic/claude-sonnet-4.6",
+                    ],
+                    "model": "openai/gpt-5.4",
+                },
+            },
+        ]
+        assert kw["tool_choice"] == "required"
+        assert "plugins" not in kw.get("extra_body", {})
+
+    def test_openrouter_fusion_without_force_omits_tool_choice(self, transport):
+        from providers import get_provider_profile
+        profile = get_provider_profile("openrouter")
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            openrouter_fusion={"enabled": True},
+        )
+        assert kw["tools"] == [{"type": "openrouter:fusion", "parameters": {}}]
+        assert "tool_choice" not in kw
+
     def test_nous_tags(self, transport):
         from agent.portal_tags import nous_portal_tags
         from providers import get_provider_profile

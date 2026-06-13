@@ -16053,6 +16053,7 @@ class GatewayRunner:
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        ("openrouter", "fusion"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (

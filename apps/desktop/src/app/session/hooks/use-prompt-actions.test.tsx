@@ -364,10 +364,10 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
   })
 
-  it('a fromQueue drain that hits "session busy" stays quiet (no error bubble) and a retry sends it', async () => {
-    // The drain can fire on the settle edge before the gateway has fully wound
-    // the turn down → transient 4009. It must not append a red "session busy"
-    // bubble; the entry stays queued and the next idle retry succeeds.
+  it('rides out a transient "session busy" so the user never sees it (retries, no error bubble)', async () => {
+    // A submit racing the settle edge can hit a transient 4009 before the turn
+    // has fully wound down. It must be invisible: retried in place until the
+    // gateway accepts, never a red "session busy" bubble.
     let attempt = 0
     const seeds: Record<string, unknown>[] = []
     const requestGateway = vi.fn(async (method: string) => {
@@ -392,15 +392,12 @@ describe('usePromptActions submit / queue drain semantics', () => {
       />
     )
 
-    const first = await handle!.submitText('queued during a turn', { fromQueue: true })
-    expect(first).toBe(false)
+    expect(await handle!.submitText('sent while settling')).toBe(true)
+    expect(attempt).toBe(2) // rode past the busy on the second try
     // No assistant-error message was appended for the transient busy.
     expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
       false
     )
-
-    const second = await handle!.submitText('queued during a turn', { fromQueue: true })
-    expect(second).toBe(true)
   })
 
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {
@@ -879,7 +876,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
     const requestGateway = vi.fn(async (method: string) => {
       calls.push(method)
       if (method === 'prompt.submit') {
-        throw new Error('session busy')
+        throw new Error('gateway exploded')
       }
       return {} as never
     })

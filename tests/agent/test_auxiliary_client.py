@@ -1643,6 +1643,50 @@ class TestAuxiliaryFallbackLayering:
         # Main agent fallback should NOT have been consulted — chain succeeded first
         main_called.assert_not_called()
 
+    def test_double_fallback_warns_with_landed_model(self, monkeypatch, caplog):
+        """Landing past fallback 1 is operator-visible and names the model used."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        landed_client = MagicMock()
+        landed_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from fallback 2"))
+        ])
+
+        chain_config = {
+            "fallback_chain": [
+                {"provider": "kimi-coding", "model": "kimi-k2.7"},
+                {"provider": "ollama-cloud", "model": "nemotron-3-ultra"},
+            ]
+        }
+
+        def resolve_chain_provider(provider, model="", **_kwargs):
+            if provider == "ollama-cloud":
+                return landed_client, model
+            return None, None
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value=chain_config), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   side_effect=resolve_chain_provider), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert landed_client.chat.completions.create.called
+        assert any(
+            "fell back past fallback 1" in r.message
+            and "fallback_chain[1](ollama-cloud)" in r.message
+            and "nemotron-3-ultra" in r.message
+            for r in caplog.records
+        ), f"Expected double-fallback WARNING with model, got: {[r.message for r in caplog.records]}"
+
     def test_explicit_provider_falls_back_to_main_when_chain_exhausted(self, monkeypatch):
         """If configured fallback_chain returns nothing, main agent model is tried next."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -2950,16 +2994,21 @@ class TestCodexAuxiliaryAdapterTimeout:
 
     def test_enforces_total_timeout_while_stream_keeps_emitting_events(self):
         class _SlowAliveCreateStream:
+            yielded = 0
+
             def __iter__(self):
                 for _ in range(5):
                     time.sleep(0.03)
+                    self.yielded += 1
                     yield SimpleNamespace(type="response.in_progress")
 
             def close(self): pass
 
+        stream = _SlowAliveCreateStream()
+
         class FakeResponses:
             def create(self, **kwargs):
-                return _SlowAliveCreateStream()
+                return stream
 
         fake_client = SimpleNamespace(responses=FakeResponses(), close=lambda: None)
         adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
@@ -2971,7 +3020,8 @@ class TestCodexAuxiliaryAdapterTimeout:
                 timeout=0.05,
             )
 
-        assert time.monotonic() - started < 0.14
+        assert time.monotonic() - started < 0.5
+        assert stream.yielded < 5
 
 
 class TestCodexAuxiliaryToolMessageConversion:

@@ -3084,17 +3084,24 @@ def _try_configured_fallback_chain(
         label = f"fallback_chain[{i}]({fb_provider})"
 
         try:
-            fb_client = _resolve_single_provider(
+            fb_client, landed_model = _resolve_single_provider(
                 fb_provider, fb_model, fb_base_url, fb_api_key)
         except Exception:
-            fb_client = None
+            fb_client, landed_model = None, None
 
         if fb_client is not None:
-            logger.info(
-                "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
-                task, reason, failed_provider, label, fb_model or "default",
+            final_model = landed_model or fb_model
+            log_fn = logger.warning if i >= 1 else logger.info
+            log_fn(
+                "Auxiliary %s: %s on %s — %s to %s (%s)",
+                task,
+                reason,
+                failed_provider,
+                "fell back past fallback 1" if i >= 1 else "configured fallback",
+                label,
+                final_model or "default",
             )
-            return fb_client, fb_model, label
+            return fb_client, final_model, label
         tried.append(label)
 
     if tried:
@@ -3110,7 +3117,7 @@ def _resolve_single_provider(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-) -> Optional[Any]:
+) -> Tuple[Optional[Any], Optional[str]]:
     """Resolve a single provider entry from fallback_chain to an OpenAI client.
 
     Uses the existing provider resolution infrastructure where possible.
@@ -3118,11 +3125,11 @@ def _resolve_single_provider(
     # Reuse resolve_provider_client which handles provider→client mapping
     client, resolved_model = resolve_provider_client(
         provider=provider,
-        model=model,
-        base_url=base_url,
-        api_key=api_key,
+        model=model or "",
+        explicit_base_url=base_url or "",
+        explicit_api_key=api_key or "",
     )
-    return client
+    return client, resolved_model
 
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.

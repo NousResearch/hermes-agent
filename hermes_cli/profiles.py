@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
 
@@ -486,6 +487,53 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
         pass
 
 
+def _load_wrappers() -> list[tuple[str, str]]:
+    """Get the list of wrappers, checking directory mtime to auto-invalidate the cache."""
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        return []
+    try:
+        mtime_ns = wrapper_dir.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return _load_wrappers_cached(wrapper_dir, mtime_ns)
+
+
+@lru_cache(maxsize=1)
+def _load_wrappers_cached(wrapper_dir: Path, mtime_ns: int) -> list[tuple[str, str]]:
+    """Load and cache the (alias_name, file_content) of all valid wrapper scripts in wrapper_dir.
+
+    This avoids re-reading the filesystem and especially decoding large files on multiple calls.
+    """
+    is_windows = sys.platform == "win32"
+    wrappers = []
+
+    try:
+        for entry in sorted(wrapper_dir.iterdir()):
+            if not entry.is_file():
+                continue
+            if is_windows and entry.suffix != ".bat":
+                continue
+            if not is_windows and entry.suffix:
+                continue
+
+            try:
+                # Wrapper scripts are very small (typically < 100 bytes).
+                # Skip large binary files (like uv) to avoid expensive reading/decoding.
+                if entry.stat().st_size > 8192:
+                    continue
+                content = entry.read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            alias = entry.stem if is_windows else entry.name
+            wrappers.append((alias, content))
+    except OSError:
+        pass
+
+    return wrappers
+
+
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Return the alias name of the wrapper that activates *profile_name*, or None.
 
@@ -499,34 +547,20 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
     """
-    wrapper_dir = _get_wrapper_dir()
-    if not wrapper_dir.is_dir():
-        return None
     canon = normalize_profile_name(profile_name)
-    is_windows = sys.platform == "win32"
     needle = f"hermes -p {canon}"
 
     custom: Optional[str] = None
     profile_named: Optional[str] = None
-    for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
-            continue
-        try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
+
+    for alias, content in _load_wrappers():
         if needle not in content:
             continue
-        alias = entry.stem if is_windows else entry.name
         if alias == canon:
             profile_named = alias
         elif custom is None:
             custom = alias
+
     return custom if custom is not None else profile_named
 
 
@@ -567,6 +601,28 @@ class ProfileInfo:
     description_auto: bool = False
 
 
+_yaml_loader = None
+_yaml_dumper = None
+
+
+def _safe_load(stream):
+    """Parse YAML with lazy import and CSafeLoader preference."""
+    global _yaml_loader
+    import yaml
+    if _yaml_loader is None:
+        _yaml_loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
+    return yaml.load(stream, Loader=_yaml_loader)
+
+
+def _safe_dump(data, stream, **kwargs):
+    """Serialize Python object as YAML, preference for CSafeDumper."""
+    global _yaml_dumper
+    import yaml
+    if _yaml_dumper is None:
+        _yaml_dumper = getattr(yaml, "CSafeDumper", None) or yaml.SafeDumper
+    yaml.dump(data, stream, Dumper=_yaml_dumper, **kwargs)
+
+
 def _read_distribution_meta(profile_dir: Path) -> tuple:
     """Return ``(name, version, source)`` from the profile's ``distribution.yaml``
     if present; ``(None, None, None)`` otherwise.
@@ -578,9 +634,8 @@ def _read_distribution_meta(profile_dir: Path) -> tuple:
     if not mf_path.is_file():
         return None, None, None
     try:
-        import yaml
         with open(mf_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = _safe_load(f) or {}
         if not isinstance(data, dict):
             return None, None, None
         return (
@@ -598,9 +653,8 @@ def _read_config_model(profile_dir: Path) -> tuple:
     if not config_path.exists():
         return None, None
     try:
-        import yaml
         with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+            cfg = _safe_load(f) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, None
@@ -687,9 +741,8 @@ def read_profile_meta(profile_dir: Path) -> dict:
     if not path.is_file():
         return {"description": "", "description_auto": False}
     try:
-        import yaml
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data = _safe_load(f) or {}
     except Exception:
         return {"description": "", "description_auto": False}
     if not isinstance(data, dict):
@@ -714,13 +767,12 @@ def write_profile_meta(
     """
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"profile directory does not exist: {profile_dir}")
-    import yaml
     path = _profile_yaml_path(profile_dir)
     existing: dict = {}
     if path.is_file():
         try:
             with open(path, "r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f) or {}
+                loaded = _safe_load(f) or {}
             if isinstance(loaded, dict):
                 existing = loaded
         except Exception:
@@ -730,7 +782,7 @@ def write_profile_meta(
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
     with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+        _safe_dump(existing, f, sort_keys=False, default_flow_style=False)
 
 
 # ---------------------------------------------------------------------------

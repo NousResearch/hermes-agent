@@ -3411,13 +3411,15 @@ class DiscordAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
-        """
-        Format message for Discord.
+        """Format message for Discord.
 
-        Discord uses its own markdown variant.
+        Converts GFM markdown tables to bullet-list groups since Discord
+        does not render pipe tables natively.
         """
-        # Discord markdown is fairly standard, no special escaping needed
-        return content
+        if not content:
+            return content
+        from gateway.platforms.helpers import convert_table_to_bullets
+        return convert_table_to_bullets(content)
 
     async def _run_simple_slash(
         self,

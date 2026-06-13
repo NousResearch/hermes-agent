@@ -1,5 +1,6 @@
 """Regression tests for dashboard cron job profile routing."""
 
+from queue import Empty, SimpleQueue
 import threading
 
 import pytest
@@ -22,6 +23,15 @@ def isolated_profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
     return {"default": default_home, "worker_alpha": worker_home}
+
+
+def _drain_queue(q):
+    values = []
+    while True:
+        try:
+            values.append(q.get_nowait())
+        except Empty:
+            return values
 
 
 def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_profiles):
@@ -146,17 +156,17 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
     )
 
     event_loop_thread = threading.get_ident()
-    profile_scan_threads = []
-    worker_threads = []
+    profile_scan_threads = SimpleQueue()
+    worker_threads = SimpleQueue()
     original_profile_dicts = web_server._cron_profile_dicts
     original_find = web_server._find_cron_job_profile
 
     def tracking_profile_dicts():
-        profile_scan_threads.append(threading.get_ident())
+        profile_scan_threads.put(threading.get_ident())
         return original_profile_dicts()
 
     def tracking_find(job_id):
-        worker_threads.append(threading.get_ident())
+        worker_threads.put(threading.get_ident())
         return original_find(job_id)
 
     monkeypatch.setattr(web_server, "_cron_profile_dicts", tracking_profile_dicts)
@@ -167,10 +177,23 @@ async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypa
 
     assert any(job["id"] == worker_job["id"] for job in jobs)
     assert paused["profile"] == "worker_alpha"
-    assert profile_scan_threads
-    assert worker_threads
-    assert all(thread_id != event_loop_thread for thread_id in profile_scan_threads)
-    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+    profile_scan_thread_ids = _drain_queue(profile_scan_threads)
+    worker_thread_ids = _drain_queue(worker_threads)
+    assert profile_scan_thread_ids
+    assert worker_thread_ids
+    assert all(thread_id != event_loop_thread for thread_id in profile_scan_thread_ids)
+    assert all(thread_id != event_loop_thread for thread_id in worker_thread_ids)
+
+
+@pytest.mark.asyncio
+async def test_cron_dashboard_io_rejects_async_callables():
+    from hermes_cli import web_server
+
+    async def async_callable():
+        return "nope"
+
+    with pytest.raises(TypeError, match="only accepts sync callables"):
+        await web_server._run_cron_dashboard_io(async_callable)
 
 
 @pytest.mark.asyncio

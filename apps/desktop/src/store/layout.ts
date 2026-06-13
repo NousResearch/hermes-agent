@@ -26,6 +26,7 @@ const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
+const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
@@ -58,6 +59,9 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
 export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
 export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
+// Order of the top-level repo "parent" groups in the worktree tree (worktrees
+// within a parent reuse $sidebarWorkspaceOrderIds).
+export const $sidebarWorkspaceParentOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
 // Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
 // true the whole time it's a floating overlay (not just while shown) so the
@@ -85,6 +89,9 @@ $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY,
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
+$sidebarWorkspaceParentOrderIds.subscribe(ids =>
+  persistStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY, [...ids])
+)
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
@@ -169,6 +176,12 @@ export function setSidebarWorkspaceOrderIds(ids: string[]) {
   }
 }
 
+export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
+  if (!arraysEqual($sidebarWorkspaceParentOrderIds.get(), ids)) {
+    $sidebarWorkspaceParentOrderIds.set(ids)
+  }
+}
+
 export function setSidebarResizing(resizing: boolean) {
   $isSidebarResizing.set(resizing)
 }
@@ -191,16 +204,15 @@ export function unpinSession(sessionId: string) {
   }
 }
 
-export function reorderPinnedSession(sessionId: string, targetIndex: number) {
+// Replace the whole pinned order at once (drag-reorder hands back the new order
+// rather than a single move). Keep only ids that are actually pinned so a stale
+// row can't smuggle an unpinned id into the store.
+export function setPinnedSessionOrder(ids: string[]) {
   const prev = $pinnedSessionIds.get()
+  const pinned = new Set(prev)
+  const next = ids.filter(id => pinned.has(id))
 
-  if (!prev.includes(sessionId)) {
-    return
-  }
-
-  const next = insertUniqueId(prev, sessionId, targetIndex)
-
-  if (!arraysEqual(prev, next)) {
+  if (next.length === prev.length && !arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
 }

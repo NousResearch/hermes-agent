@@ -404,24 +404,10 @@ function useThreadScrollAnchor({
     }
   }, [scrollerRef, stickyBottomRef])
 
-  // Streaming auto-follow: while — and ONLY while — parked at the bottom, chase
-  // content growth (streaming tokens, late measurement, Shiki re-highlight) so
-  // the tail stays in view. One upward pixel (scroll/wheel/touch above) flips
-  // the gate false and following stops until the user returns to the bottom.
-  // Keyed on the virtualizer's own size signal and pinned in useLayoutEffect —
-  // the virtualizer's scrollToFn runs in the same pre-paint pass, so the two
-  // don't fight (no rubber-banding). pinToBottom no-ops at bottom, so rapid
-  // growth is cheap.
-  const totalSize = virtualizer.getTotalSize()
-  const prevTotalSizeRef = useRef<number | null>(null)
-  useLayoutEffect(() => {
-    const prev = prevTotalSizeRef.current
-    prevTotalSizeRef.current = totalSize
-
-    if (enabled && prev !== null && totalSize > prev && stickyBottomRef.current) {
-      pinToBottom()
-    }
-  }, [enabled, pinToBottom, stickyBottomRef, totalSize])
+  // No streaming auto-follow: chasing content growth while parked at the bottom
+  // rubber-bands (the tail and the virtualizer's own measurement adjustments
+  // fight for scrollTop). The one-time new-turn jump below already lands a fresh
+  // message in view; from there the viewport stays put unless the user jumps.
 
   // The floating jump button asks us to return to the bottom; same re-arm + pin
   // path as a new turn.

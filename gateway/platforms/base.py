@@ -1850,6 +1850,17 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Channel turn-coalescing index: "chat_id\x1fuser_id" -> the session_key
+        # of that user's in-flight *top-level* group/channel turn. Lets a rapid
+        # same-user top-level follow-up join the active turn (routed through the
+        # normal busy handler so it queues/cascades — or interrupts only a cheap
+        # turn) instead of racing it in its own per-message session. Only used
+        # when each top-level message gets its own session (reply_in_thread=true,
+        # the default); under reply_in_thread=false the sessions already share a
+        # key and this no-ops. Synced with _active_sessions by
+        # _start_session_processing / _release_session_guard /
+        # _heal_stale_session_lock.
+        self._active_topfollow: Dict[str, str] = {}
         # Legacy busy_text_mode env var; when unset the runner syncs the
         # resolved value (driven by busy_input_mode) onto the adapter after
         # construction (gateway/run.py). Default to "interrupt" so a stray
@@ -3653,6 +3664,37 @@ class BasePlatformAdapter(ABC):
         if guard is not None and current_guard is not guard:
             return
         del self._active_sessions[session_key]
+        self._drop_topfollow_for(session_key)
+
+    def _topfollow_key(self, event: MessageEvent) -> Optional[str]:
+        """Composite ``chat_id\\x1fuser_id`` key for channel turn-coalescing.
+
+        Returns a key only for a *top-level* group/channel message that carries
+        a participant id — the case where the platform mints a fresh per-message
+        session (Slack with ``reply_in_thread=true`` falls back to
+        ``thread_ts = ts``), so rapid same-user follow-ups would otherwise race
+        the in-flight turn in their own sessions. Returns None for DMs, thread
+        replies, and messages with no user id (their session keys already
+        coalesce correctly), which leaves every other platform/route untouched.
+        """
+        src = getattr(event, "source", None)
+        if src is None or src.chat_type not in ("group", "channel"):
+            return None
+        user = src.user_id or src.user_id_alt
+        if not user or not src.chat_id:
+            return None
+        # Top-level when there is no thread anchor, or the anchor is the
+        # message's own id (the per-message session fallback). A genuine thread
+        # reply (anchor points at an earlier parent) is left alone.
+        thread_id = src.thread_id
+        if thread_id and event.message_id and thread_id != event.message_id:
+            return None
+        return f"{src.chat_id}\x1f{user}"
+
+    def _drop_topfollow_for(self, session_key: str) -> None:
+        """Remove any channel-coalescing index entry pointing at ``session_key``."""
+        for k in [k for k, v in self._active_topfollow.items() if v == session_key]:
+            self._active_topfollow.pop(k, None)
 
     def _session_task_is_stale(self, session_key: str) -> bool:
         """Return True if the owner task for ``session_key`` is done/cancelled.
@@ -3695,6 +3737,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._session_tasks.pop(session_key, None)
+        self._drop_topfollow_for(session_key)
         self._discard_text_debounce(session_key)
         return True
 
@@ -3728,6 +3771,9 @@ class BasePlatformAdapter(ABC):
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
+        _tf = self._topfollow_key(event)
+        if _tf is not None:
+            self._active_topfollow[_tf] = session_key
         return True
 
     async def cancel_session_processing(
@@ -3907,6 +3953,33 @@ class BasePlatformAdapter(ABC):
         # this is the split-brain tail described in issue #11016.
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
+
+        # Channel turn coalescing: a top-level group/channel message whose own
+        # per-message session is idle, but whose author already has an in-flight
+        # top-level turn in this chat, joins that turn rather than racing it in a
+        # separate concurrent session. Rebinding to the active session_key routes
+        # the message through the busy handler below — so it queues/cascades
+        # after the active turn (and the runner's #30170 demotion keeps a running
+        # delegation from being interrupted), instead of answering a question the
+        # in-flight turn is about to make moot. Same user only (per-user session
+        # isolation); thread replies and other users are untouched, and under
+        # reply_in_thread=false the keys already match so this never fires.
+        if session_key not in self._active_sessions:
+            _tf = self._topfollow_key(event)
+            if _tf is not None:
+                _sibling = self._active_topfollow.get(_tf)
+                if (
+                    _sibling
+                    and _sibling != session_key
+                    and _sibling in self._active_sessions
+                    and not self._session_task_is_stale(_sibling)
+                ):
+                    logger.debug(
+                        "[%s] Coalescing top-level follow-up into active "
+                        "session %s (own key %s)",
+                        self.name, _sibling, session_key,
+                    )
+                    session_key = _sibling
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:

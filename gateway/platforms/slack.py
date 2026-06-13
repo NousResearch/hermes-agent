@@ -365,6 +365,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Heartbeat: monotonic start time of the current status indicator per
+        # chat, so a long-running turn surfaces elapsed time ("still working…
+        # (2m03s)") instead of a static "is thinking..." that reads as stuck.
+        self._status_started: Dict[str, float] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -1290,11 +1294,27 @@ class SlackAdapter(BasePlatformAdapter):
             return  # Can only set status in a thread context
 
         self._active_status_threads[chat_id] = thread_ts
+        # Heartbeat: _keep_typing refreshes this on an interval, so deriving the
+        # label from elapsed time turns the static "is thinking..." into visible
+        # progress for a long turn (e.g. a multi-minute delegation). A turn that
+        # visibly advances doesn't provoke a mid-turn "you there?" — which would
+        # otherwise race the in-flight answer in its own session.
+        started = self._status_started.get(chat_id)
+        if started is None:
+            started = time.monotonic()
+            self._status_started[chat_id] = started
+        elapsed = int(time.monotonic() - started)
+        if elapsed >= 30:
+            mins, secs = divmod(elapsed, 60)
+            human = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+            status = f"still working… ({human})"
+        else:
+            status = "is thinking..."
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
-                status="is thinking...",
+                status=status,
             )
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
@@ -1306,6 +1326,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return
         thread_ts = self._active_status_threads.pop(chat_id, None)
+        self._status_started.pop(chat_id, None)
         if not thread_ts:
             return
         try:

@@ -1834,6 +1834,7 @@ export const ja = defineLocale({
       moreOptions: 'その他の承認オプション',
       allowSession: 'このセッションで許可',
       alwaysAllowMenu: '常に許可…',
+      jumpToApproval: '承認が必要',
       reject: '拒否',
       alwaysTitle: 'このコマンドを常に許可しますか？',
       alwaysDescription: pattern =>

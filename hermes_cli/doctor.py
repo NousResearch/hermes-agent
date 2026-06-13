@@ -1543,8 +1543,14 @@ def run_doctor(args):
                 total = critical + high + moderate
                 # Determine a scoped fix command for the remediation hint.
                 if audit_extra and audit_extra[0] == "--workspace":
-                    fix_scope = " ".join(audit_extra)
-                    fix_cmd = f"cd {npm_dir} && npm audit fix {fix_scope}"
+                    # Detection (`npm audit --workspace <name>`) is read-only and
+                    # safe, but `npm audit fix --workspace <name>` crashes on
+                    # current npm with "Cannot read properties of null (reading
+                    # 'edgesOut')" — an arborist bug with workspace-filtered
+                    # audit fix. Recommend the root-level `npm audit fix`, which
+                    # operates over every workspace and does not crash, instead
+                    # of handing the user a command that errors out.
+                    fix_cmd = f"cd {npm_dir} && npm audit fix"
                 elif audit_extra == ["--workspaces=false"]:
                     fix_cmd = f"cd {npm_dir} && npm audit fix --workspaces=false"
                 else:
@@ -1556,6 +1562,19 @@ def run_doctor(args):
                         f"{label} deps",
                         f"({critical} critical, {high} high, {moderate} moderate — run: {fix_cmd})"
                     )
+                    if audit_extra and audit_extra[0] == "--workspace":
+                        # The web/ui-tui workspace advisories are in build-time
+                        # tooling (esbuild/vite, etc.), not runtime code that ships
+                        # to users. `npm audit fix` here may also error with a known
+                        # npm arborist crash (edgesOut / isDescendantOf) on this
+                        # monorepo tree — in that case it is an npm bug, not a
+                        # Hermes one, and the advisories clear via a lockfile bump
+                        # rather than a manual fix.
+                        check_info(
+                            "  ^ build-time tooling (not runtime); if `npm audit fix` "
+                            "errors with an npm arborist crash it's a known npm bug — "
+                            "clears via a lockfile bump"
+                        )
                     issues.append(
                         f"{label} has {total} npm "
                         f"{'vulnerability' if total == 1 else 'vulnerabilities'}"

@@ -496,6 +496,43 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/no-fields", json={})
         assert resp.status_code == 400
 
+    def test_sessions_respects_profile_query_for_list(self):
+        """GET /api/sessions?profile=... must read the selected profile DB."""
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profiles_mod.create_profile("alpha", no_alias=True)
+        alpha_db = SessionDB(db_path=profiles_mod.get_profile_dir("alpha") / "state.db")
+        try:
+            alpha_db.create_session(session_id="alpha-only", source="cli")
+            alpha_db.append_message(session_id="alpha-only", role="user", content="hello alpha")
+        finally:
+            alpha_db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0&profile=alpha")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert any(s["id"] == "alpha-only" for s in data["sessions"])
+        assert all(s["id"] != "agg-me" for s in data["sessions"])
+
+    def test_sessions_stats_respects_profile_query(self):
+        """GET /api/sessions/stats?profile=... must count the selected profile DB."""
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profiles_mod.create_profile("beta", no_alias=True)
+        beta_db = SessionDB(db_path=profiles_mod.get_profile_dir("beta") / "state.db")
+        try:
+            beta_db.create_session(session_id="beta-only", source="cli")
+            beta_db.append_message(session_id="beta-only", role="user", content="hello beta")
+        finally:
+            beta_db.close()
+
+        resp = self.client.get("/api/sessions/stats?profile=beta")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] >= 1
+
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""

@@ -58,11 +58,10 @@ export function getManagementProfile(): string {
   return _managementProfile;
 }
 
-// Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope). Anything else — sessions, analytics, ops, pairing,
-// telegram onboarding, cron (which has its own per-job profile params),
-// profiles themselves — is machine-global or self-scoped and must NOT be
-// rewritten.
+// Endpoint families that honor ?profile= on the backend. Sessions now
+// participate in the same management-profile scope as the other profile-
+// scoped dashboard pages; other machine-global surfaces (analytics, ops,
+// pairing, telegram onboarding, cron jobs, profiles) are left untouched.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/skills",
   "/api/tools/toolsets",
@@ -74,6 +73,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/set",
   "/api/model/auxiliary",
   "/api/model/options",
+  "/api/sessions",
 ];
 
 function withManagementProfile(url: string): string {
@@ -371,7 +371,7 @@ export const api = {
     ),
   getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
   exportSessionUrl: (id: string) =>
-    `/api/sessions/${encodeURIComponent(id)}/export`,
+    withManagementProfile(`/api/sessions/${encodeURIComponent(id)}/export`),
   pruneSessions: (older_than_days: number, source?: string) =>
     fetchJSON<{ ok: boolean; removed: number }>("/api/sessions/prune", {
       method: "POST",

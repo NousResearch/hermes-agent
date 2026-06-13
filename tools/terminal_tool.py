@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 import threading
 import atexit
@@ -1064,6 +1065,10 @@ def _safe_getcwd() -> str:
     except FileNotFoundError:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
+# Regex patterns for CWD path conversion (hoisted to module level per
+# style review — re.compile once, not on every _get_env_config call).
+_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[/\\]?(.*)$")
+_MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
 
 _AUTO_SAVED_CWDS: set = set()
 
@@ -1213,7 +1218,6 @@ def _get_env_config() -> Dict[str, Any]:
         # WSL is not a container.  Try to convert Windows-style CWDs
         # (C:\Users\..., D:\project) to WSL mount points so desktop
         # users keep their working directory when switching backends.
-        _WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[/\\]?(.*)$")
         _m = _WIN_DRIVE_RE.match(cwd)
         if _m:
             drive = _m.group(1).lower()
@@ -1231,7 +1235,6 @@ def _get_env_config() -> Dict[str, Any]:
     elif env_type in {"local", "ssh"} and cwd and cwd.startswith("/mnt/"):
         # Convert WSL /mnt/drive/... paths back to Windows when switching
         # from WSL to a Windows-hosted backend (local or SSH).
-                _MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
         _m = _MNT_RE.match(cwd)
         if _m:
             drive = _m.group(1).upper() + ":"

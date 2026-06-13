@@ -495,7 +495,10 @@ class TestWebSearchSchema:
         assert result == '{"success": true}'
         mock_search.assert_called_once_with("site:example.com docs", limit=12)
 
-    def test_registered_handler_defaults_limit_to_five(self):
+    def test_registered_handler_defers_limit_to_config_when_omitted(self):
+        # When the caller omits ``limit`` the handler passes None, so
+        # web_search_tool resolves the configured web.search_default_limit
+        # rather than a hardcoded value (#45701).
         import tools.web_tools
 
         entry = tools.web_tools.registry.get_entry("web_search")
@@ -503,7 +506,7 @@ class TestWebSearchSchema:
             result = entry.handler({"query": "docs"})
 
         assert result == '{"success": true}'
-        mock_search.assert_called_once_with("docs", limit=5)
+        mock_search.assert_called_once_with("docs", limit=None)
 
     def test_web_search_clamps_limit_before_backend_call(self):
         import tools.web_tools

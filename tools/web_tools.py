@@ -784,7 +784,17 @@ def _ensure_web_plugins_loaded() -> None:
         logger.warning("Web plugin discovery failed (non-fatal): %s", exc)
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def _get_web_search_default_limit() -> int:
+    """Default web_search result count from config ``web.search_default_limit``
+    (clamped to [1, 100]); falls back to 5 when unset or unreadable."""
+    try:
+        value = int(_load_web_config().get("search_default_limit", 5))
+    except (TypeError, ValueError):
+        return 5
+    return min(max(value, 1), 100)
+
+
+def web_search_tool(query: str, limit: int | None = None) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -818,10 +828,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Raises:
         Exception: If search fails or API key is not set
     """
+    if limit is None:
+        limit = _get_web_search_default_limit()
     try:
         limit = int(limit)
     except (TypeError, ValueError):
-        limit = 5
+        limit = _get_web_search_default_limit()
     limit = min(max(limit, 1), 100)
 
     debug_call_data = {
@@ -1326,7 +1338,7 @@ WEB_SEARCH_SCHEMA = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of results to return. Defaults to 5.",
+                "description": "Maximum number of results to return. Defaults to the configured web.search_default_limit (5 unless changed).",
                 "minimum": 1,
                 "maximum": 100,
                 "default": 5
@@ -1357,7 +1369,7 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit")),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",

@@ -1109,6 +1109,96 @@ class TestElementLabelParsing:
         assert labels[15] == "Search"
 
 
+class TestParsedElementBoundsKnown:
+    """Bug #44763: parser must mark element bounds as unknown, not silently zero.
+
+    cua-driver's get_window_state markdown tree is ``[index] role (id) "label"``
+    — it does not include spatial coordinates. The parser was setting
+    ``bounds=(0, 0, 0, 0)`` for every parsed element, which the formatter then
+    rendered as ``@ (0, 0, 0, 0)`` — silently lying to the model about
+    available geometry and breaking spatial grounding (#44763).
+
+    The fix: parsed elements get ``bounds_known=False`` by default. The
+    formatter renders ``<unknown>`` for those, and ``_element_to_dict``
+    surfaces the ``bounds_known`` flag so callers can branch on it.
+
+    A future change that adds a bounds-bearing cua-driver format should
+    populate ``bounds`` and flip ``bounds_known=True``; the behavior contract
+    is "unknown ⇔ formatter says <unknown>".
+    """
+
+    def test_parsed_elements_have_bounds_known_false(self):
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = (
+            '  - [1] AXWindow "Main Window"\n'
+            '  - [14] AXButton "One"\n'
+            "[15] AXButton (2) id=Two\n"
+        )
+        els = _parse_elements_from_tree(tree)
+        assert len(els) == 3
+        for e in els:
+            assert e.bounds_known is False, (
+                "parsed elements from cua-driver markdown must default to "
+                f"bounds_known=False (got {e.bounds_known!r} for #{e.index})"
+            )
+
+    def test_explicit_construction_keeps_bounds_known_default(self):
+        """Default-constructed UIElement (e.g. test fixtures) stays known=False."""
+        from tools.computer_use.backend import UIElement
+        e = UIElement(index=1, role="AXButton", label="x")
+        assert e.bounds_known is False
+
+    def test_explicit_construction_with_bounds_known_true(self):
+        from tools.computer_use.backend import UIElement
+        e = UIElement(
+            index=1, role="AXButton", label="x",
+            bounds=(10, 20, 30, 40), bounds_known=True,
+        )
+        assert e.bounds_known is True
+        assert e.bounds == (10, 20, 30, 40)
+
+    def test_formatter_renders_unknown_for_parsed_elements(self):
+        """Formatter must not display misleading ``(0, 0, 0, 0)`` for parsed elements."""
+        from tools.computer_use.tool import _format_elements
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = '  - [1] AXButton "Continue"\n'
+        els = _parse_elements_from_tree(tree)
+        lines = _format_elements(els)
+        assert len(lines) == 1
+        # Pre-fix: this line was ``#1 AXButton 'Continue' @ (0, 0, 0, 0)``.
+        # Post-fix: it must say ``<unknown>`` so the model knows the geometry
+        # is unavailable, not at the screen origin.
+        assert "<unknown>" in lines[0], lines
+        assert "(0, 0, 0, 0)" not in lines[0], (
+            "formatter must not silently display (0, 0, 0, 0) for unknown "
+            f"bounds (got: {lines[0]!r})"
+        )
+
+    def test_formatter_renders_known_bounds_when_flag_set(self):
+        """Formatter must still show explicit bounds when bounds_known=True."""
+        from tools.computer_use.tool import _format_elements
+        from tools.computer_use.backend import UIElement
+        e = UIElement(
+            index=1, role="AXButton", label="Continue",
+            bounds=(10, 20, 30, 40), bounds_known=True,
+        )
+        lines = _format_elements([e])
+        assert "(10, 20, 30, 40)" in lines[0], lines
+
+    def test_element_to_dict_includes_bounds_known(self):
+        """_element_to_dict surfaces bounds_known so downstream callers can branch."""
+        from tools.computer_use.tool import _element_to_dict
+        from tools.computer_use.backend import UIElement
+        e = UIElement(index=1, role="AXButton", label="x", bounds=(1, 2, 3, 4))
+        d = _element_to_dict(e)
+        assert d["bounds_known"] is False
+        e2 = UIElement(
+            index=2, role="AXButton", label="x",
+            bounds=(1, 2, 3, 4), bounds_known=True,
+        )
+        assert _element_to_dict(e2)["bounds_known"] is True
+
+
 class TestCaptureAfterAppContext:
     """Bug 2: capture_after=True loses app context after actions.
 

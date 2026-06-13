@@ -786,7 +786,11 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
     out: List[str] = []
     for e in elements[:max_lines]:
         label = e.label.replace("\n", " ")[:60]
-        out.append(f"  #{e.index} {e.role} {label!r} @ {e.bounds}"
+        # When the backend didn't provide geometry, render an honest
+        # ``<unknown>`` sentinel instead of misleading ``(0, 0, 0, 0)``
+        # zeros (see #44763 — silent zeros broke spatial grounding).
+        bounds_str = f"{e.bounds}" if e.bounds_known else "<unknown>"
+        out.append(f"  #{e.index} {e.role} {label!r} @ {bounds_str}"
                    + (f" [{e.app}]" if e.app else ""))
     if len(elements) > max_lines:
         out.append(f"  ... +{len(elements) - max_lines} more (call capture with app= to narrow)")
@@ -799,6 +803,7 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
         "role": e.role,
         "label": e.label,
         "bounds": list(e.bounds),
+        "bounds_known": e.bounds_known,
         "app": e.app,
     }
 

@@ -964,6 +964,17 @@ export function DesktopController() {
       onPickFiles={() => void composer.pickContextPaths('file')}
       onPickFolders={() => void composer.pickContextPaths('folder')}
       onPickImages={() => void composer.pickImages()}
+      onRecoverCurrentTranscript={() => {
+        const sessionId = selectedStoredSessionIdRef.current || routedSessionId
+
+        if (sessionId) {
+          void resumeSession(sessionId, true)
+
+          return
+        }
+
+        window.location.reload()
+      }}
       onReload={reloadFromMessage}
       onRemoveAttachment={id => void composer.removeAttachment(id)}
       onRestoreToMessage={restoreToMessage}

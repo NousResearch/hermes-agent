@@ -200,7 +200,7 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived }
+    body: { archived, ...(profile ? { profile } : {}) }
   })
 }
 

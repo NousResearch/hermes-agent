@@ -16,6 +16,7 @@ import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile
 import {
   $currentCwd,
   $messages,
+  $messagingSessions,
   $sessions,
   $yoloActive,
   sessionPinId,
@@ -34,6 +35,8 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setMessagingPlatformTotals,
+  setMessagingSessions,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
@@ -678,6 +681,7 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)
@@ -902,7 +906,9 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const removedRegular = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const removedMessaging = $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const removed = removedRegular ?? removedMessaging
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
@@ -912,9 +918,25 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-      // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
-      // doesn't keep claiming the removed row is still on the server.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
+      setMessagingSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+
+      // Keep list totals in sync so sidebars don't keep claiming the removed row
+      // is still on the server. Messaging-platform conversations live in their
+      // own store slice, so deleting Telegram/Discord/etc. sessions must update
+      // that slice too; otherwise the row appears to survive until a full reload.
+      if (removedRegular) {
+        setSessionsTotal(prev => Math.max(0, prev - 1))
+      }
+
+      const removedMessagingSource = removedMessaging?.source ?? null
+
+      if (removedMessagingSource) {
+        setMessagingPlatformTotals(prev => ({
+          ...prev,
+          [removedMessagingSource]: Math.max(0, (prev[removedMessagingSource] ?? 1) - 1)
+        }))
+      }
+
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -935,9 +957,20 @@ export function useSessionActions({
           clearQueuedPrompts(closingRuntimeId)
         }
       } catch (err) {
-        if (removed) {
-          setSessions(prev => [removed, ...prev])
+        if (removedRegular) {
+          setSessions(prev => [removedRegular, ...prev])
           setSessionsTotal(prev => prev + 1)
+        }
+
+        if (removedMessaging) {
+          setMessagingSessions(prev => [removedMessaging, ...prev.filter(s => s.id !== storedSessionId)])
+
+          if (removedMessagingSource) {
+            setMessagingPlatformTotals(prev => ({
+              ...prev,
+              [removedMessagingSource]: (prev[removedMessagingSource] ?? 0) + 1
+            }))
+          }
         }
 
         $pinnedSessionIds.set(previousPinned)
@@ -985,7 +1018,9 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const archivedRegular = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const archivedMessaging = $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const archived = archivedRegular ?? archivedMessaging
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
@@ -994,10 +1029,24 @@ export function useSessionActions({
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      setMessagingSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+
       // Archived sessions are hidden by the listSessions(min_messages=1) query
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
+      if (archivedRegular) {
+        setSessionsTotal(prev => Math.max(0, prev - 1))
+      }
+
+      const archivedMessagingSource = archivedMessaging?.source ?? null
+
+      if (archivedMessagingSource) {
+        setMessagingPlatformTotals(prev => ({
+          ...prev,
+          [archivedMessagingSource]: Math.max(0, (prev[archivedMessagingSource] ?? 1) - 1)
+        }))
+      }
+
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
 
       if (wasSelected) {
@@ -1011,12 +1060,27 @@ export function useSessionActions({
         // that race after the mutation succeeds so right-click → Archive does
         // not appear to do nothing until the next full refresh.
         setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+        setMessagingSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
         $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
-        if (archived) {
-          setSessions(prev => [archived, ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))])
+        if (archivedRegular) {
+          setSessions(prev => [
+            archivedRegular,
+            ...prev.filter(session => !sessionMatchesStoredId(session, storedSessionId))
+          ])
           setSessionsTotal(prev => prev + 1)
+        }
+
+        if (archivedMessaging) {
+          setMessagingSessions(prev => [archivedMessaging, ...prev.filter(s => s.id !== storedSessionId)])
+
+          if (archivedMessagingSource) {
+            setMessagingPlatformTotals(prev => ({
+              ...prev,
+              [archivedMessagingSource]: (prev[archivedMessagingSource] ?? 0) + 1
+            }))
+          }
         }
 
         $pinnedSessionIds.set(previousPinned)

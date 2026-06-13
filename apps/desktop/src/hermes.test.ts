@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, listAllProfileSessions, listSessions } from './hermes'
+import { getSessionMessages, listAllProfileSessions, listSessions, setSessionArchived } from './hermes'
 
 const emptySessionsResponse = {
   limit: 0,
@@ -55,6 +55,17 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith({
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
+    })
+  })
+
+  it('includes the owning profile when archiving a session', async () => {
+    await setSessionArchived('telegram-session', true, 'default')
+
+    expect(api).toHaveBeenCalledWith({
+      profile: 'default',
+      path: '/api/sessions/telegram-session',
+      method: 'PATCH',
+      body: { archived: true, profile: 'default' }
     })
   })
 })

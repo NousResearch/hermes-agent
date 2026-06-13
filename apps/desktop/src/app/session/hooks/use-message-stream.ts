@@ -288,27 +288,40 @@ export function useMessageStream({
           const prev = state.messages
           let nextMessages: ChatMessage[]
 
-          if (!prev.some(m => m.id === streamId)) {
-            nextMessages = [
-              ...prev,
-              {
-                id: streamId,
-                role: 'assistant',
-                parts: seed(),
-                pending: true,
-                branchGroupId: groupId
-              }
-            ]
+          const lastIndex = prev.length - 1
+          const lastMessage = prev[lastIndex]
+
+          if (lastMessage?.id === streamId) {
+            nextMessages = prev.slice()
+            nextMessages[lastIndex] = {
+              ...lastMessage,
+              parts: transform(lastMessage.parts, lastMessage),
+              pending: opts.pending ? opts.pending(lastMessage) : true
+            }
           } else {
-            nextMessages = prev.map(m =>
-              m.id === streamId
-                ? {
-                    ...m,
-                    parts: transform(m.parts, m),
-                    pending: opts.pending ? opts.pending(m) : true
-                  }
-                : m
-            )
+            const streamIndex = prev.findIndex(m => m.id === streamId)
+
+            if (streamIndex === -1) {
+              nextMessages = [
+                ...prev,
+                {
+                  id: streamId,
+                  role: 'assistant',
+                  parts: seed(),
+                  pending: true,
+                  branchGroupId: groupId
+                }
+              ]
+            } else {
+              const streamMessage = prev[streamIndex]
+
+              nextMessages = prev.slice()
+              nextMessages[streamIndex] = {
+                ...streamMessage,
+                parts: transform(streamMessage.parts, streamMessage),
+                pending: opts.pending ? opts.pending(streamMessage) : true
+              }
+            }
           }
 
           return {

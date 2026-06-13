@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.agent_init import _claim_one_time_notice
 from agent.auxiliary_client import (
     _compression_threshold_for_model,
     _fixed_temperature_for_model,
@@ -157,3 +158,13 @@ def test_compression_threshold_opt_out_does_not_disable_trinity() -> None:
         )
         == 0.75
     )
+
+
+def test_codex_gpt55_autoraise_notice_is_claimed_once_per_hermes_home() -> None:
+    assert _claim_one_time_notice("codex_gpt55_autoraise") is True
+    assert _claim_one_time_notice("codex_gpt55_autoraise") is False
+
+
+def test_one_time_notice_ids_are_sanitized() -> None:
+    assert _claim_one_time_notice(" codex/gpt 5.5 autoraise ") is True
+    assert _claim_one_time_notice("codex_gpt_5.5_autoraise") is False

@@ -86,6 +86,34 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     )
 
 
+def _claim_one_time_notice(notice_id: str) -> bool:
+    """Return True once per Hermes home for a user-facing notice.
+
+    Gateway sessions can construct a fresh ``AIAgent`` frequently, so startup
+    notices that are "one-time per agent" become chat spam. Persist a small
+    marker under ``HERMES_HOME`` and use ``O_EXCL`` so concurrent agent starts
+    cannot both claim the same notice.
+
+    If the marker cannot be written, fail open and show the notice. The notice
+    explains a real behavior change and an opt-out command; hiding it because
+    of a filesystem hiccup would be worse than a repeated line.
+    """
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(notice_id).strip())
+    if not safe_id:
+        return True
+    marker = get_hermes_home() / "state" / "notices" / f"{safe_id}.seen"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(datetime.utcnow().isoformat(timespec="seconds") + "Z\n")
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return True
+
+
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -1646,18 +1674,30 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
+    # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
+    # exact opt-back-out command. This used to be "one-time per agent", but
+    # gateway sessions can create fresh agents frequently; persist the marker so
+    # Discord/Telegram/Slack do not see the same startup notice repeatedly.
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    if not isinstance(_autoraise, dict):
+        _autoraise = None
+    _show_codex_gpt55_autoraise_notice = bool(
+        _autoraise
+        and compression_enabled
+        and _claim_one_time_notice("codex_gpt55_autoraise")
+    )
+
+    _codex_gpt55_autoraise_notice = None
+    if _show_codex_gpt55_autoraise_notice and _autoraise is not None:
+        _codex_gpt55_autoraise_notice = _build_codex_gpt55_autoraise_notice(_autoraise)
+
     if not agent.quiet_mode:
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
-        _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
-            print(_build_codex_gpt55_autoraise_notice(_autoraise))
+        if _codex_gpt55_autoraise_notice:
+            print(_codex_gpt55_autoraise_notice)
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
@@ -1666,9 +1706,8 @@ def init_agent(
     # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
-        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+    if _codex_gpt55_autoraise_notice:
+        agent._compression_warning = _codex_gpt55_autoraise_notice
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

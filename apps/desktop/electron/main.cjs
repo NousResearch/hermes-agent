@@ -136,14 +136,29 @@ function hiddenWindowsChildOptions(options = {}) {
 // switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
 const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
-if (REMOTE_DISPLAY_REASON) {
+const FORCE_DISABLE_GPU = /^(1|true|yes)$/i.test(process.env.HERMES_DESKTOP_DISABLE_GPU || '')
+if (REMOTE_DISPLAY_REASON || FORCE_DISABLE_GPU) {
   app.disableHardwareAcceleration()
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
   // with only --disable-gpu: force compositing onto the CPU too.
   app.commandLine.appendSwitch('disable-gpu-compositing')
-  console.log(
-    `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
-  )
+  if (FORCE_DISABLE_GPU) {
+    console.log('[hermes] HERMES_DESKTOP_DISABLE_GPU set; disabling GPU hardware acceleration')
+  } else {
+    console.log(
+      `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
+    )
+  }
+}
+
+// Windows with older Intel integrated graphics (WDDM 1.x drivers) can crash
+// the GPU process on startup (exit_code=-2147483645). The ANGLE graphics
+// abstraction layer is the usual culprit; --no-angle forces Chromium to use
+// the basic Direct3D renderer instead.  Must run before app `ready`.
+if (IS_WINDOWS) {
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  app.commandLine.appendSwitch('use-gl', 'disabled')
+  app.commandLine.appendSwitch('no-angle')
 }
 
 // Keep the renderer running at full speed while the window is in the background

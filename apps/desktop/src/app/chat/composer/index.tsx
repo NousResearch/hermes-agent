@@ -1411,7 +1411,11 @@ export function ChatBar({
     }
 
     void runDrain(() => entry)
-      .then(sent => void (sent ? undefined : onFail()))
+      .then(sent => {
+        if (!sent) {
+          onFail()
+        }
+      })
       .catch(onFail)
   }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
 
@@ -1437,7 +1441,7 @@ export function ChatBar({
     if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
       autoDrainNext()
     }
-  }, [activeQueueSessionKey, autoDrainNext, busy, queuedPrompts.length])
+  }, [autoDrainNext, busy, queuedPrompts.length])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

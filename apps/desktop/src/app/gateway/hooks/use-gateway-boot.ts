@@ -46,6 +46,7 @@ interface GatewayBootOptions {
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
   onGatewayReady: (gateway: HermesGateway | null) => void
+  onReconnectReady?: () => Promise<void> | void
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
 }
@@ -54,6 +55,7 @@ export function useGatewayBoot({
   handleGatewayEvent,
   onConnectionReady,
   onGatewayReady,
+  onReconnectReady,
   refreshHermesConfig,
   refreshSessions
 }: GatewayBootOptions) {
@@ -61,6 +63,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    onReconnectReady,
     refreshHermesConfig,
     refreshSessions
   })
@@ -69,6 +72,7 @@ export function useGatewayBoot({
     handleGatewayEvent,
     onConnectionReady,
     onGatewayReady,
+    onReconnectReady,
     refreshHermesConfig,
     refreshSessions
   }
@@ -158,6 +162,12 @@ export function useGatewayBoot({
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
+        // A reconnect creates a fresh WebSocket transport. Any turns that were
+        // running when the old socket dropped are still alive server-side but
+        // parked on the detached transport until the renderer explicitly resumes
+        // them. Let the app rebind those stored-session lineages now; otherwise
+        // their final events are written to the drop sink and the UI looks stuck.
+        await Promise.resolve(callbacksRef.current.onReconnectReady?.()).catch(() => undefined)
       } catch (err) {
         // OAuth session expired mid-reconnect: surface the actionable "sign in
         // again" message once instead of silently looping the backoff against a
@@ -184,6 +194,14 @@ export function useGatewayBoot({
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1
+
+      // After a prolonged post-boot outage, stop presenting this as endless
+      // "connecting" and surface the recovery UI. Keep scheduling retries below:
+      // a transient network can still come back without forcing a full restart.
+      if (reconnectAttempt >= 6 && !$desktopBoot.get().error) {
+        failDesktopBoot('Hermes gateway connection could not be restored.')
+      }
+
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
         void attemptReconnect()
@@ -359,10 +377,12 @@ export function useGatewayBoot({
         })
         await ensureDefaultWorkspaceCwd()
         const remoteDefault = await desktopDefaultCwd().catch(() => null)
+
         if (remoteDefault?.cwd && !$activeSessionId.get() && !$currentCwd.get()) {
           setCurrentCwd(remoteDefault.cwd)
           setCurrentBranch(remoteDefault.branch || '')
         }
+
         await callbacksRef.current.refreshHermesConfig()
 
         if (cancelled) {

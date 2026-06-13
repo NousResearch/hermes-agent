@@ -202,7 +202,7 @@ function upsertOptimisticSession(
   setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
 }
 
-function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
+export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
   if (!cwd) {
     return
   }
@@ -289,7 +289,7 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
+export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
@@ -678,6 +678,7 @@ export function useSessionActions({
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
+
         // The rejection is consumed by the `await` below; this guard only
         // keeps it from surfacing as unhandled while the prefetch settles.
         resumePromise.catch(() => undefined)

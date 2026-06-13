@@ -54,6 +54,7 @@ interface Secondary {
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
   reconnecting: boolean
+  reconnectPromise: Promise<void> | null
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
@@ -131,24 +132,32 @@ function scheduleReconnect(entry: Secondary): void {
 }
 
 async function reconnectSecondary(entry: Secondary): Promise<void> {
-  if (entry.reconnecting || !entry.wantOpen || isOpen(entry.gateway)) {
+  if (!entry.wantOpen || isOpen(entry.gateway)) {
     return
   }
 
-  entry.reconnecting = true
-
-  try {
-    await openSecondary(entry)
-    entry.reconnectAttempt = 0
-  } catch {
-    // Transport failure → fall through to the backoff below.
-  } finally {
-    entry.reconnecting = false
-
-    if (entry.wantOpen && !isOpen(entry.gateway)) {
-      scheduleReconnect(entry)
-    }
+  if (entry.reconnectPromise) {
+    return entry.reconnectPromise
   }
+
+  entry.reconnecting = true
+  entry.reconnectPromise = (async () => {
+    try {
+      await openSecondary(entry)
+      entry.reconnectAttempt = 0
+    } catch {
+      // Transport failure → fall through to the backoff below.
+    } finally {
+      entry.reconnecting = false
+      entry.reconnectPromise = null
+
+      if (entry.wantOpen && !isOpen(entry.gateway)) {
+        scheduleReconnect(entry)
+      }
+    }
+  })()
+
+  return entry.reconnectPromise
 }
 
 function createSecondary(profile: string): Secondary {
@@ -162,6 +171,7 @@ function createSecondary(profile: string): Secondary {
     reconnectTimer: null,
     reconnectAttempt: 0,
     reconnecting: false,
+    reconnectPromise: null,
     wantOpen: true
   }
 
@@ -180,6 +190,30 @@ function createSecondary(profile: string): Secondary {
   secondaries.set(profile, entry)
 
   return entry
+}
+
+export async function ensureGatewayForProfileOpen(profile: string): Promise<HermesGateway | null> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return primaryGateway
+  }
+
+  let entry = secondaries.get(key)
+
+  if (!entry) {
+    entry = createSecondary(key)
+  }
+
+  entry.wantOpen = true
+
+  if (!isOpen(entry.gateway)) {
+    clearTimer(entry)
+    entry.reconnectAttempt = 0
+    await reconnectSecondary(entry)
+  }
+
+  return isOpen(entry.gateway) ? entry.gateway : null
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The

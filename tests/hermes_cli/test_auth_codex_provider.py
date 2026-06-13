@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli.auth import (
     AuthError,
+    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
     _read_codex_tokens,
@@ -20,6 +21,12 @@ from hermes_cli.auth import (
     resolve_codex_runtime_credentials,
     resolve_provider,
 )
+
+
+def test_codex_oauth_refresh_skew_is_large_enough_for_long_agent_turns():
+    """Codex OAuth should refresh long before a token can expire mid-turn."""
+
+    assert CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS == 36 * 60 * 60
 
 
 def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):

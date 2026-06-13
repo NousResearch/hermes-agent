@@ -379,6 +379,19 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_mattermost_explicit_thread_target(self):
+        """mattermost:<channel_id>:<root_post_id> preserves thread_id."""
+        job = {
+            "deliver": "mattermost:4crs8iwh4tncpqpephzajymeia:87bfm3xu87n75c4ec4xuc9ejow",
+            "origin": None,
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "mattermost",
+            "chat_id": "4crs8iwh4tncpqpephzajymeia",
+            "thread_id": "87bfm3xu87n75c4ec4xuc9ejow",
+        }
+
     def test_list_form_multiple_platforms_normalized(self, monkeypatch):
         """deliver=['telegram', 'discord'] resolves to multiple targets."""
         from cron.scheduler import _resolve_delivery_targets

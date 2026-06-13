@@ -218,6 +218,36 @@ class TestMattermostSend:
         assert payload["root_id"] == "root_post"
 
     @pytest.mark.asyncio
+    async def test_send_with_metadata_thread_id(self):
+        """metadata.thread_id should become root_id for cron/gateway delivery."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post456"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_get_resp = AsyncMock()
+        mock_get_resp.status = 200
+        mock_get_resp.json = AsyncMock(return_value={"id": "root_post", "root_id": ""})
+        mock_get_resp.text = AsyncMock(return_value="")
+        mock_get_resp.__aenter__ = AsyncMock(return_value=mock_get_resp)
+        mock_get_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+        self.adapter._session.get = MagicMock(return_value=mock_get_resp)
+
+        result = await self.adapter.send(
+            "channel_1", "Reply!", metadata={"thread_id": "root_post"}
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
     async def test_send_without_thread_no_root_id(self):
         """When reply_mode is 'off', reply_to should NOT set root_id."""
         self.adapter._reply_mode = "off"

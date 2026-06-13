@@ -16,5 +16,25 @@ def test_photon_e164_target_is_explicit() -> None:
 
 
 def test_e164_target_still_requires_phone_platform() -> None:
-    assert _parse_target_ref("matrix", "+15551234567")[2] is False
+    assert _parse_target_ref("matrix", "+155****4567")[2] is False
+
+
+def test_mattermost_channel_target_is_explicit() -> None:
+    chat_id, thread_id, is_explicit = _parse_target_ref(
+        "mattermost", "4crs8iwh4tncpqpephzajymeia"
+    )
+
+    assert chat_id == "4crs8iwh4tncpqpephzajymeia"
+    assert thread_id is None
+    assert is_explicit is True
+
+
+def test_mattermost_thread_target_is_explicit() -> None:
+    chat_id, thread_id, is_explicit = _parse_target_ref(
+        "mattermost", "4crs8iwh4tncpqpephzajymeia:87bfm3xu87n75c4ec4xuc9ejow"
+    )
+
+    assert chat_id == "4crs8iwh4tncpqpephzajymeia"
+    assert thread_id == "87bfm3xu87n75c4ec4xuc9ejow"
+    assert is_explicit is True
 

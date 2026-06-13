@@ -107,6 +107,7 @@ class MattermostAdapter(BasePlatformAdapter):
         return {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
+            "User-Agent": "HermesAgent-Mattermost/1.0",
         }
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
@@ -286,11 +287,17 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
+            # Thread support: reply_to or metadata.thread_id is the root post ID.
+            # Gateway delivery/cron/send_message pass thread context via metadata;
+            # normal user-message replies pass reply_to. Honour both so all
+            # outbound paths preserve Mattermost CRT root_id semantics.
+            effective_reply_to = reply_to
+            if not effective_reply_to and metadata:
+                effective_reply_to = metadata.get("thread_id") or metadata.get("root_id")
+            if effective_reply_to and self._reply_mode == "thread":
                 # Ensure root_id points to the thread root, not a reply.
                 # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
+                resolved_root = await self._resolve_root_id(str(effective_reply_to))
                 payload["root_id"] = resolved_root
 
             data = await self._api_post("posts", payload)
@@ -927,8 +934,12 @@ async def _standalone_send(
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "User-Agent": "HermesAgent-Mattermost/1.0",
     }
-    upload_headers = {"Authorization": f"Bearer {token}"}
+    upload_headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "HermesAgent-Mattermost/1.0",
+    }
 
     media_files = media_files or []
 

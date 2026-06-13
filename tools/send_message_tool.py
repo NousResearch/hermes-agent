@@ -31,6 +31,10 @@ _SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
+# Mattermost channel/post IDs are 26-character lowercase base32-ish strings.
+# A thread target is encoded as "<channel_id>:<root_post_id>", matching the
+# cron/send_message platform:chat_id:thread_id convention used by Slack/Discord.
+_MATTERMOST_THREAD_TARGET_RE = re.compile(r"^\s*([a-z0-9]{26})(?::([a-z0-9]{26}))?\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -365,6 +369,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "mattermost":
+        match = _MATTERMOST_THREAD_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     if platform_name == "slack":
         match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -519,7 +527,14 @@ async def _send_via_adapter(
             adapter = runner.adapters.get(platform)
         except Exception:
             adapter = None
-        if adapter is not None:
+        # Mattermost's live adapter owns an aiohttp ClientSession created on
+        # the gateway event loop. send_message can run from an agent/tool loop;
+        # directly awaiting adapter.send() there raises aiohttp's
+        # "Timeout context manager should be used inside a task". Prefer the
+        # plugin's standalone REST sender for Mattermost unless a caller has
+        # scheduled delivery onto the gateway loop itself (cron does that in
+        # cron.scheduler via safe_schedule_threadsafe()).
+        if adapter is not None and platform_name != "mattermost":
             try:
                 metadata = {}
                 if thread_id:

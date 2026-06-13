@@ -5,9 +5,19 @@ raise AttributeError: 'list' object has no attribute 'extra'.
 """
 
 import pytest
+from unittest.mock import patch
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.config import (
+    GatewayConfig,
+    HomeChannel,
+    Platform,
+    PlatformConfig,
+    _apply_env_overrides,
+)
 from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
+from gateway.platforms.base import BasePlatformAdapter
 
 
 class DummyMixin(GatewayAuthorizationMixin):
@@ -16,6 +26,25 @@ class DummyMixin(GatewayAuthorizationMixin):
     def __init__(self, config):
         self.config = config
         self.adapters = {}
+
+
+class DummyAdapter(BasePlatformAdapter):
+    """Small concrete adapter for runner routing tests."""
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, chat_id, content, **kwargs):
+        calls = getattr(self, "send_calls", None)
+        if calls is not None:
+            calls.append((chat_id, content, kwargs))
+        return None
+
+    async def get_chat_info(self, chat_id):
+        return {"name": chat_id, "type": "dm"}
 
 
 class TestMultiAppListConfig:
@@ -155,6 +184,60 @@ class TestMultiAppListConfig:
         assert feishu_cfgs[0].extra["app_id"] == "cli_app1"
         assert feishu_cfgs[1].extra["app_id"] == "cli_app2"
 
+    def test_from_dict_preserves_top_level_platform_specific_keys_in_extra(self):
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "feishu": [
+                        {"enabled": True, "app_id": "cli_app1", "app_secret": "secret1"},
+                        {"enabled": True, "app_id": "cli_app2", "app_secret": "secret2"},
+                    ]
+                }
+            }
+        )
+
+        feishu_cfgs = restored.platforms[Platform.FEISHU]
+
+        assert isinstance(feishu_cfgs, list)
+        assert feishu_cfgs[0].extra["app_id"] == "cli_app1"
+        assert feishu_cfgs[0].extra["app_secret"] == "secret1"
+        assert feishu_cfgs[1].extra["app_id"] == "cli_app2"
+        assert feishu_cfgs[1].extra["app_secret"] == "secret2"
+
+    def test_env_overrides_do_not_clobber_explicit_multi_app_credentials(self):
+        config = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "feishu": [
+                        {"enabled": True, "app_id": "cli_app1", "app_secret": "secret1"},
+                        {"enabled": True, "app_id": "cli_app2", "app_secret": "secret2"},
+                    ]
+                }
+            }
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "FEISHU_APP_ID": "cli_env",
+                "FEISHU_APP_SECRET": "secret_env",
+                "FEISHU_DOMAIN": "lark",
+                "FEISHU_CONNECTION_MODE": "websocket",
+            },
+            clear=False,
+        ):
+            _apply_env_overrides(config)
+
+        feishu_cfgs = config.platforms[Platform.FEISHU]
+
+        assert isinstance(feishu_cfgs, list)
+        assert feishu_cfgs[0].extra["app_id"] == "cli_app1"
+        assert feishu_cfgs[0].extra["app_secret"] == "secret1"
+        assert feishu_cfgs[1].extra["app_id"] == "cli_app2"
+        assert feishu_cfgs[1].extra["app_secret"] == "secret2"
+        assert feishu_cfgs[0].extra["domain"] == "lark"
+        assert feishu_cfgs[1].extra["domain"] == "lark"
+
     def test_get_home_channel_list(self, multi_config):
         """get_home_channel should iterate list and return first match."""
         # Default home_channel is None; test that it doesn't crash
@@ -165,3 +248,88 @@ class TestMultiAppListConfig:
         # No real connection, but ensure it doesn't crash on list
         connected = multi_config.get_connected_platforms()
         assert isinstance(connected, list)
+
+    def test_build_source_carries_adapter_id(self):
+        adapter = DummyAdapter(
+            PlatformConfig(enabled=True, extra={"app_id": "cli_app1"}),
+            Platform.FEISHU,
+        )
+        adapter.adapter_id = "feishu:cli_app1"
+
+        source = adapter.build_source(chat_id="chat-1", user_id="user-1")
+
+        assert source.adapter_id == "feishu:cli_app1"
+
+    def test_runner_routes_source_to_matching_feishu_app_adapter(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner.adapters_by_id = {}
+        runner._platform_adapter_ids = {}
+
+        app1 = DummyAdapter(
+            PlatformConfig(enabled=True, extra={"app_id": "cli_app1"}),
+            Platform.FEISHU,
+        )
+        app2 = DummyAdapter(
+            PlatformConfig(enabled=True, extra={"app_id": "cli_app2"}),
+            Platform.FEISHU,
+        )
+
+        runner._register_connected_adapter(Platform.FEISHU, app1)
+        runner._register_connected_adapter(Platform.FEISHU, app2)
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-from-app2",
+            adapter_id="feishu:cli_app2",
+        )
+
+        assert runner.adapters[Platform.FEISHU] is app1
+        assert runner._adapter_for_source(source) is app2
+
+    @pytest.mark.asyncio
+    async def test_startup_notifications_use_each_feishu_app_home_channel(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: [
+                    PlatformConfig(
+                        enabled=True,
+                        extra={"app_id": "cli_app1"},
+                        home_channel=HomeChannel(
+                            platform=Platform.FEISHU,
+                            chat_id="chat-app1",
+                            name="App 1",
+                        ),
+                    ),
+                    PlatformConfig(
+                        enabled=True,
+                        extra={"app_id": "cli_app2"},
+                        home_channel=HomeChannel(
+                            platform=Platform.FEISHU,
+                            chat_id="chat-app2",
+                            name="App 2",
+                        ),
+                    ),
+                ],
+            }
+        )
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = config
+        runner.adapters = {}
+        runner.adapters_by_id = {}
+        runner._platform_adapter_ids = {}
+
+        app1 = DummyAdapter(config.platforms[Platform.FEISHU][0], Platform.FEISHU)
+        app1.send_calls = []
+        app2 = DummyAdapter(config.platforms[Platform.FEISHU][1], Platform.FEISHU)
+        app2.send_calls = []
+
+        runner._register_connected_adapter(Platform.FEISHU, app1)
+        runner._register_connected_adapter(Platform.FEISHU, app2)
+
+        delivered = await runner._send_home_channel_startup_notifications()
+
+        assert ("feishu", "chat-app1", None) in delivered
+        assert ("feishu", "chat-app2", None) in delivered
+        assert [call[0] for call in app1.send_calls] == ["chat-app1"]
+        assert [call[0] for call in app2.send_calls] == ["chat-app2"]

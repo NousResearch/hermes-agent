@@ -559,6 +559,62 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._reconnect_interval, 3)
         self.assertEqual(fake_client._ping_interval, 4)
 
+    def test_ws_client_no_running_loop_fallback_stays_alive_until_adapter_stops(self):
+        import sys
+        from types import ModuleType
+
+        calls = []
+
+        class _FakeWSClient:
+            def start(self):
+                raise RuntimeError("no running event loop")
+
+            async def _connect(self):
+                calls.append("connect")
+
+            async def _ping_loop(self):
+                calls.append("ping")
+                await asyncio.Event().wait()
+
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _running=True,
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        async def _stop_after_first_idle(_delay):
+            calls.append("sleep")
+            fake_adapter._running = False
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from gateway.platforms import feishu as feishu_module
+
+            with patch.object(feishu_module.asyncio, "sleep", side_effect=_stop_after_first_idle):
+                feishu_module._run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        self.assertIn("connect", calls)
+        self.assertIn("ping", calls)
+        self.assertIn("sleep", calls)
+        self.assertIsNone(fake_adapter._ws_thread_loop)
+
 
 def _admits_group(adapter, message, sender_id, chat_id=""):
     """Group-path shim: run a message through ``_admit`` and return a bool."""
@@ -1596,6 +1652,7 @@ class TestAdapterBehavior(unittest.TestCase):
         )
         sender = SimpleNamespace(sender_type="user", sender_id=sender_id)
         data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
+        adapter.adapter_id = "feishu:cli_test_app"
 
         asyncio.run(
             adapter._process_inbound_message(
@@ -1614,6 +1671,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+        self.assertEqual(event.source.adapter_id, "feishu:cli_test_app")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_text_batch_merges_rapid_messages_into_single_event(self):

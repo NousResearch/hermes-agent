@@ -3521,6 +3521,13 @@ def launchd_restart():
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
+    def _ensure_detached_restart_can_take_over() -> None:
+        # When launchd cannot manage this host and we fall back to a detached
+        # process, there is no supervisor to serialize the replacement. Make
+        # one final PID-file-based pass so the new gateway does not overlap the
+        # old websocket clients and lose the Feishu app locks.
+        _wait_for_gateway_exit(timeout=5.0, force_after=0.0)
+
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
@@ -3545,6 +3552,7 @@ def launchd_restart():
             # unmanageable (error 5), degrade to detached; the old process was
             # already drained/terminated above. Otherwise re-raise.
             if _launchctl_domain_unsupported(e.returncode):
+                _ensure_detached_restart_can_take_over()
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
             raise
@@ -3561,6 +3569,7 @@ def launchd_restart():
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
+            _ensure_detached_restart_can_take_over()
             _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
             return
         print("✓ Service restarted")

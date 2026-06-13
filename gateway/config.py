@@ -330,6 +330,20 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        reserved_keys = {
+            "enabled",
+            "token",
+            "api_key",
+            "home_channel",
+            "reply_to_mode",
+            "gateway_restart_notification",
+            "extra",
+        }
+        extra = dict(data.get("extra", {}) or {})
+        for key, value in data.items():
+            if key not in reserved_keys:
+                extra.setdefault(key, value)
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -337,7 +351,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -567,6 +581,40 @@ class GatewayConfig:
         if config:
             return config.home_channel
         return None
+
+    def iter_platform_configs(self, platform: Platform) -> list[PlatformConfig]:
+        """Return all configs for a platform, preserving multi-app entries."""
+        config = self.platforms.get(platform)
+        if isinstance(config, list):
+            return [cfg for cfg in config if cfg is not None]
+        if config:
+            return [config]
+        return []
+
+    def get_config_for_adapter_id(
+        self,
+        platform: Platform,
+        adapter_id: Optional[str],
+    ) -> Optional[PlatformConfig]:
+        """Find the platform config that produced a concrete adapter id."""
+        configs = self.iter_platform_configs(platform)
+        if not configs:
+            return None
+        if not adapter_id:
+            return configs[0]
+
+        for cfg in configs:
+            extra = cfg.extra if isinstance(cfg.extra, dict) else {}
+            configured_id = str(
+                extra.get("adapter_id")
+                or extra.get("app_id")
+                or extra.get("bot_id")
+                or extra.get("client_id")
+                or ""
+            ).strip()
+            if configured_id and str(adapter_id) == f"{platform.value}:{configured_id}":
+                return cfg
+        return configs[0]
     
     def get_reset_policy(
         self, 
@@ -1675,17 +1723,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if isinstance(feishu_cfg, list):
             for cfg in feishu_cfg:
                 cfg.enabled = True
-                cfg.extra.update({
-                    "app_id": feishu_app_id,
-                    "app_secret": feishu_app_secret,
-                    "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-                    "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
-                })
+                cfg.extra.setdefault("app_id", feishu_app_id)
+                cfg.extra.setdefault("app_secret", feishu_app_secret)
+                cfg.extra.setdefault("domain", os.getenv("FEISHU_DOMAIN", "feishu"))
+                cfg.extra.setdefault("connection_mode", os.getenv("FEISHU_CONNECTION_MODE", "websocket"))
                 feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
-                if feishu_encrypt_key:
+                if feishu_encrypt_key and not cfg.extra.get("encrypt_key"):
                     cfg.extra["encrypt_key"] = feishu_encrypt_key
                 feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
-                if feishu_verification_token:
+                if feishu_verification_token and not cfg.extra.get("verification_token"):
                     cfg.extra["verification_token"] = feishu_verification_token
         else:
             feishu_cfg.enabled = True

@@ -1285,6 +1285,14 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
 
+    async def _run_manual_ws_client() -> None:
+        await ws_client._connect()
+        ping_loop = getattr(ws_client, "_ping_loop", None)
+        if callable(ping_loop):
+            loop.create_task(ping_loop())
+        while getattr(adapter, "_running", False):
+            await asyncio.sleep(60)
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     ws_client_module.loop = loop
@@ -1322,6 +1330,13 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
+    except RuntimeError as e:
+        if "no running event loop" in str(e).lower():
+            logger.warning("[Feishu] lark_oapi.start() requires running loop — retrying with loop.run_until_complete")
+            try:
+                loop.run_until_complete(_run_manual_ws_client())
+            except Exception:
+                pass
     except Exception:
         pass
     finally:
@@ -1681,7 +1696,12 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
-            logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
+            logger.info(
+                "[Feishu] Connected in %s mode (%s, adapter_id=%s)",
+                self._connection_mode,
+                self._domain_name,
+                getattr(self, "adapter_id", None) or "pending",
+            )
             return True
         except Exception as exc:
             await self._release_app_lock()
@@ -3138,8 +3158,9 @@ class FeishuAdapter(BasePlatformAdapter):
             or "<unknown>"
         )
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: adapter_id=%s id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
             "dm" if chat_type == "p2p" else "group",
+            getattr(self, "adapter_id", None) or "unknown",
             message_id,
             inbound_type.value,
             getattr(message, "chat_id", "") or "",

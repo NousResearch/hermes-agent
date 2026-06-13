@@ -158,6 +158,7 @@ export interface Translations {
     unmuteHaptics: string
     openSettings: string
     openKeybinds: string
+    openDashboard: string
   }
 
   keybinds: {

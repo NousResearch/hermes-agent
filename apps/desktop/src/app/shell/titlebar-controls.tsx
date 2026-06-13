@@ -22,6 +22,8 @@ import { appViewForPath, isOverlayView } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
+const DASHBOARD_URL = 'http://127.0.0.1:9120'
+
 export interface TitlebarTool {
   id: string
   label: string
@@ -124,6 +126,15 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: () => {
         triggerHaptic('open')
         toggleKeybindPanel()
+      }
+    },
+    {
+      icon: <Codicon name="globe" />,
+      id: 'dashboard',
+      label: t.titlebar.openDashboard,
+      onSelect: () => {
+        triggerHaptic('open')
+        window.hermesDesktop?.openExternal?.(DASHBOARD_URL) ?? window.open(DASHBOARD_URL, '_blank', 'noopener,noreferrer')
       }
     },
     {

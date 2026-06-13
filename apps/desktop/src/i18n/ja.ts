@@ -146,7 +146,9 @@ export const ja = defineLocale({
     showRightSidebar: '右サイドバーを表示',
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
-    openSettings: '設定を開く'
+    openSettings: '設定を開く',
+    openKeybinds: 'キーボードショートカット',
+    openDashboard: 'ダッシュボードを開く'
   },
 
   language: {

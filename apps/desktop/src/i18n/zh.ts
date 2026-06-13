@@ -142,7 +142,8 @@ export const zh: Translations = {
     muteHaptics: '关闭触感反馈',
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
-    openKeybinds: '键盘快捷键'
+    openKeybinds: '键盘快捷键',
+    openDashboard: '打开仪表盘'
   },
 
   keybinds: {

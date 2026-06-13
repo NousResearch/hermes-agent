@@ -146,7 +146,8 @@ export const en: Translations = {
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
     openSettings: 'Open settings',
-    openKeybinds: 'Keyboard shortcuts'
+    openKeybinds: 'Keyboard shortcuts',
+    openDashboard: 'Open dashboard'
   },
 
   keybinds: {

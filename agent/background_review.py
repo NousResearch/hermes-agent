@@ -460,6 +460,15 @@ def _run_review_in_thread(
             # detail. Both compression triggers in conversation_loop.py gate on
             # agent.compression_enabled, so this short-circuits both paths.
             review_agent.compression_enabled = False
+            # The review fork shares the parent's session_id (pinned above for
+            # prefix-cache parity). If it persisted a session snapshot it would
+            # CLOBBER the parent's session_{id}.json with this throwaway review
+            # transcript -- which the next foreground turn then re-loads as if the
+            # user had typed it (the review prompt enters as a role:"user" turn),
+            # so the agent replies to the review instead of the user. Disable
+            # session-log writes on the fork so the module docstring's "main
+            # conversation is never touched" actually holds.
+            review_agent._session_json_enabled = False
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (

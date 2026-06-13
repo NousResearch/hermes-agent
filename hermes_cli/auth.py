@@ -1676,6 +1676,15 @@ _NOUS_STALE_PORTAL_HOSTS: FrozenSet[str] = frozenset({
     "api.nousresearch.com",
 })
 
+# Allowlist of valid Nous Portal hosts. A portal_base_url outside this
+# set is treated as a misconfiguration and falls back to the default.
+# "localhost" / "127.0.0.1" are valid for local development and testing.
+_NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
+    "portal.nousresearch.com",
+    "localhost",
+    "127.0.0.1",
+})
+
 
 def _migrate_stale_nous_portal_url(providers: Dict[str, Any]) -> None:
     nous = providers.get("nous")
@@ -5013,16 +5022,11 @@ def resolve_nous_access_token(
             or DEFAULT_NOUS_PORTAL_URL
         ).rstrip("/")
 
-        _parsed_pb = urlparse(portal_base_url)
-        _NOUS_PORTAL_ALLOWED_HOSTS: FrozenSet[str] = frozenset({
-            "portal.nousresearch.com",
-            "localhost",
-            "127.0.0.1",
-        })
-        if _parsed_pb.hostname and _parsed_pb.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
+        parsed_portal_url = urlparse(portal_base_url)
+        if parsed_portal_url.hostname and parsed_portal_url.hostname not in _NOUS_PORTAL_ALLOWED_HOSTS:
             logger.warning(
                 "auth: ignoring invalid portal_base_url %r (host %r not in allowlist), using default",
-                portal_base_url, _parsed_pb.hostname,
+                portal_base_url, parsed_portal_url.hostname,
             )
             portal_base_url = DEFAULT_NOUS_PORTAL_URL
 

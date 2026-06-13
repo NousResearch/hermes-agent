@@ -5846,6 +5846,59 @@ class TestStreamingApiCall:
         assert tc[1].function.name == "read"
         assert tc[1].function.arguments == '{}'
 
+    def test_lmstudio_fragmented_tool_calls(self, agent):
+        """LM-Studio sends each argument chunk with a unique id.
+
+        Without the fix, each chunk becomes a separate tool call.
+        With the fix, all chunks accumulate into one tool call.
+        """
+        chunks = [
+            # First chunk: has name, empty args
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_123", "shell", "")]),
+            # Subsequent chunks: no name, unique ids, short args
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-call-1", None, "{\n")]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-call-2", None, " ")]),
+            _make_chunk(
+                tool_calls=[_make_tc_delta(0, "tool-call-3", None, '"command"')]
+            ),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-call-4", None, ': "ls"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1, f"Expected 1 tool call, got {len(tc)}"
+        assert tc[0].function.name == "shell"
+        assert tc[0].function.arguments == '{\n "command": "ls"}'
+
+    def test_lmstudio_multiple_fragmented_tool_calls(self, agent):
+        """LM-Studio with two tool calls, each fragmented across chunks."""
+        chunks = [
+            # Tool call 1: name
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", "")]),
+            # Tool call 1: args fragments
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-1", None, '{"q":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-2", None, '"hello"}')]),
+            # Tool call 2: name (new tool, same index)
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read_file", "")]),
+            # Tool call 2: args fragments
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-3", None, '{"path":')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool-4", None, '"x.py"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 2, f"Expected 2 tool calls, got {len(tc)}"
+        assert tc[0].function.name == "search"
+        assert tc[0].function.arguments == '{"q":"hello"}'
+        assert tc[1].function.name == "read_file"
+        assert tc[1].function.arguments == '{"path":"x.py"}'
+
     def test_content_and_tool_calls_together(self, agent):
         chunks = [
             _make_chunk(content="I'll search"),

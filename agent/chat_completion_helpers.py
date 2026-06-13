@@ -1840,8 +1840,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         and raw_idx in _last_id_at_idx
                         and delta_id != _last_id_at_idx[raw_idx]
                     ):
-                        new_slot = max(tool_calls_acc, default=-1) + 1
-                        _active_slot_by_idx[raw_idx] = new_slot
+                        # Genuinely new tool calls always carry the function name
+                        # in the first chunk (OpenAI streaming spec). If the name
+                        # is missing but the ID changed, this is a fragment of the
+                        # current tool call's arguments (Kimi/LM-Studio bug).
+                        has_name = tc_delta.function and tc_delta.function.name
+                        if has_name:
+                            new_slot = max(tool_calls_acc, default=-1) + 1
+                            _active_slot_by_idx[raw_idx] = new_slot
                     if delta_id:
                         _last_id_at_idx[raw_idx] = delta_id
                     idx = _active_slot_by_idx[raw_idx]

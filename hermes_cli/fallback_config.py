@@ -51,18 +51,28 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
-    ``fallback_providers`` remains the primary source of truth and keeps its
-    order. Legacy ``fallback_model`` entries are appended afterwards unless
-    they target the same provider/model/base_url route as an earlier entry.
-    The returned list always contains fresh dict copies.
+    Top-level ``fallback_providers`` remains the primary source of truth and
+    keeps its order. ``model.fallback_providers`` is accepted as a compatibility
+    source for configs that colocate model routing options under ``model``.
+    Legacy ``fallback_model`` entries are appended afterwards unless they target
+    the same provider/model/base_url route as an earlier entry. The returned
+    list always contains fresh dict copies.
     """
 
     config = config or {}
+    model_config = config.get("model") if isinstance(config.get("model"), dict) else {}
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
-    for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+    sources = (
+        config.get("fallback_providers"),
+        model_config.get("fallback_providers"),
+        config.get("fallback_model"),
+        model_config.get("fallback_model"),
+    )
+
+    for source in sources:
+        for entry in _iter_fallback_entries(source):
             identity = _entry_identity(entry)
             if identity in seen:
                 continue

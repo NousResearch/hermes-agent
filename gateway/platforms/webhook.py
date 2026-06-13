@@ -17,6 +17,8 @@ Each route defines:
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
     and sub-second delivery matter more than agent reasoning.
+  - ignored_actor_ids / ignored_actor_names: drop self-authored events
+    before agent dispatch.
 
 Security:
   - HMAC secret is required per route (validated at startup)
@@ -67,6 +69,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+_ACTOR_FIELD_NAMES = frozenset({"actor", "creator", "author", "user"})
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -90,6 +93,53 @@ def _is_loopback_host(host: str) -> bool:
     if not host:
         return False
     return host.strip().lower() in _LOOPBACK_HOSTS
+
+
+def _as_list(value: Any) -> List[Any]:
+    """Normalize config scalars/lists for route matching."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def _iter_actor_candidates(value: Any):
+    """Yield dicts from common webhook actor fields, including nested ones."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in _ACTOR_FIELD_NAMES:
+                if isinstance(child, dict):
+                    yield child
+                elif isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, dict):
+                            yield item
+            yield from _iter_actor_candidates(child)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_actor_candidates(item)
+
+
+def _payload_matches_ignored_actor(payload: dict, route_config: dict) -> bool:
+    """Return True when payload actor/creator/author/user is configured ignored."""
+    ignored_ids = {str(v).strip() for v in _as_list(route_config.get("ignored_actor_ids")) if str(v).strip()}
+    ignored_names = {
+        str(v).strip().casefold()
+        for v in _as_list(route_config.get("ignored_actor_names"))
+        if str(v).strip()
+    }
+    if not ignored_ids and not ignored_names:
+        return False
+
+    for actor in _iter_actor_candidates(payload):
+        actor_id = actor.get("id")
+        if actor_id is not None and str(actor_id).strip() in ignored_ids:
+            return True
+        actor_name = actor.get("name") or actor.get("display_name") or actor.get("username")
+        if actor_name is not None and str(actor_name).strip().casefold() in ignored_names:
+            return True
+    return False
 
 
 def check_webhook_requirements() -> bool:
@@ -455,6 +505,16 @@ class WebhookAdapter(BasePlatformAdapter):
             )
             return web.json_response(
                 {"status": "ignored", "event": event_type}
+            )
+
+        if _payload_matches_ignored_actor(payload, route_config):
+            logger.info(
+                "[webhook] Ignoring self-authored event %s for route %s",
+                event_type,
+                route_name,
+            )
+            return web.json_response(
+                {"status": "ignored", "reason": "ignored_actor", "event": event_type}
             )
 
         # Format prompt from template

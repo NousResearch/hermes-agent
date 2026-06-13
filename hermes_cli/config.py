@@ -4736,19 +4736,6 @@ def _normalize_custom_provider_entry(
     # rest of the normalizer treats it as the canonical field.
     if "api_key_env" in entry and "key_env" not in entry:
         entry["key_env"] = entry["api_key_env"]
-    _KNOWN_KEYS = {
-        # ``provider`` duplicates the ``providers.<name>`` mapping key and is
-        # unused here, but Hermes' own config writer has historically emitted it
-        # into provider entries. Accept it silently so those (self-written)
-        # configs don't warn on every load.
-        "provider",
-        "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
-        "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
-        "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
-    }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
             _warn_once_per_provider(
@@ -4758,7 +4745,7 @@ def _normalize_custom_provider_entry(
                 provider_key or "?", camel, snake,
             )
             entry[snake] = entry[camel]
-    unknown = set(entry.keys()) - _KNOWN_KEYS - set(_CAMEL_ALIASES.keys())
+    unknown = set(entry.keys()) - _KNOWN_PROVIDER_KEYS - set(_CAMEL_ALIASES.keys())
     if unknown:
         _warn_once_per_provider(
             provider_key, "unknown:" + ",".join(sorted(unknown)),
@@ -4890,6 +4877,21 @@ def _normalize_custom_provider_entry(
         normalized["ssl_verify"] = ssl_verify.strip()
 
     return normalized
+
+
+_KNOWN_PROVIDER_KEYS = {
+    # ``provider`` duplicates the ``providers.<name>`` mapping key and is
+    # unused here, but Hermes' own config writer has historically emitted it
+    # into provider entries. Accept it silently so those (self-written)
+    # configs don't warn on every load.
+    "provider",
+    "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
+    "api_mode", "transport", "model", "default_model", "models",
+    "context_length", "rate_limit_delay",
+    "request_timeout_seconds", "stale_timeout_seconds",
+    "discover_models", "extra_body", "extra_headers",
+    "ssl_ca_cert", "ssl_verify",
+}
 
 
 def _custom_provider_entry_to_provider_config(
@@ -8149,6 +8151,83 @@ def _default_value_for_key(dotted_key: str):
     return node if not isinstance(node, dict) else None
 
 
+def _is_valid_config_key(dotted_key: str, current_user_config: Dict[str, Any]) -> bool:
+    """Return True if dotted_key is a recognized configuration or environment variable key."""
+    # 1. Check environment variables
+    # (Matches set_config_value's logic for redirecting to .env)
+    upper_key = dotted_key.upper()
+    api_keys = {
+        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
+        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
+        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
+        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
+        'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
+        'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
+        'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
+        'GITHUB_TOKEN', 'HONCHO_API_KEY',
+    }
+    if (upper_key in api_keys or
+        upper_key in REQUIRED_ENV_VARS or
+        upper_key in OPTIONAL_ENV_VARS or
+        upper_key in _EXTRA_ENV_KEYS or
+        upper_key.endswith(('_API_KEY', '_TOKEN')) or
+        upper_key.startswith('TERMINAL_SSH')):
+        return True
+
+    # 2. Check if it's already in the user's config (allow updates to custom keys)
+    try:
+        parts = dotted_key.split('.')
+        curr = current_user_config
+        found = True
+        for part in parts:
+            if isinstance(curr, dict) and part in curr:
+                curr = curr[part]
+            else:
+                found = False
+                break
+        if found:
+            return True
+    except Exception:
+        pass
+
+    # 3. Check DEFAULT_CONFIG tree
+    parts = dotted_key.split('.')
+
+    # Special case: providers.<name>.<field>
+    if parts[0] == "providers" and len(parts) >= 2:
+        if len(parts) == 2:
+            return True
+        return parts[-1] in _KNOWN_PROVIDER_KEYS
+
+    # Special case: skills.config.<name>
+    if dotted_key.startswith("skills.config."):
+        return True
+
+    # Special case: Legacy or Test keys
+    if parts[0] in {"custom_providers", "platforms", "verbose"}:
+        return True
+
+    # Recursive check in DEFAULT_CONFIG
+    current = DEFAULT_CONFIG
+    for part in parts:
+        if isinstance(current, dict):
+            if part in current:
+                current = current[part]
+            else:
+                return False
+        elif isinstance(current, list):
+            try:
+                int(part)
+                return True
+            except ValueError:
+                return False
+        else:
+            return False
+
+    return True
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -8170,6 +8249,25 @@ def set_config_value(key: str, value: str):
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Otherwise it goes to config.yaml
+    # Read the raw user config (not merged with defaults) to avoid
+    # dumping all default values back to the file
+    config_path = get_config_path()
+    require_readable_config_before_write(config_path)
+    user_config = {}
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                user_config = fast_safe_load(f) or {}
+        except Exception:
+            user_config = {}
+
+    if not _is_valid_config_key(key, user_config):
+        print(color(f"⚠ Unknown configuration key: {key}", Colors.YELLOW))
+        print(f"  Check '{get_config_path()}' for valid structure.")
+        sys.exit(1)
+
     # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
@@ -8187,19 +8285,6 @@ def set_config_value(key: str, value: str):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    
-    # Otherwise it goes to config.yaml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
-    config_path = get_config_path()
-    require_readable_config_before_write(config_path)
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = fast_safe_load(f) or {}
-        except Exception:
-            user_config = {}
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to

@@ -67,16 +67,14 @@ async def test_rich_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
-async def test_legacy_rich_messages_config_is_ignored():
+async def test_rich_messages_config_false_uses_legacy_send_message():
     adapter = _make_adapter(extra={"rich_messages": False})
 
     result = await adapter.send("12345", RICH_CONTENT)
 
     assert result.success is True
-    # The legacy toggle was removed; stale config entries must not disable the
-    # rich path.
-    adapter._bot.do_api_request.assert_awaited_once()
-    adapter._bot.send_message.assert_not_called()
+    adapter._bot.do_api_request.assert_not_awaited()
+    adapter._bot.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio

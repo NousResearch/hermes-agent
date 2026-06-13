@@ -418,6 +418,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
         # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
         # with the raw agent markdown so tables/task lists/etc. render natively.
+        # Telegram Web may render these as "This message is not supported",
+        # so keep the legacy rich_messages toggle as an explicit opt-out.
+        self._rich_messages_enabled: bool = self._coerce_bool_extra(
+            "rich_messages", True
+        )
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -948,7 +953,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", True)
+            and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()
             and self._content_fits_rich_limits(content)
@@ -1126,7 +1132,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", True)
+            and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()

@@ -3227,20 +3227,11 @@ class AIAgent:
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "") -> Any:
         try:
-            import socket as _socket
-
-            _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-            if hasattr(_socket, "TCP_KEEPIDLE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-            elif hasattr(_socket, "TCP_KEEPALIVE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-            from agent.httpx_clients import build_httpx_client
+            from agent.httpx_clients import build_httpx_client, keepalive_socket_options
 
             return build_httpx_client(
                 base_url=base_url,
-                socket_options=_sock_opts,
+                socket_options=keepalive_socket_options(),
             )
         except Exception:
             return None

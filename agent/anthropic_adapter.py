@@ -759,11 +759,16 @@ def build_anthropic_client(
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
     try:
-        from agent.httpx_clients import build_httpx_client
+        from agent.httpx_clients import build_httpx_client, keepalive_socket_options
 
+        # Inject TCP keepalives (parity with the OpenAI-wire primary client,
+        # see agent_runtime_helpers.create_openai_client) so the kernel
+        # surfaces a dead Anthropic streaming connection as a read error
+        # instead of leaving the worker thread blocked on recv() forever.
         kwargs["http_client"] = build_httpx_client(
             base_url=normalized_base_url,
             timeout=kwargs.get("timeout"),
+            socket_options=keepalive_socket_options(),
         )
     except Exception:
         pass

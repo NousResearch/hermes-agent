@@ -94,6 +94,32 @@ def proxy_for_base_url(base_url: str | None) -> str | None:
     return proxy
 
 
+def keepalive_socket_options() -> list[tuple]:
+    """TCP keepalive socket options for long-lived provider connections.
+
+    Without these, a half-open connection (provider crash / silent network
+    drop / LB idle-kill with no FIN) leaves a blocking ``recv`` waiting
+    indefinitely — the kernel never learns the peer is gone.  Enabling
+    keepalive makes the kernel probe after 30s idle, every 10s, giving up
+    after 3 misses (~60s), at which point the socket errors out and the
+    streaming reader unblocks so the agent's retry loop can reconnect.
+
+    Falls back to bare ``SO_KEEPALIVE`` on platforms without the per-socket
+    tuning knobs (e.g. macOS lacks ``TCP_KEEPIDLE``).
+    """
+
+    import socket as _socket
+
+    opts: list[tuple] = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
+    if hasattr(_socket, "TCP_KEEPIDLE"):
+        opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
+        opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
+        opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
+    elif hasattr(_socket, "TCP_KEEPALIVE"):
+        opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+    return opts
+
+
 def build_httpx_client(
     *,
     base_url: str | None = None,

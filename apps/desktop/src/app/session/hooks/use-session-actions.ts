@@ -640,9 +640,11 @@ export function useSessionActions({
       setFreshDraftReady(false)
       setActiveSessionId(null)
       activeSessionIdRef.current = null
-      busyRef.current = true
-      setBusy(true)
-      setAwaitingResponse(false)
+      // Don't set busy=true optimistically — the gateway session.resume
+      // response tells us whether the session is actually running.
+      // Setting busy=true here causes a stuck "running" state if the
+      // finally block's isCurrentResume() guard fails (race condition)
+      // or if flushPendingViewState restores stale cached busy=true.
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
@@ -762,6 +764,12 @@ export function useSessionActions({
           busyRef.current = resumedRunning
           setBusy(resumedRunning)
           setAwaitingResponse(resumedRunning)
+        } else {
+          // User navigated away — ensure busy is never left stuck true.
+          // The next resume will set the correct state from the gateway.
+          busyRef.current = false
+          setBusy(false)
+          setAwaitingResponse(false)
         }
       }
     },

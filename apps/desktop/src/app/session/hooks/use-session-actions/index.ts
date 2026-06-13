@@ -337,6 +337,17 @@ export function useSessionActions({
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         setMessages([])
+      } else {
+        // Warm-cached target: flip the foreground view to the new session
+        // SYNCHRONOUSLY here, before the profile-resolve / gateway-swap awaits
+        // below. activeSessionId is what the status stack and transcript key on,
+        // so if we wait until the post-await fast-path to repaint, the previous
+        // session's transcript and status linger above the composer during the
+        // await window (#45738). The fast-path below re-applies this idempotently
+        // (with the model merge) and adds the usage refresh.
+        setActiveSessionId(warmRuntimeId)
+        activeSessionIdRef.current = warmRuntimeId
+        syncSessionStateToView(warmRuntimeId, warmState)
       }
 
       // Swap the single live gateway to this session's profile before any

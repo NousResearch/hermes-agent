@@ -618,10 +618,26 @@ export function useSessionActions({
         const watchWindow = isWatchWindow()
         let localSnapshot = $messages.get()
 
+        // REST transcript prefetch and the gateway resume RPC are independent
+        // — run them concurrently so a big session's wall time is
+        // max(prefetch, resume) instead of their sum. The prefetch paints the
+        // transcript as soon as it lands; the RPC binds the runtime id.
+        // Watch windows skip the prefetch — lazy resume attaches the live mirror.
+        const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
+
+        const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
+          session_id: storedSessionId,
+          cols: 96,
+          ...(watchWindow ? { lazy: true } : {}),
+          ...(sessionProfile ? { profile: sessionProfile } : {})
+        })
+        // The rejection is consumed by the `await` below; this guard only
+        // keeps it from surfacing as unhandled while the prefetch settles.
+        resumePromise.catch(() => undefined)
+
         try {
-          // Watch windows skip REST prefetch — lazy resume attaches the live mirror.
-          if (!watchWindow) {
-            const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
+          if (prefetchPromise) {
+            const storedMessages = await prefetchPromise
 
             if (isCurrentResume()) {
               localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
@@ -635,12 +651,7 @@ export function useSessionActions({
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96,
-          ...(watchWindow ? { lazy: true } : {}),
-          ...(sessionProfile ? { profile: sessionProfile } : {})
-        })
+        const resumed = await resumePromise
 
         if (!isCurrentResume()) {
           return
@@ -648,17 +659,22 @@ export function useSessionActions({
 
         const currentMessages = $messages.get()
 
-        const resumedMessages = preserveLocalAssistantErrors(
-          reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
-          currentMessages
-        )
-        // Keep the local snapshot when resume would only reshuffle runtime projection.
+        // Keep the local snapshot when resume would only reshuffle runtime
+        // projection. When the REST prefetch already hydrated the transcript,
+        // skip converting/reconciling the resume payload entirely — on a
+        // 1000+-message session that second conversion plus the deep
+        // equivalence compare costs over a second of main-thread time.
         const preferredMessages =
           localSnapshot.length > 0
             ? localSnapshot
-            : chatMessageArraysEquivalent(currentMessages, resumedMessages)
-              ? currentMessages
-              : resumedMessages
+            : (() => {
+                const resumedMessages = preserveLocalAssistantErrors(
+                  reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
+                  currentMessages
+                )
+
+                return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
+              })()
 
         const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
 

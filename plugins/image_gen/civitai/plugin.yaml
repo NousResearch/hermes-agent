@@ -1,0 +1,7 @@
+name: civitai
+version: 1.0.0
+description: "Civitai Orchestration API image generation — Flux 2, SDXL/Illustrious/Anima, custom AIR checkpoints, LoRAs. Images returned as signed URLs."
+author: Nako + Quill
+kind: backend
+requires_env:
+  - CIVITAI_API_KEY

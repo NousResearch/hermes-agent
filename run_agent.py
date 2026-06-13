@@ -1604,6 +1604,7 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    response_id=getattr(self, "_current_response_id", None),
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:

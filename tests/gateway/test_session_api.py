@@ -1,5 +1,6 @@
 """Focused tests for API server session-control endpoints."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -39,6 +40,13 @@ def auth_adapter(session_db):
 def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/sessions/active", adapter._handle_list_active_sessions)
+    app.router.add_get("/v1/sessions/{session_id}/state", adapter._handle_session_state)
+    app.router.add_get("/v1/sessions/{session_id}/items", adapter._handle_session_items)
+    app.router.add_get("/v1/sessions/{session_id}/events", adapter._handle_session_events)
+    app.router.add_get("/v1/session_events/firehose", adapter._handle_session_firehose)
+    app.router.add_post("/v1/session_events/ack", adapter._handle_session_events_ack)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
@@ -48,7 +56,23 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/v1/sessions/{session_id}/steer", adapter._handle_steer_session)
+    app.router.add_post("/v1/sessions/{session_id}/halt", adapter._handle_halt_session)
+    app.router.add_post("/v1/sessions/{session_id}/queue", adapter._handle_queue_session)
     return app
+
+
+class _CaptureAgent:
+    def __init__(self):
+        self.call = None
+
+    def run_conversation(self, user_message, conversation_history=None, task_id=None):
+        self.call = {
+            "user_message": user_message,
+            "conversation_history": conversation_history,
+            "task_id": task_id,
+        }
+        return {"final_response": "ok", "messages": []}
 
 
 @pytest.mark.asyncio
@@ -124,6 +148,14 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_query_access_token_auth_supports_websocket_clients(auth_adapter):
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get("/v1/capabilities?access_token=sk-test")
+        assert resp.status == 200
+
+
+@pytest.mark.asyncio
 async def test_session_crud_and_message_history(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
@@ -156,6 +188,7 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert messages["object"] == "list"
         assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
         assert messages["data"][0]["content"] == "hello from phone"
+        assert messages["data"][0]["items"][0]["id"].startswith("msg:")
 
         patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
         assert patch_resp.status == 200
@@ -187,6 +220,38 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
     assert messages["object"] == "list"
     assert messages["session_id"] == "tip-session"
     assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
+async def test_runs_hydrate_existing_session_history(adapter, session_db):
+    session_id = session_db.create_session("continuity-session", "api_server")
+    session_db.append_message(session_id, "user", "terminal twice")
+    session_db.append_message(session_id, "assistant", "Ran terminal twice.")
+    agent = _CaptureAgent()
+
+    app = _create_session_app(adapter)
+    with (
+        patch.object(adapter, "_create_agent", return_value=agent),
+        patch.object(adapter, "_agent_usage_snapshot", return_value={}),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"session_id": session_id, "input": "before that", "model": "test-model"},
+            )
+            assert resp.status == 202, await resp.text()
+            for _ in range(50):
+                if agent.call is not None:
+                    break
+                await asyncio.sleep(0.02)
+
+    assert agent.call is not None
+    assert agent.call["user_message"] == "before that"
+    assert agent.call["task_id"] == session_id
+    assert agent.call["conversation_history"] == [
+        {"role": "user", "content": "terminal twice"},
+        {"role": "assistant", "content": "Ran terminal twice."},
+    ]
 
 
 @pytest.mark.asyncio
@@ -275,6 +340,164 @@ async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db)
 
 
 @pytest.mark.asyncio
+async def test_session_replay_api_exposes_stable_items_events_and_state(adapter, session_db):
+    session_id = session_db.create_session("sync-session", "api_server")
+    session_db.append_message(session_id, "user", "please inspect")
+    session_db.append_message(
+        session_id,
+        "assistant",
+        "",
+        tool_calls=[{"id": "call_1", "function": {"name": "read_file", "arguments": "{\"path\":\"a\"}"}}],
+    )
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        items_resp = await cli.get(f"/v1/sessions/{session_id}/items")
+        assert items_resp.status == 200
+        items_payload = await items_resp.json()
+        item_ids = [item["id"] for item in items_payload["data"]]
+        assert item_ids[0].startswith("msg:")
+        assert any(item_id.endswith(":tool_call:call_1") for item_id in item_ids)
+        assert items_payload["latest_event_cursor"] is not None
+
+        events_resp = await cli.get(f"/v1/sessions/{session_id}/events?after=0")
+        assert events_resp.status == 200
+        events_payload = await events_resp.json()
+        assert events_payload["object"] == "list"
+        assert all(event["event_id"].startswith("evt:") for event in events_payload["data"])
+        assert [event["event_type"] for event in events_payload["data"]].count("session.item.upserted") >= 2
+        cursor = events_payload["data"][0]["cursor"]
+
+        replay_resp = await cli.get(f"/v1/sessions/{session_id}/events?after={cursor}")
+        assert replay_resp.status == 200
+        replay_payload = await replay_resp.json()
+        assert all(int(event["cursor"]) > int(cursor) for event in replay_payload["data"])
+
+        state_resp = await cli.get(f"/v1/sessions/{session_id}/state")
+        assert state_resp.status == 200
+        state_payload = await state_resp.json()
+        assert state_payload["state"] == "interrupted"
+        assert state_payload["pending_tool_call_ids"] == ["call_1"]
+
+        active_resp = await cli.get("/v1/sessions/active")
+        assert active_resp.status == 200
+        active_payload = await active_resp.json()
+        listed = {session["id"]: session for session in active_payload["data"]}
+        assert listed[session_id]["sync_state"]["state"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_session_state_and_firehose_include_run_terminal_events(adapter, session_db):
+    session_id = session_db.create_session("run-terminal-session", "api_server")
+    adapter._set_run_status("run_test", "running", session_id=session_id)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        state_resp = await cli.get(f"/v1/sessions/{session_id}/state")
+        assert state_resp.status == 200
+        state_payload = await state_resp.json()
+        assert state_payload["state"] == "processing"
+        assert state_payload["active"] is True
+
+        cursor = session_db.latest_session_event_cursor(session_id) or "0"
+        adapter._record_run_session_event(
+            session_id=session_id,
+            event_type="run.completed",
+            run_id="run_test",
+            payload={"status": "completed", "output": "done"},
+        )
+
+        events_resp = await cli.get(f"/v1/sessions/{session_id}/events?after={cursor}")
+        assert events_resp.status == 200
+        events_payload = await events_resp.json()
+
+    terminal_event = events_payload["data"][0]
+    assert terminal_event["event_id"].startswith("evt:")
+    assert terminal_event["event_type"] == "run.completed"
+    assert terminal_event["item_id"] == "run:run_test"
+    assert terminal_event["payload"]["run_id"] == "run_test"
+    assert terminal_event["payload"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_session_firehose_streams_missed_events(adapter, session_db):
+    session_id = session_db.create_session("firehose-session", "api_server")
+    cursor = session_db.latest_session_event_cursor() or "0"
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        ws = await cli.ws_connect(f"/v1/session_events/firehose?after={cursor}")
+        session_db.append_message(session_id, "user", "from firehose")
+        try:
+            message = await asyncio.wait_for(ws.receive(), timeout=3)
+            assert message.type == web.WSMsgType.TEXT
+            payload = message.json()
+            assert payload["session_id"] == session_id
+            assert payload["event_type"] == "session.item.upserted"
+            assert payload["payload"]["item"]["id"].startswith("msg:")
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_session_events_ack_records_monotonic_consumer_offset(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/v1/session_events/ack", json={"consumer": "nako", "cursor": "7"})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["object"] == "hermes.session_events.ack"
+        assert body["consumer"] == "nako"
+        assert body["cursor"] == "7"
+
+        # Idempotent + monotonic: a lower/equal ack must never rewind the offset.
+        resp = await cli.post("/v1/session_events/ack", json={"consumer": "nako", "cursor": "3"})
+        assert (await resp.json())["cursor"] == "7"
+
+        # A newer ack advances it.
+        resp = await cli.post("/v1/session_events/ack", json={"consumer": "nako", "cursor": "9"})
+        assert (await resp.json())["cursor"] == "9"
+
+    assert session_db.get_consumer_offset("nako") == "9"
+    assert session_db.get_consumer_offset("other") is None
+
+
+@pytest.mark.asyncio
+async def test_session_events_ack_validates_body(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/v1/session_events/ack", json={"cursor": "1"})
+        assert resp.status == 400
+        resp = await cli.post("/v1/session_events/ack", json={"consumer": "nako"})
+        assert resp.status == 400
+        resp = await cli.post("/v1/session_events/ack", data="not-json")
+        assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_session_firehose_resumes_from_consumer_offset(adapter, session_db):
+    session_id = session_db.create_session("firehose-consumer-session", "api_server")
+    # One event already exists and nako has durably acknowledged it.
+    session_db.append_message(session_id, "user", "first")
+    first_cursor = session_db.latest_session_event_cursor()
+    session_db.acknowledge_consumer_offset("nako", first_cursor)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        # No explicit `after`: the firehose must resume from nako's acked offset,
+        # skip the already-stored event, and replay only the newer one.
+        ws = await cli.ws_connect("/v1/session_events/firehose?consumer=nako")
+        session_db.append_message(session_id, "assistant", "second")
+        try:
+            message = await asyncio.wait_for(ws.receive(), timeout=3)
+            assert message.type == web.WSMsgType.TEXT
+            payload = message.json()
+            assert int(payload["cursor"]) > int(first_cursor)
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_accepts_multimodal_message(adapter, session_db):
     session_id = session_db.create_session("image-stream-session", "api_server")
     image_payload = [
@@ -334,6 +557,145 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_forwards_model_override_and_records_live_tool_items(adapter, session_db):
+    import json as _json
+
+    session_id = session_db.create_session("stream-tool-session", "api_server")
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        assert adapter._active_response_agents_by_session.get(session_id) is kwargs["agent_ref"]
+        kwargs["tool_start_callback"]("call_1", "terminal", {"cmd": "pwd"})
+        kwargs["tool_complete_callback"]("call_1", "terminal", {"cmd": "pwd"}, "/Users/quill")
+        return {
+            "final_response": "done",
+            "session_id": session_id,
+            "messages": [{"role": "assistant", "content": "done"}],
+        }, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with (
+        patch.object(
+            adapter,
+            "_resolve_request_model_override",
+            return_value=({"model": "gpt-5.5", "provider": "openai-codex"}, None),
+        ),
+        patch.object(adapter, "_run_agent", side_effect=fake_run),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "message": "use a tool",
+                },
+            )
+            assert resp.status == 200
+            body = await resp.text()
+
+    assert captured_kwargs["request_model_override"]["model"] == "gpt-5.5"
+    run_id = None
+    for block in body.split("\n\n"):
+        if "event: run.started" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    run_id = _json.loads(line[len("data: "):])["run_id"]
+            break
+    assert run_id is not None, body
+    events = session_db.list_session_events(session_id, after=0)
+    live_tool_events = [
+        event
+        for event in events
+        if event["event_type"] == "session.item.upserted"
+        and event.get("response_id") == run_id
+    ]
+    assert len(live_tool_events) == 2
+    item_types = [event["payload"]["item"]["type"] for event in live_tool_events]
+    assert item_types == ["tool_call", "tool_result"]
+    assert session_id not in adapter._active_response_agents_by_session
+
+
+@pytest.mark.asyncio
+async def test_session_halt_interrupts_active_chat_stream_agent(adapter, session_db):
+    session_id = session_db.create_session("halt-stream-session", "api_server")
+
+    class Agent:
+        def __init__(self):
+            self.reason = None
+
+        def interrupt(self, reason):
+            self.reason = reason
+
+    agent = Agent()
+    adapter._active_response_agents_by_session[session_id] = [agent]
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/v1/sessions/{session_id}/halt",
+            json={"reason": "user stopped it"},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body["accepted"] is True
+    assert body["session_id"] == session_id
+    assert agent.reason == "user stopped it"
+
+
+@pytest.mark.asyncio
+async def test_session_queue_drains_after_active_chat_stream_turn(adapter, session_db):
+    import json as _json
+
+    session_id = session_db.create_session("queue-stream-session", "api_server")
+    first_turn_started = asyncio.Event()
+    release_first_turn = asyncio.Event()
+    seen_messages = []
+
+    async def fake_run(**kwargs):
+        seen_messages.append(kwargs["user_message"])
+        if len(seen_messages) == 1:
+            first_turn_started.set()
+            await release_first_turn.wait()
+        return {
+            "final_response": f"done {len(seen_messages)}",
+            "session_id": session_id,
+            "messages": [{"role": "assistant", "content": f"done {len(seen_messages)}"}],
+        }, {"total_tokens": len(seen_messages)}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            stream_task = asyncio.create_task(
+                cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "first"})
+            )
+            await asyncio.wait_for(first_turn_started.wait(), timeout=2)
+            queue_resp = await cli.post(
+                f"/v1/sessions/{session_id}/queue",
+                json={"input": [{"role": "user", "content": "second"}]},
+            )
+            assert queue_resp.status == 202, await queue_resp.text()
+            queued = await queue_resp.json()
+            release_first_turn.set()
+            stream_resp = await stream_task
+            assert stream_resp.status == 200
+            stream_body = await stream_resp.text()
+
+    assert seen_messages == ["first", "second"]
+    run_started_payloads = []
+    for block in stream_body.split("\n\n"):
+        if "event: run.started" not in block:
+            continue
+        for line in block.splitlines():
+            if line.startswith("data: "):
+                run_started_payloads.append(_json.loads(line[len("data: "):]))
+    assert len(run_started_payloads) == 2
+    assert run_started_payloads[1]["run_id"] == queued["run_id"]
+    assert run_started_payloads[1]["user_message"]["content"] == "second"
 
 
 @pytest.mark.asyncio

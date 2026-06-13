@@ -2598,6 +2598,61 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
+def _live_tool_arguments(args: dict) -> str:
+    try:
+        return json.dumps(args or {}, sort_keys=True, default=str)
+    except Exception:
+        return "{}"
+
+
+def _append_live_tool_session_item(
+    sid: str,
+    *,
+    item_type: str,
+    tool_call_id: str,
+    name: str,
+    args: dict,
+    content: str | None = None,
+) -> None:
+    session = _sessions.get(sid)
+    if session is None:
+        return
+    db = _get_db()
+    if db is None:
+        return
+    session_id = str(session.get("session_key") or sid)
+    response_id = str(session.get("active_response_id") or "")
+    now = time.time()
+    item: dict[str, object] = {
+        "id": f"live:{item_type}:{tool_call_id}",
+        "object": "hermes.session.item",
+        "type": item_type,
+        "session_id": session_id,
+        "created_at": now,
+        "committed_at": None,
+        "tool_call_id": tool_call_id,
+        "tool_name": name,
+    }
+    if response_id:
+        item["response_id"] = response_id
+    if item_type == "tool_call":
+        item["role"] = "assistant"
+        item["tool_arguments"] = _live_tool_arguments(args)
+    else:
+        item["role"] = "tool"
+        item["content"] = content or ""
+    try:
+        db.append_session_event(
+            session_id,
+            "session.item.upserted",
+            {"item": item},
+            item_id=str(item["id"]),
+            response_id=response_id or None,
+        )
+    except Exception:
+        logger.debug("failed to append live tool session item", exc_info=True)
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
@@ -2610,6 +2665,13 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         except Exception:
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+    _append_live_tool_session_item(
+        sid,
+        item_type="tool_call",
+        tool_call_id=tool_call_id,
+        name=name,
+        args=args,
+    )
     if _tool_progress_enabled(sid):
         payload = {
             "tool_id": tool_call_id,
@@ -2640,6 +2702,14 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["result"] = json.loads(result)
     except Exception:
         payload["result"] = result
+    _append_live_tool_session_item(
+        sid,
+        item_type="tool_result",
+        tool_call_id=tool_call_id,
+        name=name,
+        args=args,
+        content=result,
+    )
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
@@ -5694,7 +5764,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
+        response_id = f"tui-turn:{uuid.uuid4().hex}"
+        session["active_response_id"] = response_id
     agent = session["agent"]
+    try:
+        setattr(agent, "_current_response_id", response_id)
+    except Exception:
+        pass
     _emit("message.start", sid)
 
     def run():
@@ -6048,7 +6124,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
+                if session.get("active_response_id") == response_id:
+                    session.pop("active_response_id", None)
                 _clear_inflight_turn(session)
+            try:
+                if getattr(agent, "_current_response_id", None) == response_id:
+                    setattr(agent, "_current_response_id", None)
+            except Exception:
+                pass
             _emit("session.info", sid, _session_info(agent, session))
 
         # Chain a goal-continuation turn if the judge said so. We do

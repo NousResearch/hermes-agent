@@ -125,6 +125,41 @@ class TestStartRun:
                 assert status["object"] == "hermes.run"
 
     @pytest.mark.asyncio
+    async def test_start_records_durable_run_lifecycle_events(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, \
+                 patch.object(adapter, "_record_run_session_event") as mock_record:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "nako:test:run-lifecycle"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                event_types = [
+                    call.kwargs["event_type"]
+                    for call in mock_record.call_args_list
+                ]
+                assert "run.started" in event_types
+                assert "run.running" in event_types
+                assert "run.completed" in event_types
+
+    @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -188,6 +223,42 @@ class TestStartRun:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_start_threads_request_model_override_to_create_agent(self, adapter):
+        override = {
+            "model": "gpt-5.5",
+            "provider": "openai-codex",
+            "runtime": {"provider": "openai-codex"},
+        }
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_resolve_request_model_override", return_value=(override, None)), \
+                 patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "model": "gpt-5.5", "provider": "openai-codex"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+
+                for _ in range(20):
+                    if mock_create.called:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert mock_create.called
+                assert mock_create.call_args.kwargs["request_model_override"] == override
+                status_resp = await cli.get(f"/v1/runs/{data['run_id']}")
+                status = await status_resp.json()
+                assert status["model"] == "gpt-5.5"
 
 
 # ---------------------------------------------------------------------------

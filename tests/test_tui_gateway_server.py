@@ -380,6 +380,63 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tool_callbacks_append_live_session_item_events(monkeypatch):
+    appended: list[tuple[str, str, dict, str | None]] = []
+
+    class FakeDB:
+        def append_session_event(
+            self, session_id, event_type, payload, *, item_id=None, response_id=None
+        ):
+            appended.append((session_id, event_type, payload, item_id))
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(
+        server._sessions,
+        "live-test",
+        {
+            "session_key": "session-key",
+            "active_response_id": "resp-live",
+            "tool_progress_mode": "none",
+        },
+    )
+
+    server._on_tool_start("live-test", "call-1", "terminal", {"command": "pwd"})
+    server._on_tool_complete(
+        "live-test",
+        "call-1",
+        "terminal",
+        {"command": "pwd"},
+        "done",
+    )
+
+    assert [event[1] for event in appended] == [
+        "session.item.upserted",
+        "session.item.upserted",
+    ]
+    assert appended[0][0] == "session-key"
+    assert appended[0][3] == "live:tool_call:call-1"
+    assert appended[0][2]["item"] == {
+        "id": "live:tool_call:call-1",
+        "object": "hermes.session.item",
+        "type": "tool_call",
+        "session_id": "session-key",
+        "created_at": appended[0][2]["item"]["created_at"],
+        "committed_at": None,
+        "response_id": "resp-live",
+        "tool_call_id": "call-1",
+        "tool_name": "terminal",
+        "role": "assistant",
+        "tool_arguments": '{"command": "pwd"}',
+    }
+    assert appended[0][2]["item"]["response_id"] == "resp-live"
+    assert appended[1][3] == "live:tool_result:call-1"
+    assert appended[1][2]["item"]["response_id"] == "resp-live"
+    assert appended[1][2]["item"]["type"] == "tool_result"
+    assert appended[1][2]["item"]["tool_call_id"] == "call-1"
+    assert appended[1][2]["item"]["content"] == "done"
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

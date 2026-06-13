@@ -429,6 +429,63 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["tool_calls"] == tool_calls
 
+    def test_session_events_expose_stable_item_ids_and_cursors(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}],
+        )
+        db.append_message(
+            "s1",
+            role="tool",
+            content="result",
+            tool_name="web_search",
+            tool_call_id="call_1",
+        )
+
+        items = db.get_session_items("s1")
+        assert [item["type"] for item in items] == ["message", "tool_call", "tool_result"]
+        assert items[0]["id"].startswith("msg:")
+        assert items[1]["id"].endswith(":tool_call:call_1")
+        assert items[2]["id"].endswith(":tool_result:call_1")
+
+        events = db.list_session_events("s1", after=0)
+        assert [event["event_type"] for event in events] == [
+            "session.item.upserted",
+            "session.item.upserted",
+            "session.item.upserted",
+        ]
+        assert all(event["event_id"] == f"evt:{event['id']}" for event in events)
+        assert all(event["cursor"] == str(event["id"]) for event in events)
+
+        replayed = db.list_session_events("s1", after=events[0]["cursor"])
+        assert [event["id"] for event in replayed] == [events[1]["id"], events[2]["id"]]
+
+    def test_session_state_marks_unresolved_tool_call_interrupted(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}],
+        )
+
+        state = db.get_session_sync_state("s1")
+        assert state["state"] == "interrupted"
+        assert state["pending_tool_call_ids"] == ["call_1"]
+
+        db.append_message(
+            "s1",
+            role="tool",
+            content="result",
+            tool_name="web_search",
+            tool_call_id="call_1",
+        )
+        assert db.get_session_sync_state("s1")["state"] == "idle"
+
     def test_multimodal_list_content_round_trip(self, db):
         """Multimodal ``content`` (list of parts) must survive the SQLite
         round-trip.  sqlite3 cannot bind Python lists directly, so the DB

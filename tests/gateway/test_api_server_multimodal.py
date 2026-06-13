@@ -247,6 +247,85 @@ class TestChatCompletionsMultimodalHTTP:
         assert body["error"]["code"] == "unsupported_content_type"
 
 
+class TestResponsesForceCompactionHTTP:
+    @pytest.mark.asyncio
+    async def test_force_compaction_without_input_compacts_previous_response_history(self, adapter):
+        app = _create_app(adapter)
+        adapter._response_store.put("resp_prev", {
+            "response": {"id": "resp_prev", "object": "response", "status": "completed"},
+            "conversation_history": [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+                {"role": "user", "content": "three"},
+                {"role": "assistant", "content": "four"},
+            ],
+            "instructions": "stay helpful",
+            "session_id": "session-prev",
+        })
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_compact_response_context", new=MagicMock()) as mock_compact:
+                async def _stub(**kwargs):
+                    mock_compact.captured = kwargs
+                    return (
+                        [{"role": "user", "content": "[CONTEXT COMPACTION]\nsummary"}],
+                        {"input_tokens": 10, "output_tokens": 0, "total_tokens": 10, "compression_count": 1},
+                        "session-prev",
+                    )
+                mock_compact.side_effect = _stub
+
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "previous_response_id": "resp_prev",
+                        "force_compaction": True,
+                        "compaction_focus": "schema notes",
+                    },
+                )
+                assert resp.status == 200, await resp.text()
+                body = await resp.json()
+
+        assert body["output"][0]["content"][0]["text"].startswith("[CONTEXT COMPACTION]")
+        assert mock_compact.captured["ephemeral_system_prompt"] == "stay helpful"
+        assert mock_compact.captured["focus_topic"] == "schema notes"
+        stored = adapter._response_store.get(body["id"])
+        assert stored["conversation_history"] == [
+            {"role": "user", "content": "[CONTEXT COMPACTION]\nsummary"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_compaction_forwards_request_model_override_to_agent_factory(self, adapter):
+        fake_agent = MagicMock()
+        fake_agent.compression_enabled = True
+        fake_agent._cached_system_prompt = ""
+        fake_agent.tools = None
+        fake_agent.session_id = "session-prev"
+        fake_agent._compress_context.return_value = ([{"role": "user", "content": "summary"}], None)
+        request_model_override = {
+            "provider": "custom:test",
+            "model": "test-model",
+            "runtime": {"provider": "custom:test", "base_url": "https://example.invalid/v1"},
+        }
+
+        with patch.object(adapter, "_create_agent", return_value=fake_agent) as create_agent:
+            with patch.object(adapter, "_agent_usage_snapshot", return_value={}):
+                compacted, _, effective_session_id = await adapter._compact_response_context(
+                    conversation_history=[
+                        {"role": "user", "content": "one"},
+                        {"role": "assistant", "content": "two"},
+                        {"role": "user", "content": "three"},
+                        {"role": "assistant", "content": "four"},
+                    ],
+                    session_id="session-prev",
+                    request_model_override=request_model_override,
+                )
+
+        assert compacted == [{"role": "user", "content": "summary"}]
+        assert effective_session_id == "session-prev"
+        create_agent.assert_called_once()
+        assert create_agent.call_args.kwargs["request_model_override"] is request_model_override
+
+
 class TestResponsesMultimodalHTTP:
     @pytest.mark.asyncio
     async def test_input_image_canonicalized_and_forwarded(self, adapter):

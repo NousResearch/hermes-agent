@@ -3519,6 +3519,12 @@ def run_conversation(
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
+                from agent.tool_aliases import normalize_tool_call_aliases
+
+                normalize_tool_call_aliases(
+                    assistant_message.tool_calls,
+                    agent.valid_tool_names,
+                )
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names

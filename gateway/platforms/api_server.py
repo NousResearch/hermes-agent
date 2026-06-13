@@ -40,6 +40,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -89,9 +90,25 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+MAX_AUDIO_TRANSCRIPTION_BYTES = 25 * 1024 * 1024
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_AUDIO_MIME_EXTENSIONS = {
+    "audio/aac": ".aac",
+    "audio/flac": ".flac",
+    "audio/m4a": ".m4a",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/mpga": ".mpga",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/webm": ".webm",
+    "audio/x-m4a": ".m4a",
+    "audio/x-wav": ".wav",
+    "video/webm": ".webm",
+}
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -357,6 +374,29 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
         return None, _multimodal_validation_error(exc, param=param)
 
 
+def _session_chat_queued_user_message(body: Dict[str, Any]) -> tuple[Any, Optional["web.Response"]]:
+    """Parse a queued message from chat-stream or Responses-style request bodies."""
+    user_message, err = _session_chat_user_message(body)
+    if err is None:
+        return user_message, None
+    raw_input = body.get("input")
+    if isinstance(raw_input, list):
+        for item in reversed(raw_input):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "user")
+            if role != "user":
+                continue
+            content = item.get("content")
+            if not _content_has_visible_payload(content):
+                continue
+            try:
+                return _normalize_multimodal_content(content), None
+            except ValueError as exc:
+                return None, _multimodal_validation_error(exc, param="input")
+    return None, err
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -585,7 +625,12 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    limit = (
+                        MAX_AUDIO_TRANSCRIPTION_BYTES
+                        if request.path == "/v1/audio/transcriptions"
+                        else MAX_REQUEST_BYTES
+                    )
+                    if int(cl) > limit:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
@@ -759,6 +804,11 @@ class APIServerAdapter(BasePlatformAdapter):
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
+        # Active Responses API agents for mid-run /steer support. Values are
+        # one-element agent_ref lists populated by _run_agent before the loop starts.
+        self._active_response_agents: Dict[str, list] = {}
+        self._active_response_agents_by_session: Dict[str, list] = {}
+        self._session_chat_pending_messages: Dict[str, List[Dict[str, Any]]] = {}
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
         # Active approval session key for each run_id.  The approval core
@@ -904,6 +954,9 @@ class APIServerAdapter(BasePlatformAdapter):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
+        query_token = request.query.get("access_token") or request.query.get("api_key")
+        if query_token and hmac.compare_digest(str(query_token), self._api_key):
+            return None  # Auth OK
 
         logger.warning(
             "API server rejected invalid API key: %s",
@@ -1010,6 +1063,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        request_model_override: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1030,9 +1084,22 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        try:
+            runtime_kwargs = _resolve_runtime_agent_kwargs()
+        except Exception:
+            if not request_model_override:
+                raise
+            runtime_kwargs = {}
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
+        if request_model_override:
+            model = request_model_override.get("model") or model
+            override_runtime = request_model_override.get("runtime") or {}
+            for key in ("provider", "api_key", "base_url", "api_mode", "command", "credential_pool"):
+                if key in override_runtime:
+                    runtime_kwargs[key] = override_runtime.get(key)
+            if "args" in override_runtime:
+                runtime_kwargs["args"] = list(override_runtime.get("args") or [])
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -1063,6 +1130,108 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _resolve_request_model_override(
+        self,
+        body: Dict[str, Any],
+    ) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
+        """Resolve request-scoped provider/model selection.
+
+        OpenAI-compatible clients already send ``model`` as a frontend routing
+        or display identifier, so Hermes only treats it as a backend selection
+        when the request also supplies a Hermes ``provider`` field.
+        """
+        requested_provider = body.get("provider")
+        if requested_provider is None:
+            hermes_ext = body.get("hermes")
+            if isinstance(hermes_ext, dict):
+                requested_provider = hermes_ext.get("provider")
+
+        if requested_provider is None or str(requested_provider).strip() == "":
+            return None, None
+        if not isinstance(requested_provider, str):
+            return None, web.json_response(
+                _openai_error("'provider' must be a string", param="provider"),
+                status=400,
+            )
+
+        requested_model = body.get("model")
+        if not isinstance(requested_model, str) or not requested_model.strip():
+            return None, web.json_response(
+                _openai_error("'model' is required when 'provider' is supplied", param="model"),
+                status=400,
+            )
+
+        try:
+            from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+            from hermes_cli.config import get_compatible_custom_providers
+            from hermes_cli.model_switch import switch_model
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            user_config = _load_gateway_config()
+            try:
+                runtime_kwargs = _resolve_runtime_agent_kwargs()
+            except Exception as exc:
+                logger.debug(
+                    "Configured gateway runtime unavailable while resolving request override: %s",
+                    exc,
+                )
+                runtime_kwargs = {}
+            current_model = _resolve_gateway_model(user_config)
+            runtime_model = runtime_kwargs.get("model")
+            if runtime_model:
+                current_model = runtime_model
+
+            provider = requested_provider.strip()
+            model = requested_model.strip()
+            switch_result = switch_model(
+                raw_input=model,
+                current_provider=runtime_kwargs.get("provider") or "",
+                current_model=current_model or "",
+                current_base_url=runtime_kwargs.get("base_url") or "",
+                current_api_key=runtime_kwargs.get("api_key") or "",
+                explicit_provider=provider,
+                user_providers=user_config.get("providers") if isinstance(user_config, dict) else None,
+                custom_providers=get_compatible_custom_providers(user_config),
+            )
+            if not switch_result.success:
+                return None, web.json_response(
+                    _openai_error(
+                        switch_result.error_message or "Invalid provider/model selection",
+                        param="model",
+                    ),
+                    status=400,
+                )
+
+            resolved_runtime = resolve_runtime_provider(
+                requested=switch_result.target_provider,
+                target_model=switch_result.new_model,
+            )
+            override_runtime = {
+                "provider": switch_result.target_provider,
+                "api_key": switch_result.api_key or resolved_runtime.get("api_key"),
+                "base_url": switch_result.base_url or resolved_runtime.get("base_url"),
+                "api_mode": switch_result.api_mode or resolved_runtime.get("api_mode"),
+                "command": resolved_runtime.get("command"),
+                "args": list(resolved_runtime.get("args") or []),
+                "credential_pool": resolved_runtime.get("credential_pool"),
+            }
+            return {
+                "model": switch_result.new_model,
+                "provider": switch_result.target_provider,
+                "runtime": override_runtime,
+            }, None
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve request model override provider=%r model=%r: %s",
+                requested_provider,
+                requested_model,
+                exc,
+            )
+            return None, web.json_response(
+                _openai_error(f"Could not resolve provider/model selection: {exc}", param="provider"),
+                status=400,
+            )
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1323,7 +1492,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
             "reasoning_content",
         )
-        return {key: message.get(key) for key in safe_keys if key in message}
+        payload = {key: message.get(key) for key in safe_keys if key in message}
+        try:
+            from hermes_state import SessionDB
+            payload["items"] = SessionDB._session_items_from_message(message)
+        except Exception:
+            payload["items"] = []
+        return payload
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:
@@ -1352,6 +1527,294 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
+
+    def _live_session_state(self, session_id: str, state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        payload = dict(state or {
+            "object": "hermes.session.state",
+            "session_id": session_id,
+            "state": "idle",
+            "status": "idle",
+            "active": False,
+        })
+        active_run = any(
+            run.get("session_id") == session_id
+            and run.get("status") in {"queued", "running", "waiting_for_approval", "stopping"}
+            for run in self._run_statuses.values()
+        )
+        if session_id in self._active_response_agents_by_session or active_run:
+            payload["state"] = "processing"
+            payload["status"] = "processing"
+            payload["active"] = True
+        return payload
+
+    def _record_response_session_event(
+        self,
+        *,
+        session_id: Optional[str],
+        event_type: str,
+        response_id: str,
+        response: Dict[str, Any],
+    ) -> None:
+        if not session_id:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        try:
+            db.append_session_event(
+                session_id,
+                event_type,
+                {
+                    "session_id": session_id,
+                    "response_id": response_id,
+                    "response": response,
+                },
+                item_id=f"response:{response_id}",
+                response_id=response_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record response session event for %s: %s", session_id, exc)
+
+    def _record_run_session_event(
+        self,
+        *,
+        session_id: Optional[str],
+        event_type: str,
+        run_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        if not session_id:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        try:
+            db.ensure_session(session_id, source="api_server", model=payload.get("model"))
+            event_payload = dict(payload)
+            event_payload["session_id"] = session_id
+            event_payload["run_id"] = run_id
+            db.append_session_event(
+                session_id,
+                event_type,
+                event_payload,
+                item_id=f"run:{run_id}",
+            )
+        except Exception as exc:
+            logger.debug("Failed to record run session event for %s: %s", session_id, exc)
+
+    def _record_live_tool_session_item(
+        self,
+        *,
+        session_id: Optional[str],
+        item_type: str,
+        tool_call_id: Optional[str],
+        name: Optional[str],
+        arguments: Any,
+        content: Optional[str] = None,
+        response_id: Optional[str] = None,
+    ) -> None:
+        """Publish provisional tool items to the durable session event stream."""
+        if not session_id or not tool_call_id:
+            return
+        db = self._ensure_session_db()
+        if db is None:
+            return
+        now = time.time()
+        item: Dict[str, Any] = {
+            "id": f"live:{item_type}:{tool_call_id}",
+            "object": "hermes.session.item",
+            "type": item_type,
+            "session_id": session_id,
+            "created_at": now,
+            "committed_at": None,
+            "tool_call_id": tool_call_id,
+            "tool_name": name or "tool",
+        }
+        if response_id:
+            item["response_id"] = response_id
+        if item_type == "tool_call":
+            item["role"] = "assistant"
+            try:
+                item["tool_arguments"] = json.dumps(arguments or {}, sort_keys=True, default=str)
+            except Exception:
+                item["tool_arguments"] = "{}"
+        elif item_type == "tool_result":
+            item["role"] = "tool"
+            item["content"] = content or ""
+        else:
+            return
+        try:
+            db.ensure_session(session_id, source="api_server")
+            db.append_session_event(
+                session_id,
+                "session.item.upserted",
+                {"item": item},
+                item_id=str(item["id"]),
+                response_id=response_id,
+            )
+        except Exception as exc:
+            logger.debug("Failed to record live tool session item for %s: %s", session_id, exc)
+
+    async def _handle_list_active_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/active — sessions Nako should reconcile on startup."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=200, maximum=1000)
+        recent_seconds = self._parse_nonnegative_int(
+            request.query.get("recent_seconds"),
+            default=14 * 24 * 60 * 60,
+            maximum=90 * 24 * 60 * 60,
+        )
+        sessions = db.list_sync_sessions(limit=limit, recent_seconds=recent_seconds)
+        data = []
+        for session in sessions:
+            payload = self._session_response(session)
+            sync_state = session.get("sync_state")
+            payload["sync_state"] = self._live_session_state(session["id"], sync_state)
+            payload["latest_event_cursor"] = session.get("latest_event_cursor")
+            data.append(payload)
+        return web.json_response({"object": "list", "data": data, "limit": limit})
+
+    async def _handle_session_state(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        return web.json_response(self._live_session_state(session_id, db.get_session_sync_state(session_id)))
+
+    async def _handle_session_items(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/items — full stable item projection."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        items = db.get_session_items(session_id)
+        return web.json_response({
+            "object": "list",
+            "session_id": session_id,
+            "data": items,
+            "latest_event_cursor": db.latest_session_event_cursor(session_id),
+        })
+
+    async def _handle_session_events(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/events — replay durable events after a cursor."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=100, maximum=1000)
+        events = db.list_session_events(
+            session_id=session_id,
+            after=request.query.get("after") or request.query.get("cursor"),
+            limit=limit,
+        )
+        return web.json_response({
+            "object": "list",
+            "session_id": session_id,
+            "data": events,
+            "latest_event_cursor": db.latest_session_event_cursor(session_id),
+            "has_more": len(events) == limit,
+        })
+
+    async def _handle_session_firehose(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /v1/session_events/firehose — websocket stream of durable session events."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+
+        session_id = request.query.get("session_id") or None
+        consumer = request.query.get("consumer") or None
+        cursor = request.query.get("after") or request.query.get("cursor")
+        # When the client does not pin an explicit resume point, fall back to
+        # this consumer's durably-acknowledged offset so a reconnecting consumer
+        # never re-streams events it already stored (nor misses the gap). An
+        # explicit `after` always wins — the client may know a newer watermark.
+        if cursor is None and consumer:
+            cursor = db.get_consumer_offset(consumer)
+        idle_sleep_seconds = 0.5
+        try:
+            while not ws.closed:
+                events = db.list_session_events(session_id=session_id, after=cursor, limit=100)
+                if events:
+                    for event in events:
+                        await ws.send_json(event)
+                        cursor = event["cursor"]
+                    continue
+                try:
+                    message = await ws.receive(timeout=idle_sleep_seconds)
+                except asyncio.TimeoutError:
+                    continue
+                if message.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSING, web.WSMsgType.CLOSED):
+                    break
+                if message.type == web.WSMsgType.TEXT:
+                    try:
+                        payload = json.loads(message.data)
+                    except Exception:
+                        continue
+                    if isinstance(payload, dict) and payload.get("after") is not None:
+                        cursor = str(payload["after"])
+        except Exception as exc:
+            logger.debug("[api_server] session firehose closed: %s", exc)
+        finally:
+            await ws.close()
+        return ws
+
+    async def _handle_session_events_ack(self, request: "web.Request") -> "web.Response":
+        """POST /v1/session_events/ack — durably record a consumer's firehose offset.
+
+        Body: ``{"consumer": "nako", "cursor": "<watermark>"}``. The cursor is an
+        inclusive watermark: it asserts every event ``<= cursor`` has been
+        persisted by ``consumer``. Idempotent and monotonic on the store side, so
+        retries and replays are safe. Consumers MUST call this only after their
+        own write commits.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be a JSON object", code="invalid_request"), status=400)
+        consumer = body.get("consumer")
+        cursor = body.get("cursor")
+        if not consumer or not isinstance(consumer, str):
+            return web.json_response(_openai_error("consumer is required", code="invalid_request"), status=400)
+        if cursor is None:
+            return web.json_response(_openai_error("cursor is required", code="invalid_request"), status=400)
+        offset = db.acknowledge_consumer_offset(consumer, cursor)
+        return web.json_response({
+            "object": "hermes.session_events.ack",
+            "consumer": consumer,
+            "cursor": offset,
+        })
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -1556,6 +2019,9 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
         history = self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(
             user_message=user_message,
@@ -1563,6 +2029,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            request_model_override=request_model_override,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -1600,12 +2067,16 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
         seq = 0
+        agent_ref = [None]
 
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
             nonlocal seq
@@ -1641,45 +2112,103 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _on_tool_start(tool_call_id, function_name, function_args):
+            self._record_live_tool_session_item(
+                session_id=session_id,
+                item_type="tool_call",
+                tool_call_id=tool_call_id,
+                name=function_name,
+                arguments=function_args or {},
+                response_id=run_id,
+            )
+
+        def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            self._record_live_tool_session_item(
+                session_id=session_id,
+                item_type="tool_result",
+                tool_call_id=tool_call_id,
+                name=function_name,
+                arguments=function_args or {},
+                content=function_result,
+                response_id=run_id,
+            )
+
+        async def _run_turn(
+            turn_user_message: Any,
+            turn_system_prompt: Optional[str],
+            turn_request_model_override: Optional[Dict[str, Any]],
+            turn_gateway_session_key: Optional[str],
+        ) -> None:
+            await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": turn_user_message}}))
+            await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
+            history = self._conversation_history_for_session(session_id)
+            result, usage = await self._run_agent(
+                user_message=turn_user_message,
+                conversation_history=history,
+                ephemeral_system_prompt=turn_system_prompt,
+                session_id=session_id,
+                stream_delta_callback=_delta,
+                tool_progress_callback=_tool_progress,
+                tool_start_callback=_on_tool_start,
+                tool_complete_callback=_on_tool_complete,
+                agent_ref=agent_ref,
+                gateway_session_key=turn_gateway_session_key,
+                request_model_override=turn_request_model_override,
+            )
+            final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+            effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
+            turn_messages = self._turn_transcript_messages(history, turn_user_message, result) if isinstance(result, dict) else []
+            await queue.put(_event_payload("assistant.completed", {
+                "session_id": effective_session_id,
+                "message_id": message_id,
+                "content": final_response,
+                "completed": True,
+                "partial": False,
+                "interrupted": False,
+            }))
+            await queue.put(_event_payload("run.completed", {
+                "session_id": effective_session_id,
+                "message_id": message_id,
+                "completed": True,
+                "messages": turn_messages,
+                "usage": usage,
+            }))
+
         async def _run_and_signal() -> None:
+            nonlocal message_id, run_id
             try:
-                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
-                await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
-                history = self._conversation_history_for_session(session_id)
-                result, usage = await self._run_agent(
-                    user_message=user_message,
-                    conversation_history=history,
-                    ephemeral_system_prompt=system_prompt,
-                    session_id=session_id,
-                    stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress,
-                    gateway_session_key=gateway_session_key,
+                await _run_turn(
+                    user_message,
+                    system_prompt,
+                    request_model_override,
+                    gateway_session_key,
                 )
-                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
-                turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
-                await queue.put(_event_payload("assistant.completed", {
-                    "session_id": effective_session_id,
-                    "message_id": message_id,
-                    "content": final_response,
-                    "completed": True,
-                    "partial": False,
-                    "interrupted": False,
-                }))
-                await queue.put(_event_payload("run.completed", {
-                    "session_id": effective_session_id,
-                    "message_id": message_id,
-                    "completed": True,
-                    "messages": turn_messages,
-                    "usage": usage,
-                }))
+                while True:
+                    pending = self._session_chat_pending_messages.get(session_id) or []
+                    if not pending:
+                        self._session_chat_pending_messages.pop(session_id, None)
+                        break
+                    queued = pending.pop(0)
+                    if not pending:
+                        self._session_chat_pending_messages.pop(session_id, None)
+                    run_id = str(queued.get("run_id") or f"run_{uuid.uuid4().hex}")
+                    message_id = f"msg_{uuid.uuid4().hex}"
+                    await _run_turn(
+                        queued.get("user_message"),
+                        queued.get("system_prompt"),
+                        queued.get("request_model_override"),
+                        queued.get("gateway_session_key") or gateway_session_key,
+                    )
             except Exception as exc:
                 logger.exception("[api_server] session chat stream failed")
                 await queue.put(_event_payload("error", {"message": str(exc)}))
             finally:
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
+                if self._active_response_agents_by_session.get(session_id) is agent_ref:
+                    self._active_response_agents_by_session.pop(session_id, None)
 
+        self._active_response_agents_by_session[session_id] = agent_ref
         task = asyncio.create_task(_run_and_signal())
         try:
             self._background_tasks.add(task)
@@ -1738,6 +2267,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "Missing or invalid 'messages' field", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
+        response_model_name = (
+            request_model_override.get("model")
+            if request_model_override
+            else body.get("model", self._model_name)
+        )
+        response_provider_name = request_model_override.get("provider") if request_model_override else None
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
@@ -1835,7 +2374,6 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
         created = int(time.time())
 
         if stream:
@@ -1920,13 +2458,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             return await self._write_sse_chat_completion(
-                request, completion_id, model_name, created, _stream_q,
+                request, completion_id, response_model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
             )
@@ -1939,11 +2478,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(body, keys=["model", "provider", "messages", "tools", "tool_choice", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -2009,7 +2549,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "id": completion_id,
             "object": "chat.completion",
             "created": created,
-            "model": model_name,
+            "model": response_model_name,
             "choices": [
                 {
                     "index": 0,
@@ -2034,10 +2574,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 "error": err_msg,
                 "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
             }
+            if response_provider_name:
+                response_data["hermes"]["provider"] = response_provider_name
+                response_data["hermes"]["model"] = response_model_name
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
             if err_msg:
                 response_headers["X-Hermes-Error"] = err_msg[:200]
+        elif response_provider_name:
+            response_data["hermes"] = {
+                "provider": response_provider_name,
+                "model": response_model_name,
+            }
 
         return web.json_response(response_data, headers=response_headers)
 
@@ -2320,6 +2868,14 @@ class APIServerAdapter(BasePlatformAdapter):
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
+            status = response_env.get("status")
+            if isinstance(status, str) and status in {"completed", "failed", "incomplete"}:
+                self._record_response_session_event(
+                    session_id=session_id,
+                    event_type=f"response.{status}",
+                    response_id=response_id,
+                    response=response_env,
+                )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -2684,11 +3240,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
                 failed_env["error"] = {"message": agent_error, "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                failed_env["usage"] = self._responses_usage_payload(usage)
                 _failed_history = list(conversation_history)
                 _failed_history.append({"role": "user", "content": user_message})
                 if final_response_text or agent_error:
@@ -2708,11 +3260,7 @@ class APIServerAdapter(BasePlatformAdapter):
             else:
                 completed_env = _envelope("completed")
                 completed_env["output"] = final_items
-                completed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
+                completed_env["usage"] = self._responses_usage_payload(usage)
                 full_history = self._build_response_conversation_history(
                     conversation_history,
                     user_message,
@@ -2810,13 +3358,36 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         raw_input = body.get("input")
-        if raw_input is None:
+        force_compaction = bool(body.get("force_compaction") or body.get("compact"))
+        if raw_input is None and not force_compaction:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
+        if raw_input is None:
+            raw_input = []
+
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
+        response_model_name = (
+            request_model_override.get("model")
+            if request_model_override
+            else body.get("model", self._model_name)
+        )
+        response_provider_name = request_model_override.get("provider") if request_model_override else None
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = _coerce_request_bool(body.get("store"), default=True)
+        requested_session_id = body.get("session_id")
+        if requested_session_id is not None:
+            if not isinstance(requested_session_id, str) or not requested_session_id.strip():
+                return web.json_response(_openai_error("'session_id' must be a non-empty string"), status=400)
+            requested_session_id = requested_session_id.strip()
+            if re.search(r'[\r\n\x00]', requested_session_id):
+                return web.json_response(
+                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                    status=400,
+                )
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -2882,6 +3453,68 @@ class APIServerAdapter(BasePlatformAdapter):
             if instructions is None:
                 instructions = stored.get("instructions")
 
+        # Reuse session from previous_response_id chain so the dashboard
+        # groups the entire conversation under one session entry.
+        session_id = stored_session_id or requested_session_id or str(uuid.uuid4())
+
+        # Append new input messages to history.  A force compaction request is
+        # a maintenance command rather than a user turn, so any supplied input
+        # is folded into the compacted history and no assistant response is run.
+        if force_compaction:
+            conversation_history.extend(input_messages)
+            if len(conversation_history) < 1:
+                return web.json_response(_openai_error("No conversation history to compact"), status=400)
+            try:
+                compacted_history, usage, effective_session_id = await self._compact_response_context(
+                    conversation_history=conversation_history,
+                    ephemeral_system_prompt=instructions,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                    request_model_override=request_model_override,
+                    focus_topic=body.get("compaction_focus") or body.get("compact_focus"),
+                )
+            except Exception as e:
+                logger.error("Error compacting responses context: %s", e, exc_info=True)
+                return web.json_response(
+                    _openai_error(f"Compaction failed: {e}", err_type="server_error"),
+                    status=500,
+                )
+            response_id = f"resp_{uuid.uuid4().hex[:28]}"
+            created_at = int(time.time())
+            compacted_count = max(0, len(conversation_history) - len(compacted_history))
+            final_response = (
+                f"[CONTEXT COMPACTION]\n"
+                f"Compacted conversation context ({len(conversation_history)} → {len(compacted_history)} messages"
+                f"{f', removed {compacted_count}' if compacted_count else ''})."
+            )
+            output_items = [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": final_response}],
+            }]
+            response_data = {
+                "id": response_id,
+                "object": "response",
+                "status": "completed",
+                "created_at": created_at,
+                "model": body.get("model", self._model_name),
+                "output": output_items,
+                "usage": self._responses_usage_payload(usage),
+            }
+            if store:
+                self._response_store.put(response_id, {
+                    "response": response_data,
+                    "conversation_history": compacted_history,
+                    "instructions": instructions,
+                    "session_id": session_id,
+                })
+                if conversation:
+                    self._response_store.set_conversation(conversation, response_id)
+            response_headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
+            if gateway_session_key:
+                response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(response_data, headers=response_headers)
+
         # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:
             conversation_history.append(msg)
@@ -2897,7 +3530,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
-        session_id = stored_session_id or str(uuid.uuid4())
+        session_id = stored_session_id or requested_session_id or str(uuid.uuid4())
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
@@ -2952,31 +3585,39 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
             agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
-            model_name = body.get("model", self._model_name)
             created_at = int(time.time())
+            self._active_response_agents[response_id] = agent_ref
+            if session_id:
+                self._active_response_agents_by_session[session_id] = agent_ref
 
-            return await self._write_sse_responses(
-                request=request,
-                response_id=response_id,
-                model=model_name,
-                created_at=created_at,
-                stream_q=_stream_q,
-                agent_task=agent_task,
-                agent_ref=agent_ref,
-                conversation_history=conversation_history,
-                user_message=user_message,
-                instructions=instructions,
-                conversation=conversation,
-                store=store,
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-            )
+            try:
+                return await self._write_sse_responses(
+                    request=request,
+                    response_id=response_id,
+                    model=response_model_name,
+                    created_at=created_at,
+                    stream_q=_stream_q,
+                    agent_task=agent_task,
+                    agent_ref=agent_ref,
+                    conversation_history=conversation_history,
+                    user_message=user_message,
+                    instructions=instructions,
+                    conversation=conversation,
+                    store=store,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                )
+            finally:
+                self._active_response_agents.pop(response_id, None)
+                if session_id and self._active_response_agents_by_session.get(session_id) is agent_ref:
+                    self._active_response_agents_by_session.pop(session_id, None)
 
         async def _compute_response():
             return await self._run_agent(
@@ -2985,13 +3626,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "tools"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -3042,14 +3684,15 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
+            "model": response_model_name,
             "output": output_items,
-            "usage": {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            },
+            "usage": self._responses_usage_payload(usage),
         }
+        if response_provider_name:
+            response_data["hermes"] = {
+                "provider": response_provider_name,
+                "model": response_model_name,
+            }
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
@@ -3063,6 +3706,12 @@ class APIServerAdapter(BasePlatformAdapter):
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
+        self._record_response_session_event(
+            session_id=session_id,
+            event_type="response.completed",
+            response_id=response_id,
+            response=response_data,
+        )
 
         response_headers = {"X-Hermes-Session-Id": session_id}
         if gateway_session_key:
@@ -3070,8 +3719,244 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
-    # GET / DELETE response endpoints
+    # Responses steer / GET / DELETE endpoints
     # ------------------------------------------------------------------
+
+    async def _resolve_active_response_agent(self, agent_ref: Optional[list]) -> Optional[Any]:
+        """Return a live AIAgent from an active Responses API ref, waiting briefly."""
+        if agent_ref is None:
+            return None
+        for _ in range(20):
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                return agent
+            await asyncio.sleep(0.025)
+        return None
+
+    async def _handle_steer_response(self, request: "web.Request") -> "web.Response":
+        """POST /v1/responses/{response_id}/steer — call AIAgent.steer()."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        response_id = request.match_info["response_id"]
+        agent = await self._resolve_active_response_agent(self._active_response_agents.get(response_id))
+        if agent is None or not hasattr(agent, "steer"):
+            return web.json_response(_openai_error(f"Active response not found: {response_id}"), status=404)
+        return await self._handle_steer_active_agent(request, agent, {"response_id": response_id})
+
+    async def _handle_steer_session(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/steer — steer active response by session id."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        agent = await self._resolve_active_response_agent(
+            self._active_response_agents_by_session.get(session_id)
+        )
+        if agent is None or not hasattr(agent, "steer"):
+            return web.json_response(
+                _openai_error(f"No active response for session: {session_id}"),
+                status=404,
+            )
+        return await self._handle_steer_active_agent(request, agent, {"session_id": session_id})
+
+    async def _handle_halt_session(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/halt — interrupt active work by session id."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        agent = await self._resolve_active_response_agent(
+            self._active_response_agents_by_session.get(session_id)
+        )
+        if agent is None:
+            return web.json_response(
+                _openai_error(f"No active response for session: {session_id}"),
+                status=404,
+            )
+        reason = "Halt requested via API"
+        try:
+            body = await request.json()
+            if isinstance(body.get("reason"), str) and body.get("reason").strip():
+                reason = body.get("reason").strip()
+        except Exception:
+            pass
+        try:
+            agent.interrupt(reason)
+        except Exception:
+            pass
+        return web.json_response({
+            "object": "hermes.session.halt",
+            "session_id": session_id,
+            "accepted": True,
+            "status": "stopping",
+        })
+
+    async def _handle_queue_session(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/queue — queue a follow-up for active session chat."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        if session_id not in self._active_response_agents_by_session:
+            return web.json_response(
+                _openai_error(f"No active response for session: {session_id}", code="session_not_active"),
+                status=409,
+            )
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        user_message, err = _session_chat_queued_user_message(body)
+        if err is not None:
+            return err
+        system_prompt = body.get("system_message") or body.get("instructions")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        request_model_override, model_override_err = self._resolve_request_model_override(body)
+        if model_override_err is not None:
+            return model_override_err
+        queued_run_id = f"run_{uuid.uuid4().hex}"
+        self._session_chat_pending_messages.setdefault(session_id, []).append({
+            "run_id": queued_run_id,
+            "user_message": user_message,
+            "system_prompt": system_prompt,
+            "request_model_override": request_model_override,
+            "gateway_session_key": gateway_session_key,
+            "queued_at": time.time(),
+        })
+        return web.json_response({
+            "object": "hermes.session.queued_message",
+            "session_id": session_id,
+            "run_id": queued_run_id,
+            "accepted": True,
+            "queued": True,
+        }, status=202)
+
+    async def _handle_steer_active_agent(
+        self,
+        request: "web.Request",
+        agent: Any,
+        extra: Dict[str, str],
+    ) -> "web.Response":
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                status=400,
+            )
+        text = body.get("input") or body.get("prompt") or body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response(_openai_error("Missing non-empty steer text"), status=400)
+        try:
+            accepted = bool(agent.steer(text))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Responses steer failed: %s", exc, exc_info=True)
+            return web.json_response(
+                _openai_error(f"Steer failed: {exc}", err_type="server_error"),
+                status=500,
+            )
+        if not accepted:
+            return web.json_response(_openai_error("Steer rejected"), status=400)
+        return web.json_response({"object": "response.steer", "accepted": True, **extra})
+
+    def _audio_extension_for_mime(self, mime_type: str) -> str:
+        normalized = (mime_type or "").split(";", 1)[0].strip().lower()
+        return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+    async def _read_limited_audio_body(self, request: "web.Request") -> bytes:
+        chunks: List[bytes] = []
+        total = 0
+        async for chunk in request.content.iter_chunked(1024 * 1024):
+            total += len(chunk)
+            if total > MAX_AUDIO_TRANSCRIPTION_BYTES:
+                raise ValueError("Audio recording is too large")
+            chunks.append(bytes(chunk))
+        return b"".join(chunks)
+
+    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/transcriptions — transcribe an uploaded audio file."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        mime_type = (request.headers.get("Content-Type") or "audio/webm").strip()
+        normalized_mime_type = mime_type.split(";", 1)[0].lower()
+        if not (
+            normalized_mime_type.startswith("audio/")
+            or normalized_mime_type == "video/webm"
+            or normalized_mime_type == "application/octet-stream"
+        ):
+            return web.json_response(
+                _openai_error("Payload must be an audio recording", code="invalid_audio_type"),
+                status=400,
+            )
+
+        try:
+            audio_bytes = await self._read_limited_audio_body(request)
+        except ValueError:
+            return web.json_response(
+                _openai_error("Audio recording is too large", code="body_too_large"),
+                status=413,
+            )
+
+        if not audio_bytes:
+            return web.json_response(
+                _openai_error("Audio recording is empty", code="empty_audio"),
+                status=400,
+            )
+
+        temp_path = ""
+        try:
+            suffix = self._audio_extension_for_mime(mime_type)
+            with tempfile.NamedTemporaryFile(
+                prefix="hermes-api-audio-",
+                suffix=suffix,
+                delete=False,
+            ) as tmp:
+                tmp.write(audio_bytes)
+                temp_path = tmp.name
+
+            from tools.transcription_tools import transcribe_audio
+
+            result = await asyncio.to_thread(transcribe_audio, temp_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Audio transcription failed: %s", exc, exc_info=True)
+            return web.json_response(
+                _openai_error(f"Transcription failed: {exc}", err_type="server_error"),
+                status=500,
+            )
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+
+        if not result.get("success"):
+            return web.json_response(
+                _openai_error(
+                    str(result.get("error") or "Transcription failed"),
+                    code="transcription_failed",
+                ),
+                status=400,
+            )
+
+        transcript = str(result.get("transcript") or "").strip()
+        return web.json_response(
+            {
+                "object": "audio.transcription",
+                "text": transcript,
+                "transcript": transcript,
+                "provider": result.get("provider"),
+            }
+        )
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""
@@ -3483,6 +4368,57 @@ class APIServerAdapter(BasePlatformAdapter):
     # Agent execution
     # ------------------------------------------------------------------
 
+    async def _compact_response_context(
+        self,
+        conversation_history: List[Dict[str, Any]],
+        ephemeral_system_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,
+        gateway_session_key: Optional[str] = None,
+        request_model_override: Optional[Dict[str, Any]] = None,
+        focus_topic: Optional[str] = None,
+    ) -> tuple:
+        """Force a context compaction without running a user-visible assistant turn."""
+        loop = asyncio.get_running_loop()
+
+        def _run():
+            agent = self._create_agent(
+                ephemeral_system_prompt=ephemeral_system_prompt,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                request_model_override=request_model_override,
+            )
+            if not getattr(agent, "compression_enabled", False):
+                raise RuntimeError("Compression is disabled in config.")
+            history = list(conversation_history)
+            if len(history) < 4:
+                usage = self._agent_usage_snapshot(agent)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                return history, usage, _eff_sid
+            try:
+                from agent.model_metadata import estimate_request_tokens_rough
+
+                system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+                tools = getattr(agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    history,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                )
+            except Exception:
+                approx_tokens = None
+            compacted, _ = agent._compress_context(
+                history,
+                ephemeral_system_prompt,
+                approx_tokens=approx_tokens,
+                task_id=session_id or "api_server_compact",
+                focus_topic=focus_topic,
+            )
+            usage = self._agent_usage_snapshot(agent)
+            _eff_sid = getattr(agent, "session_id", session_id)
+            return compacted, usage, _eff_sid
+
+        return await loop.run_in_executor(None, _run)
+
     async def _run_agent(
         self,
         user_message: str,
@@ -3495,6 +4431,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        request_model_override: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -3527,6 +4464,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_start_callback=tool_start_callback,
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
+                    request_model_override=request_model_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -3536,11 +4474,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history=conversation_history,
                     task_id=effective_task_id,
                 )
-                usage = {
-                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                }
+                usage = self._agent_usage_snapshot(agent)
                 # Include the effective session ID in the result so callers
                 # (e.g. X-Hermes-Session-Id header) can track compression-
                 # triggered session rotations. (#16938)
@@ -3552,6 +4486,76 @@ class APIServerAdapter(BasePlatformAdapter):
                 clear_session_vars(tokens)
 
         return await loop.run_in_executor(None, _run)
+
+    @staticmethod
+    def _responses_usage_payload(usage: Dict[str, Any]) -> Dict[str, Any]:
+        """Return Responses API usage with Hermes context-compressor fields preserved."""
+        def _number(value: Any) -> int | float:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+        payload = {
+            "input_tokens": _number(usage.get("input_tokens", 0)),
+            "output_tokens": _number(usage.get("output_tokens", 0)),
+            "total_tokens": _number(usage.get("total_tokens", 0)),
+        }
+        optional_aliases = (
+            "cached_input_tokens",
+            "api_calls",
+            "current_context_tokens",
+            "context_tokens",
+            "last_prompt_tokens",
+            "context_length",
+            "context_percent",
+            "compression_count",
+            "compressions",
+        )
+        for key in optional_aliases:
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                payload[key] = value
+        return payload
+
+    @staticmethod
+    def _agent_usage_snapshot(agent) -> Dict[str, Any]:
+        """Return token/context usage fields matching Hermes /usage as closely as possible."""
+        def _number(value: Any) -> int | float:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+        def _optional_number(value: Any) -> int | float | None:
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        usage = {
+            "input_tokens": _number(getattr(agent, "session_prompt_tokens", 0)),
+            "output_tokens": _number(getattr(agent, "session_completion_tokens", 0)),
+            "total_tokens": _number(getattr(agent, "session_total_tokens", 0)),
+        }
+        api_calls = _optional_number(getattr(agent, "session_api_calls", None))
+        if api_calls is not None:
+            usage["api_calls"] = api_calls
+
+        cache_read_tokens = _optional_number(getattr(agent, "session_cache_read_tokens", None))
+        cache_write_tokens = _optional_number(getattr(agent, "session_cache_write_tokens", None))
+        cache_total = (cache_read_tokens or 0) + (cache_write_tokens or 0)
+        if cache_total:
+            usage["cached_input_tokens"] = cache_total
+
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor:
+            context_tokens = _optional_number(getattr(compressor, "last_prompt_tokens", None))
+            context_length = _optional_number(getattr(compressor, "context_length", None))
+            compression_count = _optional_number(getattr(compressor, "compression_count", None))
+            if context_tokens is not None:
+                usage["current_context_tokens"] = context_tokens
+                usage["context_tokens"] = context_tokens
+                usage["last_prompt_tokens"] = context_tokens
+            if compression_count is not None:
+                usage["compression_count"] = compression_count
+                usage["compressions"] = compression_count
+            if context_length:
+                usage["context_length"] = context_length
+                if context_tokens is not None:
+                    usage["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+        return usage
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -3653,6 +4657,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
+        response_model_name = body.get("model", self._model_name)
+
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
@@ -3702,6 +4708,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+        if (
+            session_id
+            and not conversation_history
+            and not previous_response_id
+            and not (isinstance(raw_input, list) and len(raw_input) > 1)
+        ):
+            conversation_history = self._conversation_history_for_session(session_id)
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
@@ -3732,20 +4745,32 @@ class APIServerAdapter(BasePlatformAdapter):
             "queued",
             created_at=created_at,
             session_id=session_id,
-            model=body.get("model", self._model_name),
+            model=response_model_name,
+        )
+        self._record_run_session_event(
+            session_id=session_id,
+            event_type="run.started",
+            run_id=run_id,
+            payload={
+                "status": "queued",
+                "model": response_model_name,
+                "timestamp": created_at,
+            },
         )
 
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
-                agent = self._create_agent(
-                    ephemeral_system_prompt=ephemeral_system_prompt,
+                self._record_run_session_event(
                     session_id=session_id,
-                    stream_delta_callback=_text_cb,
-                    tool_progress_callback=event_cb,
-                    gateway_session_key=gateway_session_key,
+                    event_type="run.running",
+                    run_id=run_id,
+                    payload={
+                        "status": "running",
+                        "model": response_model_name,
+                        "timestamp": time.time(),
+                    },
                 )
-                self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -3775,6 +4800,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
 
                     effective_task_id = session_id or run_id
+                    request_model_override, model_override_err = self._resolve_request_model_override(body)
+                    if model_override_err is not None:
+                        error_text = getattr(model_override_err, "text", None)
+                        return {
+                            "failed": True,
+                            "error": error_text if isinstance(error_text, str) else "Invalid provider/model selection",
+                        }, {}
+                    agent = self._create_agent(
+                        ephemeral_system_prompt=ephemeral_system_prompt,
+                        session_id=session_id,
+                        stream_delta_callback=_text_cb,
+                        tool_progress_callback=event_cb,
+                        tool_start_callback=lambda tool_call_id, function_name, function_args: self._record_live_tool_session_item(
+                            session_id=session_id,
+                            item_type="tool_call",
+                            tool_call_id=tool_call_id,
+                            name=function_name,
+                            arguments=function_args or {},
+                            response_id=run_id,
+                        ),
+                        tool_complete_callback=lambda tool_call_id, function_name, function_args, function_result: self._record_live_tool_session_item(
+                            session_id=session_id,
+                            item_type="tool_result",
+                            tool_call_id=tool_call_id,
+                            name=function_name,
+                            arguments=function_args or {},
+                            content=function_result,
+                            response_id=run_id,
+                        ),
+                        gateway_session_key=gateway_session_key,
+                        request_model_override=request_model_override,
+                    )
+                    self._active_run_agents[run_id] = agent
                     approval_token = None
                     session_tokens = []
                     try:
@@ -3806,11 +4864,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                     clear_session_vars(session_tokens)
                                 except Exception:
                                     pass
-                    u = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-                    }
+                    u = self._agent_usage_snapshot(agent)
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
@@ -3831,6 +4885,16 @@ class APIServerAdapter(BasePlatformAdapter):
                         error=error_msg,
                         last_event="run.failed",
                     )
+                    self._record_run_session_event(
+                        session_id=session_id,
+                        event_type="run.failed",
+                        run_id=run_id,
+                        payload={
+                            "status": "failed",
+                            "error": error_msg,
+                            "timestamp": time.time(),
+                        },
+                    )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                     q.put_nowait({
@@ -3847,6 +4911,17 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.completed",
                     )
+                    self._record_run_session_event(
+                        session_id=session_id,
+                        event_type="run.completed",
+                        run_id=run_id,
+                        payload={
+                            "status": "completed",
+                            "output": final_response,
+                            "usage": usage,
+                            "timestamp": time.time(),
+                        },
+                    )
             except asyncio.CancelledError:
                 self._set_run_status(
                     run_id,
@@ -3861,6 +4936,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
                 except Exception:
                     pass
+                self._record_run_session_event(
+                    session_id=session_id,
+                    event_type="run.cancelled",
+                    run_id=run_id,
+                    payload={
+                        "status": "cancelled",
+                        "timestamp": time.time(),
+                    },
+                )
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
@@ -3879,6 +4963,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
                 except Exception:
                     pass
+                self._record_run_session_event(
+                    session_id=session_id,
+                    event_type="run.failed",
+                    run_id=run_id,
+                    payload={
+                        "status": "failed",
+                        "error": str(exc),
+                        "timestamp": time.time(),
+                    },
+                )
             finally:
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
@@ -4168,6 +5262,12 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
+            self._app.router.add_get("/v1/sessions/active", self._handle_list_active_sessions)
+            self._app.router.add_get("/v1/sessions/{session_id}/state", self._handle_session_state)
+            self._app.router.add_get("/v1/sessions/{session_id}/items", self._handle_session_items)
+            self._app.router.add_get("/v1/sessions/{session_id}/events", self._handle_session_events)
+            self._app.router.add_get("/v1/session_events/firehose", self._handle_session_firehose)
+            self._app.router.add_post("/v1/session_events/ack", self._handle_session_events_ack)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
             self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
@@ -4179,6 +5279,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
+            self._app.router.add_post("/v1/responses/{response_id}/steer", self._handle_steer_response)
+            self._app.router.add_post("/v1/sessions/{session_id}/steer", self._handle_steer_session)
+            self._app.router.add_post("/v1/sessions/{session_id}/halt", self._handle_halt_session)
+            self._app.router.add_post("/v1/sessions/{session_id}/queue", self._handle_queue_session)
+            self._app.router.add_post("/v1/audio/transcriptions", self._handle_audio_transcriptions)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
             # Cron jobs management API

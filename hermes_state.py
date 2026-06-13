@@ -581,12 +581,36 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS session_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT UNIQUE,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    event_type TEXT NOT NULL,
+    item_id TEXT,
+    message_id INTEGER REFERENCES messages(id),
+    response_id TEXT,
+    payload TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+-- Per-consumer firehose acknowledgement offsets. A consumer (e.g. "nako")
+-- records the highest globally-ordered session_events.id it has durably
+-- stored; the firehose resumes from here when no explicit `after` is given,
+-- and retention can reclaim events all consumers have acked past.
+CREATE TABLE IF NOT EXISTS session_event_consumers (
+    consumer TEXT PRIMARY KEY,
+    offset_cursor INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_session_events_cursor ON session_events(id);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -970,6 +994,342 @@ class SessionDB:
                 self._conn = None
 
     @staticmethod
+    def _event_cursor_value(cursor: Any) -> int:
+        """Parse a session event cursor accepted by replay APIs."""
+        if cursor is None:
+            return 0
+        if isinstance(cursor, int):
+            return max(cursor, 0)
+        value = str(cursor).strip()
+        if value.startswith("evt:"):
+            value = value[4:]
+        try:
+            parsed = int(value)
+        except ValueError:
+            return 0
+        return max(parsed, 0)
+
+    @staticmethod
+    def _tool_call_fields(tool_call: Any, index: int) -> Dict[str, Any]:
+        if not isinstance(tool_call, dict):
+            return {
+                "tool_call_id": f"tool_call_{index}",
+                "tool_name": "tool",
+                "tool_arguments": "",
+            }
+        function = tool_call.get("function")
+        function = function if isinstance(function, dict) else {}
+        tool_call_id = (
+            tool_call.get("id")
+            or tool_call.get("tool_call_id")
+            or function.get("id")
+            or f"tool_call_{index}"
+        )
+        tool_name = tool_call.get("name") or function.get("name") or "tool"
+        arguments = tool_call.get("arguments")
+        if arguments is None:
+            arguments = function.get("arguments")
+        if isinstance(arguments, (dict, list)):
+            arguments = json.dumps(arguments, sort_keys=True)
+        elif arguments is None:
+            arguments = ""
+        else:
+            arguments = str(arguments)
+        return {
+            "tool_call_id": str(tool_call_id),
+            "tool_name": str(tool_name),
+            "tool_arguments": arguments,
+        }
+
+    @staticmethod
+    def _session_items_from_message(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Project one durable message row into stable Hermes session items."""
+        message_id = message.get("id")
+        session_id = message.get("session_id")
+        response_id = message.get("response_id")
+        role = str(message.get("role") or "unknown")
+        timestamp = message.get("timestamp")
+        items: List[Dict[str, Any]] = []
+
+        content = message.get("content")
+        if role == "tool":
+            suffix = message.get("tool_call_id") or message_id
+            item_id = f"msg:{message_id}:tool_result:{suffix}"
+            items.append({
+                "id": item_id,
+                "object": "hermes.session.item",
+                "type": "tool_result",
+                "session_id": session_id,
+                "message_id": message_id,
+                "role": role,
+                "content": content,
+                "tool_call_id": message.get("tool_call_id"),
+                "tool_name": message.get("tool_name") or "tool",
+                "created_at": timestamp,
+                "committed_at": timestamp,
+                "response_id": response_id,
+            })
+            return items
+
+        if content not in (None, ""):
+            items.append({
+                "id": f"msg:{message_id}",
+                "object": "hermes.session.item",
+                "type": "message",
+                "session_id": session_id,
+                "message_id": message_id,
+                "role": role,
+                "content": content,
+                "created_at": timestamp,
+                "committed_at": timestamp,
+                "response_id": response_id,
+            })
+
+        if role == "assistant":
+            for index, tool_call in enumerate(message.get("tool_calls") or []):
+                fields = SessionDB._tool_call_fields(tool_call, index)
+                tool_call_id = fields["tool_call_id"]
+                items.append({
+                    "id": f"msg:{message_id}:tool_call:{tool_call_id}",
+                    "object": "hermes.session.item",
+                    "type": "tool_call",
+                    "session_id": session_id,
+                    "message_id": message_id,
+                    "role": role,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": fields["tool_name"],
+                    "tool_arguments": fields["tool_arguments"],
+                    "created_at": timestamp,
+                    "committed_at": timestamp,
+                    "response_id": response_id,
+                })
+
+        return items
+
+    @staticmethod
+    def _decode_event_row(row: sqlite3.Row) -> Dict[str, Any]:
+        event = dict(row)
+        payload = event.get("payload")
+        if isinstance(payload, str):
+            try:
+                event["payload"] = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                event["payload"] = {}
+        event["cursor"] = str(event["id"])
+        if not event.get("event_id"):
+            event["event_id"] = f"evt:{event['id']}"
+        return event
+
+    def _insert_session_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_id: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        item_id: Optional[str] = None,
+        message_id: Optional[int] = None,
+        response_id: Optional[str] = None,
+        created_at: Optional[float] = None,
+    ) -> int:
+        cursor = conn.execute(
+            """INSERT INTO session_events (
+                   session_id, event_type, item_id, message_id, response_id,
+                   payload, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                session_id,
+                event_type,
+                item_id,
+                message_id,
+                response_id,
+                json.dumps(payload, sort_keys=True, default=str),
+                created_at if created_at is not None else time.time(),
+            ),
+        )
+        event_row_id = cursor.lastrowid
+        conn.execute(
+            "UPDATE session_events SET event_id = ? WHERE id = ?",
+            (f"evt:{event_row_id}", event_row_id),
+        )
+        return int(event_row_id)
+
+    def append_session_event(
+        self,
+        session_id: str,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        item_id: Optional[str] = None,
+        message_id: Optional[int] = None,
+        response_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Append a durable session event and return the stored event."""
+        def _do(conn):
+            return self._insert_session_event(
+                conn,
+                session_id=session_id,
+                event_type=event_type,
+                payload=payload or {},
+                item_id=item_id,
+                message_id=message_id,
+                response_id=response_id,
+            )
+
+        event_row_id = self._execute_write(_do)
+        events = self.list_session_events(after=event_row_id - 1, limit=1)
+        return events[0]
+
+    def list_session_events(
+        self,
+        session_id: Optional[str] = None,
+        after: Any = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return durable session events after a cursor."""
+        cursor_value = self._event_cursor_value(after)
+        limit = max(1, min(int(limit or 100), 1000))
+        where = ["id > ?"]
+        params: List[Any] = [cursor_value]
+        if session_id:
+            where.append("session_id = ?")
+            params.append(session_id)
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""SELECT * FROM session_events
+                    WHERE {' AND '.join(where)}
+                    ORDER BY id
+                    LIMIT ?""",
+                params,
+            ).fetchall()
+        return [self._decode_event_row(row) for row in rows]
+
+    def latest_session_event_cursor(self, session_id: Optional[str] = None) -> Optional[str]:
+        where = ""
+        params: Tuple[Any, ...] = ()
+        if session_id:
+            where = "WHERE session_id = ?"
+            params = (session_id,)
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT MAX(id) AS max_id FROM session_events {where}",
+                params,
+            ).fetchone()
+        if not row or row["max_id"] is None:
+            return None
+        return str(row["max_id"])
+
+    def get_consumer_offset(self, consumer: str) -> Optional[str]:
+        """Return the acknowledged firehose cursor for *consumer*, or None."""
+        if not consumer:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT offset_cursor FROM session_event_consumers WHERE consumer = ?",
+                (consumer,),
+            ).fetchone()
+        if not row or row["offset_cursor"] is None:
+            return None
+        return str(row["offset_cursor"])
+
+    def acknowledge_consumer_offset(self, consumer: str, cursor: Any) -> str:
+        """Durably record that *consumer* has stored every event up to *cursor*.
+
+        Idempotent and monotonic: the stored offset only ever advances
+        (offset = max(stored, cursor)), so replays of an already-acked cursor
+        are no-ops and an out-of-order ack cannot rewind progress. Returns the
+        resulting offset as a cursor string.
+        """
+        if not consumer:
+            raise ValueError("consumer is required")
+        target = self._event_cursor_value(cursor)
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO session_event_consumers (consumer, offset_cursor, updated_at)
+                       VALUES (?, ?, ?)
+                   ON CONFLICT(consumer) DO UPDATE SET
+                       offset_cursor = MAX(offset_cursor, excluded.offset_cursor),
+                       updated_at = excluded.updated_at""",
+                (consumer, target, time.time()),
+            )
+            row = conn.execute(
+                "SELECT offset_cursor FROM session_event_consumers WHERE consumer = ?",
+                (consumer,),
+            ).fetchone()
+            return str(row["offset_cursor"])
+
+        return self._execute_write(_do)
+
+    def get_session_items(self, session_id: str) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for message in self.get_messages(session_id):
+            items.extend(self._session_items_from_message(message))
+        return items
+
+    def get_session_sync_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        session = self.get_session(session_id)
+        if not session:
+            return None
+        items = self.get_session_items(session_id)
+        pending_tool_calls = {
+            item["tool_call_id"]
+            for item in items
+            if item.get("type") == "tool_call" and item.get("tool_call_id")
+        }
+        for item in items:
+            if item.get("type") == "tool_result" and item.get("tool_call_id"):
+                pending_tool_calls.discard(item["tool_call_id"])
+        if session.get("ended_at") is not None:
+            state = "failed" if session.get("end_reason") == "error" else "completed"
+        elif pending_tool_calls:
+            state = "interrupted"
+        else:
+            state = "idle"
+        return {
+            "object": "hermes.session.state",
+            "session_id": session_id,
+            "state": state,
+            "status": state,
+            "active": session.get("ended_at") is None,
+            "ended_at": session.get("ended_at"),
+            "end_reason": session.get("end_reason"),
+            "pending_tool_call_ids": sorted(pending_tool_calls),
+            "latest_event_cursor": self.latest_session_event_cursor(session_id),
+            "item_count": len(items),
+        }
+
+    def list_sync_sessions(
+        self,
+        *,
+        limit: int = 200,
+        recent_seconds: int = 14 * 24 * 60 * 60,
+    ) -> List[Dict[str, Any]]:
+        """List sessions Nako should consider during startup reconciliation."""
+        limit = max(1, min(int(limit or 200), 1000))
+        cutoff = time.time() - max(0, recent_seconds)
+        sessions = self.list_sessions_rich(
+            limit=limit,
+            offset=0,
+            include_children=True,
+            order_by_last_active=True,
+        )
+        result = []
+        for session in sessions:
+            last_active = session.get("last_active") or session.get("started_at") or 0
+            recoverable = session.get("ended_at") is None or float(last_active) >= cutoff
+            if not recoverable:
+                continue
+            sync_state = self.get_session_sync_state(session["id"])
+            result.append({
+                **session,
+                "sync_state": sync_state,
+                "latest_event_cursor": self.latest_session_event_cursor(session["id"]),
+            })
+        return result
+
+    @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
         """Extract expected columns per table from SCHEMA_SQL.
 
@@ -1318,11 +1678,25 @@ class SessionDB:
         intentionally need to re-end a closed session with a new reason.
         """
         def _do(conn):
-            conn.execute(
+            ended_at = time.time()
+            cursor = conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? "
                 "WHERE id = ? AND ended_at IS NULL",
-                (time.time(), end_reason, session_id),
+                (ended_at, end_reason, session_id),
             )
+            if cursor.rowcount > 0:
+                self._insert_session_event(
+                    conn,
+                    session_id=session_id,
+                    event_type="session.ended",
+                    payload={
+                        "session_id": session_id,
+                        "state": "failed" if end_reason == "error" else "completed",
+                        "end_reason": end_reason,
+                        "ended_at": ended_at,
+                    },
+                    created_at=ended_at,
+                )
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
@@ -1331,6 +1705,12 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),
+            )
+            self._insert_session_event(
+                conn,
+                session_id=session_id,
+                event_type="session.reopened",
+                payload={"session_id": session_id, "state": "idle"},
             )
         self._execute_write(_do)
 
@@ -2373,6 +2753,7 @@ class SessionDB:
         codex_reasoning_items: Any = None,
         codex_message_items: Any = None,
         platform_message_id: str = None,
+        response_id: str = None,
         observed: bool = False,
     ) -> int:
         """
@@ -2411,6 +2792,7 @@ class SessionDB:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
+            timestamp = time.time()
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
@@ -2424,7 +2806,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    timestamp,
                     token_count,
                     finish_reason,
                     reasoning,
@@ -2450,6 +2832,34 @@ class SessionDB:
                     "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
                     (session_id,),
                 )
+            message_payload = {
+                "id": msg_id,
+                "session_id": session_id,
+                "role": role,
+                "content": content,
+                "tool_call_id": tool_call_id,
+                "tool_calls": tool_calls or [],
+                "tool_name": tool_name,
+                "timestamp": timestamp,
+                "token_count": token_count,
+                "finish_reason": finish_reason,
+                "reasoning": reasoning,
+                "reasoning_content": reasoning_content,
+                "response_id": response_id,
+                "observed": 1 if observed else 0,
+            }
+            items = self._session_items_from_message(message_payload)
+            for item in items:
+                self._insert_session_event(
+                    conn,
+                    session_id=session_id,
+                    event_type="session.item.upserted",
+                    item_id=item["id"],
+                    message_id=msg_id,
+                    response_id=response_id,
+                    payload={"message": message_payload, "item": item},
+                    created_at=timestamp,
+                )
             return msg_id
 
         return self._execute_write(_do)
@@ -2472,6 +2882,13 @@ class SessionDB:
             )
 
             now_ts = time.time()
+            self._insert_session_event(
+                conn,
+                session_id=session_id,
+                event_type="session.transcript.replaced",
+                payload={"session_id": session_id, "message_count": len(messages)},
+                created_at=now_ts,
+            )
             total_messages = 0
             total_tool_calls = 0
             for msg in messages:
@@ -2501,7 +2918,7 @@ class SessionDB:
                     msg.get("platform_message_id") or msg.get("message_id")
                 )
 
-                conn.execute(
+                cursor = conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
@@ -2526,10 +2943,33 @@ class SessionDB:
                         1 if msg.get("observed") else 0,
                     ),
                 )
+                msg_id = cursor.lastrowid
                 total_messages += 1
                 if tool_calls is not None:
                     total_tool_calls += (
                         len(tool_calls) if isinstance(tool_calls, list) else 1
+                    )
+                message_payload = {
+                    **msg,
+                    "id": msg_id,
+                    "session_id": session_id,
+                    "role": role,
+                    "timestamp": now_ts,
+                    "tool_calls": tool_calls or [],
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "tool_name": msg.get("tool_name"),
+                    "response_id": msg.get("response_id"),
+                }
+                for item in self._session_items_from_message(message_payload):
+                    self._insert_session_event(
+                        conn,
+                        session_id=session_id,
+                        event_type="session.item.upserted",
+                        item_id=item["id"],
+                        message_id=msg_id,
+                        response_id=msg.get("response_id"),
+                        payload={"message": message_payload, "item": item},
+                        created_at=now_ts,
                     )
                 now_ts += 1e-6
 

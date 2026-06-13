@@ -23,10 +23,15 @@ update when it's noticed.
 import json
 import logging
 import os
+import sys
 import datetime
 import threading
 import uuid
-from typing import Any, Dict, Optional
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+from urllib.parse import urlencode
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because
@@ -1126,7 +1131,69 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
-        result = provider.generate(**kwargs)
+
+        # Providers that need local execution (e.g. Civitai — Cloudflare
+        # blocks Python TLS / proxy-routed traffic from the agent host)
+        # run in a clean subprocess that inherits no proxy env vars.
+        if getattr(provider, "prefer_local_execution", False) or getattr(provider, "PREFER_LOCAL_EXECUTION", False):
+            # Build a path to the hermes-agent checkout
+            repo_root = str(Path(__file__).resolve().parent.parent)
+
+            env_clean = os.environ.copy()
+            # Strip proxy env vars so the subprocess connects directly
+            for key in list(env_clean):
+                if key.lower() in ("http_proxy", "https_proxy", "all_proxy",
+                                   "no_proxy", "ftp_proxy"):
+                    del env_clean[key]
+
+            script = (
+                "import json, os, sys\n"
+                "os.environ['CIVITAI_API_KEY'] = " + json.dumps(os.environ.get("CIVITAI_API_KEY", "")) + "\n"
+                "sys.path.insert(0, " + json.dumps(repo_root) + ")\n"
+                "from plugins.image_gen.civitai import CivitaiImageGenProvider\n"
+                "p = CivitaiImageGenProvider()\n"
+                "result = p.generate(**" + json.dumps(kwargs) + ")\n"
+                "print(json.dumps(result))\n"
+            )
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, prefix="civitai_gen_"
+            ) as tf:
+                tf.write(script)
+                script_path = tf.name
+
+            try:
+                proc = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True, text=True, timeout=190,
+                    env=env_clean,
+                )
+                if proc.returncode != 0:
+                    return json.dumps({
+                        "success": False, "image": None,
+                        "error": f"Local provider subprocess failed: {proc.stderr[:300]}",
+                        "error_type": "provider_exception",
+                    })
+                result = json.loads(proc.stdout)
+            except subprocess.TimeoutExpired:
+                return json.dumps({
+                    "success": False, "image": None,
+                    "error": "Local provider subprocess timed out",
+                    "error_type": "provider_exception",
+                })
+            except json.JSONDecodeError:
+                return json.dumps({
+                    "success": False, "image": None,
+                    "error": f"Local provider returned non-JSON: {proc.stdout[:300]}",
+                    "error_type": "provider_contract",
+                })
+            finally:
+                try:
+                    os.unlink(script_path)
+                except OSError:
+                    pass
+        else:
+            result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
             "Image gen provider '%s' raised: %s",

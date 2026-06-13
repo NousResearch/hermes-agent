@@ -337,6 +337,54 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_uses_request_model_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "api_key": "sk-default",
+                "base_url": "https://default.test/v1",
+                "api_mode": "codex_responses",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "default-model")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: {}),
+        )
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        override = {
+            "model": "gpt-5.5",
+            "provider": "openai",
+            "runtime": {
+                "provider": "openai",
+                "api_key": "sk-request",
+                "base_url": "https://api.openai.com/v1",
+                "api_mode": "codex_responses",
+            },
+        }
+        agent = adapter._create_agent(request_model_override=override)
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["model"] == "gpt-5.5"
+        assert captured["provider"] == "openai"
+        assert captured["api_key"] == "sk-request"
+        assert captured["base_url"] == "https://api.openai.com/v1"
+        assert captured["api_mode"] == "codex_responses"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -416,6 +464,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_post("/v1/responses/{response_id}/steer", adapter._handle_steer_response)
+    app.router.add_post("/v1/sessions/{session_id}/steer", adapter._handle_steer_session)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
     return app
@@ -464,6 +514,96 @@ class TestAgentExecution:
             conversation_history=[],
             task_id="session-123",
         )
+
+    @pytest.mark.asyncio
+    async def test_run_agent_threads_request_model_override_to_create_agent(self, adapter):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        override = {
+            "model": "gpt-5.5",
+            "provider": "openai",
+            "runtime": {"provider": "openai"},
+        }
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent) as mock_create:
+            await adapter._run_agent(
+                user_message="hello",
+                conversation_history=[],
+                request_model_override=override,
+            )
+
+        assert mock_create.call_args.kwargs["request_model_override"] == override
+
+    def test_request_model_override_ignores_model_without_provider(self, adapter):
+        override, err = adapter._resolve_request_model_override({"model": "frontend-model"})
+
+        assert override is None
+        assert err is None
+
+    def test_request_model_override_requires_model_with_provider(self, adapter):
+        override, err = adapter._resolve_request_model_override({"provider": "openai"})
+
+        assert override is None
+        assert err is not None
+        assert err.status == 400
+
+    def test_request_model_override_resolves_provider_and_model(self, adapter, monkeypatch):
+        captured = {}
+
+        class FakeSwitchResult:
+            success = True
+            new_model = "gpt-5.5"
+            target_provider = "openai"
+            api_key = "sk-switch"
+            base_url = "https://api.openai.com/v1"
+            api_mode = "codex_responses"
+            error_message = ""
+
+        def fake_switch_model(**kwargs):
+            captured["switch"] = kwargs
+            return FakeSwitchResult()
+
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"providers": {"openai": {}}})
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda cfg=None: "default-model")
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "api_key": "sk-default",
+                "base_url": "https://default.test/v1",
+                "api_mode": "codex_responses",
+            },
+        )
+        monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda cfg: [])
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested, target_model: {
+                "provider": requested,
+                "api_key": "sk-runtime",
+                "base_url": "https://runtime.test/v1",
+                "api_mode": "chat_completions",
+                "args": ["--runtime"],
+            },
+        )
+
+        override, err = adapter._resolve_request_model_override(
+            {"provider": "openai", "model": "gpt-5.5"},
+        )
+
+        assert err is None
+        assert override["model"] == "gpt-5.5"
+        assert override["provider"] == "openai"
+        assert override["runtime"]["provider"] == "openai"
+        assert override["runtime"]["api_key"] == "sk-switch"
+        assert override["runtime"]["base_url"] == "https://api.openai.com/v1"
+        assert override["runtime"]["api_mode"] == "codex_responses"
+        assert override["runtime"]["args"] == ["--runtime"]
+        assert captured["switch"]["raw_input"] == "gpt-5.5"
+        assert captured["switch"]["explicit_provider"] == "openai"
 
 
 # ---------------------------------------------------------------------------
@@ -1351,6 +1491,39 @@ class TestChatCompletionsEndpoint:
             assert "usage" in data
 
     @pytest.mark.asyncio
+    async def test_chat_completion_provider_model_override_is_request_scoped(self, adapter):
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        override = {
+            "model": "claude-sonnet-4.6",
+            "provider": "anthropic",
+            "runtime": {"provider": "anthropic"},
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_resolve_request_model_override", return_value=(override, None)), \
+                 patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4.6",
+                        "messages": [{"role": "user", "content": "Hello"}],
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "claude-sonnet-4.6"
+            assert data["hermes"] == {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4.6",
+            }
+            assert mock_run.call_args.kwargs["request_model_override"] == override
+            assert not hasattr(adapter, "_session_model_overrides")
+
+    @pytest.mark.asyncio
     async def test_system_prompt_extracted(self, adapter):
         """System messages from the client are passed as ephemeral_system_prompt."""
         mock_result = {
@@ -1527,6 +1700,41 @@ class TestDeriveChatSessionId:
 
 class TestResponsesEndpoint:
     @pytest.mark.asyncio
+    async def test_response_steer_endpoint_calls_active_agent_steer(self, adapter):
+        agent = MagicMock()
+        agent.steer.return_value = True
+        adapter._active_response_agents["resp_active"] = [agent]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/responses/resp_active/steer", json={"input": "check after tool"})
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"object": "response.steer", "accepted": True, "response_id": "resp_active"}
+            agent.steer.assert_called_once_with("check after tool")
+
+    @pytest.mark.asyncio
+    async def test_session_steer_endpoint_calls_active_agent_steer(self, adapter):
+        agent = MagicMock()
+        agent.steer.return_value = True
+        adapter._active_response_agents_by_session["session-active"] = [agent]
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/sessions/session-active/steer", json={"input": "use smaller patch"})
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {"object": "response.steer", "accepted": True, "session_id": "session-active"}
+            agent.steer.assert_called_once_with("use smaller patch")
+
+    @pytest.mark.asyncio
+    async def test_session_steer_endpoint_returns_404_without_active_response(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/sessions/missing/steer", json={"input": "late steer"})
+            assert resp.status == 404
+            data = await resp.json()
+            assert "No active response" in data["error"]["message"]
+
+    @pytest.mark.asyncio
     async def test_missing_input_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -1576,6 +1784,36 @@ class TestResponsesEndpoint:
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+    @pytest.mark.asyncio
+    async def test_response_provider_model_override_is_request_scoped(self, adapter):
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        override = {
+            "model": "gpt-5.5",
+            "provider": "openai",
+            "runtime": {"provider": "openai"},
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_resolve_request_model_override", return_value=(override, None)), \
+                 patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "provider": "openai",
+                        "model": "gpt-5.5",
+                        "input": "Hello",
+                    },
+                )
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["model"] == "gpt-5.5"
+            assert data["hermes"] == {"provider": "openai", "model": "gpt-5.5"}
+            assert mock_run.call_args.kwargs["request_model_override"] == override
+            assert not hasattr(adapter, "_session_model_overrides")
 
     @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
@@ -1989,7 +2227,20 @@ class TestResponsesStreaming:
                     cb(" world")
                 return (
                     {"final_response": "Hello world", "messages": [], "api_calls": 1},
-                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "total_tokens": 15,
+                        "cached_input_tokens": 3,
+                        "api_calls": 2,
+                        "current_context_tokens": 1234,
+                        "context_tokens": 1234,
+                        "last_prompt_tokens": 1234,
+                        "context_length": 2000,
+                        "context_percent": 62,
+                        "compression_count": 1,
+                        "compressions": 1,
+                    },
                 )
 
             with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
@@ -2008,6 +2259,31 @@ class TestResponsesStreaming:
                 assert '"logprobs": []' in body
                 assert "Hello" in body
                 assert " world" in body
+                completed_payload = None
+                for line in body.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        payload = json.loads(line[len("data: "):])
+                    except json.JSONDecodeError:
+                        continue
+                    if payload.get("type") == "response.completed":
+                        completed_payload = payload
+                        break
+                assert completed_payload is not None
+                usage = completed_payload["response"]["usage"]
+                assert usage["input_tokens"] == 10
+                assert usage["output_tokens"] == 5
+                assert usage["total_tokens"] == 15
+                assert usage["cached_input_tokens"] == 3
+                assert usage["api_calls"] == 2
+                assert usage["current_context_tokens"] == 1234
+                assert usage["context_tokens"] == 1234
+                assert usage["last_prompt_tokens"] == 1234
+                assert usage["context_length"] == 2000
+                assert usage["context_percent"] == 62
+                assert usage["compression_count"] == 1
+                assert usage["compressions"] == 1
 
     @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_response(self, adapter):

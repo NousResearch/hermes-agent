@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -277,6 +278,48 @@ class TestNarrationStore:
         assert first.job_id == second.job_id
         assert len(store.list_jobs()) == 1
         assert len(store.list_chunks(first.job_id)) == 1
+
+    def test_recover_stale_processing_marks_job_and_chunk_retryable(self, tmp_path):
+        from gateway.tts_narration import NarrationJobStore
+
+        store = NarrationJobStore(tmp_path / "narration.sqlite")
+        job = store.enqueue_job(
+            platform="telegram",
+            chat_id="123",
+            thread_id=None,
+            reply_to_message_id="msg42",
+            idempotency_key="stale-processing",
+            text="First. Second.",
+            chunks=["First.", "Second."],
+            provider=None,
+            model=None,
+            voice=None,
+            scope_key="telegram:123",
+            policy={"target_chars": 1000, "max_chars": 1200},
+        )
+        assert store.claim_job(job.job_id) is True
+        assert store.claim_chunk(job.job_id, 1) is True
+
+        with sqlite3.connect(tmp_path / "narration.sqlite") as conn:
+            conn.execute(
+                "UPDATE tts_narration_jobs SET started_at = '2000-01-01T00:00:00+00:00' WHERE job_id = ?",
+                (job.job_id,),
+            )
+            conn.execute(
+                "UPDATE tts_narration_chunks SET updated_at = '2000-01-01T00:00:00+00:00' WHERE job_id = ? AND chunk_index = 1",
+                (job.job_id,),
+            )
+
+        recovered = store.recover_stale_processing(older_than_seconds=900)
+
+        assert recovered == 2
+        loaded = store.get_job(job.job_id)
+        assert loaded is not None
+        assert loaded["status"] == "failed"
+        chunks = store.list_chunks(job.job_id)
+        assert chunks[0]["status"] == "failed"
+        assert chunks[1]["status"] == "queued"
+        assert "stale narration processing" in chunks[0]["last_error"]
 
 
 class TestGatewayNarrationMode:
@@ -642,4 +685,56 @@ class TestGatewayNarrationMode:
 
         assert calls == ["First.", "First.", "Second."]
         assert [c["status"] for c in runner._tts_narration_store.list_chunks(job.job_id)] == ["sent", "sent"]
+        assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_narration_marks_active_chunk_failed_and_retry_resumes_in_order(self, runner, tmp_path, monkeypatch):
+        calls = []
+        cancelled = {"done": False}
+
+        def flaky_tts(text, output_path=None, provider=None):
+            calls.append(text)
+            if text == "Fourth." and not cancelled["done"]:
+                cancelled["done"] = True
+                raise asyncio.CancelledError()
+            path = tmp_path / f"{len(calls)}.ogg"
+            path.write_bytes(b"OggS fake")
+            return json.dumps({"success": True, "file_path": str(path)})
+
+        monkeypatch.setattr("gateway.tts_narration.text_to_speech_tool", flaky_tts)
+        adapter = SimpleNamespace(send_voice=AsyncMock(return_value=SendResult(success=True, message_id="sent")))
+        runner.adapters[Platform.TELEGRAM] = adapter
+        job = runner._tts_narration_store.enqueue_job(
+            platform="telegram",
+            chat_id="123",
+            thread_id="1495",
+            reply_to_message_id="msg42",
+            idempotency_key="turn-cancelled",
+            text="First. Second. Third. Fourth. Fifth.",
+            chunks=["First.", "Second.", "Third.", "Fourth.", "Fifth."],
+            provider="openrouter-coral",
+            model="openai/gpt-audio-mini",
+            voice="coral",
+            scope_key="telegram:123:1495",
+            policy={"target_chars": 1000, "max_chars": 1200},
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await runner._process_narration_job(job.job_id)
+
+        chunks = runner._tts_narration_store.list_chunks(job.job_id)
+        assert [c["status"] for c in chunks] == ["sent", "sent", "sent", "failed", "queued"]
+        assert "cancelled" in (chunks[3]["last_error"] or "")
+        assert runner._tts_narration_store.get_job(job.job_id)["status"] == "failed"
+
+        await runner._process_narration_job(job.job_id)
+
+        assert calls == ["First.", "Second.", "Third.", "Fourth.", "Fourth.", "Fifth."]
+        assert [c["status"] for c in runner._tts_narration_store.list_chunks(job.job_id)] == [
+            "sent",
+            "sent",
+            "sent",
+            "sent",
+            "sent",
+        ]
         assert runner._tts_narration_store.get_job(job.job_id)["status"] == "complete"

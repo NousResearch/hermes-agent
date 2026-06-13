@@ -10139,6 +10139,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.tts_narration import narration_audio_path, sanitize_error, text_to_speech_tool
 
         store = self._get_tts_narration_store()
+        try:
+            recovered = store.recover_stale_processing(older_than_seconds=900)
+            if recovered:
+                logger.warning("Recovered %d stale long-form narration processing row(s)", recovered)
+        except Exception:
+            logger.debug("Long-form narration stale-processing recovery failed", exc_info=True)
         job = store.get_job(job_id)
         if not job:
             return
@@ -10160,62 +10166,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         chunks = store.list_chunks(job_id)
-        for chunk in chunks:
-            if chunk.get("status") == "sent":
-                continue
-            index = int(chunk["chunk_index"])
-            if chunk.get("status") not in {"queued", "failed"} or not store.claim_chunk(job_id, index):
-                continue
-            total = int(chunk["chunk_total"])
-            audio_path = narration_audio_path(job_id, index)
-            tts_text = chunk["text"]
-            caption = f"Narration part {index}/{total}" if total > 1 else None
-            try:
-                from tools.tts_tool import _strip_markdown_for_tts
-                tts_text = re.sub(r"(?m)^.*MEDIA:\S+.*$", "", tts_text).strip()
-                tts_text = _strip_markdown_for_tts(tts_text)
-                if not tts_text:
-                    store.update_chunk(job_id, index, status="skipped", increment_attempts=True)
+        active_chunk_index = None
+        try:
+            for chunk in chunks:
+                if chunk.get("status") == "sent":
                     continue
-                result_json = await asyncio.to_thread(
-                    text_to_speech_tool,
-                    text=tts_text,
-                    output_path=audio_path,
-                    provider=job.get("provider") or None,
-                )
-                result = json.loads(result_json) if isinstance(result_json, str) else (result_json or {})
-                actual_path = result.get("file_path") or audio_path
-                if not result.get("success") or not os.path.isfile(actual_path):
-                    raise RuntimeError(result.get("error") or "TTS generation failed")
-
+                index = int(chunk["chunk_index"])
+                if chunk.get("status") not in {"queued", "failed"} or not store.claim_chunk(job_id, index):
+                    continue
+                active_chunk_index = index
+                total = int(chunk["chunk_total"])
+                audio_path = narration_audio_path(job_id, index)
+                tts_text = chunk["text"]
+                caption = f"Narration part {index}/{total}" if total > 1 else None
                 try:
-                    metadata = json.loads(job.get("metadata_json") or "{}")
-                    if not isinstance(metadata, dict):
+                    from tools.tts_tool import _strip_markdown_for_tts
+                    tts_text = re.sub(r"(?m)^.*MEDIA:\S+.*$", "", tts_text).strip()
+                    tts_text = _strip_markdown_for_tts(tts_text)
+                    if not tts_text:
+                        store.update_chunk(job_id, index, status="skipped", increment_attempts=True)
+                        active_chunk_index = None
+                        continue
+                    result_json = await asyncio.to_thread(
+                        text_to_speech_tool,
+                        text=tts_text,
+                        output_path=audio_path,
+                        provider=job.get("provider") or None,
+                    )
+                    result = json.loads(result_json) if isinstance(result_json, str) else (result_json or {})
+                    actual_path = result.get("file_path") or audio_path
+                    if not result.get("success") or not os.path.isfile(actual_path):
+                        raise RuntimeError(result.get("error") or "TTS generation failed")
+
+                    try:
+                        metadata = json.loads(job.get("metadata_json") or "{}")
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                    except Exception:
                         metadata = {}
-                except Exception:
-                    metadata = {}
-                metadata = dict(metadata)
-                metadata["notify"] = True
-                if job.get("thread_id") and "thread_id" not in metadata:
-                    metadata["thread_id"] = job.get("thread_id")
-                send_result = await adapter.send_voice(
-                    chat_id=job["chat_id"],
-                    audio_path=actual_path,
-                    caption=caption,
-                    reply_to=job.get("reply_to_message_id"),
-                    metadata=metadata,
-                )
-                if not getattr(send_result, "success", False):
-                    raise RuntimeError(getattr(send_result, "error", None) or "voice send failed")
-                store.update_chunk(
-                    job_id, index, status="sent", audio_path=actual_path,
-                    sent_message_id=getattr(send_result, "message_id", None), increment_attempts=True,
-                )
-            except Exception as exc:
-                safe_error = sanitize_error(exc)
-                store.update_chunk(job_id, index, status="failed", last_error=safe_error, increment_attempts=True)
+                    metadata = dict(metadata)
+                    metadata["notify"] = True
+                    if job.get("thread_id") and "thread_id" not in metadata:
+                        metadata["thread_id"] = job.get("thread_id")
+                    send_result = await adapter.send_voice(
+                        chat_id=job["chat_id"],
+                        audio_path=actual_path,
+                        caption=caption,
+                        reply_to=job.get("reply_to_message_id"),
+                        metadata=metadata,
+                    )
+                    if not getattr(send_result, "success", False):
+                        raise RuntimeError(getattr(send_result, "error", None) or "voice send failed")
+                    store.update_chunk(
+                        job_id, index, status="sent", audio_path=actual_path,
+                        sent_message_id=getattr(send_result, "message_id", None), increment_attempts=True,
+                    )
+                    active_chunk_index = None
+                except asyncio.CancelledError:
+                    safe_error = sanitize_error("narration processing cancelled")
+                    store.update_chunk(job_id, index, status="failed", last_error=safe_error, increment_attempts=True)
+                    store.update_job_status(job_id, "failed", last_error=safe_error)
+                    raise
+                except Exception as exc:
+                    safe_error = sanitize_error(exc)
+                    store.update_chunk(job_id, index, status="failed", last_error=safe_error, increment_attempts=True)
+                    store.update_job_status(job_id, "failed", last_error=safe_error)
+                    return
+        except asyncio.CancelledError:
+            if active_chunk_index is not None:
+                safe_error = sanitize_error("narration processing cancelled")
+                store.update_chunk(job_id, active_chunk_index, status="failed", last_error=safe_error)
                 store.update_job_status(job_id, "failed", last_error=safe_error)
-                return
+            raise
 
         store.update_job_status(job_id, "complete")
 

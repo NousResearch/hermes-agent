@@ -401,6 +401,44 @@ class NarrationJobStore:
                 )
             conn.commit()
 
+    def recover_stale_processing(self, *, older_than_seconds: int = 900) -> int:
+        """Move stale in-flight jobs/chunks back to retryable failed state.
+
+        A narration worker can be cancelled after claiming a job/chunk, for
+        example when a Telegram session is interrupted by a new inbound message
+        or the gateway is draining.  ``asyncio.CancelledError`` does not inherit
+        from ``Exception`` on modern Python, so defensive exception handlers may
+        never run.  Without a recovery sweep those rows remain ``processing``
+        forever and strict chunk ordering prevents later chunks from sending.
+        """
+        seconds = max(1, int(older_than_seconds))
+        cutoff = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=seconds)).isoformat()
+        now = _utc_now()
+        message = "stale narration processing recovered for retry"
+        with self._connect() as conn:
+            chunk_cur = conn.execute(
+                """
+                UPDATE tts_narration_chunks
+                   SET status = 'failed',
+                       last_error = COALESCE(last_error, ?),
+                       updated_at = ?
+                 WHERE status = 'processing' AND updated_at < ?
+                """,
+                (message, now, cutoff),
+            )
+            job_cur = conn.execute(
+                """
+                UPDATE tts_narration_jobs
+                   SET status = 'failed',
+                       last_error = COALESCE(last_error, ?)
+                 WHERE status = 'processing'
+                   AND COALESCE(started_at, created_at) < ?
+                """,
+                (message, cutoff),
+            )
+            conn.commit()
+            return int(chunk_cur.rowcount or 0) + int(job_cur.rowcount or 0)
+
     def claim_job(self, job_id: str) -> bool:
         """Atomically claim a queued/failed job for one processor."""
         now = _utc_now()

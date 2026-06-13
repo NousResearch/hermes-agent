@@ -242,6 +242,8 @@ export function ChatBar({
   const gatewayState = useStore($gatewayState)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
+  const reconnecting = gatewayState === 'closed' || gatewayState === 'error'
+  const inputDisabled = disabled && !reconnecting
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -272,11 +274,13 @@ export function ChatBar({
     setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
-  // When the bar is disabled it's because the gateway isn't open. Distinguish a
-  // cold start ("Starting Hermes...") from a dropped connection we're trying to
-  // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
+  // When the transport is disabled it's because the gateway isn't open.
+  // Distinguish a cold start ("Starting Hermes...") from a dropped connection
+  // we're trying to restore. During reconnect, keep the textbox editable so a
+  // flaky network doesn't block drafting; only submit/backend actions stay
+  // disabled until the gateway is open again.
   const placeholder = disabled
-    ? gatewayState === 'closed' || gatewayState === 'error'
+    ? reconnecting
       ? t.composer.placeholderReconnecting
       : t.composer.placeholderStarting
     : restingPlaceholder
@@ -318,13 +322,13 @@ export function ChatBar({
   )
 
   useEffect(() => {
-    if (!disabled) {
+    if (!inputDisabled) {
       focusInput()
     }
-  }, [disabled, focusInput, focusKey, focusRequestId])
+  }, [focusInput, focusKey, focusRequestId, inputDisabled])
 
   useEffect(() => {
-    if (disabled) {
+    if (inputDisabled) {
       return undefined
     }
 
@@ -344,7 +348,7 @@ export function ChatBar({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, disabled])
+  }, [appendExternalText, inputDisabled])
 
   // Keep draftRef in sync with the assistant-ui composer state for callers
   // that read the latest text outside the React render cycle. We don't push
@@ -927,6 +931,10 @@ export function ChatBar({
       const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
+      if (disabled) {
+        return
+      }
+
       if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
         void drainNextQueued()
 
@@ -1421,6 +1429,10 @@ export function ChatBar({
   }
 
   const submitDraft = () => {
+    if (disabled) {
+      return
+    }
+
     // Source the text from the DOM editor, not React state. The AUI composer
     // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
     // render, so on fast typing or IME composition the final keystroke(s) may
@@ -1601,6 +1613,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
+        aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
         autoCapitalize="off"
         autoCorrect="off"
@@ -1611,7 +1624,7 @@ export function ChatBar({
           stacked && 'pl-3',
           stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1'
         )}
-        contentEditable={!disabled}
+        contentEditable={!inputDisabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}

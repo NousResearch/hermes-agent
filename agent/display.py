@@ -858,6 +858,20 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     return False, ""
 
 
+def _used_free_parallel(result: str | None) -> bool:
+    """True when a web result came from Parallel's free Search MCP.
+
+    Only the keyless Parallel path tags its result with ``provider="parallel"``;
+    the paid REST path and every other provider omit it. Used to label the tool
+    line "Parallel search" / "Parallel fetch" exactly when the free MCP served
+    the call.
+    """
+    if not isinstance(result, str) or '"provider"' not in result:
+        return False
+    data = safe_json_loads(result)
+    return isinstance(data, dict) and str(data.get("provider", "")).lower() == "parallel"
+
+
 def get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
@@ -895,19 +909,17 @@ def get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+        verb = "Parallel search" if _used_free_parallel(result) else "search"
+        return _wrap(f"┊ 🔍 {verb:<9} {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
+        verb = "Parallel fetch" if _used_free_parallel(result) else "fetch"
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 fetch     pages  {dur}")
-    if tool_name == "web_crawl":
-        url = args.get("url", "")
-        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}")
+            return _wrap(f"┊ 📄 {verb:<9} {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ 📄 {verb:<9} pages  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":

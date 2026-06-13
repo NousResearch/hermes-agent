@@ -131,8 +131,9 @@ class AcmeProfile(ProviderProfile):
 
     def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
         """Returns (extra_body_additions, top_level_kwargs). Needed when some
-        fields go top-level (Kimi's reasoning_effort) and some go in extra_body
-        (OpenRouter's reasoning dict). Default: ({}, {})."""
+        fields go top-level (Kimi's reasoning_effort, OpenRouter's verbosity for
+        adaptive Anthropic models) and some go in extra_body (OpenRouter's
+        reasoning dict). Default: ({}, {})."""
         return {}, {}
 
     def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:
@@ -250,7 +251,7 @@ The general `PluginManager` (the thing `hermes plugins` operates on) **sees** mo
 Like any Hermes plugin, model providers can ship as a pip package. Add an entry point to your `pyproject.toml`:
 
 ```toml
-[project.entry-points."hermes.plugins"]
+[project.entry-points."hermes_agent.plugins"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 

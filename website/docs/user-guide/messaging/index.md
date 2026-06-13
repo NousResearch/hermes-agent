@@ -10,6 +10,10 @@ Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Ho
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
+:::tip
+Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
+:::
+
 ## Platform Comparison
 
 | Platform | Voice | Images | Files | Threads | Reactions | Typing | Streaming |
@@ -27,7 +31,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
@@ -384,6 +388,23 @@ journalctl -u hermes-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
+:::tip Headless VMs: user service + linger avoids root prompts
+A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
+
+For a headless VM you never log into, a **user** service with lingering enabled gives you the same start-at-boot behavior with zero root involvement:
+
+```bash
+hermes gateway install          # user service
+sudo loginctl enable-linger $USER   # one-time: start at boot, survive logout
+```
+
+After that, `hermes update` can restart the gateway without any privileges. If you prefer to keep the system service, either run updates with `sudo hermes update`, or grant the service account passwordless sudo for systemctl, e.g. in `sudo visudo -f /etc/sudoers.d/hermes-gateway`:
+
+```
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed hermes-gateway*, /usr/bin/systemctl --no-ask-password start hermes-gateway*, /usr/bin/systemctl --no-ask-password restart hermes-gateway*
+```
+:::
+
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 :::info Multiple installations
@@ -424,6 +445,7 @@ Each platform has its own toolset:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
@@ -507,9 +529,33 @@ Scheduled auto-resume for N restart-interrupted session(s)
 
 No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
 
+### Mobile-friendly progress defaults
+
+Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
+
+- **`tool_progress`** defaults to **`off`** — no per-tool breadcrumb stream filling up the chat.
+- **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
+- **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
+- **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
+
+Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      # Re-enable the tool-progress stream
+      tool_progress: new
+      # Show "iteration N/M, running: tool" in heartbeats and busy acks
+      busy_ack_detail: true
+      # Or quiet them entirely
+      interim_assistant_messages: false
+      long_running_notifications: false
+```
+
 ### Progress bubble cleanup (opt-in)
 
-Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
+Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
 
 ```yaml
 display:
@@ -529,6 +575,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)

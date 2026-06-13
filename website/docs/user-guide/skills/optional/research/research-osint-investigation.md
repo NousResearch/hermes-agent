@@ -20,7 +20,7 @@ Public-records OSINT investigation framework — SEC EDGAR filings, USAspending 
 | Author | Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT) |
 | Platforms | linux, macos, windows |
 | Tags | `osint`, `investigation`, `public-records`, `sec`, `sanctions`, `corporate-registry`, `property`, `courts`, `due-diligence`, `journalism` |
-| Related skills | [`domain-intel`](/user-guide/skills/optional/research/research-domain-intel), [`arxiv`](/user-guide/skills/bundled/research/research-arxiv) |
+| Related skills | [`domain-intel`](/docs/user-guide/skills/optional/research/research-domain-intel), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |
 
 ## Reference: full SKILL.md
 

@@ -484,6 +484,88 @@ def test_default_slot_autostarts_when_root_state_running(tmp_path: Path) -> None
     assert not (scandir / "gateway-default" / "down").exists()
 
 
+@pytest.mark.parametrize(
+    "container_argv",
+    [
+        ("gateway", "run"),
+        ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run"),
+    ],
+)
+def test_legacy_gateway_run_cmd_seeds_default_running_state(
+    tmp_path: Path,
+    container_argv: tuple[str, ...],
+) -> None:
+    """Pre-s6 Docker users often ran `gateway run` as the container
+    command. With no persisted gateway_state.json yet, s6 reconciliation
+    must migrate that legacy intent into a running default gateway slot."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path,
+        scandir=scandir,
+        dry_run=False,
+        container_argv=container_argv,
+    )
+
+    default_action = next(a for a in actions if a.profile == "default")
+    assert default_action.prior_state == "running"
+    assert default_action.action == "started"
+    assert not (scandir / "gateway-default" / "down").exists()
+    state = json.loads((tmp_path / "gateway_state.json").read_text())
+    assert state["gateway_state"] == "running"
+    assert state["migrated_from"] == "legacy-container-cmd"
+
+
+@pytest.mark.parametrize(
+    "container_argv",
+    [
+        ("gateway", "run", "--no-supervise"),
+        ("/init", "/opt/hermes/docker/main-wrapper.sh", "gateway", "run", "--no-supervise"),
+    ],
+)
+def test_legacy_gateway_run_no_supervise_does_not_seed_s6_state(
+    tmp_path: Path,
+    container_argv: tuple[str, ...],
+) -> None:
+    """`gateway run --no-supervise` is an explicit opt-out from s6 migration."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path,
+        scandir=scandir,
+        dry_run=False,
+        container_argv=container_argv,
+    )
+
+    default_action = next(a for a in actions if a.profile == "default")
+    assert default_action.prior_state is None
+    assert default_action.action == "registered"
+    assert (scandir / "gateway-default" / "down").exists()
+    assert not (tmp_path / "gateway_state.json").exists()
+
+
+def test_legacy_gateway_run_env_no_supervise_does_not_seed_s6_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env opt-out matches the CLI `--no-supervise` flag."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    monkeypatch.setenv("HERMES_GATEWAY_NO_SUPERVISE", "1")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=tmp_path,
+        scandir=scandir,
+        dry_run=False,
+        container_argv=("gateway", "run"),
+    )
+
+    default_action = next(a for a in actions if a.profile == "default")
+    assert default_action.prior_state is None
+    assert default_action.action == "registered"
+    assert (scandir / "gateway-default" / "down").exists()
+    assert not (tmp_path / "gateway_state.json").exists()
+
+
 def test_default_slot_does_not_autostart_when_root_state_stopped(
     tmp_path: Path,
 ) -> None:
@@ -491,12 +573,17 @@ def test_default_slot_does_not_autostart_when_root_state_stopped(
     _seed_default_root(tmp_path, state="stopped")
 
     actions = reconcile_profile_gateways(
-        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+        hermes_home=tmp_path,
+        scandir=scandir,
+        dry_run=False,
+        container_argv=("gateway", "run"),
     )
 
     default_action = next(a for a in actions if a.profile == "default")
     assert default_action.action == "registered"
     assert (scandir / "gateway-default" / "down").exists()
+    state = json.loads((tmp_path / "gateway_state.json").read_text())
+    assert state["gateway_state"] == "stopped"
 
 
 def test_default_slot_does_not_autostart_when_root_state_startup_failed(

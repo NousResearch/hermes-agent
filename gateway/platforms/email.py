@@ -470,8 +470,15 @@ class EmailAdapter(BasePlatformAdapter):
         for att in attachments:
             media_urls.append(att["path"])
             media_types.append(att["media_type"])
-            if att["type"] == "image":
+            if att["type"] == "image" and msg_type == MessageType.TEXT:
                 msg_type = MessageType.PHOTO
+            elif att["type"] == "document":
+                # Document wins over PHOTO for mixed attachments: run.py's
+                # image handling keys off the per-path image/* mime type
+                # regardless of message_type, but document-context injection
+                # gates strictly on MessageType.DOCUMENT — so DOCUMENT is the
+                # only classification that surfaces both.
+                msg_type = MessageType.DOCUMENT
 
         # Store thread context for reply threading
         self._thread_context[sender_addr] = {

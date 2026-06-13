@@ -364,6 +364,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": f"Unknown route: {route_name}"}, status=404
             )
 
+        # Disabled routes are kept in the subscriptions file (so the dashboard
+        # can re-enable them) but reject incoming events.  Default-enabled:
+        # only an explicit ``enabled: false`` turns a route off, matching the
+        # mcp_servers ``enabled`` semantics.
+        if route_config.get("enabled", True) is False:
+            return web.json_response(
+                {"error": f"Route disabled: {route_name}"}, status=403
+            )
+
         # ── Auth-before-body ─────────────────────────────────────
         # Check Content-Length before reading the full payload.
         content_length = request.content_length or 0

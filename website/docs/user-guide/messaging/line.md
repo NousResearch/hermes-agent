@@ -10,6 +10,8 @@ Run Hermes Agent as a [LINE](https://line.me/) bot via the official LINE Messagi
 
 LINE is the dominant messaging app in Japan, Taiwan, and Thailand. If your users live there, this is how they reach you.
 
+> Run `hermes gateway setup` and pick **LINE** for a guided walk-through.
+
 ## How the bot responds
 
 | Context | Behavior |
@@ -192,7 +194,7 @@ Cron jobs with `deliver: line` route to `LINE_HOME_CHANNEL`. The adapter ships a
 
 ## Limitations
 
-* **Single bubble per chunk.** Each LINE text bubble is capped at 5000 characters, and at most 5 bubbles are sent per Reply/Push call. Longer responses are truncated with an ellipsis.
+* **Bubble and length caps.** Each LINE text bubble is capped at 5000 characters. Longer responses are smart-chunked at ~4500 characters across up to 5 bubbles per Reply/Push call, splitting on natural boundaries where possible.
 * **No native message editing.** LINE has no edit-message API — streaming responses always send fresh bubbles, never edit prior ones.
 * **No Markdown rendering.** Bold (`**`), italics (`*`), code fences, and headings render as literal characters. The adapter strips them before sending; URLs are preserved (`[label](url)` becomes `label (url)`).
 * **Loading indicator is DM-only.** LINE rejects the chat/loading API for groups and rooms, so the typing indicator only shows in 1:1 chats.

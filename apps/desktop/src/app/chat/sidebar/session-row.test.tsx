@@ -291,9 +291,12 @@ describe('SidebarSessionRow gestures', () => {
     })
 
     const transfer = fakeTransfer()
+    const dragAnchor = container.querySelector('[data-session-id]') as HTMLElement
 
     expect(container.querySelector('[data-reorder-handle]')).toBeNull()
     expect(container.querySelector('[data-drop-indicator]')).toBeNull()
+    expect(dragAnchor.draggable).toBe(false)
+    expect(rowButton.dataset.sessionDragSource).toBe('true')
     expect(rowButton.draggable).toBe(true)
 
     fireEvent.dragStart(rowButton, { dataTransfer: transfer })
@@ -312,6 +315,7 @@ describe('SidebarSessionRow gestures', () => {
         pinned: true
       })
     )
+    expect(onSessionDragStart).toHaveBeenCalledTimes(1)
 
     fireEvent.dragEnd(rowButton)
     expect(onSessionDragEnd).toHaveBeenCalledTimes(1)

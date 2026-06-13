@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
+  hashText,
   normalizeGitHubRepository,
   remoteBranchName,
   remoteNameFromRef,
@@ -27,4 +28,10 @@ test('derives clone URLs from repository slug', () => {
     repoUrlHttps: 'https://github.com/OmarB97/hermes-agent.git',
     repoUrlSsh: 'git@github.com:OmarB97/hermes-agent.git'
   })
+})
+
+test('hashText is stable for tracked source diff stamps', () => {
+  assert.equal(hashText(''), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+  assert.equal(hashText('diff --git a/x b/x\n'), hashText('diff --git a/x b/x\n'))
+  assert.notEqual(hashText('diff --git a/x b/x\n'), hashText('diff --git a/y b/y\n'))
 })

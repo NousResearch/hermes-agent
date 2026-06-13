@@ -88,15 +88,17 @@ const ARCHIVED_ZONE = (flags: SessionDragFlags) => !flags.archived
 function Probe({
   accepts,
   children,
+  draggingSession,
   draggingSessionId,
   onDropSession
 }: {
   accepts: (flags: SessionDragFlags) => boolean
   children?: React.ReactNode
+  draggingSession?: null | SessionDragPayload
   draggingSessionId?: string
   onDropSession: (session: SessionDragPayload, event: React.DragEvent, anchor: null | SessionDropAnchor) => void
 }) {
-  const { active, dropHandlers } = useSessionDropZone({ accepts, draggingSessionId, onDropSession })
+  const { active, dropHandlers } = useSessionDropZone({ accepts, draggingSession, draggingSessionId, onDropSession })
 
   return (
     <div data-active={active ? 'true' : 'false'} data-testid="zone" {...dropHandlers}>
@@ -242,6 +244,22 @@ describe('useSessionDropZone', () => {
 
     fireEvent.drop(zone, { dataTransfer: transfer })
     expect(onDropSession).not.toHaveBeenCalled()
+  })
+
+  it('accepts the active local session drag when DataTransfer hides custom MIME types during hover', () => {
+    const onDropSession = vi.fn()
+    render(<Probe accepts={PINNED_ZONE} draggingSession={UNPINNED_ROW} onDropSession={onDropSession} />)
+    const zone = screen.getByTestId('zone')
+    const opaqueTransfer = fakeTransfer()
+
+    fireEvent.dragEnter(zone, { dataTransfer: opaqueTransfer })
+    expect(zone.dataset.active).toBe('true')
+
+    expect(fireEvent.dragOver(zone, { dataTransfer: opaqueTransfer })).toBe(false)
+
+    fireEvent.drop(zone, { dataTransfer: opaqueTransfer })
+    expect(onDropSession).toHaveBeenCalledWith(UNPINNED_ROW, expect.objectContaining({ type: 'drop' }), null)
+    expect(zone.dataset.active).toBe('false')
   })
 
   it('keeps the highlight while moving across nested children', () => {

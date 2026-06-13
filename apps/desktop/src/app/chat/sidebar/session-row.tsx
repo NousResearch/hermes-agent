@@ -137,6 +137,20 @@ export function SidebarSessionRow({
     onToggleSelect?.(mode)
   }
 
+  const handleSessionDragStart = (event: React.DragEvent<HTMLButtonElement>) => {
+    const payload: SessionDragPayload = {
+      archived,
+      id: session.id,
+      pinId: sessionPinId(session),
+      pinned: isPinned,
+      profile: session.profile || 'default',
+      title
+    }
+
+    writeSessionDrag(event.dataTransfer, payload)
+    onSessionDragStart?.(payload)
+  }
+
   return (
     <SessionContextMenu
       archived={archived}
@@ -153,21 +167,6 @@ export function SidebarSessionRow({
     >
       <div
         data-session-id={session.id}
-        draggable
-        onDragEnd={() => onSessionDragEnd?.()}
-        onDragStart={event => {
-          const payload: SessionDragPayload = {
-            archived,
-            id: session.id,
-            pinId: sessionPinId(session),
-            pinned: isPinned,
-            profile: session.profile || 'default',
-            title
-          }
-
-          writeSessionDrag(event.dataTransfer, payload)
-          onSessionDragStart?.(payload)
-        }}
         ref={ref}
         style={style}
         {...rest}
@@ -192,6 +191,7 @@ export function SidebarSessionRow({
           {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
           <button
             className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
+            data-session-drag-source
             draggable
             onClick={event => {
               const canSelect = Boolean(selectable && onToggleSelect)
@@ -260,6 +260,8 @@ export function SidebarSessionRow({
 
               onResume()
             }}
+            onDragEnd={() => onSessionDragEnd?.()}
+            onDragStart={handleSessionDragStart}
             type="button"
           >
             {selectionActive ? (

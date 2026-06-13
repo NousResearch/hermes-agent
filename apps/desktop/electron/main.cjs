@@ -1408,7 +1408,6 @@ async function resolveUpdateTarget(updateRoot, configuredBranch, configuredRemot
   ) {
     // If tracking a non-origin remote, prefer it as the effective remote
     // for the update target label/ref
-    const targetRemote = (!configuredRemote && tracking.remote !== 'origin') ? tracking.remote : effectiveRemote
     return {
       branch: tracking.branch,
       currentBranch,
@@ -1457,12 +1456,7 @@ async function checkUpdates() {
     if (currentSha) {
       // `runningAppBundle()` currently resolves only packaged macOS .app
       // bundles; Linux/Windows/dev launches return null and skip this hint.
-      rebuildNeeded = bundleNeedsRebuild(runningAppBundle(), currentSha)
-      // Catch local uncommitted edits to desktop source files
-      const desktopDiff = await runGit(['diff', '--name-only', 'HEAD', '--', 'apps/desktop/'], { cwd: updateRoot })
-      if (desktopDiff.code === 0 && desktopDiff.stdout?.trim().length > 0) {
-        rebuildNeeded = true
-      }
+      rebuildNeeded = bundleNeedsRebuild(runningAppBundle(), currentSha, fs, { repoRoot: updateRoot })
     }
   } catch {
     // Best-effort — don't let stamp or diff failure break the check

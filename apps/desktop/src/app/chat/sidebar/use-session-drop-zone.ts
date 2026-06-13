@@ -19,6 +19,9 @@ interface SessionDropZoneOptions {
   /** Which drags this zone acts on. Pinned/Sessions/Archived each choose their
    * own policy based on the drag's pinned/archived flags. */
   accepts: (flags: SessionDragFlags) => boolean
+  /** Locally active sidebar drag. Chromium can hide custom MIME `types` during
+   * dragover, so this is the trusted same-renderer fallback until drop. */
+  draggingSession?: null | SessionDragPayload
   /** The native drag payload itself is not reliably readable until drop, so
    * the owner passes the active row id for hover-time self-anchor filtering. */
   draggingSessionId?: null | string
@@ -212,6 +215,7 @@ export function sessionDropAnchor(
  */
 export function useSessionDropZone({
   accepts: acceptsFlags,
+  draggingSession,
   draggingSessionId,
   onDropSession
 }: SessionDropZoneOptions) {
@@ -220,14 +224,26 @@ export function useSessionDropZone({
   const anchorRef = useRef<null | SessionDropAnchor>(null)
   const depth = useRef(0)
 
+  const movingSessionId = draggingSession?.id ?? draggingSessionId
+
   const accepts = useCallback(
-    (event: ReactDragEvent) =>
-      dragHasSession(event.dataTransfer) &&
-      acceptsFlags({
-        archived: dragSessionIsArchived(event.dataTransfer),
-        pinned: dragSessionIsPinned(event.dataTransfer)
-      }),
-    [acceptsFlags]
+    (event: ReactDragEvent) => {
+      const hasSession = Boolean(draggingSession) || dragHasSession(event.dataTransfer)
+
+      if (!hasSession) {
+        return false
+      }
+
+      const flags = draggingSession
+        ? { archived: Boolean(draggingSession.archived), pinned: Boolean(draggingSession.pinned) }
+        : {
+            archived: dragSessionIsArchived(event.dataTransfer),
+            pinned: dragSessionIsPinned(event.dataTransfer)
+          }
+
+      return acceptsFlags(flags)
+    },
+    [acceptsFlags, draggingSession]
   )
 
   const reset = useCallback(() => {
@@ -238,22 +254,22 @@ export function useSessionDropZone({
   }, [])
 
   useEffect(() => {
-    if (!draggingSessionId) {
+    if (!movingSessionId) {
       reset()
     }
-  }, [draggingSessionId, reset])
+  }, [movingSessionId, reset])
 
   const updateAnchor = useCallback(
     (event: ReactDragEvent) => {
       const nextAnchor = sessionDropAnchor(event, {
-        movingSessionId: draggingSessionId,
+        movingSessionId,
         previous: anchorRef.current
       })
 
       anchorRef.current = nextAnchor
       setAnchor(nextAnchor)
     },
-    [draggingSessionId]
+    [movingSessionId]
   )
 
   const onDragEnter = useCallback(
@@ -304,13 +320,13 @@ export function useSessionDropZone({
       const dropAnchor = anchorRef.current
       reset()
 
-      const session = readSessionDrag(event.dataTransfer)
+      const session = readSessionDrag(event.dataTransfer) ?? draggingSession
 
       if (session) {
         onDropSession(session, event, dropAnchor)
       }
     },
-    [accepts, onDropSession, reset]
+    [accepts, draggingSession, onDropSession, reset]
   )
 
   return {

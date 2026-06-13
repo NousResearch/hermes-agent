@@ -148,8 +148,20 @@ export function applyBootstrapEvent(payload: BootstrapEvent): void {
     case 'manifest': {
       const stages: Record<string, StageRecord> = {}
       const order: string[] = []
+      const incomingOrder = payload.stages.map(s => s.name)
+      const sameStageOrder =
+        cur.stageOrder.length === incomingOrder.length &&
+        cur.stageOrder.every((name, index) => name === incomingOrder[index])
+      const preserveActiveRun = cur.status === 'running' && sameStageOrder
+
       for (const s of payload.stages) {
-        stages[s.name] = { info: s, state: null }
+        const existing = preserveActiveRun ? cur.stages[s.name] : null
+        stages[s.name] = {
+          info: s,
+          state: existing?.state ?? null,
+          durationMs: existing?.durationMs,
+          error: existing?.error
+        }
         order.push(s.name)
       }
       $bootstrap.set({
@@ -158,10 +170,10 @@ export function applyBootstrapEvent(payload: BootstrapEvent): void {
         protocolVersion: payload.protocolVersion,
         stages,
         stageOrder: order,
-        currentStage: null,
+        currentStage: preserveActiveRun ? cur.currentStage : null,
         installRoot: null,
         error: null,
-        logs: []
+        logs: preserveActiveRun ? cur.logs : []
       })
       $route.set('progress')
       break
@@ -206,10 +218,24 @@ export function applyBootstrapEvent(payload: BootstrapEvent): void {
       $bootstrap.set({ ...cur, logs: trimmed })
       break
     }
-    case 'complete':
+    case 'complete': {
+      const completedStages = Object.fromEntries(
+        Object.entries(cur.stages).map(([name, record]) => [
+          name,
+          {
+            ...record,
+            state:
+              record.state === 'failed' || record.state === 'skipped'
+                ? record.state
+                : 'succeeded'
+          } satisfies StageRecord
+        ])
+      )
+
       $bootstrap.set({
         ...cur,
         status: 'completed',
+        stages: completedStages,
         installRoot: payload.installRoot,
         currentStage: null
       })
@@ -221,6 +247,7 @@ export function applyBootstrapEvent(payload: BootstrapEvent): void {
         $route.set('success')
       }
       break
+    }
     case 'failed':
       $bootstrap.set({
         ...cur,
@@ -285,7 +312,9 @@ export async function startUpdate(): Promise<void> {
   // Update is driven by the desktop handing off (Hermes-Setup.exe --update);
   // there's no welcome click. Reset + jump straight to progress, then let the
   // Rust side stream the synthetic update manifest.
-  $bootstrap.set(INITIAL)
+  if ($bootstrap.get().status !== 'running') {
+    $bootstrap.set(INITIAL)
+  }
   $route.set('progress')
   await invoke('start_update')
 }

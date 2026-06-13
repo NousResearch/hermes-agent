@@ -4,7 +4,12 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { bundleNeedsRebuild, readInstallStamp } = require('./update-stamp.cjs')
+const {
+  EMPTY_TRACKED_SOURCE_DIFF_HASH,
+  bundleNeedsRebuild,
+  hashText,
+  readInstallStamp
+} = require('./update-stamp.cjs')
 
 function withBundle(fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-update-stamp-'))
@@ -32,11 +37,61 @@ test('bundleNeedsRebuild is true when the baked stamp differs from HEAD', () => 
   })
 })
 
-test('bundleNeedsRebuild is false when the baked stamp matches HEAD', () => {
+test('bundleNeedsRebuild is false when the baked stamp and tracked source diff match HEAD', () => {
+  withBundle(({ root, stampPath }) => {
+    const diffHash = hashText('diff --git a/apps/desktop/src/a.ts b/apps/desktop/src/a.ts\n')
+    fs.writeFileSync(
+      stampPath,
+      JSON.stringify({
+        commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        trackedSourceDiffHash: diffHash
+      })
+    )
+
+    assert.equal(
+      bundleNeedsRebuild(root, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', fs, {
+        currentTrackedSourceDiffHash: diffHash
+      }),
+      false
+    )
+  })
+})
+
+test('bundleNeedsRebuild is true when tracked source diff changed after the local build', () => {
+  withBundle(({ root, stampPath }) => {
+    fs.writeFileSync(
+      stampPath,
+      JSON.stringify({
+        commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        trackedSourceDiffHash: hashText('old diff')
+      })
+    )
+
+    assert.equal(
+      bundleNeedsRebuild(root, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', fs, {
+        currentTrackedSourceDiffHash: hashText('new diff')
+      }),
+      true
+    )
+  })
+})
+
+test('bundleNeedsRebuild keeps legacy stamps honest when checkout has tracked desktop edits', () => {
   withBundle(({ root, stampPath }) => {
     fs.writeFileSync(stampPath, JSON.stringify({ commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }))
 
-    assert.equal(bundleNeedsRebuild(root, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'), false)
+    assert.equal(
+      bundleNeedsRebuild(root, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', fs, {
+        currentTrackedSourceDiffHash: hashText('diff --git a/apps/desktop/src/a.ts b/apps/desktop/src/a.ts\n')
+      }),
+      true
+    )
+    assert.equal(
+      bundleNeedsRebuild(root, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', fs, {
+        currentTrackedSourceDiffHash: EMPTY_TRACKED_SOURCE_DIFF_HASH
+      }),
+      false
+    )
   })
 })
 

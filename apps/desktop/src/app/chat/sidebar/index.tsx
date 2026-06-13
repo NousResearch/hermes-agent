@@ -435,6 +435,7 @@ export function ChatSidebar({
     // Archived rows can't pin — the Pinned section resolves pins against the
     // live (unarchived) slices, so accepting one would pin into the void.
     accepts: flags => !flags.archived,
+    draggingSession,
     draggingSessionId: draggingSession?.id,
     onDropSession: (payload, _event, anchor) => {
       // Translate the anchor row into an index in the RAW pinned-id store:
@@ -471,6 +472,7 @@ export function ChatSidebar({
     // Any session row can land in Sessions: pinned rows unpin, archived rows
     // restore, and already-live rows reorder by the row edge under the pointer.
     accepts: () => true,
+    draggingSession,
     draggingSessionId: draggingSession?.id,
     onDropSession: (payload, _event, anchor) => {
       if (payload.archived) {
@@ -512,6 +514,7 @@ export function ChatSidebar({
   // Sessions to restore it.
   const archivedDropZone = useSessionDropZone({
     accepts: flags => !flags.archived,
+    draggingSession,
     draggingSessionId: draggingSession?.id,
     onDropSession: payload => {
       onArchiveSession(payload.id)

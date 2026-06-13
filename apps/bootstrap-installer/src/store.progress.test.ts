@@ -83,4 +83,68 @@ describe('bootstrap progress', () => {
       total: 3
     })
   })
+
+  it('does not reset progress when a duplicate manifest arrives for the active run', () => {
+    applyBootstrapEvent({
+      type: 'stage',
+      name: 'update',
+      state: 'succeeded',
+      durationMs: 1200
+    })
+    applyBootstrapEvent({
+      type: 'stage',
+      name: 'rebuild',
+      state: 'running'
+    })
+    applyBootstrapEvent({
+      type: 'log',
+      stage: 'rebuild',
+      line: 'packaging...',
+      stream: 'stdout'
+    })
+
+    applyBootstrapEvent({
+      type: 'manifest',
+      stages,
+      protocolVersion: null
+    })
+
+    expect($bootstrap.get().currentStage).toBe('rebuild')
+    expect($bootstrap.get().logs).toHaveLength(1)
+    expect($bootstrap.get().stages.update).toMatchObject({
+      state: 'succeeded',
+      durationMs: 1200
+    })
+    expect($bootstrap.get().stages.rebuild).toMatchObject({
+      state: 'running'
+    })
+    expect($progress.get()).toMatchObject({
+      done: 1,
+      current: 2,
+      total: 3
+    })
+  })
+
+  it('marks unfinished stages complete when the backend reports completion', () => {
+    applyBootstrapEvent({
+      type: 'stage',
+      name: 'update',
+      state: 'succeeded'
+    })
+
+    applyBootstrapEvent({
+      type: 'complete',
+      installRoot: '/tmp/hermes-agent',
+      marker: null
+    })
+
+    expect($bootstrap.get().status).toBe('completed')
+    expect($bootstrap.get().currentStage).toBeNull()
+    expect($progress.get()).toEqual({
+      done: 3,
+      current: 3,
+      total: 3,
+      fraction: 1
+    })
+  })
 })

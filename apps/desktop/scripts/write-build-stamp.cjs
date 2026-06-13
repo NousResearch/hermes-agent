@@ -32,6 +32,10 @@
 const fs = require("fs")
 const path = require("path")
 const { execFileSync, execSync } = require("child_process")
+const {
+  currentDesktopSourceStateHash,
+  hashText
+} = require("../electron/source-state-hash.cjs")
 
 const STAMP_SCHEMA_VERSION = 1
 
@@ -54,6 +58,10 @@ function tryGit(args) {
   } catch {
     return null
   }
+}
+
+function trackedDesktopSourceDiffHash() {
+  return currentDesktopSourceStateHash(REPO_ROOT)
 }
 
 function normalizeGitHubRepository(value) {
@@ -205,6 +213,7 @@ function main() {
     repoUrlHttps: stamp.repoUrlHttps,
     repoUrlSsh: stamp.repoUrlSsh,
     builtAt: new Date().toISOString(),
+    trackedSourceDiffHash: trackedDesktopSourceDiffHash(),
     dirty: stamp.dirty,
     source: stamp.source
   }
@@ -232,5 +241,6 @@ module.exports = {
   normalizeGitHubRepository,
   remoteBranchName,
   remoteNameFromRef,
-  repoUrls
+  repoUrls,
+  hashText
 }

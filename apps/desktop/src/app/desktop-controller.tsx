@@ -109,6 +109,7 @@ import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { type BootAutoArchiveState, scheduleBootAutoArchiveOnce } from './session/boot-auto-archive'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
@@ -186,8 +187,10 @@ export function DesktopController() {
   const navigate = useNavigate()
 
   const busyRef = useRef(false)
+  const bootAutoArchiveStateRef = useRef<BootAutoArchiveState>({ started: false })
   const creatingSessionRef = useRef(false)
   const refreshSessionsRequestRef = useRef(0)
+  const refreshSessionsAfterMaintenanceRef = useRef<(() => Promise<void>) | null>(null)
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -414,18 +417,6 @@ export function DesktopController() {
         preserveIds.add(activeSessionId)
       }
 
-      // Only run auto-archive on the first refresh (boot). Subsequent
-      // cascading refreshes from message events skip this to save a round-trip.
-      const isFirst = requestId <= 2
-
-      if (isFirst) {
-        try {
-          await autoArchiveOldSessions([...preserveIds])
-        } catch (error) {
-          console.warn('Hermes session auto-archive skipped', error)
-        }
-      }
-
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't
       // clutter the sidebar.
@@ -450,6 +441,18 @@ export function DesktopController() {
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
         setSessionProfileTotals(result.profile_totals ?? {})
+
+        scheduleBootAutoArchiveOnce({
+          autoArchive: autoArchiveOldSessions,
+          onArchived: () => {
+            void refreshSessionsAfterMaintenanceRef.current?.()
+          },
+          onError: error => {
+            console.warn('Hermes session auto-archive skipped', error)
+          },
+          preserveIds,
+          state: bootAutoArchiveStateRef.current
+        })
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {
@@ -461,6 +464,8 @@ export function DesktopController() {
     void refreshMessagingSessions()
     void refreshArchivedSessions()
   }, [refreshArchivedSessions, refreshCronSessions, refreshMessagingSessions])
+
+  refreshSessionsAfterMaintenanceRef.current = refreshSessions
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()

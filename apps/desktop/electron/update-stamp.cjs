@@ -6,6 +6,14 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
+const {
+  EMPTY_DESKTOP_SOURCE_STATE_HASH,
+  currentDesktopSourceStateHash,
+  hashText
+} = require('./source-state-hash.cjs')
+
+const EMPTY_TRACKED_SOURCE_DIFF_HASH = EMPTY_DESKTOP_SOURCE_STATE_HASH
+const currentTrackedSourceDiffHash = currentDesktopSourceStateHash
 
 function readInstallStamp(bundlePath, fsImpl = fs) {
   if (!bundlePath) return null
@@ -16,19 +24,35 @@ function readInstallStamp(bundlePath, fsImpl = fs) {
   return JSON.parse(fsImpl.readFileSync(stampPath, 'utf8'))
 }
 
-function bundleNeedsRebuild(bundlePath, currentSha, fsImpl = fs) {
+function bundleNeedsRebuild(bundlePath, currentSha, fsImpl = fs, options = {}) {
   if (!bundlePath || !currentSha) return false
 
   try {
     const stamp = readInstallStamp(bundlePath, fsImpl)
     const stampCommit = String(stamp?.commit || '').trim()
-    return Boolean(stampCommit && stampCommit !== currentSha)
+    if (!stampCommit) return false
+    if (stampCommit !== currentSha) return true
+
+    const currentDiffHash =
+      typeof options.currentTrackedSourceDiffHash === 'string'
+        ? options.currentTrackedSourceDiffHash
+        : currentTrackedSourceDiffHash(options.repoRoot)
+    if (!currentDiffHash) return false
+
+    if (typeof stamp.trackedSourceDiffHash === 'string') {
+      return stamp.trackedSourceDiffHash !== currentDiffHash
+    }
+
+    return currentDiffHash !== EMPTY_TRACKED_SOURCE_DIFF_HASH
   } catch {
     return false
   }
 }
 
 module.exports = {
+  EMPTY_TRACKED_SOURCE_DIFF_HASH,
   bundleNeedsRebuild,
+  currentTrackedSourceDiffHash,
+  hashText,
   readInstallStamp
 }

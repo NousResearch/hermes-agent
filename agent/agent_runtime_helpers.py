@@ -2209,20 +2209,34 @@ def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
     ``_needs_thinking_reasoning_pad()`` is True for the active provider, so it
     is safe to call every iteration and covers every fallback path.
 
-    Returns the number of assistant turns that gained reasoning_content.
+    When the active provider does NOT need the echo-back (i.e. after fallback
+    from a thinking provider like GLM-5.1 to a non-thinking provider like
+    Groq/Cerebras), any ``reasoning_content`` already injected for the previous
+    provider is stripped so the non-thinking provider does not reject the
+    request with HTTP 400 ("property 'reasoning_content' is unsupported").
+
+    Returns the number of assistant turns that gained (or lost) reasoning_content.
     """
-    if not agent._needs_thinking_reasoning_pad():
-        return 0
-    padded = 0
+    needs_pad = agent._needs_thinking_reasoning_pad()
+    changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
             continue
-        if api_msg.get("reasoning_content"):
-            continue
-        copy_reasoning_content_for_api(agent, api_msg, api_msg)
-        if api_msg.get("reasoning_content"):
-            padded += 1
-    return padded
+        if needs_pad:
+            # Thinking provider requires reasoning_content — add if absent
+            if api_msg.get("reasoning_content"):
+                continue
+            copy_reasoning_content_for_api(agent, api_msg, api_msg)
+            if api_msg.get("reasoning_content"):
+                changed += 1
+        else:
+            # Non-thinking provider — strip reasoning_content that was
+            # injected for a prior thinking provider.  Providers like
+            # Groq and Cerebras reject messages containing this field
+            # with HTTP 400/422 (refs #45332).
+            if api_msg.pop("reasoning_content", None) is not None:
+                changed += 1
+    return changed
 
 
 def _iter_pool_sockets(client: Any):

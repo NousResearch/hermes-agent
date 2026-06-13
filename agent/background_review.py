@@ -39,7 +39,13 @@ _MEMORY_REVIEW_PROMPT = (
     "2. Has the user expressed expectations about how you should behave, their work "
     "style, or ways they want you to operate?\n\n"
     "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
+    "If nothing is worth saving, just say 'Nothing to save.' and stop.\n\n"
+    "Additionally, check the current memory usage (shown in the system prompt "
+    "header). If MEMORY.md or USER.md is over approximately 80% full, use "
+    "the memory tool to consolidate: merge overlapping or redundant entries "
+    "into shorter ones using 'replace', and 'remove' entries that are stale, "
+    "duplicated, or no longer relevant. This prevents the memory store from "
+    "hitting its character limit and silently rejecting new entries."
 )
 
 _SKILL_REVIEW_PROMPT = (

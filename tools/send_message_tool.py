@@ -45,7 +45,7 @@ _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # natively, so _parse_target_ref should recognise them as explicit targets
 # instead of letting them fall through to the generic numeric / channel-name
 # resolution paths (which silently route to the home channel or crash).
-_WHATSAPP_JID_RE = re.compile(r"^\s*(\d+@(?:lid|s\.whatsapp\.net))\s*$")
+_WHATSAPP_JID_RE = re.compile(r"^\s*(\d+@(?:lid|s\.whatsapp\.net|g\.us|c\.us))\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
 # resolution which has no way to resolve a raw address.

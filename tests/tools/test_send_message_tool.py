@@ -1174,6 +1174,18 @@ class TestParseTargetRefE164:
         assert chat_id == "5511999888777@lid"
         assert is_explicit is True
 
+    def test_whatsapp_group_jid_is_explicit(self):
+        """@g.us JIDs (WhatsApp group targets) must be recognised as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "120363123456@g.us")
+        assert chat_id == "120363123456@g.us"
+        assert is_explicit is True
+
+    def test_whatsapp_c_us_jid_is_explicit(self):
+        """@c.us JIDs (WhatsApp individual targets) must be recognised as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "919900123456@c.us")
+        assert chat_id == "919900123456@c.us"
+        assert is_explicit is True
+
     def test_whatsapp_non_numeric_jid_rejected(self):
         """JIDs with non-numeric user parts are not matched by the WhatsApp regex."""
         assert _parse_target_ref("whatsapp", "abc@lid")[2] is False

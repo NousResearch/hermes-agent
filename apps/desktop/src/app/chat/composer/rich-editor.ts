@@ -132,6 +132,63 @@ export function renderComposerContents(target: HTMLElement, text: string) {
   appendComposerContents(target, text)
 }
 
+/** Caret range when the selection lives inside `editor`; else null. */
+function composerSelectionRange(editor: HTMLElement) {
+  const selection = window.getSelection()
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null
+
+  if (!selection || !range || !editor.contains(range.commonAncestorContainer)) {
+    return null
+  }
+
+  return { range, selection }
+}
+
+/** Insert plain text at the caret (replacing any selection). Pastes use this
+ *  instead of `execCommand('insertText')` — Chromium's editing pipeline is
+ *  ~O(n²) on large multiline blobs. */
+export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
+  const hit = composerSelectionRange(editor)
+  const fragment = document.createDocumentFragment()
+
+  appendTextWithBreaks(fragment, text)
+
+  const tail = fragment.lastChild
+
+  if (hit) {
+    hit.range.deleteContents()
+    hit.range.insertNode(fragment)
+  } else {
+    editor.append(fragment)
+  }
+
+  if (tail) {
+    const caret = document.createRange()
+    caret.setStartAfter(tail)
+    caret.collapse(true)
+    const selection = hit?.selection ?? window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(caret)
+  }
+}
+
+/** Remove a non-collapsed selection in-editor. Skips collapsed carets so word/
+ *  line delete (Opt/Cmd+Backspace) stays native. Returns whether anything ran. */
+export function deleteSelectionInEditor(editor: HTMLElement) {
+  const hit = composerSelectionRange(editor)
+
+  if (!hit || hit.range.collapsed) {
+    return false
+  }
+
+  hit.range.deleteContents()
+  hit.range.collapse(true)
+  hit.selection.removeAllRanges()
+  hit.selection.addRange(hit.range)
+
+  return true
+}
+
 /** Serialize a draft string into chip-HTML for the contenteditable surface. */
 export function composerHtml(text: string) {
   let cursor = 0

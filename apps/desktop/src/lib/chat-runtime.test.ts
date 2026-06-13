@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseSlashCommand } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,27 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+describe('parseSlashCommand', () => {
+  it('parses a bare command with no argument', () => {
+    expect(parseSlashCommand('/kn-nrr')).toEqual({ name: 'kn-nrr', arg: '' })
+  })
+
+  it('parses a single-line argument', () => {
+    expect(parseSlashCommand('/kn-nrr fix this')).toEqual({ name: 'kn-nrr', arg: 'fix this' })
+  })
+
+  it('parses a multi-line argument (regression: previously returned an empty name)', () => {
+    const input = '/kn-nrr Details below.\nline two\nline three'
+
+    expect(parseSlashCommand(input)).toEqual({
+      name: 'kn-nrr',
+      arg: 'Details below.\nline two\nline three',
+    })
+  })
+
+  it('returns an empty name for slash-only input', () => {
+    expect(parseSlashCommand('/')).toEqual({ name: '', arg: '' })
   })
 })

@@ -5637,6 +5637,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
     def run():
         approval_token = None
+        _ro_approval_token = None
+        _ro_reset_session_key = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
@@ -5647,6 +5649,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
 
             approval_token = set_current_session_key(session["session_key"])
+            # Bind the read-only contextvar so the tool-dispatch gate
+            # can find the session key.
+            try:
+                from tools.read_only import (
+                    reset_current_session_key as _ro_reset_session_key,
+                    set_current_session_key as _ro_set_session_key,
+                )
+                _ro_approval_token = _ro_set_session_key(session["session_key"])
+            except Exception:
+                _ro_reset_session_key = None  # type: ignore[assignment]
+                _ro_approval_token = None
             session_tokens = _set_session_context(session["session_key"])
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
@@ -5980,6 +5993,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     reset_current_session_key(approval_token)
             except Exception:
                 pass
+            # Release the read-only contextvar too.
+            if _ro_approval_token is not None and _ro_reset_session_key is not None:
+                try:
+                    _ro_reset_session_key(_ro_approval_token)
+                except Exception:
+                    pass
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
@@ -7107,6 +7126,45 @@ def _(rid, params: dict) -> dict:
                     os.environ.pop("HERMES_YOLO_MODE", None)
                     nv = "0"
             return _ok(rid, {"key": key, "value": nv, "scope": "session"})
+        except Exception as e:
+            return _err(rid, 5001, str(e))
+
+    if key == "ro":
+        """Handle /ro — toggle read-only mode for this session."""
+        try:
+            from tools.read_only import (
+                disable_read_only,
+                enable_read_only,
+                is_read_only,
+            )
+
+            raw = str(value or "").strip().lower()
+
+            if session:
+                current = is_read_only(session["session_key"])
+                if raw in {"1", "on", "true", "yes"}:
+                    enable = True
+                elif raw in {"0", "off", "false", "no"}:
+                    enable = False
+                else:
+                    enable = not current
+                if enable:
+                    enable_read_only(session["session_key"])
+                    nv = "1"
+                else:
+                    disable_read_only(session["session_key"])
+                    nv = "0"
+                agent = session.get("agent")
+                if agent is not None:
+                    _emit(
+                        "session.info",
+                        params.get("session_id", ""),
+                        _session_info(agent, session),
+                    )
+            else:
+                # No active session — nothing to toggle
+                return _ok(rid, {"key": key, "value": "0"})
+            return _ok(rid, {"key": key, "value": nv})
         except Exception as e:
             return _err(rid, 5001, str(e))
 

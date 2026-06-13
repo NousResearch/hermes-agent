@@ -1657,7 +1657,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
+_STREAM_PAD = ""  # 0-space indent for streamed response text
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -7443,6 +7443,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
+        elif canonical == "ro":
+            self._handle_ro_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -8042,8 +8044,54 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 " — all commands auto-approved. Use with caution."
             )
 
+    def _handle_ro_command(self, cmd_original: str = ""):
+        """Handle /ro — toggle read-only mode for this CLI session."""
+        from tools.read_only import (
+            disable_read_only,
+            enable_read_only,
+            is_read_only,
+            READ_ONLY_WHITELIST,
+        )
 
+        session_key = self.session_id or "default"
 
+        # Check for explicit on/off subcommand
+        _raw = cmd_original.strip()
+        _parts = _raw.split(None, 1)
+        _sub = _parts[1].strip().lower() if len(_parts) > 1 else ""
+
+        _currently = is_read_only(session_key)
+
+        if _sub == "on":
+            if _currently:
+                self._console_print("  Read-only mode already ON.")
+                return
+            enable_read_only(session_key)
+            self._console_print(
+                "  \U0001f512 Read-only mode ON — only whitelisted tools allowed."
+            )
+        elif _sub == "off":
+            if not _currently:
+                self._console_print("  Read-only mode already OFF.")
+                return
+            disable_read_only(session_key)
+            self._console_print(
+                "  \U0001f513 Read-only mode OFF — all tools available."
+            )
+        else:
+            if _currently:
+                disable_read_only(session_key)
+                self._console_print(
+                    "  \U0001f513 Read-only mode OFF — all tools available."
+                )
+            else:
+                enable_read_only(session_key)
+                _tools_sorted = sorted(READ_ONLY_WHITELIST)
+                _whitelist_str = ", ".join(_tools_sorted)
+                self._console_print(
+                    "  \U0001f512 Read-only mode ON — only whitelisted tools allowed."
+                )
+                self._console_print(f"  Whitelist: {_whitelist_str}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -10171,6 +10219,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
+                # Set the read-only contextvar so is_tool_allowed() in the
+                # tool dispatch can find the session key. Must share the same
+                # session_id as approval above.
+                try:
+                    from tools.read_only import (
+                        reset_current_session_key as _ro_reset,
+                        set_current_session_key as _ro_set,
+                    )
+                    _ro_session_token = _ro_set(self.session_id or "default")
+                except Exception:
+                    _ro_reset = None  # type: ignore[assignment]
+                    _ro_session_token = None
                 agent_message = _voice_prefix + message if _voice_prefix else message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
@@ -10228,6 +10288,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if _approval_session_token is not None and reset_current_session_key is not None:
                         try:
                             reset_current_session_key(_approval_session_token)
+                        except Exception:
+                            pass
+                    # Release the read-only contextvar too.
+                    if _ro_session_token is not None and _ro_reset is not None:
+                        try:
+                            _ro_reset(_ro_session_token)
                         except Exception:
                             pass
 
@@ -10481,7 +10547,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
+                        padding=(1, 0),
                         width=self._scrollback_box_width(),
                     ))
 

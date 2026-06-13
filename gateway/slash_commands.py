@@ -2235,6 +2235,26 @@ class GatewaySlashCommandsMixin:
             enable_session_yolo(session_key)
             return EphemeralReply(t("gateway.yolo.enabled"))
 
+    async def _handle_ro_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /ro — toggle read-only mode for this session."""
+        from tools.read_only import (
+            disable_read_only,
+            enable_read_only,
+            is_read_only,
+        )
+
+        session_key = self._session_key_for_source(event.source)
+        current = is_read_only(session_key)
+        if current:
+            disable_read_only(session_key)
+            return EphemeralReply("\U0001f513 Read-only mode OFF \u2014 all tools available.")
+        else:
+            enable_read_only(session_key)
+            return EphemeralReply(
+                "\U0001f512 Read-only mode ON \u2014 only whitelisted tools allowed. "
+                "Use /ro again to disable."
+            )
+
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.
 

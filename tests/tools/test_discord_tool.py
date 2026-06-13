@@ -63,6 +63,16 @@ def _valid_activation():
     )
 
 
+def _discord_message(message_id, content, author_id="424242424242424242", attachments=None, embeds=None):
+    return {
+        "id": message_id,
+        "content": content,
+        "author": {"id": author_id, "bot": True},
+        "attachments": attachments or [],
+        "embeds": embeds or [],
+        "timestamp": "2026-06-12T00:00:00Z",
+    }
+
 
 def _set_receipt_config(monkeypatch, *, enabled=True, server_actions=""):
     monkeypatch.setattr(
@@ -269,7 +279,12 @@ class TestSessionKickoffReceiptPrechecks:
     @patch("tools.discord_tool._discord_request")
     @pytest.mark.parametrize(
         "platform,user_id",
-        [("telegram", "123456789012345678"), ("discord", "not-a-snowflake"), ("", "")],
+        [
+            ("telegram", "123456789012345678"),
+            ("discord", "not-a-snowflake"),
+            ("discord", "１２３４５６７８９０１２３４５６７８"),
+            ("", ""),
+        ],
     )
     def test_unsupported_contextvar_sessions_fail_before_post(
         self, mock_req, monkeypatch, platform, user_id,
@@ -294,8 +309,13 @@ class TestSessionKickoffReceiptPrechecks:
         try:
             _assert_receipt_error(_receipt_call(post_intent="wrong"), "invalid_post_intent")
             _assert_receipt_error(_receipt_call(channel_id=" 151 "), "invalid_channel_id")
+            _assert_receipt_error(_receipt_call(channel_id="１２３"), "invalid_channel_id")
             _assert_receipt_error(
                 _receipt_call(expected_requester_user_id="abc"),
+                "invalid_expected_requester_user_id",
+            )
+            _assert_receipt_error(
+                _receipt_call(expected_requester_user_id="۱۲۳۴۵۶۷۸۹۰۱۲۳۴۵۶۷۸"),
                 "invalid_expected_requester_user_id",
             )
             _assert_receipt_error(
@@ -470,6 +490,243 @@ class TestSessionKickoffReceiptPositivePath:
             f"/channels/{channel_id}/messages/{message_id}"
             for message_id in result["message_ids"]
         ]
+
+
+class TestSessionKickoffReceiptNegativeHardening:
+    @patch("tools.discord_tool._discord_request")
+    def test_post_429_retries_then_passes(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        sleeps = []
+        monkeypatch.setattr("tools.discord_tool.time.sleep", lambda seconds: sleeps.append(seconds))
+        channel_id = "1514919981337284668"
+        stored = {}
+        seen_rate_limit = {"value": False}
+
+        def fake_request(method, path, token, **kwargs):
+            if method == "POST" and not seen_rate_limit["value"]:
+                seen_rate_limit["value"] = True
+                raise DiscordAPIError(429, '{"retry_after": 0.25}')
+            if method == "POST":
+                body = kwargs["body"]
+                message_id = "900000000000000001"
+                stored[message_id] = _discord_message(message_id, body["content"])
+                return stored[message_id]
+            if method == "GET":
+                return stored[path.rsplit("/", 1)[-1]]
+            raise AssertionError(method)
+
+        mock_req.side_effect = fake_request
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(channel_id=channel_id)
+        finally:
+            _clear_context(tokens)
+
+        assert result["status"] == "receipt_pass"
+        assert sleeps == [0.25]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_post_429_retry_budget_exhaustion_fails_without_success(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        sleeps = []
+        monkeypatch.setattr("tools.discord_tool.time.sleep", lambda seconds: sleeps.append(seconds))
+        mock_req.side_effect = DiscordAPIError(429, '{"retry_after": 9}')
+        tokens = _discord_context()
+        try:
+            result = _receipt_call()
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, "post_rate_limited", status="post_failed")
+        assert result["message_ids"] == []
+        assert sleeps == [2.0, 2.0, 2.0, 2.0]
+        assert mock_req.call_count == 5
+
+    @patch("tools.discord_tool._discord_request")
+    def test_post_429_zero_retry_after_is_attempt_bounded(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        sleeps = []
+        monkeypatch.setattr("tools.discord_tool.time.sleep", lambda seconds: sleeps.append(seconds))
+        mock_req.side_effect = DiscordAPIError(429, '{"retry_after": 0}')
+        tokens = _discord_context()
+        try:
+            result = _receipt_call()
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, "post_rate_limited", status="post_failed")
+        assert result["message_ids"] == []
+        assert sleeps == []
+        assert mock_req.call_count == 5
+
+    @patch("tools.discord_tool._discord_request")
+    def test_partial_post_sanitizes_discord_error_body(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "secret-token")
+        _set_receipt_config(monkeypatch)
+        channel_id = "1514919981337284668"
+        stored = {}
+        long_body = (
+            '{"message":"boom ?token=abc123 secret-token /home/a01/.hermes/secret"}'
+            + ("x" * 1200)
+        )
+
+        def fake_request(method, path, token, **kwargs):
+            if method == "POST" and not stored:
+                body = kwargs["body"]
+                message_id = "900000000000000001"
+                stored[message_id] = _discord_message(message_id, body["content"])
+                return stored[message_id]
+            if method == "POST":
+                raise DiscordAPIError(500, long_body)
+            raise AssertionError("GET should not run after partial POST")
+
+        mock_req.side_effect = fake_request
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(channel_id=channel_id, activation_content=_valid_activation())
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, "partial_post", status="partial_post")
+        assert result["message_ids"] == ["900000000000000001"]
+        body = result["errors"][0]["body"]
+        assert len(body) <= 1000
+        assert "secret-token" not in body
+        assert "abc123" not in body
+        assert "/home/a01" not in body
+
+    @patch("tools.discord_tool._discord_request")
+    def test_fetch_retry_exhaustion_returns_fetch_failed(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        sleeps = []
+        monkeypatch.setattr("tools.discord_tool.time.sleep", lambda seconds: sleeps.append(seconds))
+
+        def fake_request(method, path, token, **kwargs):
+            if method == "POST":
+                return _discord_message("900000000000000001", kwargs["body"]["content"])
+            if method == "GET":
+                raise DiscordAPIError(404, '{"message":"unknown message"}')
+            raise AssertionError(method)
+
+        mock_req.side_effect = fake_request
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(max_fetch_attempts=2, fetch_delay_seconds=0.1)
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, "message_fetch_failed", status="fetch_failed")
+        assert sleeps == [0.1]
+
+    @patch("tools.discord_tool._discord_request")
+    @pytest.mark.parametrize(
+        "mutation,error_code",
+        [
+            ("content", "content_mismatch"),
+            ("id", "content_mismatch"),
+            ("author", "author_mismatch"),
+            ("attachment", "unexpected_attachment_in_text_only_mvp"),
+            ("embed", "unexpected_embed_in_text_only_mvp"),
+            ("ping", "forbidden_mass_or_role_ping"),
+        ],
+    )
+    def test_fetched_validation_failures_never_receipt_pass(self, mock_req, monkeypatch, mutation, error_code):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        stored = {}
+
+        def fake_request(method, path, token, **kwargs):
+            if method == "POST":
+                body = kwargs["body"]
+                message_id = "900000000000000001"
+                stored[message_id] = _discord_message(message_id, body["content"])
+                return stored[message_id]
+            if method == "GET":
+                message_id = path.rsplit("/", 1)[-1]
+                message = dict(stored[message_id])
+                message["author"] = dict(message["author"])
+                if mutation == "content":
+                    message["content"] += " altered"
+                elif mutation == "id":
+                    message["id"] = "900000000000000999"
+                elif mutation == "author":
+                    message["author"]["id"] = "111111111111111111"
+                elif mutation == "attachment":
+                    message["attachments"] = [{"filename": "x.txt", "size": 1}]
+                elif mutation == "embed":
+                    message["embeds"] = [{"type": "rich", "secret": "not returned"}]
+                elif mutation == "ping":
+                    message["content"] += " @everyone"
+                return message
+            raise AssertionError(method)
+
+        mock_req.side_effect = fake_request
+        tokens = _discord_context()
+        try:
+            result = _receipt_call()
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, error_code, status="validation_failed")
+
+    @patch("tools.discord_tool._discord_request")
+    @pytest.mark.parametrize(
+        "drift,status,error_code",
+        [
+            ("dropped_middle", "fetch_failed", "message_fetch_failed"),
+            ("reordered", "validation_failed", "content_mismatch"),
+            ("extra_id", "validation_failed", "content_mismatch"),
+            ("fewer_ids", "validation_failed", "content_mismatch"),
+        ],
+    )
+    def test_multi_chunk_drift_never_receipt_pass(
+        self, mock_req, monkeypatch, drift, status, error_code,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        monkeypatch.setattr("tools.discord_tool._DISCORD_MESSAGE_LIMIT", 40)
+        seed = _valid_seed() + "\n" + ("chunk-body-" * 12)
+        stored = {}
+        order = []
+
+        def fake_request(method, path, token, **kwargs):
+            if method == "POST":
+                body = kwargs["body"]
+                message_id = str(900000000000000000 + len(order) + 1)
+                message = _discord_message(message_id, body["content"])
+                stored[message_id] = message
+                order.append(message_id)
+                return message
+            if method == "GET":
+                requested_id = path.rsplit("/", 1)[-1]
+                if len(order) < 3:
+                    raise AssertionError("test seed should produce at least three chunks")
+                if drift == "dropped_middle" and requested_id == order[1]:
+                    raise DiscordAPIError(404, '{"message":"unknown message"}')
+                if drift == "reordered":
+                    index = order.index(requested_id)
+                    return dict(stored[order[-index - 1]])
+                message = dict(stored[requested_id])
+                if drift == "extra_id" and requested_id == order[1]:
+                    message["id"] = "999999999999999999"
+                elif drift == "fewer_ids" and requested_id == order[1]:
+                    message["id"] = ""
+                return message
+            raise AssertionError(method)
+
+        mock_req.side_effect = fake_request
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(seed_content=seed, max_fetch_attempts=1)
+        finally:
+            _clear_context(tokens)
+
+        assert len(order) >= 3
+        _assert_receipt_error(result, error_code, status=status)
 
 
 # ---------------------------------------------------------------------------

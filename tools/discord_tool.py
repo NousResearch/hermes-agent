@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +45,7 @@ _SESSION_KICKOFF_RECEIPT_INTENT = "session_kickoff_receipt_v1"
 _DISCORD_MESSAGE_LIMIT = 2000
 _SESSION_KICKOFF_CONTENT_LIMIT = 20_000
 _SESSION_KICKOFF_CHUNK_LIMIT = 10
+_SESSION_KICKOFF_POST_429_ATTEMPT_LIMIT = 5
 _SUPPRESS_EMBEDS_FLAG = 4
 _BOUNDARY_PHRASES = (
     "Boundary: reply before mutation.",
@@ -107,8 +109,13 @@ def _session_kickoff_receipt_enabled() -> bool:
 
 
 def _is_discord_snowflake(value: Any) -> bool:
-    """Discord IDs used in REST paths must be simple decimal snowflake strings."""
-    return isinstance(value, str) and value.isdecimal() and 1 <= len(value) <= 20
+    """Discord IDs used in REST paths must be ASCII decimal snowflake strings."""
+    return (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdigit()
+        and 1 <= len(value) <= 20
+    )
 
 
 def _first_visible_line(text: str) -> str:
@@ -165,8 +172,10 @@ def _receipt_result(
     }
 
 
-def _receipt_error(code: str, message: str = "") -> Dict[str, str]:
-    return {"code": code, "message": message or code}
+def _receipt_error(code: str, message: str = "", **details: Any) -> Dict[str, Any]:
+    error = {"code": code, "message": message or code}
+    error.update(details)
+    return error
 
 
 def _receipt_json(status: str, code: str, **kwargs: Any) -> str:
@@ -216,13 +225,30 @@ def _post_receipt_message(
     channel_id: str,
     content: str,
     trusted_requester_user_id: str,
-) -> Dict[str, Any]:
+    retry_sleep_used: float,
+) -> Tuple[Dict[str, Any], float]:
     body = {
         "content": content,
         "flags": _SUPPRESS_EMBEDS_FLAG,
         "allowed_mentions": _receipt_allowed_mentions(trusted_requester_user_id),
     }
-    return _discord_request("POST", f"/channels/{channel_id}/messages", token, body=body)
+    rate_limit_attempts = 0
+    while True:
+        try:
+            return _discord_request("POST", f"/channels/{channel_id}/messages", token, body=body), retry_sleep_used
+        except DiscordAPIError as exc:
+            if exc.status != 429:
+                raise
+            rate_limit_attempts += 1
+            delay = _retry_after_seconds(exc)
+            if (
+                rate_limit_attempts >= _SESSION_KICKOFF_POST_429_ATTEMPT_LIMIT
+                or retry_sleep_used + delay > 8.0
+            ):
+                raise
+            if delay:
+                time.sleep(delay)
+            retry_sleep_used += delay
 
 
 def _fetch_receipt_message(token: str, channel_id: str, message_id: str) -> Dict[str, Any]:
@@ -246,6 +272,7 @@ def _receipt_failure(
     message_ids: Optional[List[str]] = None,
     seed_message_ids: Optional[List[str]] = None,
     activation_message_ids: Optional[List[str]] = None,
+    error: Optional[Dict[str, Any]] = None,
     evidence: Optional[Dict[str, Any]] = None,
 ) -> str:
     return json.dumps(_receipt_result(
@@ -255,7 +282,7 @@ def _receipt_failure(
         message_ids=message_ids,
         seed_message_ids=seed_message_ids,
         activation_message_ids=activation_message_ids,
-        errors=[_receipt_error(code)],
+        errors=[error or _receipt_error(code)],
         evidence=evidence,
     ))
 
@@ -299,15 +326,60 @@ def _discord_request(
             error_body = e.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        raise DiscordAPIError(e.code, error_body) from e
+        headers = dict(e.headers.items()) if e.headers else {}
+        raise DiscordAPIError(e.code, error_body, headers=headers) from e
 
 
 class DiscordAPIError(Exception):
     """Raised when a Discord API call fails."""
-    def __init__(self, status: int, body: str):
+    def __init__(self, status: int, body: str, headers: Optional[Dict[str, str]] = None):
         self.status = status
         self.body = body
+        self.headers = headers or {}
         super().__init__(f"Discord API error {status}: {body}")
+
+
+def _sanitize_discord_error_body(body: str) -> str:
+    value = str(body or "")
+    try:
+        from agent.redact import redact_sensitive_text
+        value = redact_sensitive_text(value, force=True)
+    except Exception:
+        pass
+    token = _get_bot_token()
+    if token:
+        value = value.replace(token, "<redacted>")
+    value = re.sub(
+        r"([?&](?:token|access_token|api_key|signature|sig)=)[^&\s]+",
+        r"\1<redacted>",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"/home/[A-Za-z0-9._~+/@%-]+", "<local-path-redacted>", value)
+    return value[:1000]
+
+
+def _error_from_discord_exception(code: str, exc: DiscordAPIError) -> Dict[str, Any]:
+    return _receipt_error(
+        code,
+        http_status=exc.status,
+        body=_sanitize_discord_error_body(exc.body),
+    )
+
+
+def _retry_after_seconds(exc: DiscordAPIError) -> float:
+    retry_after: Any = None
+    try:
+        payload = json.loads(exc.body or "{}")
+        retry_after = payload.get("retry_after")
+    except Exception:
+        retry_after = None
+    if retry_after is None:
+        retry_after = (exc.headers or {}).get("Retry-After") or (exc.headers or {}).get("retry-after")
+    try:
+        return min(2.0, max(0.0, float(retry_after)))
+    except (TypeError, ValueError):
+        return 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +817,6 @@ def _post_session_kickoff_receipt(
             channel_id=channel_id, trusted_requester_user_id=requester_id,
             evidence={"first_seed_line": first_line},
         )
-    del attempts, delay
 
     expected_seed_chunks, seed_error = _split_discord_text(seed_content)
     if seed_error:
@@ -770,10 +841,13 @@ def _post_session_kickoff_receipt(
     activation_message_ids: List[str] = []
     message_ids: List[str] = []
     bot_author_id = ""
+    post_retry_sleep_used = 0.0
 
     try:
         for content in expected_seed_chunks:
-            posted = _post_receipt_message(token, channel_id, content, requester_id)
+            posted, post_retry_sleep_used = _post_receipt_message(
+                token, channel_id, content, requester_id, post_retry_sleep_used,
+            )
             posted_message_id = posted.get("id")
             message_id = posted_message_id if isinstance(posted_message_id, str) else ""
             author_id = _message_author_id(posted) if isinstance(posted, dict) else ""
@@ -791,7 +865,9 @@ def _post_session_kickoff_receipt(
             message_ids.append(message_id)
 
         for content in expected_activation_chunks:
-            posted = _post_receipt_message(token, channel_id, content, requester_id)
+            posted, post_retry_sleep_used = _post_receipt_message(
+                token, channel_id, content, requester_id, post_retry_sleep_used,
+            )
             posted_message_id = posted.get("id")
             message_id = posted_message_id if isinstance(posted_message_id, str) else ""
             author_id = _message_author_id(posted) if isinstance(posted, dict) else ""
@@ -805,34 +881,48 @@ def _post_session_kickoff_receipt(
                 )
             activation_message_ids.append(message_id)
             message_ids.append(message_id)
-    except DiscordAPIError:
+    except DiscordAPIError as exc:
         status = "partial_post" if message_ids else "post_failed"
-        code = "partial_post" if message_ids else "post_failed"
+        code = "post_rate_limited" if exc.status == 429 else ("partial_post" if message_ids else "sanitized_discord_error")
         return _receipt_failure(
             status, code,
             channel_id=channel_id, trusted_requester_user_id=requester_id,
             message_ids=message_ids, seed_message_ids=seed_message_ids,
             activation_message_ids=activation_message_ids,
+            error=_error_from_discord_exception(code, exc),
             evidence={"first_seed_line": first_line},
         )
 
     fetched_messages: List[Dict[str, Any]] = []
     try:
         for message_id in message_ids:
-            fetched = _fetch_receipt_message(token, channel_id, message_id)
-            if not isinstance(fetched, dict):
-                raise DiscordAPIError(0, "non-object Discord message response")
-            fetched_messages.append(fetched)
-    except DiscordAPIError:
+            last_fetch_error: Optional[DiscordAPIError] = None
+            for attempt_index in range(attempts or 1):
+                try:
+                    fetched = _fetch_receipt_message(token, channel_id, message_id)
+                    if not isinstance(fetched, dict):
+                        raise DiscordAPIError(0, "non-object Discord message response")
+                    fetched_messages.append(fetched)
+                    last_fetch_error = None
+                    break
+                except DiscordAPIError as exc:
+                    last_fetch_error = exc
+                    if attempt_index < (attempts or 1) - 1 and delay:
+                        time.sleep(delay)
+            if last_fetch_error is not None:
+                raise last_fetch_error
+    except DiscordAPIError as exc:
         return _receipt_failure(
             "fetch_failed", "message_fetch_failed",
             channel_id=channel_id, trusted_requester_user_id=requester_id,
             message_ids=message_ids, seed_message_ids=seed_message_ids,
             activation_message_ids=activation_message_ids,
+            error=_error_from_discord_exception("message_fetch_failed", exc),
             evidence={"first_seed_line": first_line},
         )
 
     expected_chunks = expected_seed_chunks + expected_activation_chunks
+    fetched_ids = [msg.get("id") if isinstance(msg.get("id"), str) else "" for msg in fetched_messages]
     fetched_contents = [str(msg.get("content", "")) for msg in fetched_messages]
     fetched_seed_content = "".join(fetched_contents[:len(expected_seed_chunks)])
     fetched_activation_content = "".join(fetched_contents[len(expected_seed_chunks):])
@@ -846,7 +936,15 @@ def _post_session_kickoff_receipt(
         "embed_count": sum(len(msg.get("embeds") or []) for msg in fetched_messages),
     }
 
-    if fetched_contents != expected_chunks:
+    if _has_forbidden_ping(fetched_seed_content) or _has_forbidden_ping(fetched_activation_content):
+        return _receipt_failure(
+            "validation_failed", "forbidden_mass_or_role_ping",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    if fetched_ids != message_ids or fetched_contents != expected_chunks:
         return _receipt_failure(
             "validation_failed", "content_mismatch",
             channel_id=channel_id, trusted_requester_user_id=requester_id,
@@ -873,14 +971,6 @@ def _post_session_kickoff_receipt(
     if not any(phrase in fetched_seed_content for phrase in _BOUNDARY_PHRASES):
         return _receipt_failure(
             "validation_failed", "missing_boundary_phrase",
-            channel_id=channel_id, trusted_requester_user_id=requester_id,
-            message_ids=message_ids, seed_message_ids=seed_message_ids,
-            activation_message_ids=activation_message_ids,
-            evidence=evidence,
-        )
-    if _has_forbidden_ping(fetched_seed_content) or _has_forbidden_ping(fetched_activation_content):
-        return _receipt_failure(
-            "validation_failed", "forbidden_mass_or_role_ping",
             channel_id=channel_id, trusted_requester_user_id=requester_id,
             message_ids=message_ids, seed_message_ids=seed_message_ids,
             activation_message_ids=activation_message_ids,

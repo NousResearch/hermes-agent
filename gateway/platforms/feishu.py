@@ -1856,6 +1856,23 @@ class FeishuAdapter(BasePlatformAdapter):
                 fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
                 fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
                 result = self._finalize_send_result(fallback_response, "update failed")
+            if not result.success and msg_type == "text":
+                # Text edit failed — original message was likely sent as 'post'
+                # (no table in initial streaming chunk) and Feishu does not allow
+                # changing msg_type on edit. Fall back to post with markdown content
+                # so the message stays visible (tables won't render in post md, but
+                # remaining content renders correctly instead of going blank).
+                logger.warning(
+                    "[Feishu] Plain-text update rejected (likely msg_type mismatch on "
+                    "streaming edit); falling back to post markdown"
+                )
+                fallback_body = self._build_update_message_body(
+                    msg_type="post",
+                    content=_build_markdown_post_payload(content),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
             if result.success:
                 result.message_id = message_id
             return result
@@ -4373,14 +4390,112 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    @staticmethod
+    def _parse_markdown_table_to_card_element(table_text: str):
+        """Convert a markdown table block to a Feishu card 'table' element dict.
+
+        Parses header row (line 1), skips separator row (line 2), and converts
+        all data rows to card-compatible rows.
+
+        Feishu card table requires:
+          - ``page_size`` (int): rows per page (required)
+          - ``header_row`` with ``cells``: each cell is ``{"text": {"tag": "plain_text", "content": ...}}``
+          - ``columns`` with ``data_type``, ``name`` (unique key), ``display_name``, ``width``
+          - ``rows``: list of ``{"cells": [...]}`` where each cell is ``{"text": {"tag": "plain_text", ...}}``
+        """
+        lines = table_text.strip().split("\n")
+        if len(lines) < 2:
+            return None
+
+        header_cells = [c.strip() for c in lines[0].strip("|").split("|")]
+        if not header_cells:
+            return None
+
+        data_rows: List[Dict[str, Any]] = []
+        for line in lines[2:]:
+            line = line.strip()
+            if not line:
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) == len(header_cells):
+                data_rows.append({
+                    "cells": [
+                        {"text": {"tag": "plain_text", "content": cell}}
+                        for cell in cells
+                    ]
+                })
+
+        return {
+            "tag": "table",
+            "page_size": max(len(data_rows) + 1, 6),
+            "row_height": "low",
+            "header_row": {
+                "cells": [
+                    {"text": {"tag": "plain_text", "content": h}}
+                    for h in header_cells
+                ]
+            },
+            "columns": [
+                {
+                    "data_type": "text",
+                    "name": f"col_{i}",
+                    "display_name": [{"tag": "plain_text", "content": h}],
+                    "width": "auto",
+                }
+                for i, h in enumerate(header_cells)
+            ],
+            "rows": data_rows,
+        }
+
+
+    @staticmethod
+    def _build_table_card_payload(content: str) -> str:
+        """Build a Feishu interactive card JSON string from markdown content.
+
+        Feishu's post-type 'md' elements do not render markdown tables.  This
+        function parses the content, extracts markdown-table blocks, and converts
+        each one into a native Feishu card ``table`` element while rendering
+        non-table portions as card ``markdown`` elements.
+        """
+        # Split content at markdown table boundaries.
+        # Each table is: header row, separator row (/^|[-: |]+|$/), body rows.
+        parts = re.split(
+            r"(\n?(?:^\|.+\|\n\|[-: |]+\|\n(?:^\|.+\|\n?)+))",
+            content,
+            flags=re.MULTILINE,
+        )
+
+        elements: List[Dict[str, Any]] = []
+
+        for i, part in enumerate(parts):
+            stripped = part.strip()
+            if not stripped:
+                continue
+
+            # Table parts have odd indices because re.split() with a capturing
+            # group interleaves separators (tables) between text segments.
+            if i % 2 == 1:
+                table_elem = FeishuAdapter._parse_markdown_table_to_card_element(stripped)
+                if table_elem:
+                    elements.append(table_elem)
+                else:
+                    # Parse failure — render whole block as markdown
+                    elements.append({"tag": "markdown", "content": stripped})
+            else:
+                # Ensure we don't lose markdown formatting between tables
+                elements.append({"tag": "markdown", "content": stripped})
+
+        if not elements:
+            elements = [{"tag": "markdown", "content": content}]
+
+        card = {"config": {"wide_screen_mode": True}, "elements": elements}
+        return json.dumps(card, ensure_ascii=False)
+
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
+        # Route markdown content (including tables) through the post path.
+        # Markdown tables in post 'md' elements render correctly on Feishu clients.
+        if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_TABLE_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

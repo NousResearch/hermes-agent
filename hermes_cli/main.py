@@ -1429,36 +1429,16 @@ def _tui_need_npm_install(root: Path) -> bool:
     if not marker.is_file():
         return True
 
-    # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
-    # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
-    try:
-        wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return lock.stat().st_mtime > marker.stat().st_mtime
-
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
-
-    for name, pkg in wanted.items():
-        if not name:
-            continue
-
-        if not isinstance(pkg, dict):
-            continue
-
-        if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
-            return True
-
-    return False
+    # In a monorepo with npm workspaces, a full lockfile-vs-hidden-lock
+    # comparison is unreliable: the root lockfile lists deps for ALL
+    # workspaces (desktop, web, …), but a scoped ``npm ci --workspace
+    # ui-tui`` only installs the TUI's transitive deps.  The ``@hermes/ink``
+    # sentinel above already catches a missing or stale TUI install; here we
+    # only verify that the hidden lockfile is not older than the root
+    # lockfile, which handles the case where ``hermes update`` ran ``npm ci``
+    # at the workspace root (refreshing the hidden lock) without touching
+    # ``@hermes/ink``'s package.json.
+    return lock.stat().st_mtime > marker.stat().st_mtime
 
 
 _TUI_BUILD_INPUT_DIRS = (
@@ -1468,7 +1448,6 @@ _TUI_BUILD_INPUT_DIRS = (
 
 _TUI_BUILD_INPUT_FILES = (
     "package.json",
-    "package-lock.json",
     "tsconfig.json",
     "tsconfig.build.json",
     "babel.compiler.config.cjs",
@@ -4465,10 +4444,6 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         mp = web_dir / meta
         if mp.exists() and mp.stat().st_mtime > dist_mtime:
             return True
-    # Workspace root lockfile (single package-lock.json covers all workspaces).
-    root_lock = project_root / "package-lock.json"
-    if root_lock.exists() and root_lock.stat().st_mtime > dist_mtime:
-        return True
     return False
 
 

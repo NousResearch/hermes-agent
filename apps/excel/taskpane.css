@@ -1,0 +1,293 @@
+:root {
+  color-scheme: light;
+  font-family: "Aptos", "Segoe UI", Arial, sans-serif;
+  background: #f7f7f4;
+  color: #1f2933;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #b8c0c8;
+  background: #ffffff;
+  color: #1f2933;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #64748b;
+}
+
+button.primary {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: white;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100vh;
+  padding: 14px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #f7f7f4;
+  padding: 4px 0 6px;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.topbar-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #f3f4f6;
+  border-color: #b8c0c8;
+  color: #374151;
+}
+
+.topbar-actions button:hover {
+  background: #e5e7eb;
+  border-color: #64748b;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+p {
+  margin: 4px 0 0;
+}
+
+#status {
+  color: #5f6b7a;
+  font-size: 13px;
+}
+
+.dropzone {
+  position: relative;
+  display: block;
+  min-height: 38px;
+  padding: 10px 12px;
+  border: 1px dashed #8996a3;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #546179;
+  text-align: left;
+  font-size: 13px;
+}
+
+.dropzone.dragover {
+  border-color: #0f766e;
+  background: #ecfdf5;
+}
+
+.composer.dragover .dropzone,
+.composer.dragover textarea {
+  border-color: #0f766e;
+  background: #ecfdf5;
+}
+
+.dropzone input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.dropzone span {
+  display: block;
+}
+
+.dropzone span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #d7dde3;
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 160px;
+  padding: 4px 0;
+  overflow-y: auto;
+}
+
+.message {
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #d7dde3;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message.user {
+  border-color: #b7c9ff;
+  background: #f0f5ff;
+}
+
+.message.hermes {
+  border-color: #badbcc;
+  background: #f2fbf6;
+}
+
+.composer {
+  display: grid;
+  gap: 8px;
+}
+
+.work-indicator {
+  display: grid;
+  grid-template-columns: 24px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #99c2b9;
+  border-radius: 8px;
+  background: #eefaf6;
+  color: #164e45;
+  font-size: 13px;
+}
+
+.work-indicator[hidden] {
+  display: none;
+}
+
+.work-indicator strong,
+.work-indicator span {
+  display: block;
+}
+
+.work-indicator span {
+  margin-top: 2px;
+  color: #47615d;
+  font-size: 12px;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 3px solid #b9d8d1;
+  border-top-color: #0f766e;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #b8c0c8;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.actions {
+  display: block;
+}
+
+.actions .primary {
+  width: 100%;
+}
+
+.review {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: #546179;
+  cursor: pointer;
+}
+
+.review input {
+  margin: 0;
+}
+
+button.ghost {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #546179;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+button.ghost:hover {
+  background: #e5e7eb;
+  border-color: #b8c0c8;
+}
+
+.pending-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.pending-actions button {
+  font-size: 13px;
+  padding: 6px 14px;
+}
+
+.pending-actions .primary {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: white;
+}

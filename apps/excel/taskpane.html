@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes for Excel</title>
+    <link rel="stylesheet" href="./taskpane.css" />
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <h1>Hermes</h1>
+          <p id="status">Starting Excel bridge...</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="undoButton" type="button" title="Undo the last workbook change Hermes made">Undo</button>
+          <button id="clearButton" type="button" title="Clear this chat">Clear</button>
+        </div>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="chatForm" class="composer" aria-label="Hermes chat composer">
+        <section id="workIndicator" class="work-indicator" hidden aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <div>
+            <strong id="workStage">Working</strong>
+            <span id="workElapsed">0:00</span>
+          </div>
+          <button id="cancelButton" type="button" class="ghost" hidden>Cancel</button>
+        </section>
+        <label class="review"><input type="checkbox" id="reviewToggle" /> Review changes before applying</label>
+        <div id="dropzone" class="dropzone">
+          <input id="fileInput" type="file" multiple accept=".pdf,.xlsx,.xls,.csv,.txt,.doc,.docx,.png,.jpg,.jpeg" />
+          <span id="dropLabel">Drop files here or click to attach</span>
+        </div>
+        <ul id="fileList" class="file-list"></ul>
+        <textarea id="prompt" rows="3" placeholder="Ask Hermes to edit this workbook..."></textarea>
+        <div class="actions">
+          <button id="sendButton" type="submit" class="primary">Send</button>
+        </div>
+      </form>
+    </main>
+    <script type="module" src="./taskpane.js"></script>
+  </body>
+</html>

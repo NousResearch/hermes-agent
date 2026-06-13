@@ -287,7 +287,8 @@ export const es: Translations = {
     nameRule:
       "Solo letras minúsculas, dígitos, _ y -; debe comenzar con una letra o dígito; hasta 64 caracteres.",
     invalidName: "Nombre de perfil no válido",
-    cloneFromDefault: "Clonar configuración del perfil predeterminado",
+    cloneFrom: "Clonar desde el perfil",
+    cloneFromNone: "Ninguno (vacío)",
     allProfiles: "Perfiles",
     noProfiles: "No se encontraron perfiles.",
     defaultBadge: "predeterminado",

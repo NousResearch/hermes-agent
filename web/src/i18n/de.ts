@@ -286,8 +286,8 @@ export const de: Translations = {
     nameRequired: "Name ist erforderlich",
     nameRule:
       "Nur Kleinbuchstaben, Ziffern, _ und -; muss mit einem Buchstaben oder einer Ziffer beginnen; maximal 64 Zeichen.",
-    invalidName: "Ungültiger Profilname",
-    cloneFromDefault: "Konfiguration vom Standardprofil klonen",
+    invalidName: "Ungültiger Profilname",    cloneFrom: "Konfiguration klonen von",
+    cloneFromNone: "Keine (leer)",
     allProfiles: "Profile",
     noProfiles: "Keine Profile gefunden.",
     defaultBadge: "Standard",

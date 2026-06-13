@@ -2633,7 +2633,7 @@ class TestNewEndpoints:
 
         resp = self.client.post(
             "/api/profiles",
-            json={"name": "writer", "clone_from_default": False},
+            json={"name": "writer", "clone_from": None},
         )
 
         assert resp.status_code == 200
@@ -2641,7 +2641,7 @@ class TestNewEndpoints:
         assert wrapper_path.exists()
         assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
 
-    def test_profiles_create_with_clone_from_default_copies_default_skills(self, monkeypatch):
+    def test_profiles_create_with_clone_from_copies_source_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.profiles as profiles_mod
 
@@ -2652,7 +2652,7 @@ class TestNewEndpoints:
 
         resp = self.client.post(
             "/api/profiles",
-            json={"name": "cloned", "clone_from_default": True},
+            json={"name": "cloned", "clone_from": "default"},
         )
 
         assert resp.status_code == 200
@@ -2685,6 +2685,28 @@ class TestNewEndpoints:
         )
         assert cloned_skill.exists()
 
+    def test_profiles_create_clone_all_from_named_source(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        assert self.client.post("/api/profiles", json={"name": "full-src"}).status_code == 200
+        source_dir = get_hermes_home() / "profiles" / "full-src"
+        (source_dir / "config.yaml").write_text("model:\n  provider: source-only\n", encoding="utf-8")
+        (source_dir / "workspace" / "artifact.txt").parent.mkdir(parents=True, exist_ok=True)
+        (source_dir / "workspace" / "artifact.txt").write_text("copied", encoding="utf-8")
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "full-copy", "clone_from": "full-src", "clone_all": True},
+        )
+
+        assert resp.status_code == 200
+        target_dir = get_hermes_home() / "profiles" / "full-copy"
+        assert (target_dir / "config.yaml").read_text(encoding="utf-8") == "model:\n  provider: source-only\n"
+        assert (target_dir / "workspace" / "artifact.txt").read_text(encoding="utf-8") == "copied"
+
     def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.profiles as profiles_mod
@@ -2701,7 +2723,7 @@ class TestNewEndpoints:
 
         resp = self.client.post(
             "/api/profiles",
-            json={"name": "fresh", "clone_from_default": False},
+            json={"name": "fresh", "clone_from": None},
         )
 
         assert resp.status_code == 200

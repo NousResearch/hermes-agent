@@ -552,7 +552,8 @@ export const api = {
     }),
   createProfile: (body: {
     name: string;
-    clone_from_default: boolean;
+    clone_from?: string | null;
+    clone_from_default?: boolean;
     clone_all?: boolean;
     no_skills?: boolean;
     description?: string;

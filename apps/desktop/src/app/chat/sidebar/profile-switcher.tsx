@@ -284,6 +284,7 @@ export function ProfileRail() {
           selectProfile(name)
         }}
         open={createOpen}
+        profiles={profiles}
       />
 
       <RenameProfileDialog

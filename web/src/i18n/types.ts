@@ -354,7 +354,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;

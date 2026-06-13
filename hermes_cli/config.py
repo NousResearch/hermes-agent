@@ -5356,6 +5356,31 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
 
+    # ── Check for fallback keys mistakenly nested under model: ───────────
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        for nested_key in ("fallback_providers", "fallback_model"):
+            if nested_key in model_cfg:
+                if nested_key == "fallback_providers":
+                    example = (
+                        f"  {nested_key}:\n"
+                        "    - provider: ...\n"
+                        "      model: ..."
+                    )
+                else:
+                    example = (
+                        f"  {nested_key}:\n"
+                        "    provider: ...\n"
+                        "    model: ..."
+                    )
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"{nested_key} is nested under model: - move it to the top level",
+                    f"Move {nested_key} to the top level of config.yaml:\n"
+                    f"{example}\n"
+                    "It still works for compatibility, but this placement is deprecated.",
+                ))
+
     # ── fallback_model: single dict OR list of dicts (chain) ─────────────
     fb = config.get("fallback_model")
     if fb is not None:
@@ -5413,7 +5438,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
         ))
 
     # ── model section: should exist when custom_providers is configured ──
-    model_cfg = config.get("model")
     if cp and not model_cfg:
         issues.append(ConfigIssue(
             "warning",

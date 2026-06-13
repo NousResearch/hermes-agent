@@ -170,6 +170,37 @@ class TestFallbackModelValidation:
         assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
 
 
+class TestNestedModelFallbackValidation:
+    """Fallback keys nested under model still work, but should warn."""
+
+    def test_nested_fallback_providers_warns_to_move_to_top_level(self):
+        issues = validate_config_structure({
+            "model": {
+                "provider": "openai",
+                "default": "gpt-5",
+                "fallback_providers": [
+                    {"provider": "openrouter", "model": "fallback-model"},
+                ],
+            },
+        })
+
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("fallback_providers" in i.message and "top level" in i.message for i in warnings)
+        assert any("still works" in i.hint and "deprecated" in i.hint for i in warnings)
+
+    def test_nested_fallback_model_warns_to_move_to_top_level(self):
+        issues = validate_config_structure({
+            "model": {
+                "provider": "openai",
+                "default": "gpt-5",
+                "fallback_model": {"provider": "openrouter", "model": "fallback-model"},
+            },
+        })
+
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("fallback_model" in i.message and "top level" in i.message for i in warnings)
+
+
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""
 

@@ -68,3 +68,32 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
     convert.assert_called_once_with(str(out))
+
+
+def test_minimax_feishu_converts_to_opus_voice(tmp_path, monkeypatch):
+    out = tmp_path / "speech.mp3"
+    opus = tmp_path / "speech.ogg"
+
+    def fake_convert(path: str) -> str:
+        assert path == str(out)
+        opus.write_bytes(b"ogg")
+        return str(opus)
+
+    convert = Mock(side_effect=fake_convert)
+
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "feishu")
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "minimax"})
+    monkeypatch.setattr(
+        tts_tool,
+        "_generate_minimax_tts",
+        lambda _text, _output, _cfg: (_ := Path(_output).write_bytes(b"mp3")) or _output,
+    )
+    monkeypatch.setattr(tts_tool, "_convert_to_opus", convert)
+
+    result = json.loads(tts_tool.text_to_speech_tool("hello", output_path=str(out)))
+
+    assert result["success"] is True
+    assert result["file_path"] == str(opus)
+    assert result["voice_compatible"] is True
+    assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
+    convert.assert_called_once_with(str(out))

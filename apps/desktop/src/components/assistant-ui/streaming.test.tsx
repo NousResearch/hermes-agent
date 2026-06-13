@@ -58,9 +58,9 @@ Element.prototype.animate = function animate() {
   } as unknown as Animation
 }
 
-// jsdom returns 0 for offset*; the virtualizer reads those to size its
+// jsdom returns 0 for offset*; some layout code reads those to size the
 // viewport. Fall through to client* (which tests can override) or a sane
-// default so virtualized items render.
+// default so message rows render with non-zero dimensions.
 function stubOffsetDimension(
   prop: 'offsetHeight' | 'offsetWidth',
   clientProp: 'clientHeight' | 'clientWidth',
@@ -280,20 +280,6 @@ function StreamingHarness() {
   )
 }
 
-function StaticThreadHarness() {
-  const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistantMessage('complete response', false)],
-    isRunning: false,
-    onNew: async () => {}
-  })
-
-  return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread />
-    </AssistantRuntimeProvider>
-  )
-}
-
 function TodoHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -435,222 +421,11 @@ describe('assistant-ui streaming renderer', () => {
     expect(screen.getByRole('alert').textContent).toContain('OpenRouter rejected the request (403).')
   })
 
-  it('does not pull the viewport back down after the user scrolls up during streaming', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-    await wait(0)
-
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
-  })
-
-  it('does not auto-follow idle layout shifts', async () => {
-    const { container } = render(<StaticThreadHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
-  })
-
-  it('does not follow streaming content growth even while parked at the bottom', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let clientHeight = 200
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', {
-      configurable: true,
-      get: () => clientHeight
-    })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    // Park the user at the bottom of the current content.
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-
-    clientHeight = 240
-
-    await act(async () => {
-      viewport.scrollTop = 760
-      fireEvent.scroll(viewport)
-    })
-
-    // Content grows as tokens stream in. Streaming auto-follow is removed, so
-    // the viewport must NOT chase the new bottom — it stays where the user
-    // last left it.
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(760)
-  })
-
-  it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-    await wait(0)
-
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
-  })
-
-  it('does not snap to the bottom on final code-highlight growth after a run completes', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-
-    await wait(650)
-
-    // Completion re-measures (Shiki highlight) and grows the content. The
-    // post-run bottom lock is removed, so the viewport stays put instead of
-    // snapping to the new bottom.
-    scrollHeight = 1_700
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(800)
-  })
-
-  it('does not restart bottom-follow after completion when the user scrolled up', async () => {
-    const { container } = render(<StreamingHarness />)
-
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
-
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
-    })
-
-    await wait(80)
-
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
-    })
-
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
-    })
-
-    await wait(650)
-
-    scrollHeight = 1_700
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
-  })
+  // Scroll behavior (follow-at-bottom, escape-on-scroll-up, re-engage) is owned
+  // by the use-stick-to-bottom library and covered by its own test suite. We
+  // don't re-assert its scrollTop mechanics here — doing so in jsdom (no real
+  // layout, spring animation via rAF) only produces brittle change-detector
+  // tests. The rendering/streaming-content tests below remain the contract.
 
   it('renders an incomplete streaming fenced code block as a code card', async () => {
     const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)

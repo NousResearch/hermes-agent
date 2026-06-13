@@ -9711,7 +9711,71 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
             GROUP BY model, billing_provider
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
-        rows = [dict(r) for r in cur.fetchall()]
+        raw_rows = [dict(r) for r in cur.fetchall()]
+
+        # Session rows can be created before the first billable provider call
+        # finishes. If that early row records only the model name, and a later
+        # row for the same model has real accounting + billing_provider, the
+        # Models page used to show a duplicate "0 tokens / — API calls" card
+        # next to the real provider card. Fold those session-only rows into
+        # the single accounted provider row when the ownership is unambiguous.
+        rows_by_model: Dict[str, List[Dict[str, Any]]] = {}
+        for row in raw_rows:
+            rows_by_model.setdefault(row.get("model") or "", []).append(row)
+
+        rows: List[Dict[str, Any]] = []
+        for model_rows in rows_by_model.values():
+            provider_rows = [r for r in model_rows if r.get("billing_provider")]
+            if len(provider_rows) == 1:
+                target = provider_rows[0]
+                for row in model_rows:
+                    if row is target or row.get("billing_provider"):
+                        continue
+                    has_usage = any(
+                        (row.get(key) or 0) != 0
+                        for key in (
+                            "input_tokens",
+                            "output_tokens",
+                            "cache_read_tokens",
+                            "reasoning_tokens",
+                            "estimated_cost",
+                            "actual_cost",
+                            "api_calls",
+                            "tool_calls",
+                        )
+                    )
+                    if has_usage:
+                        continue
+                    target["sessions"] = (target.get("sessions") or 0) + (row.get("sessions") or 0)
+                    target["last_used_at"] = max(target.get("last_used_at") or 0, row.get("last_used_at") or 0)
+                    total_tokens = (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
+                    sessions = target.get("sessions") or 0
+                    target["avg_tokens_per_session"] = total_tokens / sessions if sessions else 0
+                rows.append(target)
+                rows.extend(
+                    r for r in model_rows
+                    if r is not target
+                    and (r.get("billing_provider") or any(
+                        (r.get(key) or 0) != 0
+                        for key in (
+                            "input_tokens",
+                            "output_tokens",
+                            "cache_read_tokens",
+                            "reasoning_tokens",
+                            "estimated_cost",
+                            "actual_cost",
+                            "api_calls",
+                            "tool_calls",
+                        )
+                    ))
+                )
+            else:
+                rows.extend(model_rows)
+
+        rows.sort(
+            key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+            reverse=True,
+        )
 
         models = []
         for row in rows:

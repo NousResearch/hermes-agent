@@ -3277,6 +3277,56 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_models_analytics_merges_session_only_duplicate_into_accounted_provider(self):
+        """Session-only model rows should not render as duplicate zero-token cards.
+
+        Direct-provider-on-OpenRouter sessions can leave one row with only
+        ``model`` populated and another row with token/API accounting plus
+        ``billing_provider``. The Models dashboard should show one provider
+        card, not a real card plus a misleading duplicate empty card.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="deepseek-session-only",
+                source="cli",
+                model="deepseek/deepseek-v4-flash",
+            )
+            db.create_session(
+                session_id="deepseek-accounted",
+                source="cli",
+                model="deepseek/deepseek-v4-flash",
+            )
+            db.update_token_counts(
+                "deepseek-accounted",
+                input_tokens=20_000,
+                output_tokens=7_100,
+                billing_provider="openrouter",
+                api_call_count=9,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+
+        models = resp.json()["models"]
+        deepseek_rows = [
+            row for row in models
+            if row["model"] == "deepseek/deepseek-v4-flash"
+        ]
+
+        assert len(deepseek_rows) == 1
+        row = deepseek_rows[0]
+        assert row["provider"] == "openrouter"
+        assert row["sessions"] == 2
+        assert row["input_tokens"] == 20_000
+        assert row["output_tokens"] == 7_100
+        assert row["api_calls"] == 9
+        assert row["avg_tokens_per_session"] == 13_550
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

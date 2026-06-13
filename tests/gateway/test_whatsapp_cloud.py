@@ -48,6 +48,8 @@ def _make_adapter(**overrides):
     adapter._webhook_path = "/whatsapp/webhook"
     adapter._health_path = "/health"
     adapter._api_version = overrides.pop("api_version", "v20.0")
+    adapter._calling_sidecar_url = overrides.pop("calling_sidecar_url", "")
+    adapter._calling_sidecar_timeout = overrides.pop("calling_sidecar_timeout", 10.0)
     adapter._runner = None
     adapter._http_client = None
 
@@ -288,6 +290,141 @@ class TestSendText:
         result = await adapter.send("15551234567", "hi")
         assert result.success is False
         assert "boom" in result.error
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp Calling sidecar client
+# ---------------------------------------------------------------------------
+
+class TestCallingSidecarClient:
+    def test_init_reads_calling_sidecar_config_from_extra(self, monkeypatch):
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        monkeypatch.delenv("WHATSAPP_CLOUD_CALLING_SIDECAR_URL", raising=False)
+        monkeypatch.delenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT", raising=False)
+
+        config = MagicMock()
+        config.extra = {
+            "phone_number_id": "123",
+            "access_token": "tok",
+            "calling_sidecar_url": "http://127.0.0.1:8787/",
+            "calling_sidecar_timeout": "2.5",
+        }
+
+        adapter = WhatsAppCloudAdapter(config)
+
+        assert adapter._calling_sidecar_url == "http://127.0.0.1:8787"
+        assert adapter._calling_sidecar_timeout == 2.5
+        assert adapter._calling_sidecar_enabled() is True
+
+    def test_gateway_env_overrides_populate_calling_sidecar(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        monkeypatch.setenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "phone-123")
+        monkeypatch.setenv("WHATSAPP_CLOUD_ACCESS_TOKEN", "token-123")
+        monkeypatch.setenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_URL",
+            "http://127.0.0.1:8787",
+        )
+        monkeypatch.setenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT", "4.25")
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        extra = config.platforms[Platform.WHATSAPP_CLOUD].extra
+        assert extra["phone_number_id"] == "phone-123"
+        assert extra["access_token"] == "token-123"
+        assert extra["calling_sidecar_url"] == "http://127.0.0.1:8787"
+        assert extra["calling_sidecar_timeout"] == 4.25
+
+    @pytest.mark.asyncio
+    async def test_disabled_without_url(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is None
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_request_posts_offer_and_returns_answer(self):
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_timeout=2.5,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "call_id": "call-1",
+                    "type": "answer",
+                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+                    "audio": {
+                        "codec": "opus",
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                    },
+                },
+            )
+        )
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is not None
+        assert answer.call_id == "call-1"
+        assert answer.sdp.startswith("v=0")
+        assert answer.audio["codec"] == "opus"
+        adapter._http_client.post.assert_awaited_once()
+        call = adapter._http_client.post.call_args
+        assert call.args[0] == "http://127.0.0.1:8787/offer"
+        assert call.kwargs["timeout"] == 2.5
+        assert call.kwargs["json"] == {
+            "call_id": "call-1",
+            "type": "offer",
+            "sdp": "v=0\r\n",
+        }
+
+    @pytest.mark.asyncio
+    async def test_request_requires_connected_http_client(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is None
+
+    @pytest.mark.asyncio
+    async def test_request_rejects_non_200(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(503, {"error": "sidecar down"})
+        )
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [
+        {"type": "offer", "sdp": "v=0"},
+        {"type": "answer"},
+        {"type": "answer", "sdp": ""},
+        ["not", "an", "object"],
+    ])
+    async def test_request_rejects_invalid_answer(self, body):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, body)
+        )
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is None
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +940,7 @@ class TestHealth:
         assert body["phone_number_id"] == "555"
         assert body["verify_token_configured"] is True
         assert body["app_secret_configured"] is True
+        assert body["calling_sidecar_configured"] is False
         assert body["accepted"] == 0
         assert body["duplicates"] == 0
         assert body["rejected_signature"] == 0

@@ -24,6 +24,7 @@ afterEach(cleanup)
 // state stays stale while the DOM already holds the text.
 function Harness({
   busy = false,
+  disabled = false,
   queued = [],
   onSubmit,
   onQueue,
@@ -31,6 +32,7 @@ function Harness({
   onDrain
 }: {
   busy?: boolean
+  disabled?: boolean
   queued?: readonly string[]
   onSubmit: (text: string) => void
   onQueue: (text: string) => void
@@ -52,6 +54,10 @@ function Harness({
   }
 
   const submitDraft = () => {
+    if (disabled) {
+      return
+    }
+
     const editor = editorRef.current
     if (editor) {
       const domText = composerPlainText(editor)
@@ -83,6 +89,10 @@ function Harness({
 
       const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+
+      if (disabled) {
+        return
+      }
 
       if (!busy && !hasLivePayload && queued.length > 0) {
         onDrain()
@@ -184,6 +194,25 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     })
 
     expect(onDrain).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('keeps reconnect drafts editable but blocks Enter submit until the gateway returns', async () => {
+    const onSubmit = vi.fn()
+    const onDrain = vi.fn()
+    const { getByTestId } = render(
+      <Harness disabled onCancel={vi.fn()} onDrain={onDrain} onQueue={vi.fn()} onSubmit={onSubmit} queued={['queued-1']} />
+    )
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'draft while reconnecting'
+      fireEvent.input(editor)
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(editor.textContent).toBe('draft while reconnecting')
+    expect(onDrain).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 })

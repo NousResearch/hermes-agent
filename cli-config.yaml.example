@@ -29,7 +29,7 @@ model:
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
-  #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
+  #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
   #
   # Local servers (LM Studio, Ollama, vLLM, llama.cpp):
@@ -38,12 +38,20 @@ model:
   #   LM Studio is first-class and uses provider: "lmstudio".
   #   It works with both no-auth and auth-enabled server modes.
   #
-  # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
+  # Can also be overridden for a single invocation with the --provider flag.
   provider: "auto"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
+
+  # Azure Foundry keyless auth example:
+  # provider: "azure-foundry"
+  # base_url: "https://<resource>.openai.azure.com/openai/v1"
+  # auth_mode: "entra_id"      # DefaultAzureCredential: az login, managed identity, workload identity, etc.
+  # default: "gpt-4o"          # Deployment/model name
+  # entra:
+  #   scope: "https://ai.azure.com/.default"  # Optional; this is the default.
 
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
@@ -63,6 +71,20 @@ model:
   #   Set only if you want to deliberately limit individual response length.
   #
 # max_tokens: 8192
+
+  # ── Custom request headers (optional) ─────────────────────────────────────
+  #
+  # default_headers: extra HTTP headers sent on every request to an
+  #   OpenAI-compatible endpoint. User values take precedence over the
+  #   provider/SDK defaults, so this is the supported way to override the
+  #   OpenAI Python SDK's identifying headers (User-Agent: OpenAI/Python ...,
+  #   X-Stainless-*) when a custom provider sits behind a gateway/WAF that
+  #   rejects them — e.g. an upstream that returns "502 Upstream access
+  #   forbidden" for the SDK default User-Agent but accepts a plain one.
+  #   Applies on the OpenAI wire only (not native Anthropic / Bedrock).
+  #
+  # default_headers:
+  #   User-Agent: "curl/8.7.1"
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
@@ -155,7 +177,7 @@ model:
 # -----------------------------------------------------------------------------
 # Working directory behavior:
 #   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
-#   - Messaging (Telegram/Discord): Uses MESSAGING_CWD from .env (default: home)
+#   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.
@@ -393,7 +415,8 @@ prompt_caching:
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
-# browser screenshot analysis, web page summarization, and context compression.
+# browser screenshot analysis, web page summarization, TTS audio-tag insertion,
+# and context compression.
 #
 # By default these use Gemini Flash via OpenRouter or Nous Portal and are
 # auto-detected from your credentials.  You do NOT need to change anything
@@ -437,6 +460,12 @@ prompt_caching:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Gemini 3.1 TTS hidden audio-tag insertion
+#   tts_audio_tags:
+#     provider: "auto"       # empty model = your main chat model
+#     model: ""
+#     timeout: 30
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:
@@ -505,6 +534,15 @@ session_reset:
   mode: both           # "both", "idle", "daily", or "none"
   idle_minutes: 1440   # Inactivity timeout in minutes (default: 1440 = 24 hours)
   at_hour: 4           # Daily reset hour, 0-23 local time (default: 4 AM)
+
+# Maximum number of simultaneously active chat sessions across CLI, TUI,
+# dashboard chat, and messaging gateway. Set to null, 0, or omit to allow
+# unlimited concurrent sessions. When the limit is reached, new sessions get a
+# clean error while existing active sessions keep their normal behavior. This
+# top-level key takes precedence over gateway.max_concurrent_sessions. The cap
+# is a best-effort single-host/profile runtime guard; Hermes fails open if the
+# local runtime lease registry cannot be read or locked.
+max_concurrent_sessions: null
 
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
@@ -805,6 +843,22 @@ platform_toolsets:
 #       log_level: "info"       # audit verbosity
 
 # =============================================================================
+# Text-to-Speech
+# =============================================================================
+# TTS defaults to Edge TTS unless changed in ~/.hermes/config.yaml.
+# Gemini TTS supports persona/director prompt files, and Gemini 3.1 Flash TTS
+# can use a hidden auxiliary rewrite pass to insert expressive square-bracket
+# audio tags into the TTS script without showing tags in chat.
+#
+# tts:
+#   provider: "gemini"
+#   gemini:
+#     model: "gemini-3.1-flash-tts-preview"
+#     voice: "Kore"
+#     audio_tags: false
+#     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+
+# =============================================================================
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
@@ -908,6 +962,15 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Per-platform defaults can be quieter than the global setting. Telegram
+  # tunes for mobile: tool_progress and busy_ack_detail default off (no
+  # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
+  # acks or heartbeats), but interim_assistant_messages and
+  # long_running_notifications STAY ON so the user has real signal between
+  # turn start and final answer (mid-turn assistant commentary + a single
+  # edit-in-place "⏳ Working — N min" heartbeat). Override under
+  # display.platforms.telegram.
+
   # Auto-cleanup of temporary progress bubbles after the final response lands.
   # On platforms that support message deletion (currently Telegram), this
   # removes the tool-progress bubble, "⏳ Still working..." notices, and
@@ -930,6 +993,22 @@ display:
   #   true:  Send mid-turn assistant updates as separate messages (default)
   #   false: Only send the final response
   interim_assistant_messages: true
+
+  # Gateway-only long-running status heartbeats.
+  # When false, the platform does not receive periodic "⏳ Working — N min"
+  # notifications even if agent.gateway_notify_interval is non-zero. The
+  # heartbeat edits a single message in place (where the adapter supports
+  # editing) instead of posting a new bubble each interval.
+  # Default: true everywhere, including Telegram (silent agents are worse
+  # than a single edit-in-place heartbeat).
+  long_running_notifications: true
+
+  # Include detailed iteration/tool/status context in busy acknowledgments
+  # and long-running heartbeats. When true, busy acks show "iteration 21/60,
+  # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
+  # iteration 21/60, terminal". When false (Telegram default), both stay
+  # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
+  busy_ack_detail: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
@@ -1089,3 +1168,67 @@ display:
 #     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
 #
 # hooks_auto_accept: false
+
+
+# =============================================================================
+# Update Behavior
+# =============================================================================
+updates:
+  # Create a full HERMES_HOME zip before every `hermes update`.
+  # Backups land in ~/.hermes/backups/ and can be restored with `hermes import`.
+  # Off by default because large homes can add minutes to every update.
+  pre_update_backup: false
+
+  # Number of pre-update backup zips to retain.
+  backup_keep: 5
+
+  # What non-interactive updates do with local source edits in the Hermes repo.
+  # Interactive terminal updates always prompt before restoring the autostash.
+  #
+  #   stash   - auto-stash before pull, then auto-restore after success (default)
+  #   discard - drop the update-created stash after success; use only on managed
+  #             installs where local source edits should not persist
+  non_interactive_local_changes: "stash"
+
+
+# =============================================================================
+# Web Dashboard
+# =============================================================================
+# OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
+# The bundled Nous Portal plugin reads these on startup; settings here are
+# the canonical surface. Each can be overridden by an environment variable:
+#
+#   dashboard.oauth.client_id   <-  HERMES_DASHBOARD_OAUTH_CLIENT_ID
+#   dashboard.oauth.portal_url  <-  HERMES_DASHBOARD_PORTAL_URL
+#   dashboard.public_url        <-  HERMES_DASHBOARD_PUBLIC_URL
+#
+# Env wins when set to a non-empty value. This is what Fly.io's platform-
+# secret injection uses to push per-deploy client_ids without needing to
+# bake a config.yaml into the image. Empty env values are treated as unset
+# so a provisioned-but-not-populated secret can't shadow a valid entry here.
+#
+# Local dev / on-prem deploys should typically set these via config.yaml
+# (the ~/.hermes/.env file is reserved for API keys and secrets).
+#
+# dashboard:
+#   oauth:
+#     client_id: ""    # agent:{instance_id}; Portal provisions this at deploy
+#     portal_url: ""   # blank → default https://portal.nousresearch.com
+#
+#   # Force the absolute base URL the OAuth callback (and any other public
+#   # URL the dashboard hands to external systems) is built from. Set this
+#   # for deploys behind reverse proxies that don't reliably forward
+#   # X-Forwarded-Host / X-Forwarded-Proto / X-Forwarded-Prefix (manual
+#   # nginx setups, on-prem ingresses, custom-domain Fly deploys without
+#   # full proxy header chains).
+#   #
+#   # When set, the value is the complete authority: scheme + host +
+#   # optional path prefix (e.g. "https://example.com/hermes"). The OAuth
+#   # callback URL becomes "<public_url>/auth/callback" — X-Forwarded-Prefix
+#   # is IGNORED on this code path because the operator has explicitly
+#   # declared the public URL and we no longer need to guess.
+#   #
+#   # Leave empty to use the existing proxy-header reconstruction (the
+#   # default — works on Fly.io out of the box).
+#   #
+#   #   public_url: "https://example.com/hermes"

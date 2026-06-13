@@ -267,6 +267,32 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    def test_skips_nested_virtualenv_dependency_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
+            typer_skill = (
+                tmp_path
+                / "bring"
+                / "scripts"
+                / ".venv"
+                / "lib"
+                / "python3.13"
+                / "site-packages"
+                / "typer"
+                / ".agents"
+                / "skills"
+                / "typer"
+            )
+            typer_skill.mkdir(parents=True)
+            (typer_skill / "SKILL.md").write_text(
+                "---\nname: typer\ndescription: Should not be discovered.\n---\n",
+                encoding="utf-8",
+            )
+
+            skills = _find_all_skills()
+
+        assert [skill["name"] for skill in skills] == ["real-skill"]
+
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"
         skills_root = tmp_path / "skills"
@@ -345,6 +371,26 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert result["name"] == "my-skill"
+        assert "Step 1" in result["content"]
+
+    def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
+        # The on-disk directory ("alias-dir") differs from the skill's
+        # frontmatter name ("real-skill-name"). skills_list() exposes the
+        # frontmatter name, so skill_view(name) must resolve it too.
+        skill_dir = tmp_path / "alias-dir"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: real-skill-name\n"
+            "description: A skill whose directory name differs from its name.\n"
+            "---\n\n"
+            "# real-skill-name\n\n"
+            "Step 1: Do the thing.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            raw = skill_view("real-skill-name")
+        result = json.loads(raw)
+        assert result["success"] is True
         assert "Step 1" in result["content"]
 
     def test_skill_view_applies_template_vars(self, tmp_path):
@@ -932,7 +978,7 @@ class TestSkillViewPrerequisites:
 
     @pytest.mark.parametrize(
         "backend",
-        ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox"],
+        ["ssh", "daytona", "docker", "singularity", "modal"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend

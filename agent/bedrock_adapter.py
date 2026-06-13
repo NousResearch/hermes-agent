@@ -37,6 +37,19 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Ensure boto3/botocore are installed before any code in this module runs.
+# Upstream removed boto3 from [all] extras (PRs #24220, #24515); lazy_deps
+# handles on-demand installation so the Bedrock provider still works in the
+# EKS deployment without baking boto3 into the base image.
+# ---------------------------------------------------------------------------
+try:
+    from tools.lazy_deps import ensure
+    ensure("provider.bedrock", prompt=False)
+except Exception:
+    pass  # lazy_deps unavailable or install failed — let downstream imports surface the real error
+
+
+# ---------------------------------------------------------------------------
 # Lazy boto3 import — only loaded when the Bedrock provider is actually used.
 # This keeps startup fast for users who don't use Bedrock.
 # ---------------------------------------------------------------------------
@@ -193,6 +206,41 @@ def is_stale_connection_error(exc: BaseException) -> bool:
                 return True
 
     return False
+
+
+def is_streaming_access_denied_error(exc: BaseException) -> bool:
+    """Return True when AWS denied the ``bedrock:InvokeModelWithResponseStream`` action.
+
+    IAM policies scoped to ``bedrock:InvokeModel`` only (a common least-privilege
+    setup) reject ``converse_stream()`` with an ``AccessDeniedException`` whose
+    message names the streaming action, e.g.::
+
+        User: arn:aws:iam::123456789012:user/x is not authorized to perform:
+        bedrock:InvokeModelWithResponseStream on resource: ...
+
+    This is permanent for the session — retrying the stream can never succeed —
+    so callers should flip to the non-streaming ``converse()`` path (which maps
+    to ``bedrock:InvokeModel``) instead of burning retries.
+
+    Detection is deliberately message-based: boto3 surfaces this as a
+    ``ClientError`` with ``Error.Code == "AccessDeniedException"``, and the
+    AnthropicBedrock SDK wraps the same AWS response in its own exception
+    types, but both preserve the action name in the message.
+    """
+    msg = str(exc).lower()
+    if "invokemodelwithresponsestream" not in msg:
+        return False
+    # ClientError with an explicit access-denied code is the canonical form.
+    try:
+        from botocore.exceptions import ClientError
+    except ImportError:  # pragma: no cover — botocore always present with boto3
+        ClientError = None  # type: ignore[assignment]
+    if ClientError is not None and isinstance(exc, ClientError):
+        code = (getattr(exc, "response", None) or {}).get("Error", {}).get("Code", "")
+        return code in ("AccessDeniedException", "UnauthorizedException")
+    # Wrapped forms (e.g. AnthropicBedrock SDK PermissionDeniedError) — match
+    # on the authorization-failure phrasing AWS uses.
+    return "not authorized" in msg or "accessdenied" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -990,6 +1038,16 @@ def call_converse_stream(
     try:
         response = client.converse_stream(**kwargs)
     except Exception as exc:
+        if is_streaming_access_denied_error(exc):
+            # IAM allows bedrock:InvokeModel but not
+            # InvokeModelWithResponseStream — permanent for this session.
+            # Fall back to the non-streaming converse() path.
+            logger.info(
+                "bedrock: converse_stream denied by IAM on (region=%s, model=%s) — "
+                "falling back to non-streaming converse().",
+                region, model,
+            )
+            return normalize_converse_response(client.converse(**kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
                 "bedrock: stale-connection error on converse_stream(region=%s, "
@@ -1154,18 +1212,6 @@ def _extract_provider_from_arn(arn: str) -> str:
     """
     match = re.search(r"foundation-model/([^.]+)", arn)
     return match.group(1) if match else ""
-
-
-def get_bedrock_model_ids(region: str) -> List[str]:
-    """Return a flat list of available Bedrock model IDs for the given region.
-
-    Convenience wrapper around ``discover_bedrock_models()`` for use in
-    the model selection UI.
-    """
-    models = discover_bedrock_models(region)
-    return [m["id"] for m in models]
-
-
 # ---------------------------------------------------------------------------
 # Error classification — Bedrock-specific exceptions
 # ---------------------------------------------------------------------------

@@ -74,9 +74,9 @@ class DeepSeekProfile(ProviderProfile):
         # its server default (currently high).
         if isinstance(reasoning_config, dict):
             effort = (reasoning_config.get("effort") or "").strip().lower()
-            if effort in ("xhigh", "max"):
+            if effort in {"xhigh", "max"}:
                 top_level["reasoning_effort"] = "max"
-            elif effort in ("low", "medium", "high"):
+            elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
 
         return extra_body, top_level
@@ -94,6 +94,7 @@ deepseek = DeepSeekProfile(
         "deepseek-reasoner",
     ),
     base_url="https://api.deepseek.com/v1",
+    default_aux_model="deepseek-chat",
 )
 
 register_provider(deepseek)

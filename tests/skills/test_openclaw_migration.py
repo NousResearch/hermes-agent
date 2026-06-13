@@ -846,7 +846,7 @@ def test_skill_installs_cleanly_under_skills_guard():
     #                      the script never writes to that file
     #
     # Accept "caution" or "safe" — just not "dangerous" from a *real* threat.
-    assert result.verdict in ("safe", "caution", "dangerous"), f"Unexpected verdict: {result.verdict}"
+    assert result.verdict in {"safe", "caution", "dangerous"}, f"Unexpected verdict: {result.verdict}"
     KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "hermes_config_mod"}
     for f in result.findings:
         assert f.pattern_id in KNOWN_FALSE_POSITIVES, f"Unexpected finding: {f}"

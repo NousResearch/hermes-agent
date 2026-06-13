@@ -135,6 +135,12 @@ function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
   return 'command'
 }
 
+/** A `/` query is at its arg stage once it's past the command name. */
+const slashArgStage = (query: string) => query.includes(' ')
+
+/** The `/command` token of a slash query (`personality x` → `/personality`). */
+const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
+
 interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string
@@ -610,19 +616,15 @@ export function ChatBar({
     }
 
     const before = textBeforeCaret(editor)
-    let detected = detectTrigger(before ?? composerPlainText(editor))
+    const found = detectTrigger(before ?? composerPlainText(editor))
 
-    // The arg-stage popover (command name + space + args) is only useful for
-    // commands with an inline options screen. For a no-arg command it would
-    // dead-end on "No matches", so drop the trigger — the directive is already
-    // complete. (Mirrors the menu only opening at this stage when args exist.)
-    if (detected?.kind === '/' && detected.query.includes(' ')) {
-      const command = detected.query.split(/\s+/, 1)[0] ?? ''
-
-      if (!desktopSlashCommandTakesArgs(command)) {
-        detected = null
-      }
-    }
+    // The arg-stage popover is only useful for commands with an options screen.
+    // For a no-arg command it would dead-end on "No matches", so drop it — the
+    // directive is already complete.
+    const detected =
+      found?.kind === '/' && slashArgStage(found.query) && !desktopSlashCommandTakesArgs(slashCommandToken(found.query))
+        ? null
+        : found
 
     setTrigger(detected)
 
@@ -677,11 +679,11 @@ export function ChatBar({
 
   const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
 
-  // Suppress the "No matches" empty state once a slash command is past its name
-  // (arg stage): a no-arg command has nothing to offer, and a fully-typed arg
-  // is committed on Space/Tab — neither should dead-end on a popover.
+  // Suppress the "No matches" empty state once a slash command is past its name:
+  // a no-arg command has nothing to offer, and a fully-typed arg commits on
+  // Space/Tab — neither should dead-end on a popover.
   const argStageEmpty =
-    trigger?.kind === '/' && trigger.query.includes(' ') && !triggerLoading && triggerItems.length === 0
+    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
 
   const closeTrigger = () => {
     setTrigger(null)
@@ -703,13 +705,12 @@ export function ChatBar({
     }
 
     const text = `/${trigger.query.trimEnd()}`
-    const command = `/${(trigger.query.split(/\s+/, 1)[0] ?? '').toLowerCase()}`
 
     replaceTriggerWithChip({
       id: text,
       type: 'slash',
       label: text.slice(1),
-      metadata: { command, display: text, meta: '', group: '', action: '', rawText: text }
+      metadata: { command: slashCommandToken(trigger.query), display: text, meta: '', group: '', action: '', rawText: text }
     })
   }
 
@@ -865,7 +866,7 @@ export function ChatBar({
       // options step, and an arg option commits the full `/cmd arg` chip. Space
       // is slash-only (an `@` mention takes a literal space) and gated to a
       // non-empty query so a bare `/ ` still types a space.
-      const acceptOnSpace = event.key === ' ' && trigger.kind === '/' && trigger.query.trim().length > 0
+      const acceptOnSpace = event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim())
       const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
 
       if (accept) {
@@ -895,10 +896,10 @@ export function ChatBar({
     // directive chip; Enter falls through to submit (send it as-is).
     if (
       trigger?.kind === '/' &&
-      triggerItems.length === 0 &&
+      !triggerItems.length &&
       (event.key === ' ' || event.key === 'Tab') &&
-      trigger.query.includes(' ') &&
-      trigger.query.trim().length > 0
+      slashArgStage(trigger.query) &&
+      trigger.query.trim()
     ) {
       event.preventDefault()
       triggerKeyConsumedRef.current = true

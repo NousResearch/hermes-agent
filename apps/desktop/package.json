@@ -90,6 +90,7 @@
     "react-router-dom": "^7.17.0",
     "react-shiki": "^0.9.3",
     "remark-math": "^6.0.0",
+    "remend": "^1.3.0",
     "shiki": "^4.0.2",
     "streamdown": "^2.5.0",
     "tailwind-merge": "^3.5.0",

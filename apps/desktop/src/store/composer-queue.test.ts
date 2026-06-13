@@ -7,9 +7,10 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  migrateQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
-  shouldAutoDrainOnSettle,
+  shouldAutoDrain,
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
@@ -117,32 +118,53 @@ describe('composer queue store', () => {
   })
 })
 
-describe('shouldAutoDrainOnSettle', () => {
-  const base = { isBusy: false, queueLength: 1, wasBusy: true }
-
-  it('drains the next queued prompt when a turn settles', () => {
-    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+describe('migrateQueuedPrompts', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
   })
 
-  it('drains after an interrupt — the settle edge is the same', () => {
-    // Interrupting to reach a queued message is the point of the queue; the
-    // gateway emits the same settle whether the turn finished or was stopped.
-    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+  it('moves entries from a dead runtime key onto the live one', () => {
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'stranded' })
+
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(true)
+    expect(getQueuedPrompts('rt-old')).toEqual([])
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['stranded'])
+    // The dead key is dropped from the store entirely.
+    expect($queuedPromptsBySession.get()['rt-old']).toBeUndefined()
   })
 
-  it('does not drain when the queue is empty', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0 })).toBe(false)
+  it('appends after existing target entries (FIFO preserved)', () => {
+    enqueueQueuedPrompt('rt-new', { attachments: [], text: 'already here' })
+    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'migrated' })
+
+    migrateQueuedPrompts('rt-old', 'rt-new')
+
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['already here', 'migrated'])
   })
 
-  it('ignores steady busy state (no true → false transition)', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true })).toBe(false)
+  it('is a no-op when source is empty or keys match', () => {
+    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
+    expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
+  })
+})
+
+describe('shouldAutoDrain', () => {
+  it('drains whenever idle with a non-empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
   })
 
-  it('ignores busy entry (false → true, not a settle)', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true, wasBusy: false })).toBe(false)
+  it('drains on mount/reconnect with no observed busy edge', () => {
+    // The whole point of dropping the edge: a remount resets the busy ref, so an
+    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
   })
 
-  it('ignores steady idle state (was not busy)', () => {
-    expect(shouldAutoDrainOnSettle({ ...base, wasBusy: false })).toBe(false)
+  it('does not drain mid-turn', () => {
+    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
+  })
+
+  it('does not drain an empty queue', () => {
+    expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
   })
 })

@@ -2302,8 +2302,13 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
 
     candidates = []
 
-    venv_bin = project_root / "venv" / "bin"
-    if _is_dir(venv_bin):
+    venv_bin = None
+    for _venv_name in (".venv", "venv"):
+        _candidate = project_root / _venv_name / "bin"
+        if _is_dir(_candidate):
+            venv_bin = _candidate
+            break
+    if venv_bin is not None:
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))

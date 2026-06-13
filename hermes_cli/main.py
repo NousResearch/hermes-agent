@@ -6595,7 +6595,9 @@ def _recover_from_interrupted_install() -> None:
 
             uv_bin = ensure_uv()
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                from hermes_cli.gateway import _detect_venv_dir
+                _detected_venv = _detect_venv_dir()
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(_detected_venv if _detected_venv else PROJECT_ROOT / "venv")}
                 if _is_termux_env(uv_env):
                     uv_env.pop("PYTHONPATH", None)
                     uv_env.pop("PYTHONHOME", None)
@@ -6680,8 +6682,9 @@ def _is_windows() -> bool:
 
 def _venv_scripts_dir() -> Path | None:
     """Return the venv Scripts directory if we're running inside the project venv."""
-    venv_dir = PROJECT_ROOT / "venv"
-    if not venv_dir.is_dir():
+    from hermes_cli.gateway import _detect_venv_dir
+    venv_dir = _detect_venv_dir()
+    if venv_dir is None:
         return None
     scripts = venv_dir / ("Scripts" if _is_windows() else "bin")
     return scripts if scripts.is_dir() else None
@@ -8587,7 +8590,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         install_group = "all"
 
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            from hermes_cli.gateway import _detect_venv_dir as _detect_venv_dir_m
+            _detected_venv = _detect_venv_dir_m()
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_detected_venv if _detected_venv else PROJECT_ROOT / "venv")}
             if _is_termux_env(uv_env):
                 uv_env.pop("PYTHONPATH", None)
                 uv_env.pop("PYTHONHOME", None)

@@ -1722,10 +1722,98 @@ def list_authenticated_providers(
                 discover = discover.lower() not in {"false", "no", "0"}
             if api_url and api_key and discover:
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
-                    if live_models:
-                        models_list = live_models
+                    # For LM Studio, use native /api/v1/models which provides
+                    # model type (embedding vs llm) and max_context_length.
+                    if str(ep_name or '').strip().lower() == 'lmstudio':
+                        from hermes_cli.models import _lmstudio_fetch_raw_models
+                        lms_raw = _lmstudio_fetch_raw_models(
+                            api_key=api_key, base_url=api_url, timeout=3.0,
+                        )
+                        if lms_raw is not None:
+                            agent_models: list[str] = []
+                            from agent.models_dev import fetch_models_dev
+                            mdev_data = fetch_models_dev()
+                            for raw in lms_raw:
+                                if not isinstance(raw, dict):
+                                    continue
+                                mtype = str(raw.get('type') or '').strip().lower()
+                                if mtype == 'embedding':
+                                    continue
+                                # Known small-context or non-agent LLMs that
+                                # LM Studio reports with inflated context.
+                                _lk = str(raw.get('key') or raw.get('id') or '').strip().lower()
+                                if any(x in _lk for x in ['magistral', 'em_german', 'uncensored', 'real-qwen-image']):
+                                    continue
+                                key = str(raw.get('key') or raw.get('id') or '').strip()
+                                ctx_ok = True
+                                if key:
+                                    lk = key.lower()
+                                    # Strip vendor prefix (e.g. "mistralai/")
+                                    # to match models.dev entries that store
+                                    # the model under a different namespace
+                                    # (e.g. "evroc/mistralai/magistral-small").
+                                    lk_base = lk.split('/', 1)[-1] if '/' in lk else lk
+                                    _dev_ctx = None
+                                    for _pid, _pd in mdev_data.items():
+                                        if not isinstance(_pd, dict):
+                                            continue
+                                        _ms = _pd.get('models')
+                                        if not isinstance(_ms, dict):
+                                            continue
+                                        for _mid, _md in _ms.items():
+                                            if not isinstance(_md, dict):
+                                                continue
+                                            _mid_l = _mid.lower()
+                                            if _mid_l == lk or _mid_l == lk_base or _mid_l.endswith('/' + lk_base):
+                                                _lm = _md.get('limit')
+                                                if isinstance(_lm, dict):
+                                                    _ctx = _lm.get('context')
+                                                    if isinstance(_ctx, (int, float)) and _ctx > 0:
+                                                        _dev_ctx = int(_ctx)
+                                                # models.dev has explicit tool_call flag
+                                                if 'tool_call' in _md and not _md.get('tool_call'):
+                                                    ctx_ok = False
+                                                break
+                                    if _dev_ctx is not None:
+                                        # models.dev is Hermes' source of truth
+                                        ctx_ok = _dev_ctx >= 64000
+                                    else:
+                                        # Unknown to models.dev: trust LM Studio
+                                        _lms_ctx = raw.get('max_context_length')
+                                        if isinstance(_lms_ctx, (int, float)) and _lms_ctx > 0:
+                                            ctx_ok = _lms_ctx >= 64000
+                                if ctx_ok and key and key not in agent_models:
+                                    agent_models.append(key)
+                            if agent_models:
+                                models_list = agent_models
+                    else:
+                        live_models = fetch_api_models(api_key, api_url)
+                        if live_models:
+                            # Filter out embeddings, rerankers, speech, vision gen,
+                            # classifiers and other non-agent models.
+                            _agent_exclude = re.compile(
+                                r'(embed|nomic|text-embedding|e5-|bge-|gte-|'
+                                r'jina-embed|snowflake-|instructor-|mxbai-|'
+                                r'all-MiniLM|text2vec|m3e|bce-embed|UAE-Large|'
+                                r'SFR-Embedding|Cohere-embed|intfloat-|stella-|'
+                                r'reranker|colbert|cross-encoder|biencoder|'
+                                r'whisper|speech-to-text|stt-|tts-|vits|'
+                                r'stable-diffusion|sdxl|flux|dall-e|'
+                                r'classifier|sentiment|ner-|summariz|qa-|'
+                                r'reward|rm-|dpo|classify)',
+                                re.IGNORECASE,
+                            )
+                            _small_param = re.compile(
+                                r'\b(0\.5b|1b[^a-z]|2b[^a-z]|350m|500m|700m|800m)\b',
+                                re.IGNORECASE,
+                            )
+                            filtered = [
+                                m for m in live_models
+                                if not _agent_exclude.search(m)
+                                and not _small_param.search(m)
+                            ]
+                            if filtered:
+                                models_list = filtered
                 except Exception:
                     pass
 

@@ -2928,6 +2928,34 @@ def ensure_lmstudio_model_loaded(
         if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
             return loaded_ctx
 
+    # Unload any other loaded model instances first so LM Studio can free
+    # GPU/system RAM before loading a different model.
+    _loaded_ids: list[str] = []
+    for _raw in raw_models:
+        if not isinstance(_raw, dict):
+            continue
+        for _inst in _raw.get("loaded_instances") or []:
+            if isinstance(_inst, dict):
+                _iid = _inst.get("id")
+                if _iid and isinstance(_iid, str) and _iid not in _loaded_ids:
+                    _loaded_ids.append(_iid)
+    for _iid in _loaded_ids:
+        try:
+            _ub = json.dumps({"instance_id": _iid}).encode()
+            _uh = dict(headers)
+            _uh["Content-Type"] = "application/json"
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    server_root + "/api/v1/models/unload",
+                    data=_ub,
+                    headers=_uh,
+                    method="POST",
+                ),
+                timeout=5,
+            )
+        except Exception:
+            pass
+
     body = json.dumps({
         "model": model,
         "context_length": target_context_length,

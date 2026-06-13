@@ -93,21 +93,53 @@ class PerplexityWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
+    @staticmethod
+    def _search_filters() -> tuple[str, List[str]]:
+        """Read optional ``recency``/``domains`` from ``web.perplexity`` config."""
+        try:
+            from hermes_cli.config import load_config
+
+            pcfg = (load_config().get("web", {}) or {}).get("perplexity", {}) or {}
+        except Exception:  # noqa: BLE001 — config optional
+            return "", []
+        recency = str(pcfg.get("recency", "") or "").strip().lower()
+        if recency not in {"hour", "day", "week", "month", "year"}:
+            recency = ""
+        domains_raw = pcfg.get("domains") or []
+        domains = [d for d in domains_raw if isinstance(d, str) and d.strip()][:10] \
+            if isinstance(domains_raw, list) else []
+        return recency, domains
+
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
-        """Execute a Perplexity search."""
+        """Execute a Perplexity search.
+
+        Optional filters are read from config (``web.perplexity.recency`` and
+        ``web.perplexity.domains``) since the ``web_search`` tool contract is
+        fixed to ``(query, limit)``. ``recency`` is one of
+        hour|day|week|month|year; ``domains`` is an allow/deny list (prefix a
+        domain with ``-`` to exclude it).
+        """
         try:
             from tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            logger.info("Perplexity search: '%s' (limit=%d)", query, limit)
-            raw = _perplexity_search_request(
-                {
-                    "query": query,
-                    "max_results": min(limit, 20),
-                }
+            payload: Dict[str, Any] = {
+                "query": query,
+                "max_results": min(limit, 20),
+            }
+            recency, domains = self._search_filters()
+            if recency:
+                payload["search_recency_filter"] = recency
+            if domains:
+                payload["search_domain_filter"] = domains
+
+            logger.info(
+                "Perplexity search: '%s' (limit=%d, recency=%s, domains=%s)",
+                query, limit, recency or "-", domains or "-",
             )
+            raw = _perplexity_search_request(payload)
             return _normalize_perplexity_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}

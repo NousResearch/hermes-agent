@@ -901,6 +901,35 @@ TOOL_REQUEST_PRICING: Dict[str, PricingEntry] = {
         source_url="https://exa.ai/pricing",
         pricing_version="exa-2026-06",
     ),
+    # Perplexity Sonar "ask" (Chat Completions). Billed on tokens + a per-request
+    # search fee; these are CONSERVATIVE flat per-call estimates for a typical
+    # ask (~1-2K in / ~0.5-1K out + request fee), not token-exact. Status stays
+    # "estimated" so the cost line flags it as such.
+    # https://docs.perplexity.ai/guides/pricing
+    "perplexity-sonar": PricingEntry(
+        request_cost=Decimal("0.010"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-sonar-2026-06",
+    ),
+    "perplexity-sonar-pro": PricingEntry(
+        request_cost=Decimal("0.030"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-sonar-2026-06",
+    ),
+    "perplexity-sonar-reasoning": PricingEntry(
+        request_cost=Decimal("0.040"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-sonar-2026-06",
+    ),
+    "perplexity-sonar-deep-research": PricingEntry(
+        request_cost=Decimal("0.250"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-sonar-2026-06",
+    ),
 }
 
 

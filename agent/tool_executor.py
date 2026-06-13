@@ -93,24 +93,33 @@ def _emit_terminal_post_tool_call(
         pass
 
 
-def _resolve_paid_tool_billing(function_name: str):
+def _resolve_paid_tool_billing(function_name: str, function_args: dict | None = None):
     """Return ``(backend, CostResult)`` for a paid web-tool call, else None.
 
     Maps the web tools to the backend that actually served the call (resolved
     from config the same way the dispatcher does) and prices it from the list
     tariffs in :mod:`agent.usage_pricing`. Free/unpriced backends yield None.
+
+    ``perplexity_ask`` is priced by Sonar model (derived from its ``mode``
+    argument) rather than by the configured search/extract backend.
     """
-    if function_name not in ("web_search", "web_extract"):
+    if function_name not in ("web_search", "web_extract", "perplexity_ask"):
         return None
     try:
-        import tools.web_tools as _wt
         from agent.usage_pricing import estimate_tool_request_cost
 
-        backend = (
-            _wt._get_search_backend()
-            if function_name == "web_search"
-            else _wt._get_extract_backend()
-        )
+        if function_name == "perplexity_ask":
+            from plugins.web.perplexity.ask import billing_key_for_args
+
+            backend = billing_key_for_args(function_args)
+        else:
+            import tools.web_tools as _wt
+
+            backend = (
+                _wt._get_search_backend()
+                if function_name == "web_search"
+                else _wt._get_extract_backend()
+            )
         cost = estimate_tool_request_cost(backend)
         if cost.amount_usd is None:
             return None
@@ -128,7 +137,7 @@ def _accumulate_paid_tool_cost(agent, function_name: str, function_args: dict) -
     Best-effort — never raises into the tool-execution path.
     """
     try:
-        billing = _resolve_paid_tool_billing(function_name)
+        billing = _resolve_paid_tool_billing(function_name, function_args)
         if not billing:
             return
         backend, cost = billing

@@ -891,7 +891,16 @@ canvas {
 
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
+  --human-msg-line-height: 1.3;
   font-size: var(--conversation-text-font-size);
+}
+
+[data-slot='aui_user-inline-text'] {
+  line-height: var(--human-msg-line-height);
+}
+
+[data-slot='aui_edit-composer-root'] [data-slot='composer-rich-input'] {
+  line-height: var(--human-msg-line-height);
 }
 
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
@@ -900,7 +909,7 @@ canvas {
    swap) and fought stick-to-bottom when parked at the bottom. */
 .sticky-human-clamp {
   cursor: pointer;
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  max-height: calc(4 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
 }
 

@@ -62,11 +62,19 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
 
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
-            identity = _entry_identity(entry)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            chain.append(entry)
+        # Check top-level key first (legacy), then nested under ``model:``
+        # (#45309).  The nested form mirrors ``model.default`` / ``model.provider``
+        # and is the natural placement for per-model overrides.
+        model_section = config.get("model")
+        sources = [config]
+        if isinstance(model_section, dict):
+            sources.append(model_section)
+        for source in sources:
+            for entry in _iter_fallback_entries(source.get(key)):
+                identity = _entry_identity(entry)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                chain.append(entry)
 
     return chain

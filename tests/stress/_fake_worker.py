@@ -9,7 +9,6 @@ exactly the way `hermes chat -q` would be, minus the LLM cost.
 import json
 import os
 import subprocess
-import sys
 import time
 
 

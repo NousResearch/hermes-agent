@@ -11,6 +11,9 @@ The fix introduces:
     error class and returns the available output token budget.
   * _ephemeral_max_output_tokens on AIAgent — a one-shot override that
     caps the output for one retry without touching context_length.
+  * get_context_length_from_provider_error() — accepts only concrete
+    provider-reported lower context limits and refuses guessed probe-tier
+    step-downs when the provider gives no maximum.
 
 Naming note
 -----------
@@ -22,11 +25,10 @@ separate.
 
 import sys
 import os
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,7 @@ class TestParseAvailableOutputTokens:
     # ── Should NOT detect (returns None) ─────────────────────────────────
 
     def test_prompt_too_long_is_not_output_cap_error(self):
-        """'prompt is too long' errors must NOT be caught — they need context halving."""
+        """'prompt is too long' errors must NOT be caught — they need context-overflow recovery."""
         msg = "prompt is too long: 205000 tokens > 200000 maximum"
         assert self._parse(msg) is None
 
@@ -99,6 +101,49 @@ class TestParseAvailableOutputTokens:
     def test_rate_limit_error(self):
         msg = "rate_limit_error: too many requests per minute"
         assert self._parse(msg) is None
+
+
+# ---------------------------------------------------------------------------
+# Context-overflow recovery — only trust provider-reported limits
+# ---------------------------------------------------------------------------
+
+class TestContextOverflowLimitSelection:
+    """Context-overflow recovery must not invent a lower window size.
+
+    Some providers only say "input exceeds the context window" without telling
+    Hermes what the actual maximum is.  In that case we may compress the
+    conversation, but must not silently probe-step from a user-configured 1M
+    window down to 256K/128K/64K/etc.
+    """
+
+    def test_generic_overflow_without_provider_limit_keeps_context_length(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+        from agent.model_metadata import get_next_probe_tier
+        from agent.model_metadata import parse_context_limit_from_error
+
+        old_ctx = 1_000_000
+        error_msg = (
+            "Your input exceeds the context window of this model. "
+            "Please adjust your input and try again."
+        )
+
+        assert parse_context_limit_from_error(error_msg) is None
+        assert get_next_probe_tier(old_ctx) == 256_000
+        assert get_context_length_from_provider_error(error_msg, old_ctx) is None
+
+    def test_explicit_provider_limit_still_selects_that_limit(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        error_msg = "prompt is too long: 300000 tokens > 272000 maximum"
+
+        assert get_context_length_from_provider_error(error_msg, 1_000_000) == 272_000
+
+    def test_reported_limit_not_lower_than_current_is_ignored(self):
+        from agent.model_metadata import get_context_length_from_provider_error
+
+        error_msg = "maximum context length is 1000000 tokens"
+
+        assert get_context_length_from_provider_error(error_msg, 272_000) is None
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +306,6 @@ class TestContextNotHalvedOnOutputCapError:
         """On 'max_tokens too large' error, _ephemeral_max_output_tokens is set
         and compressor.context_length is left unchanged."""
         from agent.model_metadata import parse_available_output_tokens_from_error
-        from agent.model_metadata import get_next_probe_tier
 
         error_msg = (
             "max_tokens: 128000 > context_window: 200000 "
@@ -282,19 +326,16 @@ class TestContextNotHalvedOnOutputCapError:
         assert agent.context_compressor.context_length == old_ctx
         assert agent._ephemeral_max_output_tokens == 19_936
 
-    def test_prompt_too_long_still_triggers_probe_tier(self):
-        """Genuine prompt-too-long errors must still use get_next_probe_tier."""
+    def test_prompt_too_long_with_explicit_limit_uses_provider_limit(self):
+        """Prompt-too-long errors only change context_length when they report a concrete limit."""
+        from agent.model_metadata import get_context_length_from_provider_error
         from agent.model_metadata import parse_available_output_tokens_from_error
-        from agent.model_metadata import get_next_probe_tier
 
         error_msg = "prompt is too long: 205000 tokens > 200000 maximum"
 
         available_out = parse_available_output_tokens_from_error(error_msg)
         assert available_out is None, "prompt-too-long must not be caught by output-cap parser"
-
-        # The old halving path is still used for this class of error
-        new_ctx = get_next_probe_tier(200_000)
-        assert new_ctx == 128_000
+        assert get_context_length_from_provider_error(error_msg, 1_000_000) == 200_000
 
     def test_output_cap_error_safety_margin(self):
         """The ephemeral value includes a 64-token safety margin below available_out."""

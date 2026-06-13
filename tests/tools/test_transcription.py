@@ -4,12 +4,10 @@ Tests cover provider selection, config loading, validation, and transcription
 dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 """
 
-import json
 import os
 import tempfile
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -109,7 +107,6 @@ class TestValidateAudioFile:
         assert _validate_audio_file(str(f)) is None
 
     def test_too_large(self, tmp_path):
-        import stat as stat_mod
         f = tmp_path / "big.ogg"
         f.write_bytes(b"x")
         from tools.transcription_tools import _validate_audio_file, MAX_FILE_SIZE
@@ -292,7 +289,7 @@ class TestNormalizeLocalModel:
 
     def test_local_transcribe_normalises_model(self):
         """transcribe_audio with local provider must not pass 'whisper-1' to WhisperModel."""
-        import tempfile, os
+        import os
         from unittest.mock import MagicMock, patch
 
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:

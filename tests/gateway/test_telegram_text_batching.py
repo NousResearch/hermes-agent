@@ -6,12 +6,14 @@ from the same session and aggregate them before dispatching.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+from gateway.session import build_session_key
 
 
 def _make_adapter():
@@ -119,3 +121,46 @@ class TestTextBatching:
 
         assert len(adapter._pending_text_batches) == 0
         assert len(adapter._pending_text_batch_tasks) == 0
+
+    @pytest.mark.asyncio
+    async def test_dm_topic_batching_recovers_thread_before_keying(self):
+        """DM-topic text batches should use the recovered topic lane."""
+        adapter = _make_adapter()
+        adapter.set_topic_recovery_fn(
+            lambda source: "222" if str(source.thread_id or "") == "1" else None
+        )
+        event = MessageEvent(
+            text="hello from DM topic",
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="dm",
+                user_id="user-1",
+                thread_id="1",
+            ),
+        )
+
+        adapter._enqueue_text_event(event)
+
+        def _key(thread_id: str) -> str:
+            return build_session_key(
+                SimpleNamespace(
+                    platform=Platform.TELEGRAM,
+                    chat_id="12345",
+                    chat_type="dm",
+                    thread_id=thread_id,
+                ),
+                group_sessions_per_user=True,
+                thread_sessions_per_user=False,
+            )
+
+        assert _key("222") in adapter._pending_text_batches
+        assert _key("1") not in adapter._pending_text_batches
+        assert event.source.thread_id == "222"
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        dispatched = adapter.handle_message.call_args[0][0]
+        assert dispatched.source.thread_id == "222"

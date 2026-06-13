@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useEffect, useRef, useState } from 'react'
+import { type FC, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -17,7 +17,6 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { onScrollToApprovalRequest, resetApprovalInView, setApprovalInView } from '@/store/approval-scroll'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
@@ -71,33 +70,6 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
   const hasCommand = request.command.trim().length > 0
-  const anchorRef = useRef<HTMLDivElement>(null)
-
-  // The bar is the only place to act on a blocked approval, but it rides the
-  // pending tool row deep in the transcript. Mirror its viewport visibility so
-  // the composer-side "jump to approval" pill can surface when it's scrolled
-  // away, and let that pill scroll us back into view. IntersectionObserver
-  // (not rect math) so it tracks scroll/resize/layout for free.
-  useEffect(() => {
-    const el = anchorRef.current
-
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      return
-    }
-
-    const observer = new IntersectionObserver(([entry]) => setApprovalInView(entry.isIntersecting), {
-      threshold: 0.6
-    })
-
-    observer.observe(el)
-    const stop = onScrollToApprovalRequest(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }))
-
-    return () => {
-      observer.disconnect()
-      stop()
-      resetApprovalInView()
-    }
-  }, [])
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -154,7 +126,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [confirmAlways, respond])
 
   return (
-    <div className="mt-1 ps-5" data-slot="tool-approval-inline" ref={anchorRef}>
+    <div className="mt-1 ps-5" data-slot="tool-approval-inline">
       <div className="flex items-center gap-2.5">
         <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
           <Button

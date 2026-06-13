@@ -55,7 +55,6 @@ import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
-import { ScrollToApprovalButton } from './scroll-to-approval-button'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
@@ -460,7 +459,6 @@ export function ChatView({
           )}
         </ChatRuntimeBoundary>
         {showChatBar && <ScrollToBottomButton />}
-        {showChatBar && <ScrollToApprovalButton />}
         <ChatDropOverlay kind={dragKind} />
         <ChatSwapOverlay profile={gatewaySwapTarget} />
       </div>

@@ -1,8 +1,7 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
-import { $approvalInView, requestScrollToApproval } from '@/store/approval-scroll'
 import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
@@ -130,79 +129,5 @@ describe('PendingToolApproval', () => {
     // The session + reject options still render, but never the permanent allow.
     expect(await screen.findByRole('menuitem', { name: /Allow this session/ })).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: /Always allow/ })).toBeNull()
-  })
-})
-
-// The inline bar mirrors its own viewport visibility (so the composer-side pill
-// can surface when it's scrolled away) and scrolls itself into view on request.
-// IntersectionObserver isn't in jsdom, so we stub it to drive the boundary —
-// the assertions are about OUR mirror/bridge/cleanup logic, not layout.
-describe('inline approval visibility bridge', () => {
-  let observers: { cb: IntersectionObserverCallback; el?: Element }[] = []
-
-  const emit = (isIntersecting: boolean) =>
-    act(() => {
-      for (const o of observers) {
-        o.cb([{ isIntersecting, target: o.el } as IntersectionObserverEntry], {} as IntersectionObserver)
-      }
-    })
-
-  beforeAll(() => {
-    vi.stubGlobal(
-      'IntersectionObserver',
-      class {
-        cb: IntersectionObserverCallback
-        el?: Element
-        constructor(cb: IntersectionObserverCallback) {
-          this.cb = cb
-          observers.push(this)
-        }
-        observe(el: Element) {
-          this.el = el
-        }
-        disconnect() {}
-        unobserve() {}
-        takeRecords() {
-          return []
-        }
-      }
-    )
-  })
-
-  afterEach(() => {
-    observers = []
-    $approvalInView.set(null)
-  })
-
-  it('mirrors the bar viewport visibility into $approvalInView', () => {
-    setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
-
-    emit(false)
-    expect($approvalInView.get()).toBe(false)
-    emit(true)
-    expect($approvalInView.get()).toBe(true)
-  })
-
-  it('scrolls the bar into view on requestScrollToApproval', () => {
-    const scrollIntoView = vi.spyOn(window.HTMLElement.prototype, 'scrollIntoView')
-    setRequest()
-    render(<PendingToolApproval part={part('terminal')} />)
-
-    requestScrollToApproval()
-
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
-    scrollIntoView.mockRestore()
-  })
-
-  it('resets $approvalInView when the bar unmounts', () => {
-    setRequest()
-    const { unmount } = render(<PendingToolApproval part={part('terminal')} />)
-
-    emit(false)
-    expect($approvalInView.get()).toBe(false)
-
-    unmount()
-    expect($approvalInView.get()).toBeNull()
   })
 })

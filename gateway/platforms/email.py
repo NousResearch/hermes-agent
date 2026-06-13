@@ -5,14 +5,18 @@ Allows users to interact with Hermes by sending emails.
 Uses IMAP to receive and SMTP to send messages.
 
 Environment variables:
-    EMAIL_IMAP_HOST     — IMAP server host (e.g., imap.gmail.com)
-    EMAIL_IMAP_PORT     — IMAP server port (default: 993)
-    EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
-    EMAIL_SMTP_PORT     — SMTP server port (default: 587)
-    EMAIL_ADDRESS       — Email address for the agent
-    EMAIL_PASSWORD      — Email password or app-specific password
-    EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
-    EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    EMAIL_IMAP_HOST       — IMAP server host (e.g., imap.gmail.com)
+    EMAIL_IMAP_PORT       — IMAP server port (default: 993)
+    EMAIL_SMTP_HOST       — SMTP server host (e.g., smtp.gmail.com)
+    EMAIL_SMTP_PORT       — SMTP server port (default: 587)
+    EMAIL_ADDRESS         — Email address for the agent
+    EMAIL_PASSWORD        — Email password or app-specific password
+    EMAIL_POLL_INTERVAL   — Seconds between mailbox checks (default: 15)
+    EMAIL_ALLOWED_USERS   — Comma-separated list of allowed sender addresses
+
+OAuth2 (EMAIL_OAUTH_PROVIDER=outlook) also requires:
+    MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET
+    EMAIL_OAUTH_TOKEN_PATH (default: ~/.hermes/oauth_tokens.json)
 """
 
 import asyncio
@@ -42,6 +46,8 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+
+# email_oauth import is lazy — loaded only in oauth2 auth mode (see _init_oauth_manager)
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -98,16 +104,31 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
         if value and check(value):
             return True
     return False
-    
+
 def check_email_requirements() -> bool:
-    """Check if email platform dependencies are available."""
+    """Check if email platform dependencies are available.
+
+    In password mode, requires EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_HOST,
+    and EMAIL_SMTP_HOST.
+
+    In OAuth mode (EMAIL_OAUTH_PROVIDER=outlook), requires EMAIL_ADDRESS,
+    EMAIL_IMAP_HOST, EMAIL_SMTP_HOST, plus MSGRAPH_TENANT_ID,
+    MSGRAPH_CLIENT_ID, and MSGRAPH_CLIENT_SECRET.
+    """
     addr = os.getenv("EMAIL_ADDRESS")
     pwd = os.getenv("EMAIL_PASSWORD")
     imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
-    if not all([addr, pwd, imap, smtp]):
-        return False
-    return True
+    oauth_provider = os.getenv("EMAIL_OAUTH_PROVIDER", "").lower()
+
+    if oauth_provider == "outlook":
+        # OAuth mode — password not required
+        tid = os.getenv("MSGRAPH_TENANT_ID")
+        cid = os.getenv("MSGRAPH_CLIENT_ID")
+        secret = os.getenv("MSGRAPH_CLIENT_SECRET")
+        return all([addr, imap, smtp, tid, cid, secret])
+    else:
+        return all([addr, pwd, imap, smtp])
 
 
 def _decode_header_value(raw: str) -> str:
@@ -250,6 +271,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         self._address = os.getenv("EMAIL_ADDRESS", "")
         self._password = os.getenv("EMAIL_PASSWORD", "")
+        self._oauth_provider = os.getenv("EMAIL_OAUTH_PROVIDER", "").lower()
         self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
         self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
@@ -271,7 +293,42 @@ class EmailAdapter(BasePlatformAdapter):
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
+        # Lazy-initialized OAuth token manager
+        self._oauth_manager: Any = None
+
         logger.info("[Email] Adapter initialized for %s", self._address)
+
+    # ------------------------------------------------------------------
+    # OAuth2 manager
+    # ------------------------------------------------------------------
+
+    def _init_oauth_manager(self) -> None:
+        """Create the OAuthTokenManager from environment variables.
+
+        Reads MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET.
+        Called once on first XOAUTH2 authentication.
+        """
+        if self._oauth_manager is not None:
+            return
+
+        from gateway.platforms.email_oauth import OAuthTokenManager
+
+        tenant_id = os.getenv("MSGRAPH_TENANT_ID", "")
+        client_id = os.getenv("MSGRAPH_CLIENT_ID", "")
+        client_secret = os.getenv("MSGRAPH_CLIENT_SECRET", "")
+
+        if not all([tenant_id, client_id, client_secret]):
+            raise RuntimeError(
+                "[Email] OAuth2 configured but MSGRAPH_TENANT_ID, "
+                "MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET are not all set"
+            )
+
+        self._oauth_manager = OAuthTokenManager(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        logger.debug("[Email] OAuthTokenManager initialized for tenant=%s", tenant_id)
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -293,12 +350,71 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    # ------------------------------------------------------------------
+    # OAuth2 helpers
+    # ------------------------------------------------------------------
+
+    def _authenticate_xoauth2_with_retry(
+        self,
+        imap_or_smtp,
+        proto: str,
+    ) -> None:
+        """Authenticate with XOAUTH2, retrying once on auth failure.
+
+        If the SASL handshake fails (token expired/revoked between cache
+        and use), the manager cache is cleared and a fresh token is fetched.
+        Network-level errors are NOT retried.
+        """
+        from gateway.platforms.email_oauth import (
+            build_imap_xoauth2_bytes,
+            build_smtp_xoauth2_str,
+        )
+
+        self._init_oauth_manager()
+        token = self._oauth_manager.get_token()
+
+        if proto == "imap":
+            xoauth2_bytes = build_imap_xoauth2_bytes(self._address, token)
+            try:
+                imap_or_smtp.authenticate("XOAUTH2", lambda _: xoauth2_bytes)
+            except (imaplib.IMAP4.error, smtplib.SMTPAuthenticationError):
+                # Token may have expired between cache and use — retry once
+                logger.warning("[Email] XOAUTH2 IMAP auth failed, retrying with fresh token")
+                self._oauth_manager.clear_cache()
+                token = self._oauth_manager.get_token(force_refresh=True)
+                xoauth2_bytes = build_imap_xoauth2_bytes(self._address, token)
+                imap_or_smtp.authenticate("XOAUTH2", lambda _: xoauth2_bytes)
+        else:
+            xoauth2_str = build_smtp_xoauth2_str(self._address, token)
+            try:
+                imap_or_smtp.auth("XOAUTH2", lambda _=None: xoauth2_str)
+            except (imaplib.IMAP4.error, smtplib.SMTPAuthenticationError):
+                logger.warning("[Email] XOAUTH2 SMTP auth failed, retrying with fresh token")
+                self._oauth_manager.clear_cache()
+                token = self._oauth_manager.get_token(force_refresh=True)
+                xoauth2_str = build_smtp_xoauth2_str(self._address, token)
+                imap_or_smtp.auth("XOAUTH2", lambda _=None: xoauth2_str)
+
+    def _imap_authenticate(self, imap: "imaplib.IMAP4") -> None:
+        """Authenticate to IMAP using password or XOAUTH2 based on _oauth_provider."""
+        if self._oauth_provider == "outlook":
+            self._authenticate_xoauth2_with_retry(imap, "imap")
+        else:
+            imap.login(self._address, self._password)
+
+    def _smtp_authenticate(self, smtp: "smtplib.SMTP") -> None:
+        """Authenticate to SMTP using password or XOAUTH2 based on _oauth_provider."""
+        if self._oauth_provider == "outlook":
+            self._authenticate_xoauth2_with_retry(smtp, "smtp")
+        else:
+            smtp.login(self._address, self._password)
+
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            imap.login(self._address, self._password)
+            self._imap_authenticate(imap)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
@@ -318,7 +434,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test SMTP connection
             smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
@@ -367,7 +483,7 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
-                imap.login(self._address, self._password)
+                self._imap_authenticate(imap)
                 _send_imap_id(imap)
                 imap.select("INBOX")
 
@@ -558,7 +674,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.send_message(msg)
         finally:
             try:
@@ -680,7 +796,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.send_message(msg)
         finally:
             try:
@@ -759,7 +875,7 @@ class EmailAdapter(BasePlatformAdapter):
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
             smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
+            self._smtp_authenticate(smtp)
             smtp.send_message(msg)
         finally:
             try:

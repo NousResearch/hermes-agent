@@ -36,10 +36,23 @@ This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills
 
 ### Outlook / Microsoft 365
 
+**Option A — App password (simpler):**
 1. Go to [Security Settings](https://account.microsoft.com/security)
 2. Enable 2FA if not already active
 3. Create an App Password under "Additional security options"
 4. IMAP host: `outlook.office365.com`, SMTP host: `smtp.office365.com`
+
+**Option B — OAuth2 (recommended for enterprise/managed accounts):**
+
+If your organization requires OAuth2 or you can't create app passwords,
+Hermes supports XOAUTH2 authentication via Microsoft Entra ID:
+
+1. Register an application in [Azure Portal](https://portal.azure.com) →
+   Microsoft Entra ID → App registrations → New registration
+2. Under **Certificates & secrets** → create a client secret
+3. Under **API permissions** → add `https://outlook.office.com/.default`
+   (Application permission, not delegated)
+4. Set the following environment variables (see Step 1 below)
 
 ### Other Providers
 
@@ -73,12 +86,20 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 
 # Security (recommended)
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
+# OAuth2 (optional — replaces EMAIL_PASSWORD for Outlook/365)
+# EMAIL_OAUTH_PROVIDER=*** MSGRAPH_TENANT_ID=your-tenant-id
+# MSGRAPH_CLIENT_ID=your-client-id
+# MSGRAPH_CLIENT_SECRET=your-client-secret
+# EMAIL_OAUTH_TOKEN_PATH=~/.hermes/oauth_tokens.json
 
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
+#
+# When EMAIL_OAUTH_PROVIDER=*** EMAIL_PASSWORD is NOT required.
+# Tokens are cached to disk and refreshed automatically.
 ```
 
 ---
@@ -162,6 +183,7 @@ Email access follows the same pattern as all other Hermes platforms:
 | **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail). |
 | **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
+| **OAuth: "Authentication failed" with Outlook** | Verify MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET. Check that the client has `https://outlook.office.com/.default` Application permission. Token auto-refresh may require the Entra admin to grant admin consent. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
 | **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
 | **Replies not threading** | The adapter uses In-Reply-To headers. Some email clients (especially web-based) may not thread correctly with automated messages. |
@@ -186,7 +208,7 @@ Email access follows the same pattern as all other Hermes platforms:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `EMAIL_ADDRESS` | Yes | — | Agent's email address |
-| `EMAIL_PASSWORD` | Yes | — | Email password or app password |
+| `EMAIL_PASSWORD` | Yes* | — | Email password or app password (*not required if OAuth is configured) |
 | `EMAIL_IMAP_HOST` | Yes | — | IMAP server host (e.g., `imap.gmail.com`) |
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
@@ -195,3 +217,8 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_OAUTH_PROVIDER` | No | — | OAuth provider (`outlook`) — enables XOAUTH2 auth |
+| `MSGRAPH_TENANT_ID` | If OAuth | — | Microsoft Entra ID tenant ID |
+| `MSGRAPH_CLIENT_ID` | If OAuth | — | Application (client) ID registered in Entra ID |
+| `MSGRAPH_CLIENT_SECRET` | If OAuth | — | Client secret for the application |
+| `EMAIL_OAUTH_TOKEN_PATH` | No | `$HERMES_HOME/oauth_tokens.json` | Token cache path (default: auto) |

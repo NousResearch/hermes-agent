@@ -54,3 +54,21 @@ def test_explicit_prompt_tool_available_when_toolset_exposed(monkeypatch):
     )
 
     assert error is None
+
+
+def test_explicit_prompt_tool_hidden_by_agent_disabled_toolsets_fails_loud():
+    from cron import scheduler
+
+    disabled = scheduler._resolve_cron_disabled_toolsets(
+        {"agent": {"disabled_toolsets": ["terminal"]}}
+    )
+    error = scheduler._explicit_prompt_tool_availability_error(
+        "Must use `terminal` to inspect the local process state.",
+        enabled_toolsets=["terminal", "file"],
+        disabled_toolsets=disabled,
+    )
+
+    assert error is not None
+    assert "terminal" in error
+    assert "toolset 'terminal' is disabled" in error
+    assert "cronjob, messaging, clarify, terminal" in error

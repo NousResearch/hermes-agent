@@ -1061,12 +1061,10 @@ class TestRunJobSessionPersistence:
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
 
-        The bug: per-job enabled_toolsets was returned verbatim, letting an
-        LLM-supplied cronjob() call re-enable tools the operator had globally
-        disabled. The fix: ALWAYS include agent.disabled_toolsets in the
-        disabled_toolsets passed to AIAgent, on top of the cron baseline
-        (cronjob/messaging/clarify). AIAgent's disabled_toolsets takes
-        precedence over enabled_toolsets, so this stops the bypass.
+        Per-job enabled_toolsets must not bypass the cron baseline denylist or
+        the user's global agent.disabled_toolsets policy. AIAgent's
+        disabled_toolsets takes precedence over enabled_toolsets, so this stops
+        the bypass.
         """
         (tmp_path / "config.yaml").write_text(
             "agent:\n"
@@ -1093,6 +1091,42 @@ class TestRunJobSessionPersistence:
         assert set(kwargs["disabled_toolsets"]) >= {
             "cronjob", "messaging", "clarify", "terminal", "file",
         }
+
+    def test_run_job_runs_mcp_discovery_before_required_tool_preflight(self, tmp_path, monkeypatch):
+        """MCP discovery must populate the registry before preflight evaluates."""
+        from cron import scheduler
+
+        job = {
+            "id": "mcp-order-job",
+            "name": "test",
+            "prompt": "must use `mcp_fake_tool`",
+        }
+        discovered = {"done": False}
+
+        def fake_discover_mcp_tools():
+            discovered["done"] = True
+            return [{"name": "mcp_fake_tool"}]
+
+        def assert_discovered_before_preflight(prompt, *, enabled_toolsets, disabled_toolsets):
+            assert discovered["done"] is True
+            assert set(disabled_toolsets) >= {"cronjob", "messaging", "clarify"}
+            return None
+
+        monkeypatch.setattr(
+            scheduler,
+            "_explicit_prompt_tool_availability_error",
+            assert_discovered_before_preflight,
+        )
+        fake_db, patches = self._make_run_job_patches(tmp_path)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patch("tools.mcp_tool.discover_mcp_tools", side_effect=fake_discover_mcp_tools), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert discovered["done"] is True
 
     def test_run_job_enabled_toolsets_resolves_from_platform_config_when_not_set(self, tmp_path):
         """When a job has no explicit enabled_toolsets, the scheduler now

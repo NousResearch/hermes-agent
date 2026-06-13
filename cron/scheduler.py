@@ -201,6 +201,7 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
             disabled.append(name)
     return disabled
 
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 

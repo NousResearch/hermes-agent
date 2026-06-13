@@ -86,6 +86,34 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     )
 
 
+def _codex_gpt55_autoraise_ack_path() -> str:
+    """Path to the marker file that records acknowledgement of the notice.
+
+    Stored under ``~/.hermes/`` so it survives reinstalls but is per-user.
+    Delete the file to see the notice again (useful after a settings change).
+    """
+    return os.path.join(get_hermes_home(), ".codex_gpt55_autoraise_acked")
+
+
+def _codex_gpt55_autoraise_acked() -> bool:
+    """Return True when the user has already seen the autoraise notice."""
+    try:
+        return os.path.exists(_codex_gpt55_autoraise_ack_path())
+    except OSError:
+        return False
+
+
+def _record_codex_gpt55_autoraise_acked() -> None:
+    """Best-effort marker write. Silent on failure — the worst case is the
+    notice fires again next session, which is no worse than today's behavior.
+    """
+    try:
+        with open(_codex_gpt55_autoraise_ack_path(), "w") as fh:
+            fh.write("")
+    except OSError:
+        pass
+
+
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -1685,9 +1713,12 @@ def init_agent(
         # exact opt-back-out command. Printed inline at startup for CLI users;
         # gateway users get the same text replayed via _compression_warning on
         # turn 1 (set below, after the warning slot is initialized).
+        # Acknowledgement is persisted to ~/.hermes/.codex_gpt55_autoraise_acked
+        # so the notice fires once per install, not once per agent init.
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        if _autoraise and compression_enabled and not _codex_gpt55_autoraise_acked():
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
+            _record_codex_gpt55_autoraise_acked()
 
     # Check immediately so CLI users see the warning at startup.
     # Gateway status_callback is not yet wired, so any warning is stored
@@ -1696,9 +1727,13 @@ def init_agent(
     # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
+    # Same per-install ack file as the CLI branch — without it, the gateway
+    # would replay the notice on every conversation turn-1, which is what
+    # users were reporting.
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if _autoraise and compression_enabled and not _codex_gpt55_autoraise_acked():
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+        _record_codex_gpt55_autoraise_acked()
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

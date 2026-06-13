@@ -153,6 +153,16 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Pre-adapter hook. Fired at the very top of
+    # MessagePlatformBase.handle_message(), BEFORE the active-session
+    # branch reads event.get_command() at gateway/platforms/base.py:3883.
+    # This is the only hook that fires early enough to polyfill methods
+    # on under-specified event objects (e.g. SimpleNamespace stubs from
+    # the queue-persistence rehydrator) — pre_gateway_dispatch runs
+    # later in run.py and is too late for the active-session shortcut.
+    # Plugins return value is ignored. Use it as a last-chance normaliser.
+    # Kwargs: event: MessageEvent, platform: MessagePlatformBase.
+    "pre_adapter_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

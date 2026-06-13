@@ -3839,13 +3839,26 @@ class BasePlatformAdapter(ABC):
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
-        
+
         This method returns quickly by spawning background tasks.
         This allows new messages to be processed even while an agent is running,
         enabling interruption support.
         """
         if not self._message_handler:
             return
+
+        # Fire pre_adapter_dispatch plugin hook at the absolute top of the
+        # inbound path — BEFORE the active-session branch reads
+        # ``event.get_command()`` below (line ~3883). This is the only
+        # point early enough to polyfill methods on under-specified event
+        # objects (e.g. SimpleNamespace stubs from the queue-persistence
+        # rehydrator). The pre_gateway_dispatch hook in run.py fires later
+        # and is too late for the active-session shortcut.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook("pre_adapter_dispatch", event=event, platform=self)
+        except Exception as _exc:
+            logger.debug("pre_adapter_dispatch hook failed (non-fatal): %s", _exc)
 
         coerce_plaintext_gateway_command(event)
 

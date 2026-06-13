@@ -27,8 +27,10 @@ logger = logging.getLogger(__name__)
 # Same filenames as prompt_builder.py but we load ALL found (not first-wins)
 # since different subdirectories may use different conventions.
 _HINT_FILENAMES = [
-    "AGENTS.md", "agents.md",
-    "CLAUDE.md", "claude.md",
+    "AGENTS.md",
+    "agents.md",
+    "CLAUDE.md",
+    "claude.md",
     ".cursorrules",
 ]
 
@@ -53,6 +55,7 @@ def _is_ancestor_or_same(a: Path, b: Path) -> bool:
         return True
     except ValueError:
         return False
+
 
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
@@ -97,9 +100,7 @@ class SubdirectoryHintTracker:
 
         return "\n\n" + "\n\n".join(all_hints)
 
-    def _extract_directories(
-        self, tool_name: str, args: Dict[str, Any]
-    ) -> list:
+    def _extract_directories(self, tool_name: str, args: Dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""
         candidates: Set[Path] = set()
 
@@ -144,7 +145,7 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
@@ -188,7 +189,7 @@ class SubdirectoryHintTracker:
         try:
             if not path.is_relative_to(self.working_dir):
                 return False
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             # Older Python or path resolution error — fall back to parent
             # check as a best-effort safeguard.
             if not _is_ancestor_or_same(self.working_dir, path):
@@ -207,14 +208,16 @@ class SubdirectoryHintTracker:
             if not directory.is_relative_to(self.working_dir):
                 logger.debug(
                     "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
+                    directory,
+                    self.working_dir,
                 )
                 return None
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
             if not _is_ancestor_or_same(self.working_dir, directory):
                 logger.debug(
                     "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
+                    directory,
+                    self.working_dir,
                 )
                 return None
 
@@ -241,11 +244,11 @@ class SubdirectoryHintTracker:
                 rel_path = str(hint_path)
                 try:
                     rel_path = str(hint_path.relative_to(self.working_dir))
-                except ValueError:
+                except (ValueError, RuntimeError):
                     try:
                         rel_path = str(hint_path.relative_to(Path.home()))
                         rel_path = "~/" + rel_path
-                    except ValueError:
+                    except (ValueError, RuntimeError):
                         pass  # keep absolute
                 found_hints.append((rel_path, content))
                 # First match wins per directory (like startup loading)
@@ -258,9 +261,7 @@ class SubdirectoryHintTracker:
 
         sections = []
         for rel_path, content in found_hints:
-            sections.append(
-                f"[Subdirectory context discovered: {rel_path}]\n{content}"
-            )
+            sections.append(f"[Subdirectory context discovered: {rel_path}]\n{content}")
 
         logger.debug(
             "Loaded subdirectory hints from %s: %s",

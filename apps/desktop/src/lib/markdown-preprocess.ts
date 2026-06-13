@@ -125,29 +125,32 @@ function isUrlOnlyBlock(lines: string[]): boolean {
   return nonEmpty.length > 0 && nonEmpty.every(line => URL_ONLY_LINE_RE.test(line))
 }
 
+// Strip only the *unbalanced* trailing `)` — the closing paren of a prose
+// wrapper like `(https://example.com/page)`, which the bare-URL matcher
+// greedily captures into the href. Parens that belong to the URL itself
+// (`…/wiki/Foo_(bar)`) stay intact: a trailing `)` is peeled only while the
+// URL holds more `)` than `(`. Count once, then trim from the end — the loop
+// only ever removes trailing closers, so `opens` never changes.
 function trimUnbalancedTrailingParens(url: string): string {
-  let result = url
+  let opens = 0
+  let closes = 0
 
-  while (result.endsWith(')')) {
-    let opens = 0
-    let closes = 0
-
-    for (const char of result) {
-      if (char === '(') {
-        opens += 1
-      } else if (char === ')') {
-        closes += 1
-      }
+  for (const char of url) {
+    if (char === '(') {
+      opens += 1
+    } else if (char === ')') {
+      closes += 1
     }
-
-    if (closes <= opens) {
-      break
-    }
-
-    result = result.slice(0, -1)
   }
 
-  return result
+  let end = url.length
+
+  while (closes > opens && url[end - 1] === ')') {
+    closes -= 1
+    end -= 1
+  }
+
+  return url.slice(0, end)
 }
 
 function autoLinkRawUrls(text: string): string {

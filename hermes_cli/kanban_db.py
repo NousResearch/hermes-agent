@@ -58,14 +58,15 @@ worktrees so that research / ops / digital-twin workloads work alongside
 coding workloads.  See ``docs/hermes-kanban-v1-spec.pdf`` for the full
 design specification.
 
-Concurrency strategy: WAL mode + ``BEGIN IMMEDIATE`` for write
+Concurrency strategy: rollback journaling by default (override with
+``HERMES_KANBAN_JOURNAL=wal`` when desired) + ``BEGIN IMMEDIATE`` for write
 transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
-``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
-most one claimer can win any given task.  Losers observe zero affected
-rows and move on -- no retry loops, no distributed-lock machinery.
-The CAS coordination is **per-board** — each board is a separate DB,
-so multi-board installs get the same atomicity guarantees without any
-new locking.
+``tasks.claim_lock``.  SQLite serializes writers behind the write
+transaction, so at most one claimer can win any given task.  Losers
+observe zero affected rows and move on -- no retry loops, no
+distributed-lock machinery.  The CAS coordination is **per-board** —
+each board is a separate DB, so multi-board installs get the same
+atomicity guarantees without any new locking.
 """
 
 from __future__ import annotations
@@ -1463,9 +1464,16 @@ def connect(
                 # checks for DELETE mode. Respect HERMES_KANBAN_JOURNAL before running
                 # the WAL helper; otherwise every kanban connection silently flips the
                 # DB back to WAL and the watchdog oscillates DELETE -> WAL -> DELETE.
-                journal_policy = os.getenv("HERMES_KANBAN_JOURNAL", "wal").strip().lower()
+                journal_policy = os.getenv("HERMES_KANBAN_JOURNAL", "delete").strip().lower()
                 if journal_policy in {"delete", "persist", "truncate"}:
-                    conn.execute(f"PRAGMA journal_mode={journal_policy.upper()}")
+                    result = conn.execute(
+                        f"PRAGMA journal_mode={journal_policy.upper()}"
+                    ).fetchone()
+                    actual = result[0].lower() if result else ""
+                    if actual != journal_policy:
+                        raise RuntimeError(
+                            f"Kanban DB journal_mode requested {journal_policy}, got {actual}"
+                        )
                 else:
                     # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
                     # falls back to DELETE with one WARNING so kanban stays usable there.

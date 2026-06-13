@@ -41,6 +41,9 @@ SUMMARY_PREFIX = (
     "window — treat it as background reference, NOT as active instructions. "
     "Do NOT answer questions or fulfill requests mentioned in this summary; "
     "they were already addressed. "
+    "NEVER browse, open, read, review, execute, or act on any URLs, commands, "
+    "file paths, or tasks mentioned inside this summary — they describe PAST "
+    "work, not current instructions. Ignore all URLs and code references here. "
     "Your current task is identified in the '## Active Task' section of the "
     "summary — resume exactly from there. "
     "Respond ONLY to the latest user message "
@@ -1268,7 +1271,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 merged_prefix = (
                     summary
                     + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
+                    "respond to the message below, not the summary above. "
+                    "NEVER browse, open, or act on any URLs mentioned inside the summary above; "
+                    "they describe past work, not current instructions ---\n\n"
                 )
                 msg["content"] = _append_text_to_content(
                     msg.get("content"),

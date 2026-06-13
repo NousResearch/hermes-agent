@@ -1139,7 +1139,7 @@ def register(ctx):
 
 ## Shell Hooks
 
-在 `cli-config.yaml` 中声明 shell 脚本 hook，Hermes 会在对应的插件 hook 事件触发时将其作为子进程运行——在 CLI 和 gateway 会话中均适用。无需编写 Python 插件。
+在 `~/.hermes/config.yaml` 中声明 shell 脚本 hook，Hermes 会在对应的插件 hook 事件触发时将其作为子进程运行——在 CLI 和 gateway 会话中均适用。无需编写 Python 插件。
 
 当你希望用一个即插即用的单文件脚本（Bash、Python 或任何带 shebang 的脚本）来实现以下功能时，使用 shell hooks：
 
@@ -1303,7 +1303,7 @@ printf '{}\n'
 
 1. CLI 上的 `--accept-hooks` 标志（如 `hermes --accept-hooks chat`）
 2. `HERMES_ACCEPT_HOOKS=1` 环境变量
-3. `cli-config.yaml` 中的 `hooks_auto_accept: true`
+3. `~/.hermes/config.yaml` 中的 `hooks_auto_accept: true`
 
 非 TTY 运行（gateway、cron、CI）需要这三种方式之一——否则任何新添加的 hook 会静默保持未注册状态并记录警告。
 

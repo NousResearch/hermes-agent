@@ -866,12 +866,15 @@ export function DesktopController() {
   })
 
   useEffect(() => {
+    void refreshSessions().catch(() => undefined)
+  }, [profileScope, refreshSessions])
+
+  useEffect(() => {
     if (gatewayState === 'open') {
       void refreshCurrentModel()
       void refreshActiveProfile()
-      void refreshSessions().catch(() => undefined)
     }
-  }, [gatewayState, refreshCurrentModel, refreshSessions])
+  }, [gatewayState, refreshActiveProfile, refreshCurrentModel])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the

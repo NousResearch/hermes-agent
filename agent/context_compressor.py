@@ -218,6 +218,51 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _serialized_length_for_budget(value: Any) -> int:
+    """Return a stable char-length for non-content replay/metadata fields."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+def _message_tokens_for_tail_budget(msg: Dict[str, Any]) -> int:
+    """Estimate a single message for compressor tail-budget decisions.
+
+    Preflight compression uses the full message shape, including provider
+    replay fields such as Codex encrypted reasoning. Tail protection must use
+    the same rough size class; otherwise an assistant message with tiny visible
+    content but large hidden replay blobs is protected as if it were small and
+    the post-compression session can remain near the context limit.
+
+    This is accounting-only: it does not mutate or prune replay fields.
+    """
+    raw_content = msg.get("content") or ""
+    msg_tokens = _content_length_for_budget(raw_content) // _CHARS_PER_TOKEN + 10
+
+    # Include tool call arguments in estimate, preserving the historical
+    # behavior while centralizing the calculation for both tail-budget passes.
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            args = tc.get("function", {}).get("arguments", "")
+            msg_tokens += len(args) // _CHARS_PER_TOKEN
+
+    for key in (
+        "reasoning",
+        "reasoning_content",
+        "reasoning_details",
+        "codex_reasoning_items",
+        "codex_message_items",
+    ):
+        msg_tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+
+    return msg_tokens
+
+
 def _content_text_for_contains(content: Any) -> str:
     """Return a best-effort text view of message content.
 
@@ -1894,15 +1939,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         cut_idx = n  # start from beyond the end
 
         for i in range(n - 1, head_end - 1, -1):
-            msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = _message_tokens_for_tail_budget(messages[i])
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -1927,14 +1964,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_budget = token_budget
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
-                raw_msg = messages[j]
-                raw_content = raw_msg.get("content") or ""
-                raw_len = _content_length_for_budget(raw_content)
-                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
-                for tc in raw_msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        raw_tok += len(args) // _CHARS_PER_TOKEN
+                raw_tok = _message_tokens_for_tail_budget(messages[j])
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break

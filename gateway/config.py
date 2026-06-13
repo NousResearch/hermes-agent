@@ -866,6 +866,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if plat == Platform.SLACK and "slash_forwards" in platform_cfg:
                     bridged["slash_forwards"] = platform_cfg["slash_forwards"]
+                if plat == Platform.SLACK and "event_forwards" in platform_cfg:
+                    bridged["event_forwards"] = platform_cfg["event_forwards"]
+                if plat == Platform.SLACK and "action_forwards" in platform_cfg:
+                    bridged["action_forwards"] = platform_cfg["action_forwards"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):

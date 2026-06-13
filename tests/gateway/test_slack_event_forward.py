@@ -186,3 +186,30 @@ async def test_forward_block_actions_posts_signed_form_on_200():
     assert _verify_slack_signature(
         "secret", post["headers"]["X-Slack-Request-Timestamp"], post["data"], post["headers"]["X-Slack-Signature"]
     )
+
+
+# ---------------------------------------------------------------------------
+# config.yaml bridging — event/action forwards must land in PlatformConfig.extra
+# ---------------------------------------------------------------------------
+
+def test_event_and_action_forwards_bridged_from_yaml(tmp_path, monkeypatch):
+    from gateway.config import Platform, load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  event_forwards:\n"
+        "    C0123456789: http://127.0.0.1:8787/slack/events\n"
+        "  action_forwards:\n"
+        "    wpc_: http://127.0.0.1:8787/slack/actions\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+
+    cfg = load_gateway_config()
+    slack_cfg = cfg.platforms[Platform.SLACK]
+    assert slack_cfg.extra.get("event_forwards") == {"C0123456789": "http://127.0.0.1:8787/slack/events"}
+    assert slack_cfg.extra.get("action_forwards") == {"wpc_": "http://127.0.0.1:8787/slack/actions"}

@@ -820,6 +820,10 @@ class TestPromptBuilderConstants:
         assert "table" in lowered
         assert "task list" in lowered
         assert "rich markdown" in lowered
+        # Hint should proactively steer toward structured formatting, not just
+        # permit it: bullet + numbered lists for scannable, structured output.
+        assert "bullet" in lowered
+        assert "numbered" in lowered
         # Local media delivery guidance must remain intact.
         assert "include MEDIA:" in hint
 

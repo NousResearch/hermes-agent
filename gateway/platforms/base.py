@@ -1602,6 +1602,45 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Whether the stream consumer should finalize a streamed reply by
+        sending a *fresh* final message (and deleting the preview) instead of
+        final-editing the preview.
+
+        Telegram has no rich *edit* endpoint: a streamed preview rendered via
+        the rich send/draft path (``sendRichMessage`` / ``sendRichMessageDraft``)
+        degrades to MarkdownV2/plain the moment it is finalized through
+        ``edit_message_text``.  Adapters whose send/draft path is richer than
+        their edit path override this to ask the consumer to re-deliver the
+        completed answer as a new rich message and best-effort delete the stale
+        preview, so the final rendering matches the streamed one.
+
+        Default implementation returns False — legacy platforms keep the
+        edit-in-place finalization path.
+        """
+        return False
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Max single-message length (in this adapter's ``message_len_fn``
+        units) the stream consumer may accumulate before it splits, when the
+        adapter can deliver a larger message than its legacy per-message limit.
+
+        Telegram Bot API 10.1 Rich Messages accept up to 32,768 chars in a
+        single ``sendRichMessage`` / ``sendRichMessageDraft``, far above the
+        4,096 MarkdownV2 limit.  Adapters with such a richer send/draft path
+        override this so the consumer doesn't fragment a reply that fits one
+        rich message; the live edit preview is still bound by the platform's
+        edit limit, but the finalized reply (and DM draft preview) is delivered
+        whole.
+
+        Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
+        """
+        return None
+
     async def send_draft(
         self,
         chat_id: str,

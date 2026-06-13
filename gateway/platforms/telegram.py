@@ -931,6 +931,46 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._bot_supports_rich()
         )
 
+    def prefers_fresh_final_streaming(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Finalize rich-eligible streamed replies with a fresh sendRichMessage
+        instead of a (non-rich) edit.
+
+        Telegram has no rich edit endpoint, so the streaming EDIT path stays
+        MarkdownV2 and the final edit would visibly downgrade a rich preview to
+        plain/MarkdownV2.  When the completed content is rich-eligible we'd
+        rather re-send it via ``sendRichMessage`` and delete the preview (see
+        ``gateway.stream_consumer._try_fresh_final``).
+
+        ``metadata`` is intentionally ignored: the preview was sent with
+        ``expect_edits=True`` (to stay on the editable path mid-stream), but the
+        FINAL answer is a brand-new message that should render rich.  Gating
+        otherwise matches :meth:`_should_attempt_rich` — ``rich_messages``
+        enabled, not latched off, content present and within the rich byte
+        limit, and the bot exposes an async ``do_api_request``.
+        """
+        return self._should_attempt_rich(content)
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Allow the stream consumer to accumulate up to the rich-message cap
+        before splitting, so a reply that fits one ``sendRichMessage`` /
+        ``sendRichMessageDraft`` isn't fragmented at the 4,096 MarkdownV2 limit.
+
+        Gated on the same rich capability as the send path (minus the
+        content-length check — raising that cap is the whole point):
+        ``rich_messages`` enabled, not latched off, and the bot exposes an
+        async ``do_api_request``.  Returns ``None`` (→ legacy 4,096 limit) when
+        rich isn't available, so non-rich streams split exactly as before.
+        """
+        if (
+            getattr(self, "_rich_messages_enabled", True)
+            and not getattr(self, "_rich_send_disabled", False)
+            and self._bot_supports_rich()
+        ):
+            return self.RICH_MESSAGE_MAX_CHARS
+        return None
+
     def _rich_message_payload(
         self, content: str, *, skip_entity_detection: bool = False
     ) -> Dict[str, Any]:

@@ -428,6 +428,67 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             audio=audio if isinstance(audio, dict) else {},
         )
 
+    async def _send_call_action(
+        self,
+        call_id: str,
+        action: str,
+        *,
+        sdp: Optional[str] = None,
+    ) -> SendResult:
+        """Send a WhatsApp Calling action to Graph API.
+
+        ``pre_accept`` and ``accept`` require an SDP answer session; ``reject``
+        and ``terminate`` do not.
+        """
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        normalized_call_id = str(call_id or "").strip()
+        normalized_action = str(action or "").strip()
+        if not normalized_call_id or not normalized_action:
+            return SendResult(success=False, error="Missing call_id or action")
+
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "call_id": normalized_call_id,
+            "action": normalized_action,
+        }
+        if sdp is not None:
+            sdp_text = str(sdp)
+            if not sdp_text.strip():
+                return SendResult(success=False, error="Missing SDP answer")
+            payload["session"] = {
+                "sdp_type": "answer",
+                "sdp": sdp_text,
+            }
+
+        url = self._graph_url("calls")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] call action %s failed", normalized_action)
+            return SendResult(success=False, error=str(exc))
+
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] call action %s rejected (status=%d): %s",
+                normalized_action,
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
+        return SendResult(success=True)
+
     @staticmethod
     def _bounded_put(cache: "OrderedDict[str, str]", key: str, value: str) -> None:
         """Insert into a FIFO-capped OrderedDict, evicting oldest entries."""
@@ -1584,16 +1645,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
-        """Walk a verified Meta webhook payload and dispatch each message.
+        """Walk a verified Meta webhook payload and dispatch each message/call.
 
         Payload shape (truncated):
           {object, entry: [{id, changes: [{value: {messages, contacts,
-          statuses, metadata}, field: "messages"}]}]}
+          statuses, metadata}, field: "messages"|"calls"}]}]}
 
         We surface ``messages`` events as MessageEvents; ``statuses``
         events (sent/delivered/read/failed) are logged but not dispatched
         — the agent doesn't currently consume delivery receipts and
         forwarding them would create noisy synthetic events.
+
+        ``calls`` connect events are routed to the optional local WebRTC
+        sidecar when configured.
         """
         if payload.get("object") != "whatsapp_business_account":
             logger.debug(
@@ -1607,12 +1671,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             for change in entry.get("changes") or []:
                 if not isinstance(change, dict):
                     continue
-                if change.get("field") != "messages":
+                field = change.get("field")
+                value = change.get("value") or {}
+                if field == "calls":
+                    await self._dispatch_call_events(value)
+                    continue
+                if field != "messages":
                     # Other fields (account_alerts, template_status_update,
                     # etc.) are subscription-dependent and not message
                     # ingress. Silent skip.
                     continue
-                value = change.get("value") or {}
                 contacts = value.get("contacts") or []
                 metadata = value.get("metadata") or {}
                 # Build a wa_id → profile-name index for the messages we're
@@ -1674,6 +1742,90 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             status.get("status"),
                             status.get("id"),
                         )
+
+    async def _dispatch_call_events(self, value: Dict[str, Any]) -> None:
+        """Handle WhatsApp Calling webhook events from a verified payload."""
+        for raw_call in value.get("calls") or []:
+            if not isinstance(raw_call, dict):
+                continue
+            event = str(raw_call.get("event") or "").strip().lower()
+            call_id = str(raw_call.get("id") or "").strip()
+            if event == "connect":
+                await self._handle_call_connect(raw_call)
+            elif event == "terminate":
+                logger.info(
+                    "[whatsapp_cloud] call terminated (call_id=%s, status=%s)",
+                    call_id,
+                    raw_call.get("status"),
+                )
+            else:
+                logger.debug(
+                    "[whatsapp_cloud] ignoring call event %r for %s",
+                    raw_call.get("event"),
+                    call_id,
+                )
+
+    async def _handle_call_connect(self, raw_call: Dict[str, Any]) -> None:
+        """Handle an inbound WhatsApp Calling connect offer."""
+        call_id = str(raw_call.get("id") or "").strip()
+        session = raw_call.get("session") or {}
+        if not isinstance(session, dict):
+            logger.warning(
+                "[whatsapp_cloud] call connect %s had non-object session",
+                call_id or "<missing>",
+            )
+            return
+
+        sdp_type = str(session.get("sdp_type") or "").strip().lower()
+        remote_sdp = str(session.get("sdp") or "")
+        if not call_id or sdp_type != "offer" or not remote_sdp.strip():
+            logger.warning(
+                "[whatsapp_cloud] ignoring malformed call connect "
+                "(call_id=%s, sdp_type=%s)",
+                call_id or "<missing>",
+                sdp_type or "<missing>",
+            )
+            return
+
+        if not self._calling_sidecar_enabled():
+            logger.info(
+                "[whatsapp_cloud] received call connect %s but no calling "
+                "sidecar is configured",
+                call_id,
+            )
+            return
+
+        answer = await self._request_calling_sidecar_answer(call_id, remote_sdp)
+        if answer is None:
+            logger.warning(
+                "[whatsapp_cloud] sidecar did not produce an SDP answer for %s",
+                call_id,
+            )
+            return
+
+        pre_accept = await self._send_call_action(
+            call_id,
+            "pre_accept",
+            sdp=answer.sdp,
+        )
+        if not pre_accept.success:
+            logger.warning(
+                "[whatsapp_cloud] pre_accept failed for %s: %s",
+                call_id,
+                pre_accept.error,
+            )
+            return
+
+        accept = await self._send_call_action(call_id, "accept", sdp=answer.sdp)
+        if not accept.success:
+            logger.warning(
+                "[whatsapp_cloud] accept failed for %s: %s",
+                call_id,
+                accept.error,
+            )
+            return
+
+        logger.info("[whatsapp_cloud] accepted call %s via calling sidecar", call_id)
 
     async def _dispatch_interactive_reply(
         self,

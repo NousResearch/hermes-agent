@@ -426,6 +426,55 @@ class TestCallingSidecarClient:
 
         assert answer is None
 
+    @pytest.mark.asyncio
+    async def test_send_call_action_posts_session_answer(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"success": True})
+        )
+
+        result = await adapter._send_call_action(
+            "wacid.call-1",
+            "pre_accept",
+            sdp="v=0\r\n",
+        )
+
+        assert result.success is True
+        call = adapter._http_client.post.call_args
+        assert call.args[0] == "https://graph.facebook.com/v20.0/1234567890/calls"
+        assert call.kwargs["headers"]["Authorization"] == "Bearer test-token"
+        assert call.kwargs["json"] == {
+            "messaging_product": "whatsapp",
+            "call_id": "wacid.call-1",
+            "action": "pre_accept",
+            "session": {
+                "sdp_type": "answer",
+                "sdp": "v=0\r\n",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_call_action_returns_graph_error(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                400,
+                {
+                    "error": {
+                        "code": 100,
+                        "message": "Invalid call id",
+                    }
+                },
+            )
+        )
+
+        result = await adapter._send_call_action("bad-call", "accept", sdp="v=0\r\n")
+
+        assert result.success is False
+        assert "graph error 100" in result.error
+
 
 # ---------------------------------------------------------------------------
 # Inbound webhook verify (GET) handshake
@@ -565,6 +614,51 @@ _SAMPLE_INBOUND_TEXT_PAYLOAD = {
                                 "timestamp": "1758254144",
                                 "text": {"body": "Hi!"},
                                 "type": "text",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    ],
+}
+
+
+_SAMPLE_CALL_CONNECT_PAYLOAD = {
+    "object": "whatsapp_business_account",
+    "entry": [
+        {
+            "id": "215589313241560883",
+            "changes": [
+                {
+                    "field": "calls",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {
+                            "display_phone_number": "15551797781",
+                            "phone_number_id": "7794189252778687",
+                        },
+                        "contacts": [
+                            {
+                                "profile": {"name": "Jessica Laverdetman"},
+                                "wa_id": "13557825698",
+                            }
+                        ],
+                        "calls": [
+                            {
+                                "id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+                                "from": "13557825698",
+                                "to": "15551797781",
+                                "event": "connect",
+                                "timestamp": "1762216151",
+                                "direction": "USER_INITIATED",
+                                "session": {
+                                    "sdp_type": "offer",
+                                    "sdp": (
+                                        "v=0\r\n"
+                                        "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+                                    ),
+                                },
                             }
                         ],
                     },
@@ -825,6 +919,125 @@ class TestWebhookDispatch:
         )
         assert response.status == 200
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_call_connect_without_sidecar_does_not_dispatch_message(self):
+        adapter = _make_adapter(app_secret="key")
+        adapter.handle_message = AsyncMock()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+        body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        adapter.handle_message.assert_not_called()
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_call_connect_routes_offer_to_sidecar_and_accepts(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter.handle_message = AsyncMock()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_httpx_response(
+                200,
+                {
+                    "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+                    "type": "answer",
+                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+                    "audio": {
+                        "codec": "opus",
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                    },
+                },
+            ),
+            _mock_httpx_response(200, {"success": True}),
+            _mock_httpx_response(200, {"success": True}),
+        ])
+        body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        adapter.handle_message.assert_not_called()
+        assert adapter._http_client.post.call_count == 3
+
+        sidecar_call = adapter._http_client.post.call_args_list[0]
+        assert sidecar_call.args[0] == "http://127.0.0.1:8787/offer"
+        assert sidecar_call.kwargs["json"] == {
+            "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+            "type": "offer",
+            "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+        }
+
+        pre_accept_call = adapter._http_client.post.call_args_list[1]
+        accept_call = adapter._http_client.post.call_args_list[2]
+        assert pre_accept_call.args[0].endswith("/calls")
+        assert accept_call.args[0].endswith("/calls")
+        assert pre_accept_call.kwargs["json"]["action"] == "pre_accept"
+        assert accept_call.kwargs["json"]["action"] == "accept"
+        assert pre_accept_call.kwargs["json"]["session"] == {
+            "sdp_type": "answer",
+            "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+        }
+        assert accept_call.kwargs["json"]["session"] == {
+            "sdp_type": "answer",
+            "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+        }
+
+    @pytest.mark.asyncio
+    async def test_call_connect_sidecar_failure_skips_graph_accept(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(503, {"error": "down"})
+        )
+        body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        assert adapter._http_client.post.call_count == 1
+        assert adapter._http_client.post.call_args.args[0].endswith("/offer")
+
+    @pytest.mark.asyncio
+    async def test_call_connect_malformed_offer_skips_sidecar(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+        payload = json.loads(json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD))
+        session = payload["entry"][0]["changes"][0]["value"]["calls"][0]["session"]
+        session["sdp_type"] = "answer"
+        body = json.dumps(payload).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        adapter._http_client.post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_dispatch_handles_button_reply(self):

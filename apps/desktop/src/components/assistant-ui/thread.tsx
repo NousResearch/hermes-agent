@@ -52,7 +52,12 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
-import { extractDroppedFiles, HERMES_PATHS_MIME, isImagePath, partitionDroppedFiles } from '@/app/chat/hooks/use-composer-actions'
+import {
+  extractDroppedFiles,
+  HERMES_PATHS_MIME,
+  isImagePath,
+  partitionDroppedFiles
+} from '@/app/chat/hooks/use-composer-actions'
 import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
@@ -81,7 +86,6 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useStuckToTop } from '@/hooks/use-stuck-to-top'
 import { useI18n } from '@/i18n'
 import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -708,22 +712,22 @@ function messageAttachmentRefs(value: unknown): string[] {
   return value.every(ref => typeof ref === 'string') ? value : EMPTY_ATTACHMENT_REFS
 }
 
-function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
-  const ref = useRef<HTMLDivElement | null>(null)
-  // --sticky-human-top is 0.23rem (~4px); the sentinel trips when the bubble
-  // parks there. Collapses sticky attachments via [data-stuck] (see styles.css).
-  const stuck = useStuckToTop(ref, 4)
-
+function StickyHumanMessageContainer({ attachments, children }: { attachments?: ReactNode; children: ReactNode }) {
   return (
-    <div
-      className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
-      data-role="user"
-      data-slot="aui_user-message-root"
-      data-stuck={stuck ? 'true' : undefined}
-      ref={ref}
-    >
-      {children}
-    </div>
+    // Fragment, not a wrapper: a wrapping element becomes the sticky's
+    // containing block (it'd stick within its own height = never). The bubble
+    // and attachments are flow siblings so the bubble pins against the scroller
+    // while attachments below it scroll away.
+    <>
+      <div
+        className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-1"
+        data-role="user"
+        data-slot="aui_user-message-root"
+      >
+        {children}
+      </div>
+      {attachments}
+    </>
   )
 }
 
@@ -863,33 +867,31 @@ const UserMessage: FC<{
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
-  const bubbleContent = (
-    <>
-      {/* Attachments collapse to nothing while the bubble rests (incl. stuck at
-          the top of the viewport) so a message with attachments doesn't eat the
-          screen; they expand with the body when the bubble is focused / the edit
-          composer opens (see styles.css .sticky-human-attachments). */}
-      {attachmentRefs.length > 0 && (
-        <span className="sticky-human-attachments -mx-1 flex flex-wrap gap-1 border-b border-border/45 pb-1.5">
-          <DirectiveContent text={attachmentRefs.join(' ')} />
-        </span>
-      )}
-      {hasBody && (
-        // Render the user's text through a minimal markdown pipeline:
-        // backtick `code` and ``` fenced ``` blocks, with directive chips
-        // (`@file:` etc.) still resolved inside the plain-text spans.
-        <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
-          <div ref={clampInnerRef}>
-            <UserMessageText className="wrap-anywhere" text={messageText} />
-          </div>
-        </div>
-      )}
-    </>
+  const bubbleContent = hasBody && (
+    // Render the user's text through a minimal markdown pipeline:
+    // backtick `code` and ``` fenced ``` blocks, with directive chips
+    // (`@file:` etc.) still resolved inside the plain-text spans.
+    <div className="sticky-human-clamp" data-clamped={bodyClamped ? 'true' : undefined}>
+      <div ref={clampInnerRef}>
+        <UserMessageText className="wrap-anywhere" text={messageText} />
+      </div>
+    </div>
   )
 
   return (
     <MessagePrimitive.Root asChild>
-      <StickyHumanMessageContainer>
+      <StickyHumanMessageContainer
+        attachments={
+          // Attachments live BELOW the sticky bubble in normal flow, so they
+          // scroll away behind the pinned bubble instead of riding along with
+          // it. Image refs render as thumbnails, file refs as chips; no border.
+          attachmentRefs.length > 0 ? (
+            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
+              <DirectiveContent text={attachmentRefs.join(' ')} />
+            </div>
+          ) : null
+        }
+      >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
@@ -1342,7 +1344,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       }
 
       const remote = $connection.get()?.mode === 'remote'
-      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) => gateway.request<T>(method, params)
+
+      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
+        gateway.request<T>(method, params)
+
       const refs: InlineRefInput[] = []
 
       for (const candidate of osDrops) {

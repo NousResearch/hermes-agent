@@ -7,7 +7,8 @@ import {
   MessagePrimitive,
   type ToolCallMessagePartProps,
   useAui,
-  useAuiState
+  useAuiState,
+  useMessageRuntime
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
@@ -105,7 +106,11 @@ type ThreadLoadingState = 'response' | 'session'
 
 interface MessageActionProps {
   messageId: string
-  messageText: string
+  /** Lazy accessor — reads the live message text at action time. Passing the
+   *  text itself as a prop forces the whole footer to re-render on every
+   *  streaming delta flush (the text changes ~30×/s), which profiling showed
+   *  was a large slice of per-token script time on long transcripts. */
+  getMessageText: () => string
   onBranchInNewChat?: (messageId: string) => void
 }
 
@@ -131,6 +136,28 @@ function messageContentText(content: unknown): string {
   }
 
   return Array.isArray(content) ? content.map(partText).join('').trim() : ''
+}
+
+// Cheap streaming-stable "does this message have visible text" check: returns
+// on the first non-whitespace text part without concatenating the whole
+// message. Used as a useAuiState selector so its boolean output stays stable
+// across token flushes (flips false→true once per turn).
+function contentHasVisibleText(content: unknown): boolean {
+  if (typeof content === 'string') {
+    return content.trim().length > 0
+  }
+
+  if (!Array.isArray(content)) {
+    return false
+  }
+
+  for (const part of content) {
+    if (partText(part).trim().length > 0) {
+      return true
+    }
+  }
+
+  return false
 }
 
 export const Thread: FC<{
@@ -221,20 +248,39 @@ const CenteredThreadSpinner: FC = () => {
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
   const messageId = useAuiState(s => s.message.id)
-  const content = useAuiState(s => s.message.content)
-  const messageText = messageContentText(content)
+  const messageRuntime = useMessageRuntime()
+
+  // PERF: this component must NOT subscribe to the streaming text. Every
+  // selector here returns a value that stays referentially stable across
+  // token flushes (booleans, status strings, '' while running), so the
+  // 30 Hz delta stream only re-renders the markdown part and the tiny
+  // StreamStallIndicator leaf — not the footer/preview/root subtree.
+  const messageStatus = useAuiState(s => s.message.status?.type)
+  const isRunning = messageStatus === 'running'
+  const isPlaceholder = useAuiState(s => s.message.status?.type === 'running' && s.message.content.length === 0)
+  const hasVisibleText = useAuiState(s => contentHasVisibleText(s.message.content))
+
+  // Preview targets only materialize once the turn completes — while running
+  // the selector returns '' (stable), so per-token flushes skip the regex
+  // scan and the re-render it would cause.
+  const completedText = useAuiState(s =>
+    s.message.status?.type === 'running' ? '' : messageContentText(s.message.content)
+  )
 
   const previewTargets = useMemo(() => {
-    if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
+    if (!completedText || !/(https?:\/\/|file:\/\/)/i.test(completedText)) {
       return []
     }
 
-    return pickPrimaryPreviewTarget(extractPreviewTargets(messageText))
-  }, [messageText])
+    return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
+  }, [completedText])
 
-  const messageStatus = useAuiState(s => s.message.status?.type)
-  const isPlaceholder = messageStatus === 'running' && content.length === 0
-  const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
+  const getMessageText = useCallback(
+    () => messageContentText(messageRuntime.getState().content),
+    [messageRuntime]
+  )
+
+  const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
     return null
@@ -245,7 +291,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden"
       data-role="assistant"
       data-slot="aui_assistant-message-root"
-      data-streaming={messageStatus === 'running' ? 'true' : undefined}
+      data-streaming={isRunning ? 'true' : undefined}
       ref={enterRef}
     >
       <div
@@ -254,7 +300,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       >
         {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
+        {isRunning && <StreamStallIndicator />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -271,8 +317,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {messageText.trim().length > 0 && (
-        <AssistantFooter messageId={messageId} messageText={messageText} onBranchInNewChat={onBranchInNewChat} />
+      {hasVisibleText && (
+        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>
   )
@@ -313,10 +359,28 @@ const STREAM_STALL_S = 2
 
 // Tail "still thinking" indicator: the pre-first-token spinner goes away once
 // text flows, but if the stream then goes quiet mid-turn (tool think-time,
-// provider stall) nothing signals that work continues. Watch a per-render
+// provider stall) nothing signals that work continues. Watch a per-flush
 // activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
 // dither + a timer counting from the last activity.
-const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
+//
+// Subscribes to the activity signal ITSELF (rather than taking it as a prop)
+// so that per-token updates re-render only this leaf, not the whole
+// AssistantMessage subtree.
+const StreamStallIndicator: FC = () => {
+  const activity = useAuiState(s => {
+    let textLength = 0
+
+    for (const part of s.message.content) {
+      const text = (part as { text?: unknown }).text
+
+      if (typeof text === 'string') {
+        textLength += text.length
+      }
+    }
+
+    return `${s.message.content.length}:${textLength}`
+  })
+
   const [stalled, setStalled] = useState(false)
 
   useEffect(() => {
@@ -584,7 +648,7 @@ function formatMessageTimestamp(
   return SHORT_FMT.format(date)
 }
 
-const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, onBranchInNewChat }) => {
+const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const [menuOpen, setMenuOpen] = useState(false)
@@ -605,7 +669,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         )}
         data-slot="aui_msg-actions"
       >
-        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label={copy.copy} text={messageText} />
+        <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
             <Codicon name="refresh" />
@@ -623,7 +687,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
               <GitBranchIcon />
               {copy.branchNewChat}
             </DropdownMenuItem>
-            <ReadAloudItem messageId={messageId} text={messageText} />
+            <ReadAloudItem getText={getMessageText} messageId={messageId} />
           </DropdownMenuContent>
         </DropdownMenu>
       </ActionBarPrimitive.Root>
@@ -631,7 +695,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
   )
 }
 
-const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, text }) => {
+const ReadAloudItem: FC<{ getText: () => string; messageId: string }> = ({ getText, messageId }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
   const voicePlayback = useStore($voicePlayback)
@@ -645,6 +709,8 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
   const Icon = isPreparing ? Loader2Icon : isSpeaking ? VolumeXIcon : Volume2Icon
 
   const read = useCallback(async () => {
+    const text = getText()
+
     if (!text || $voicePlayback.get().status !== 'idle') {
       return
     }
@@ -654,11 +720,11 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }
-  }, [copy.readAloudFailed, messageId, text])
+  }, [copy.readAloudFailed, getText, messageId])
 
   return (
     <DropdownMenuItem
-      disabled={isPreparing || (!isSpeaking && (anyPlaybackActive || !text))}
+      disabled={isPreparing || (!isSpeaking && anyPlaybackActive)}
       onSelect={e => {
         e.preventDefault()
         void (isSpeaking ? stopVoicePlayback() : read())
@@ -820,8 +886,10 @@ const UserMessage: FC<{
   // changes, not on every frame while the outer max-height animates open.
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
   const [bodyClamped, setBodyClamped] = useState(false)
+  const lastClampHeightRef = useRef(-1)
+  const lineHeightRef = useRef(0)
 
-  const measureClamp = useCallback(() => {
+  const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current
     const outer = inner?.parentElement
 
@@ -829,12 +897,28 @@ const UserMessage: FC<{
       return
     }
 
-    const styles = getComputedStyle(inner)
-    const lineHeight = parseFloat(styles.lineHeight) || 1.5 * parseFloat(styles.fontSize) || 20
-    const fullHeight = inner.scrollHeight
+    // Prefer the size the ResizeObserver already computed — reading
+    // `scrollHeight` outside RO timing forces a synchronous layout, and with
+    // many user bubbles observed at once those reads interleave with the
+    // style write below into a read-write-read reflow cascade.
+    const entryHeight = entries.find(entry => entry.target === inner)?.borderBoxSize?.[0]?.blockSize
+    const fullHeight = Math.ceil(entryHeight ?? inner.scrollHeight)
+
+    if (fullHeight === lastClampHeightRef.current) {
+      return
+    }
+
+    lastClampHeightRef.current = fullHeight
+
+    // Line-height is stable for the life of the bubble (font settings don't
+    // change under it) — resolve the computed style once.
+    if (!lineHeightRef.current) {
+      const styles = getComputedStyle(inner)
+      lineHeightRef.current = parseFloat(styles.lineHeight) || 1.5 * parseFloat(styles.fontSize) || 20
+    }
 
     outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
-    setBodyClamped(fullHeight > lineHeight * 2 + 1)
+    setBodyClamped(fullHeight > lineHeightRef.current * 2 + 1)
   }, [])
 
   useResizeObserver(measureClamp, clampInnerRef)

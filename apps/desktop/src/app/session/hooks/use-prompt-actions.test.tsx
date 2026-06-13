@@ -325,6 +325,45 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
   })
 
+  it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
+    // A stale-session 404 must not strand the queued entry: submitPrompt returns
+    // false on failure so the composer keeps it, and the edge-independent
+    // auto-drain re-attempts once the session is idle again. storedSessionId is
+    // null so the session.resume recovery path is skipped and the error surfaces.
+    let attempt = 0
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        attempt += 1
+
+        if (attempt === 1) {
+          throw new Error('404: {"detail":"Session not found"}')
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={null}
+      />
+    )
+
+    const first = await handle!.submitText('please send me', { fromQueue: true })
+    expect(first).toBe(false)
+
+    const second = await handle!.submitText('please send me', { fromQueue: true })
+    expect(second).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'please send me'
+    })
+  })
+
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {
     const busyRef = { current: true }
     const requestGateway = vi.fn(async () => ({}) as never)

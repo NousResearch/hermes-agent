@@ -1698,6 +1698,20 @@ def list_authenticated_providers(
                 store = _load_auth_store()
                 if store and store.get("credential_pool", {}).get(hermes_id):
                     has_creds = True
+                    # ...but if it parses into a full pool whose every entry is
+                    # exhausted/dead, it has no usable credential right now, so
+                    # don't treat it as authenticated -- otherwise an aggregator
+                    # whose quota is spent hijacks no-provider model resolution
+                    # and sticks as the session provider (#45759). Simple
+                    # token-style entries (no exhaustion-tracked entries) keep
+                    # the prior behaviour.
+                    try:
+                        from agent.credential_pool import load_pool as _load_pool
+                        _pool = _load_pool(hermes_id)
+                        if _pool.has_credentials() and not _pool.has_available():
+                            has_creds = False
+                    except Exception:
+                        pass
             except Exception:
                 pass
         if not has_creds:
@@ -1788,7 +1802,10 @@ def list_authenticated_providers(
             try:
                 from agent.credential_pool import load_pool
                 pool = load_pool(hermes_slug)
-                if pool.has_credentials():
+                # has_available(), not has_credentials(): an all-exhausted pool
+                # holds entries but no usable credential, so it must not count
+                # as authenticated (#45759).
+                if pool.has_available():
                     has_creds = True
             except Exception as exc:
                 logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
@@ -1929,7 +1946,9 @@ def list_authenticated_providers(
             try:
                 from agent.credential_pool import load_pool
                 _cp_pool = load_pool(_cp.slug)
-                if _cp_pool.has_credentials():
+                # has_available(): exclude pools whose every entry is exhausted
+                # (#45759).
+                if _cp_pool.has_available():
                     _cp_has_creds = True
             except Exception:
                 pass

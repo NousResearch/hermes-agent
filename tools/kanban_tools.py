@@ -814,6 +814,7 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
+                scheduled_at=args.get("scheduled_at"),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
             )
@@ -1298,6 +1299,16 @@ KANBAN_CREATE_SCHEMA = {
                     "continuation turns the worker may take before the task "
                     "is blocked for review. Ignored unless goal_mode is "
                     "true. Defaults to the goal-engine default (20)."
+                ),
+            },
+            "scheduled_at": {
+                "type": "integer",
+                "description": (
+                    "Unix epoch timestamp. The task will not be "
+                    "dispatched until this time arrives. NULL or "
+                    "omitted = dispatch immediately when ready. Use "
+                    "this to defer work to a future time — e.g. "
+                    "tomorrow morning, next Friday evening."
                 ),
             },
             "board": _board_schema_prop(),

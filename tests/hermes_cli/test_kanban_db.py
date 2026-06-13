@@ -4372,3 +4372,60 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# scheduled_at — deferred task dispatch (per-task start time)
+# ---------------------------------------------------------------------------
+
+
+def test_create_task_defaults_scheduled_at_to_none(kanban_home):
+    """A task created without scheduled_at has no scheduling constraint."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="now", assignee="alice")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.scheduled_at is None
+
+
+def test_create_task_persists_scheduled_at(kanban_home):
+    """scheduled_at round-trips through create_task -> get_task."""
+    when = int(time.time()) + 3600
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="later", assignee="alice", scheduled_at=when
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.scheduled_at == when
+
+
+def test_claim_task_blocked_until_scheduled_at(kanban_home):
+    """claim_task refuses a ready task whose scheduled_at is in the future,
+    and succeeds once the scheduled time has passed."""
+    future = int(time.time()) + 3600
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="deferred", assignee="alice", scheduled_at=future
+        )
+        # Task is 'ready' but not yet due -> claim must return None.
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.claim_task(conn, tid) is None
+
+        # Move the scheduled time into the past -> claim must now succeed.
+        past = int(time.time()) - 1
+        conn.execute(
+            "UPDATE tasks SET scheduled_at = ? WHERE id = ?", (past, tid)
+        )
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert claimed.status == "running"
+
+
+def test_claim_task_unscheduled_is_immediately_claimable(kanban_home):
+    """A ready task with scheduled_at=NULL is claimable right away."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="immediate", assignee="alice")
+        claimed = kb.claim_task(conn, tid)
+    assert claimed is not None
+    assert claimed.status == "running"

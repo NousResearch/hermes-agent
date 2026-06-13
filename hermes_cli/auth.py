@@ -3796,6 +3796,21 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
+        # Singleton missing AND no usable pool token. If every token-bearing
+        # pool entry is currently in a 429 quota-cooldown, this is a transient
+        # rate-limit — not a missing credential — and the operator-facing
+        # error must say so. Otherwise prompting `hermes auth` is misleading
+        # (re-auth cannot lift a usage cap) and panics the operator (#32790).
+        cooldown_remaining = _pool_codex_rate_limit_remaining()
+        if cooldown_remaining is not None:
+            raise AuthError(
+                "Codex provider quota exhausted (429); every stored credential "
+                f"is in cooldown. Retry after {_format_cooldown_wait(cooldown_remaining)}. "
+                "Credentials are still valid.",
+                provider="openai-codex",
+                code=CODEX_RATE_LIMITED_CODE,
+                relogin_required=False,
+            ) from read_error
         if read_error is not None:
             raise read_error
         raise AuthError(
@@ -3880,6 +3895,61 @@ def _pool_codex_access_token() -> str:
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
     return ""
+
+
+def _pool_codex_rate_limit_remaining() -> Optional[float]:
+    """Return seconds remaining on the longest 429 cooldown across token-bearing
+    ``openai-codex`` pool entries, or ``None`` when no such entry is currently
+    in a 429 cooldown.
+
+    Used by ``resolve_codex_runtime_credentials`` to distinguish "credentials
+    are missing" from "credentials exist but every entry is in upstream-quota
+    cooldown" — only the latter should surface as a transient rate-limit
+    notice instead of a misleading "run hermes auth" prompt (#32790). 401/403
+    cooldowns are intentionally not counted: those represent real credential
+    failures where re-auth is the correct remediation.
+    """
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return None
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return None
+        now = time.time()
+        longest: Optional[float] = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                continue
+            if entry.get("last_error_code") != 429:
+                continue
+            reset_at = entry.get("last_error_reset_at")
+            if not isinstance(reset_at, (int, float)) or reset_at <= now:
+                continue
+            remaining = float(reset_at - now)
+            if longest is None or remaining > longest:
+                longest = remaining
+        return longest
+    except Exception:
+        logger.debug("Codex pool rate-limit lookup failed", exc_info=True)
+        return None
+
+
+def _format_cooldown_wait(seconds: float) -> str:
+    """Format a remaining-cooldown duration into a short ``HhMm`` / ``MmSs`` / ``Ss`` string."""
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 # =============================================================================

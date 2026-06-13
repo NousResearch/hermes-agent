@@ -1655,9 +1655,10 @@ def _setup_telegram_auto_result():
 
     profile_name: str | None = None
     try:
-        hermes_home = str(get_hermes_home())
-        if "/profiles/" in hermes_home:
-            profile_name = hermes_home.rstrip("/").rsplit("/", 1)[-1]
+        from pathlib import Path
+        hermes_home_path = Path(get_hermes_home())
+        if hermes_home_path.parent.name == "profiles":
+            profile_name = hermes_home_path.name
     except Exception:
         pass
 

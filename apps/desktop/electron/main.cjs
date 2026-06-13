@@ -240,17 +240,34 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
-  if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
-  if (IS_WINDOWS && process.env.LOCALAPPDATA) {
+  let home = null
+  if (process.env.HERMES_HOME) {
+    home = path.resolve(process.env.HERMES_HOME)
+  } else if (USER_DATA_OVERRIDE) {
+    home = path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+  } else if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
     const legacy = path.join(app.getPath('home'), '.hermes')
     // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
     // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
-    if (!directoryExists(localappdata) && directoryExists(legacy)) return legacy
-    return localappdata
+    if (!directoryExists(localappdata) && directoryExists(legacy)) {
+      home = legacy
+    } else {
+      home = localappdata
+    }
+  } else {
+    home = path.join(app.getPath('home'), '.hermes')
   }
-  return path.join(app.getPath('home'), '.hermes')
+
+  // Normalize back to global root if resolved home is a profile directory
+  if (home) {
+    const parentDir = path.dirname(home)
+    if (path.basename(parentDir) === 'profiles') {
+      home = path.dirname(parentDir)
+    }
+  }
+
+  return home
 }
 
 const HERMES_HOME = resolveHermesHome()

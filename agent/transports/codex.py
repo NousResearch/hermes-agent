@@ -99,8 +99,9 @@ class ResponsesApiTransport(ProviderTransport):
             "store": False,
         }
 
+        is_custom_provider = params.get("is_custom_provider", False)
         session_id = params.get("session_id")
-        if not is_github_responses and session_id:
+        if not is_github_responses and not is_custom_provider and session_id:
             kwargs["prompt_cache_key"] = session_id
 
         if reasoning_enabled and is_xai_responses:

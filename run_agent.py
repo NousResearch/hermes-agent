@@ -8378,6 +8378,7 @@ class AIAgent:
                 )
             )
             is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
+            is_custom_provider = (self.provider or "").strip().lower() == "custom"
             _msgs_for_codex = self._prepare_messages_for_non_vision_model(api_messages)
             return _ct.build_kwargs(
                 model=self.model,
@@ -8390,6 +8391,7 @@ class AIAgent:
                 is_github_responses=is_github_responses,
                 is_codex_backend=is_codex_backend,
                 is_xai_responses=is_xai_responses,
+                is_custom_provider=is_custom_provider,
                 github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
             )
 

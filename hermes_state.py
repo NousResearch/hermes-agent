@@ -1187,8 +1187,8 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, cwd, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, cwd, started_at, message_count, tool_call_count)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)""",
                 (
                     session_id,
                     source,

@@ -15,6 +15,7 @@ from tools.file_operations import (
     ShellFileOperations,
     normalize_read_pagination,
     normalize_search_pagination,
+    _windows_bash_path_to_drive,
 )
 from tools import file_state
 from agent.redact import redact_sensitive_text
@@ -105,6 +106,11 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+
+def _msys_path_to_windows(filepath: str) -> str:
+    """Convert MSYS/WSL drive paths to native Windows paths when on Windows."""
+    return _windows_bash_path_to_drive(filepath)
 
 
 def _configured_terminal_cwd() -> str | None:

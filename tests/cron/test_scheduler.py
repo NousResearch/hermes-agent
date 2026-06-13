@@ -87,6 +87,23 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_webui_origin_delivery_is_local_session_target(self):
+        """WebUI-origin cron jobs are surfaced via the local cron session, not a gateway adapter."""
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "webui",
+                "chat_id": "webui-session-123",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "webui",
+            "chat_id": "webui-session-123",
+            "thread_id": None,
+            "local_session": True,
+        }
+
     @pytest.mark.parametrize(
         ("platform", "env_var", "chat_id"),
         [
@@ -528,6 +545,24 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    def test_webui_origin_delivery_is_satisfied_by_session_persistence(self):
+        """WebUI-origin delivery should not try to route through gateway Platform('webui')."""
+        with patch("gateway.config.load_gateway_config") as load_cfg, \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock()) as send_mock:
+            result = _deliver_result(
+                {
+                    "id": "webui-job",
+                    "name": "webui job",
+                    "deliver": "origin",
+                    "origin": {"platform": "webui", "chat_id": "webui-session-123"},
+                },
+                "Output already persisted to the cron session.",
+            )
+
+        assert result is None
+        load_cfg.assert_not_called()
+        send_mock.assert_not_called()
+
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""
         from gateway.config import Platform
@@ -959,6 +994,8 @@ class TestRunJobSessionPersistence:
             "prompt": "hello",
         }
         fake_db = MagicMock()
+        fake_db.get_session.return_value = {"id": "cron_failing-job_test"}
+        fake_db.get_messages.return_value = [{"role": "user", "content": "hello"}]
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
@@ -983,6 +1020,59 @@ class TestRunJobSessionPersistence:
         assert success is False
         assert final_response == ""
         assert "RuntimeError: boom" in error
+        fake_db.append_message.assert_called_once()
+        append_kwargs = fake_db.append_message.call_args.kwargs
+        assert append_kwargs["role"] == "assistant"
+        assert append_kwargs["finish_reason"] == "error"
+        assert "Cron job 'failing' failed" in append_kwargs["content"]
+        assert "RuntimeError: boom" in append_kwargs["content"]
+        mock_agent.close.assert_called_once()
+
+    def test_run_job_persists_failure_message_when_agent_reports_failed_result(self, tmp_path):
+        job = {
+            "id": "reported-failure-job",
+            "name": "reported failure",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+        fake_db.get_session.return_value = {"id": "cron_reported-failure-job_test"}
+        fake_db.get_messages.return_value = [{"role": "user", "content": "hello"}]
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "failed": True,
+                "completed": False,
+                "error": "provider guardrail blocked model",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None
+        assert "provider guardrail blocked model" in error
+        assert "provider guardrail blocked model" in output
+        fake_db.append_message.assert_called_once()
+        append_kwargs = fake_db.append_message.call_args.kwargs
+        assert append_kwargs["role"] == "assistant"
+        assert append_kwargs["finish_reason"] == "error"
+        assert "Cron job 'reported failure' failed" in append_kwargs["content"]
+        assert "provider guardrail blocked model" in append_kwargs["content"]
         mock_agent.close.assert_called_once()
 
     def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):

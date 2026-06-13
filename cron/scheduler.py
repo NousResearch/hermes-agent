@@ -120,6 +120,12 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "qqbot", "yuanbao",
 })
 
+# Surfaces that persist cron runs as local Hermes sessions rather than through
+# a gateway platform adapter. WebUI imports/displays ``source='cron'`` sessions
+# from the shared session DB, so a WebUI-origin cron run is already delivered
+# once the scheduler flushes its transcript.
+_LOCAL_SESSION_DELIVERY_PLATFORMS = frozenset({"webui"})
+
 # Platforms that support a configured cron/notification home target, mapped to
 # the environment variable used by gateway setup/runtime config.
 _HOME_TARGET_ENV_VARS = {
@@ -313,6 +319,12 @@ def _is_known_delivery_platform(platform_name: str) -> bool:
     return bool(_plugin_cron_env_var(name))
 
 
+def _is_local_session_delivery_target(target: dict) -> bool:
+    """Whether a resolved target is satisfied by local session persistence."""
+    platform_name = str(target.get("platform", "")).lower()
+    return bool(target.get("local_session")) or platform_name in _LOCAL_SESSION_DELIVERY_PLATFORMS
+
+
 def _resolve_home_env_var(platform_name: str) -> str:
     """Return the env var name for a platform's cron home channel.
 
@@ -434,6 +446,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
 
     if deliver_value == "origin":
         if origin:
+            origin_platform = str(origin["platform"]).lower()
+            if origin_platform in _LOCAL_SESSION_DELIVERY_PLATFORMS:
+                return {
+                    "platform": origin_platform,
+                    "chat_id": str(origin.get("chat_id", "")),
+                    "thread_id": origin.get("thread_id"),
+                    "local_session": True,
+                }
             return {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
@@ -459,6 +479,14 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
+
+        if platform_key in _LOCAL_SESSION_DELIVERY_PLATFORMS:
+            return {
+                "platform": platform_key,
+                "chat_id": rest,
+                "thread_id": None,
+                "local_session": True,
+            }
 
         from tools.send_message_tool import _parse_target_ref
 
@@ -674,6 +702,20 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
         return None  # local-only jobs don't deliver — not a failure
+
+    external_targets = []
+    for target in targets:
+        if _is_local_session_delivery_target(target):
+            logger.debug(
+                "Job '%s': cron result satisfied by local %s session persistence",
+                job.get("id", "?"),
+                target.get("platform", "session"),
+            )
+            continue
+        external_targets.append(target)
+    if not external_targets:
+        return None
+    targets = external_targets
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
@@ -1894,7 +1936,36 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
-        
+        failure_response = f"⚠️ Cron job '{job_name}' failed:\n{error_msg}"
+
+        # The scheduler must still mark the run failed and suppress normal
+        # platform delivery, but the cron session should not look like a
+        # prompt-only chat in WebUI/Desktop. If the agent already created the
+        # session row and did not persist an assistant turn, append a concise
+        # failure message so the run is readable as a chat transcript.
+        if _session_db:
+            try:
+                _session_exists = bool(_session_db.get_session(_cron_session_id))
+                if _session_exists:
+                    _messages = _session_db.get_messages(_cron_session_id)
+                    _has_assistant = any(
+                        (m.get("role") == "assistant") and str(m.get("content") or "").strip()
+                        for m in _messages
+                    )
+                    if not _has_assistant:
+                        _session_db.append_message(
+                            _cron_session_id,
+                            role="assistant",
+                            content=failure_response,
+                            finish_reason="error",
+                        )
+            except (Exception, KeyboardInterrupt) as append_exc:
+                logger.debug(
+                    "Job '%s': failed to persist cron failure message: %s",
+                    job_id,
+                    append_exc,
+                )
+
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}

@@ -5389,23 +5389,38 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
         "code_verifier": sess["verifier"],
     }).encode()
-    req = urllib.request.Request(
-        _ANTHROPIC_OAUTH_TOKEN_URL,
-        data=exchange_data,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "hermes-dashboard/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-    except Exception as e:
+    # Try multiple token endpoints — the original console.anthropic.com
+    # URL may 404 if Anthropic has migrated the endpoint.
+    _anthropic_token_endpoints = [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
+    ]
+    result = None
+    last_exchange_error = None
+    for _endpoint in _anthropic_token_endpoints:
+        req = urllib.request.Request(
+            _endpoint,
+            data=exchange_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "hermes-dashboard/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode())
+            break
+        except Exception as exc:
+            last_exchange_error = exc
+            _log.debug("Anthropic OAuth token exchange failed at %s: %s", _endpoint, exc)
+            continue
+    if result is None:
+        err_msg = f"Token exchange failed: {last_exchange_error}"
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = f"Token exchange failed: {e}"
-        return {"ok": False, "status": "error", "message": sess["error_message"]}
+            sess["error_message"] = err_msg
+        return {"ok": False, "status": "error", "message": err_msg}
 
     access_token = result.get("access_token", "")
     refresh_token = result.get("refresh_token", "")

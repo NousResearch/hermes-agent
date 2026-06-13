@@ -1346,18 +1346,36 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "code_verifier": verifier,
         }).encode()
 
-        req = urllib.request.Request(
-            _OAUTH_TOKEN_URL,
-            data=exchange_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-            },
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode())
+        # Try multiple token endpoints — the original console.anthropic.com
+        # URL may 404 if Anthropic has migrated the endpoint.  The refresh
+        # flow already uses this same fallback list (see
+        # refresh_anthropic_oauth_pure).
+        _token_endpoints = [
+            "https://platform.claude.com/v1/oauth/token",
+            "https://console.anthropic.com/v1/oauth/token",
+        ]
+        last_error = None
+        result = None
+        for endpoint in _token_endpoints:
+            req = urllib.request.Request(
+                endpoint,
+                data=exchange_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    result = json.loads(resp.read().decode())
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.debug("Anthropic OAuth token exchange failed at %s: %s", endpoint, exc)
+                continue
+        if result is None:
+            raise last_error or ValueError("Anthropic OAuth token exchange failed at all endpoints")
     except Exception as e:
         print(f"Token exchange failed: {e}")
         return None

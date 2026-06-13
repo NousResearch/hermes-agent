@@ -1131,6 +1131,33 @@ class TestSendDocument:
 class TestSendVoice:
     """Local non-Opus audio converts to Opus; fallback sends the original."""
 
+    @pytest.mark.parametrize("suffix", [".ogg", ".opus"])
+    @pytest.mark.asyncio
+    async def test_send_voice_native_opus_uploads_without_conversion(self, suffix):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_upload_response("voice_id"),
+            _mock_message_response(),
+        ])
+        adapter._convert_to_opus = AsyncMock()
+
+        path = _tmpfile(suffix, content=b"OggS")
+        try:
+            result = await adapter.send_voice("15551234567", path)
+            assert result.success is True
+            adapter._convert_to_opus.assert_not_awaited()
+
+            upload_files = adapter._http_client.post.call_args_list[0].kwargs["files"]
+            assert upload_files["file"][2] == "audio/ogg; codecs=opus"
+            assert upload_files["type"] == (None, "audio/ogg; codecs=opus")
+
+            send_payload = adapter._http_client.post.call_args_list[1].kwargs["json"]
+            assert send_payload["type"] == "audio"
+            assert send_payload["audio"]["id"] == "voice_id"
+        finally:
+            _os.unlink(path)
+
     @pytest.mark.asyncio
     async def test_send_voice_no_ffmpeg_falls_back_to_mp3(self):
         adapter = _make_adapter()

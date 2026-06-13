@@ -118,6 +118,7 @@ _DEFAULT_MIME = {
     "document": "application/octet-stream",
     "sticker": "image/webp",
 }
+_WHATSAPP_OPUS_MIME = "audio/ogg; codecs=opus"
 
 # ffmpeg location at import time. ``shutil.which`` honours PATHEXT on
 # Windows so a user's ``ffmpeg.exe`` is picked up. None means MP3 voice
@@ -1099,14 +1100,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         WhatsApp renders ``audio/ogg; codecs=opus`` as the green
         voice-note bubble; other audio types (MP3, WAV, AAC, etc.) appear as
-        a generic audio attachment. Hermes TTS providers may produce any
-        supported audio container, so we try ffmpeg conversion to Opus first
-        for local non-Opus files and fall back to sending the original audio
-        when ffmpeg is unavailable.
+        a generic audio attachment. Native Ogg/Opus is uploaded as-is. For
+        local non-Opus files, we try ffmpeg conversion to Opus first and
+        fall back to sending the original audio when ffmpeg is unavailable.
         """
         source = audio_path
         mime_type: Optional[str] = None
-
         is_local_file = (
             not audio_path.startswith(("http://", "https://"))
             and os.path.exists(audio_path)
@@ -1114,18 +1113,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         suffix = Path(audio_path).suffix.lower()
         is_opus_voice = suffix in {".ogg", ".opus"}
 
-        if is_local_file and not is_opus_voice:
+        if is_local_file and is_opus_voice:
+            mime_type = _WHATSAPP_OPUS_MIME
+        elif is_local_file:
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:
                     result = await self._send_media_from_path_or_link(
                         chat_id, opus_path, "audio",
                         caption=caption, reply_to=reply_to,
-                        mime_type="audio/ogg; codecs=opus",
+                        mime_type=_WHATSAPP_OPUS_MIME,
                     )
                 finally:
                     # The .ogg is a transient conversion artifact next to
-                    # the source MP3 — clean it up after upload so voice
+                    # the source audio, so clean it up after upload to keep
                     # sends don't leak a file per message.
                     try:
                         os.unlink(opus_path)
@@ -1136,8 +1137,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Warn-once is logged inside _convert_to_opus.
             if suffix == ".mp3":
                 mime_type = "audio/mpeg"
-        elif is_local_file and is_opus_voice:
-            mime_type = "audio/ogg; codecs=opus"
 
         return await self._send_media_from_path_or_link(
             chat_id, source, "audio",

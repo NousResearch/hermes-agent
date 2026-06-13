@@ -714,9 +714,17 @@ export function usePromptActions({
 
         return true
       } catch (err) {
+        releaseBusy()
+
+        // A queued drain that raced a not-yet-settled turn gets a transient
+        // "session busy" (4009). Don't surface an error bubble/toast — the entry
+        // stays queued and the composer's bounded auto-drain retries when idle.
+        if (options?.fromQueue && isSessionBusyError(err)) {
+          return false
+        }
+
         const message = inlineErrorMessage(err, copy.promptFailed)
 
-        releaseBusy()
         updateSessionState(sessionId, state => ({
           ...state,
           messages: [

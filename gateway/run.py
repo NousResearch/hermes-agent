@@ -12006,67 +12006,71 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
                 from tools.process_registry import process_registry as _pr_check
-                if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from tools.ansi_strip import strip_ansi
-                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
-                    _LIMIT = 2000
-                    if len(_raw) > _LIMIT:
-                        _tail = _raw[-_LIMIT:]
-                        _nl = _tail.find("\n")
-                        _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-                        _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-                    else:
-                        _out = _raw
-                    synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
-                        f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
-                        f"Output:\n{_out}]"
-                    )
-                    source = self._build_process_event_source({
-                        "session_id": session_id,
-                        "session_key": session_key,
-                        "platform": platform_name,
-                        "chat_id": chat_id,
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "user_name": user_name,
-                    })
-                    if not source:
-                        logger.warning(
-                            "Dropping completion notification with no routing metadata for process %s",
-                            session_id,
+                if agent_notify:
+                    if (
+                        session.exit_code == 0
+                        and not _pr_check.is_completion_consumed(session_id)
+                    ):
+                        from tools.ansi_strip import strip_ansi
+                        _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+                        # Truncate at line boundaries so notifications never start
+                        # mid-line (fixes #23284). Keep the last ~2000 chars but
+                        # snap to the nearest preceding newline, then prepend a
+                        # truncation marker when output was cut.
+                        _LIMIT = 2000
+                        if len(_raw) > _LIMIT:
+                            _tail = _raw[-_LIMIT:]
+                            _nl = _tail.find("\n")
+                            _tail = _tail[_nl + 1:] if _nl != -1 else _tail
+                            _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
+                        else:
+                            _out = _raw
+                        synth_text = (
+                            f"[IMPORTANT: Background process {session_id} completed "
+                            f"(exit code {session.exit_code}).\n"
+                            f"Command: {session.command}\n"
+                            f"Output:\n{_out}]"
                         )
-                        break
-
-                    adapter = None
-                    for p, a in self.adapters.items():
-                        if p == source.platform:
-                            adapter = a
-                            break
-                    if adapter and source.chat_id:
-                        try:
-                            synth_event = MessageEvent(
-                                text=synth_text,
-                                message_type=MessageType.TEXT,
-                                source=source,
-                                internal=True,
-                                message_id=message_id,
-                            )
-                            logger.info(
-                                "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                        source = self._build_process_event_source({
+                            "session_id": session_id,
+                            "session_key": session_key,
+                            "platform": platform_name,
+                            "chat_id": chat_id,
+                            "thread_id": thread_id,
+                            "user_id": user_id,
+                            "user_name": user_name,
+                        })
+                        if not source:
+                            logger.warning(
+                                "Dropping completion notification with no routing metadata for process %s",
                                 session_id,
-                                session_key,
-                                source.chat_id,
-                                source.thread_id,
                             )
-                            await adapter.handle_message(synth_event)
-                        except Exception as e:
-                            logger.error("Agent notify injection error: %s", e)
+                            break
+
+                        adapter = None
+                        for p, a in self.adapters.items():
+                            if p == source.platform:
+                                adapter = a
+                                break
+                        if adapter and source.chat_id:
+                            try:
+                                synth_event = MessageEvent(
+                                    text=synth_text,
+                                    message_type=MessageType.TEXT,
+                                    source=source,
+                                    internal=True,
+                                    message_id=message_id,
+                                )
+                                logger.info(
+                                    "Process %s finished — injecting agent notification for session %s chat=%s thread=%s",
+                                    session_id,
+                                    session_key,
+                                    source.chat_id,
+                                    source.thread_id,
+                                )
+                                await adapter.handle_message(synth_event)
+                            except Exception as e:
+                                logger.error("Agent notify injection error: %s", e)
                     break
 
                 # --- Normal text-only notification ---

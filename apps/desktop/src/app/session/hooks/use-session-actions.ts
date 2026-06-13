@@ -12,7 +12,7 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, browseProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
   $currentFastMode,
@@ -569,15 +569,19 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
-      // Paint the click before the profile-resolve / gateway-swap awaits below,
-      // so there's zero dead air: highlight the row instantly (the sidebar reads
-      // $selectedStoredSessionId) and, for a cold target, drop the previous
-      // transcript so the thread shows its loader instead of the old session
-      // lingering until resume lands. A warm-cached target keeps its transcript —
-      // the cached fast-path repaints it this same tick. Setting the ref here is
-      // also what use-route-resume's self-heal assumes ("set synchronously at
-      // resume entry").
+      // Show the saved chat immediately. Do not wait for the profile backend /
+      // live gateway swap before selecting the row or hydrating local messages:
+      // pooled profile backends can be slow or crash/restart, and saved history
+      // is local read-only state.
+      const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
+      const sessionProfile = storedForProfile?.profile
+      browseProfile(sessionProfile)
       setFreshDraftReady(false)
+      setActiveSessionId(null)
+      activeSessionIdRef.current = null
+      busyRef.current = true
+      setBusy(true)
+      setAwaitingResponse(false)
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
@@ -590,27 +594,45 @@ export function useSessionActions({
       // reselect) gives the bounded auto-retry counter a clean cycle, so the
       // chat view drops the error state and shows the loader again.
       setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
+      setSessionStartedAt(Date.now())
+      applyStoredSessionPreviewRuntimeInfo(storedForProfile)
 
-      const warmRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-
-      if (!warmRuntimeId || !sessionStateByRuntimeIdRef.current.get(warmRuntimeId)) {
-        setActiveSessionId(null)
-        activeSessionIdRef.current = null
-        setMessages([])
+      if (storedForProfile) {
+        setCurrentUsage(current => ({
+          ...current,
+          input: storedForProfile.input_tokens || 0,
+          output: storedForProfile.output_tokens || 0,
+          total: (storedForProfile.input_tokens || 0) + (storedForProfile.output_tokens || 0)
+        }))
       }
 
-      // Swap the single live gateway to this session's profile before any
-      // gateway call (no-op when it's already on that profile / single-profile).
-      // resolveStoredSession finds the row by id (cheap), so an uncached pasted
-      // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const storedForProfile = await resolveStoredSession(storedSessionId)
-      const sessionProfile = storedForProfile?.profile
+      try {
+        const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
-      if (resumeRequestRef.current !== requestId) {
+        if (isCurrentResume()) {
+          const localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+
+          if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+            setMessages(localSnapshot)
+          }
+        }
+      } catch {
+        // Non-fatal: gateway resume below can still hydrate the session.
+      }
+
+      // Swap the live gateway to this session's profile after the local snapshot
+      // is visible. No-op when already on that profile / single-profile.
+      try {
+        await ensureGatewayProfile(sessionProfile)
+      } catch (error) {
+        if (isCurrentResume()) {
+          busyRef.current = false
+          setBusy(false)
+          notifyError(error, 'Could not connect to this profile backend')
+        }
+
         return
       }
-
-      await ensureGatewayProfile(sessionProfile)
 
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)

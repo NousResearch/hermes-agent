@@ -282,34 +282,22 @@ export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_ST
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
-$activeGatewayProfile.subscribe(value => {
-  const key = normalizeProfileKey(value)
-
-  // Keep the browsed profile in sync for profile changes that originate outside
-  // the rail (for example opening a session from All Profiles). Rail clicks set
-  // $selectedProfileScope immediately before the backend finishes waking up.
-  if (!$showAllProfiles.get()) {
-    $selectedProfileScope.set(key)
-  }
-})
-
 // The profile context the sidebar is currently showing: a concrete profile key,
-// or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
-// gateway so opening/selecting a profile (which swaps the gateway) moves the
-// whole sidebar with it — a real context switch, not a separate filter to keep
-// in sync.
+// or ALL_PROFILES for the unified grouped view. Concrete scope is controlled by
+// the user's sidebar/rail selection, not by the live gateway connection, so slow
+// or crashing profile backends cannot make the visible history jump backward.
 export const $profileScope = computed([$showAllProfiles, $selectedProfileScope], (showAll, selected) =>
   showAll ? ALL_PROFILES : normalizeProfileKey(selected)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
-// chats at it, and swap the single live gateway onto its backend (which moves
-// $activeGatewayProfile → name, so $profileScope follows).
+// chats at it, show that profile's saved history immediately, and wake its live
+// gateway/backend asynchronously.
 export function selectProfile(name: string): void {
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
-  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
+  const switching = $showAllProfiles.get() || target !== normalizeProfileKey($selectedProfileScope.get())
   $showAllProfiles.set(false)
   $selectedProfileScope.set(target)
   $newChatProfile.set(target)
@@ -319,6 +307,16 @@ export function selectProfile(name: string): void {
   }
 
   void ensureGatewayProfile(target)
+}
+
+// Show an existing session's owning profile immediately without creating a new
+// draft. Used when opening/resuming a saved chat: local history visibility must
+// not depend on the profile backend finishing its gateway/socket wake-up.
+export function browseProfile(name: string | null | undefined): void {
+  const target = normalizeProfileKey(name)
+  $showAllProfiles.set(false)
+  $selectedProfileScope.set(target)
+  $newChatProfile.set(target)
 }
 
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
@@ -389,7 +387,7 @@ export function cycleProfile(direction: 1 | -1): void {
     return
   }
 
-  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($selectedProfileScope.get()))
   const start = current < 0 ? (direction === 1 ? -1 : 0) : current
   const next = (start + direction + keys.length) % keys.length
 

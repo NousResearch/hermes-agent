@@ -27,9 +27,12 @@ vi.mock('@/lib/storage', () => ({
 const {
   $activeGatewayProfile,
   $newChatProfile,
+  $profileOrder,
   $profileScope,
+  $profiles,
   $selectedProfileScope,
   $showAllProfiles,
+  cycleProfile,
   ensureGatewayProfile,
   selectProfile
 } = await import('./profile')
@@ -47,6 +50,8 @@ beforeEach(() => {
   getConnection.mockReset()
   ensureGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
+  $profiles.set([])
+  $profileOrder.set([])
   $activeGatewayProfile.set('default')
   $selectedProfileScope.set('default')
   $showAllProfiles.set(false)
@@ -109,15 +114,41 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 })
 
 describe('profile sidebar scope', () => {
-  it('shows the selected profile history immediately without waiting for gateway connection', () => {
+  beforeEach(() => {
+    ensureGatewayForProfile.mockClear()
+    $profiles.set([
+      { name: 'default', path: '', is_default: true } as never,
+      { name: 'google_search_agent', path: '', is_default: false } as never,
+      { name: 'investment_agent', path: '', is_default: false } as never
+    ])
+    $profileOrder.set([])
     $activeGatewayProfile.set('default')
     $selectedProfileScope.set('default')
     $showAllProfiles.set(false)
+    $newChatProfile.set(null)
+  })
 
+  it('shows the selected profile history immediately without waiting for gateway connection', () => {
     selectProfile('google_search_agent')
 
     expect($profileScope.get()).toBe('google_search_agent')
     expect($newChatProfile.get()).toBe('google_search_agent')
     expect(ensureGatewayForProfile).toHaveBeenCalledWith('google_search_agent')
+  })
+
+  it('does not let live gateway changes overwrite the browsed sidebar profile', () => {
+    selectProfile('investment_agent')
+    $activeGatewayProfile.set('default')
+
+    expect($profileScope.get()).toBe('investment_agent')
+  })
+
+  it('cycles from the selected sidebar profile, not the live gateway profile', () => {
+    $activeGatewayProfile.set('default')
+    $selectedProfileScope.set('google_search_agent')
+
+    cycleProfile(1)
+
+    expect($profileScope.get()).toBe('investment_agent')
   })
 })

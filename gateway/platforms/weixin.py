@@ -87,6 +87,7 @@ LONG_POLL_TIMEOUT_MS = 35_000
 API_TIMEOUT_MS = 15_000
 CONFIG_TIMEOUT_MS = 10_000
 QR_TIMEOUT_MS = 35_000
+DISCONNECT_DRAIN_TIMEOUT_MS = 5_000
 
 MAX_CONSECUTIVE_FAILURES = 3
 RETRY_DELAY_SECONDS = 2
@@ -421,6 +422,7 @@ async def _get_updates(
     token: str,
     sync_buf: str,
     timeout_ms: int,
+    swallow_timeout: bool = True,
 ) -> Dict[str, Any]:
     try:
         return await _api_post(
@@ -432,6 +434,8 @@ async def _get_updates(
             timeout_ms=timeout_ms,
         )
     except asyncio.TimeoutError:
+        if not swallow_timeout:
+            raise
         return {"ret": 0, "msgs": [], "get_updates_buf": sync_buf}
 
 
@@ -1322,6 +1326,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 await self._poll_task
             except asyncio.CancelledError:
                 pass
+        await self._drain_poll_session_on_disconnect()
         self._poll_task = None
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
@@ -1332,6 +1337,37 @@ class WeixinAdapter(BasePlatformAdapter):
         self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
+
+    async def _drain_poll_session_on_disconnect(self) -> None:
+        session = self._poll_session
+        if (
+            session is None
+            or session.closed
+            or not self._token
+            or not self._account_id
+        ):
+            return
+
+        sync_buf = _load_sync_buf(self._hermes_home, self._account_id)
+        try:
+            response = await _get_updates(
+                session,
+                base_url=self._base_url,
+                token=self._token,
+                sync_buf=sync_buf,
+                timeout_ms=DISCONNECT_DRAIN_TIMEOUT_MS,
+                swallow_timeout=False,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[%s] terminal getUpdates drain timed out during disconnect", self.name)
+            return
+        except Exception as exc:
+            logger.warning("[%s] terminal getUpdates drain failed during disconnect: %s", self.name, exc)
+            return
+
+        new_sync_buf = str(response.get("get_updates_buf") or "")
+        if new_sync_buf:
+            _save_sync_buf(self._hermes_home, self._account_id, new_sync_buf)
 
     async def _poll_loop(self) -> None:
         assert self._poll_session is not None

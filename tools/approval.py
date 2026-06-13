@@ -612,8 +612,10 @@ def detect_dangerous_command(command: str) -> tuple:
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
+_timed_approved: dict[str, dict[str, float]] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_EIGHT_HOURS_SECONDS = 8 * 60 * 60
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -631,7 +633,7 @@ class _ApprovalEntry:
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
-        self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        self.result: Optional[str] = None  # "once"|"8h"|"session"|"always"|"deny"
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -710,6 +712,33 @@ def approve_session(session_key: str, pattern_key: str):
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
 
+def approve_timed(session_key: str, pattern_key: str,
+                  ttl_seconds: int = _EIGHT_HOURS_SECONDS):
+    """Approve a pattern for a fixed period of wall-clock time."""
+    if not session_key:
+        return
+    expires_at = time.time() + max(0, ttl_seconds)
+    with _lock:
+        _timed_approved.setdefault(session_key, {})[pattern_key] = expires_at
+
+
+def _prune_expired_timed_locked(session_key: str, now: float | None = None) -> None:
+    """Remove expired timed approvals for *session_key*.
+
+    Caller must hold ``_lock``.
+    """
+    approvals = _timed_approved.get(session_key)
+    if not approvals:
+        return
+    if now is None:
+        now = time.time()
+    for key, expires_at in list(approvals.items()):
+        if expires_at <= now:
+            approvals.pop(key, None)
+    if not approvals:
+        _timed_approved.pop(session_key, None)
+
+
 def enable_session_yolo(session_key: str) -> None:
     """Enable YOLO bypass for a single session key."""
     if not session_key:
@@ -732,11 +761,13 @@ def clear_session(session_key: str) -> None:
         return
     with _lock:
         _session_approved.pop(session_key, None)
+        _timed_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
+
     for entry in entries:
-        # Session-boundary cleanup should cancel any blocked approval waits
+
         # immediately so the old run can unwind instead of idling until timeout.
         entry.result = "deny"
         entry.event.set()
@@ -766,7 +797,11 @@ def is_approved(session_key: str, pattern_key: str) -> bool:
         if any(alias in _permanent_approved for alias in aliases):
             return True
         session_approvals = _session_approved.get(session_key, set())
-        return any(alias in session_approvals for alias in aliases)
+        if any(alias in session_approvals for alias in aliases):
+            return True
+        _prune_expired_timed_locked(session_key)
+        timed_approvals = _timed_approved.get(session_key, {})
+        return any(alias in timed_approvals for alias in aliases)
 
 
 def approve_permanent(pattern_key: str):
@@ -911,6 +946,9 @@ def prompt_dangerous_approval(command: str, description: str,
             if choice in {'o', 'once'}:
                 print(t("approval.allowed_once"))
                 return "once"
+            elif choice in {'8', '8h', 'eight', '8 hours', '8hours'}:
+                print("✅ Allowed for 8 hours.")
+                return "8h"
             elif choice in {'s', 'session'}:
                 print(t("approval.allowed_session"))
                 return "session"
@@ -1128,7 +1166,9 @@ def check_dangerous_command(command: str, env_type: str,
             "description": description,
         }
 
-    if choice == "session":
+    if choice == "8h":
+        approve_timed(session_key, pattern_key)
+    elif choice == "session":
         approve_session(session_key, pattern_key)
     elif choice == "always":
         approve_session(session_key, pattern_key)
@@ -1478,9 +1518,11 @@ def check_all_command_guards(command: str, env_type: str,
 
             # User approved — persist based on scope (same logic as CLI)
             for key, _, is_tirith in warnings:
-                if choice == "session" or (choice == "always" and is_tirith):
+                if choice == "8h":
+                    approve_timed(session_key, key)
+                elif choice == "session" or (choice == "always" and is_tirith):
                     approve_session(session_key, key)
-                elif choice == "always":
+
                     approve_session(session_key, key)
                     approve_permanent(key)
                     save_permanent_allowlist(_permanent_approved)
@@ -1554,9 +1596,11 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Persist approval for each warning individually
     for key, _, is_tirith in warnings:
-        if choice == "session" or (choice == "always" and is_tirith):
-            # tirith: session only (no permanent broad allowlisting)
+        if choice == "8h":
+            approve_timed(session_key, key)
+        elif choice == "session" or (choice == "always" and is_tirith):
             approve_session(session_key, key)
+
         elif choice == "always":
             # dangerous patterns: permanent allowed
             approve_session(session_key, key)

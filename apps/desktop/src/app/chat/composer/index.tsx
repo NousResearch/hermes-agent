@@ -43,13 +43,16 @@ import {
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  MAX_AUTO_DRAIN_ATTEMPTS,
+  migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
-  shouldAutoDrainOnSettle,
+  shouldAutoDrain,
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
+import { notify } from '@/store/notifications'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { useTheme } from '@/themes'
@@ -196,11 +199,14 @@ export function ChatBar({
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
-  const previousBusyRef = useRef(busy)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
   activeQueueSessionKeyRef.current = activeQueueSessionKey
+  const prevQueueKeyRef = useRef(activeQueueSessionKey)
   const drainingQueueRef = useRef(false)
+  // Per-entry auto-drain failure counts; bounds retries so a persistent 404
+  // can't spin-loop. Cleared on success; reset naturally on remount/reconnect.
+  const drainFailuresRef = useRef(new Map<string, number>())
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
@@ -1326,6 +1332,7 @@ export function ChatBar({
           return false
         }
 
+        drainFailuresRef.current.delete(entry.id)
         removeQueuedPrompt(activeQueueSessionKey, entry.id)
         resetBrowseState(sessionId)
 
@@ -1337,15 +1344,16 @@ export function ChatBar({
     [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
   )
 
-  const drainNextQueued = useCallback(
-    () =>
-      runDrain(entries => {
-        const skip = queueEdit?.entryId
+  const pickDrainHead = useCallback(
+    (entries: QueuedPromptEntry[]) => {
+      const skip = queueEditRef.current?.entryId
 
-        return skip ? entries.find(e => e.id !== skip) : entries[0]
-      }),
-    [queueEdit, runDrain]
+      return skip ? entries.find(e => e.id !== skip) : entries[0]
+    },
+    [] // reads the edit id off a ref so the lock-holder always sees the latest
   )
+
+  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
 
   const sendQueuedNow = useCallback(
     (id: string) => {
@@ -1364,30 +1372,76 @@ export function ChatBar({
         return true
       }
 
+      // A manual send clears the auto-drain backoff so a stuck entry the user
+      // taps gets a fresh attempt (and re-enables auto-retry on success).
+      drainFailuresRef.current.delete(id)
+
       return runDrain(entries => entries.find(e => e.id === id))
     },
     [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
-  // Auto-drain on busy → false (turn settled). Queued turns always flow once
-  // the session is idle again — whether the turn finished naturally or the
-  // user interrupted it. Interrupting to reach a queued message is the whole
-  // point of the queue, so we never suppress the drain. To cancel queued
-  // turns, the user deletes them from the panel.
-  useEffect(() => {
-    const wasBusy = previousBusyRef.current
-    previousBusyRef.current = busy
-
-    if (
-      shouldAutoDrainOnSettle({
-        isBusy: busy,
-        queueLength: queuedPrompts.length,
-        wasBusy
-      })
-    ) {
-      void drainNextQueued()
+  // Edge-independent auto-drain: send the head whenever the session is idle and
+  // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
+  // a stale-session 404) can't strand the entry permanently nor spin-loop. The
+  // drain lock serializes sends; a remount/reconnect resets the failure counts.
+  const autoDrainNext = useCallback(() => {
+    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
+      return
     }
-  }, [busy, drainNextQueued, queuedPrompts.length])
+
+    const entry = pickDrainHead(queuedPrompts)
+
+    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      return
+    }
+
+    const onFail = () => {
+      const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
+      drainFailuresRef.current.set(entry.id, fails)
+
+      if (fails >= MAX_AUTO_DRAIN_ATTEMPTS) {
+        notify({
+          id: 'composer-queue-stuck',
+          kind: 'error',
+          title: t.composer.queueStuckTitle,
+          message: t.composer.queueStuckBody
+        })
+      }
+    }
+
+    void runDrain(() => entry)
+      .then(sent => {
+        if (!sent) {
+          onFail()
+        }
+      })
+      .catch(onFail)
+  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
+
+  // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
+  // never churns, so a change there is a real session switch and must NOT
+  // migrate; only the runtime-derived key (queueSessionKey falsy → key is
+  // sessionId) churns on a backend bounce/resume of the same conversation.
+  useEffect(() => {
+    const prev = prevQueueKeyRef.current
+    prevQueueKeyRef.current = activeQueueSessionKey
+
+    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
+      return
+    }
+
+    migrateQueuedPrompts(prev, activeQueueSessionKey)
+  }, [activeQueueSessionKey, queueSessionKey])
+
+  // Queued turns flow whenever the session is idle — on the busy→false settle
+  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
+  // strand them. To cancel queued turns, the user deletes them from the panel.
+  useEffect(() => {
+    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
+      autoDrainNext()
+    }
+  }, [autoDrainNext, busy, queuedPrompts.length])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.

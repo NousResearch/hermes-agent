@@ -760,6 +760,52 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         _resolved = _resolve_path_for_task(path, task_id)
 
+        # ── Structured-document extraction ────────────────────────────
+        # Try before the binary-extension guard so .docx/.xlsx can render as text.
+        # Malformed documents fall through to the normal path/binary guard.
+        from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
+
+        if is_extractable_document(str(_resolved)):
+            try:
+                extracted_text = extract_document_text(str(_resolved))
+            except ExtractionError:
+                logger.debug("document extraction failed for %s", path, exc_info=True)
+            else:
+                file_ops = _get_file_ops(task_id)
+                lines = extracted_text.splitlines()
+                total_lines = len(lines)
+                end_line = offset + limit - 1
+                page_text = "\n".join(lines[offset - 1:end_line])
+                result_dict = {
+                    "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+                    "total_lines": total_lines,
+                    "file_size": os.path.getsize(_resolved),
+                    "truncated": total_lines > end_line,
+                    "extracted_document": True,
+                }
+                if result_dict["truncated"]:
+                    result_dict["hint"] = (
+                        f"Use offset={end_line + 1} to continue reading "
+                        f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
+                    )
+                content_len = len(result_dict["content"])
+                max_chars = _get_max_read_chars()
+                if content_len > max_chars:
+                    return json.dumps({
+                        "error": (
+                            f"Read produced {content_len:,} characters which exceeds "
+                            f"the safety limit ({max_chars:,} chars). "
+                            "Use offset and limit to read a smaller range. "
+                            f"The document has {total_lines} lines of extracted text."
+                        ),
+                        "path": path,
+                        "total_lines": total_lines,
+                        "file_size": result_dict["file_size"],
+                    }, ensure_ascii=False)
+                if result_dict["content"]:
+                    result_dict["content"] = redact_sensitive_text(result_dict["content"], code_file=True)
+                return json.dumps(result_dict, ensure_ascii=False)
+
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
         if has_binary_extension(str(_resolved)):
@@ -1427,7 +1473,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {

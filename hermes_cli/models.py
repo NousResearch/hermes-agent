@@ -256,6 +256,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
     ],
     "zai": [
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",

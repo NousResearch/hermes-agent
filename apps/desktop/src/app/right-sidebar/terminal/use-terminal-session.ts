@@ -328,13 +328,19 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     const term = new Terminal({
       allowProposedApi: true,
-      allowTransparency: true,
+      // Opaque canvas = WebGL's crisp fast-path. allowTransparency instead bakes
+      // glyphs as grayscale-alpha for compositing over a see-through canvas, which
+      // reads soft on every platform; VS Code keeps it off and our surface
+      // (--ui-bg-chrome) is opaque anyway, so withSurface paints it solid.
+      allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
-      fontWeight: '400',
-      fontWeightBold: '700',
+      // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
+      // (500) as the base, which reads a touch heavy at this size.
+      fontWeight: 'normal',
+      fontWeightBold: 'bold',
       letterSpacing: 0,
       lineHeight: 1.12,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
@@ -617,8 +623,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; bold/italic aren't asked
-    // for until styled output paints (past atlas init), so warm them up front.
+    // fonts.ready settles only already-requested faces; the regular (400),
+    // bold (700) and italic aren't asked for until styled output paints (past
+    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
+    // fallback face and the terminal renders thin until a repaint.
     const warm = document.fonts?.load
       ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
       : Promise.resolve()

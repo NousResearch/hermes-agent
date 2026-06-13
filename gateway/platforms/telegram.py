@@ -9,6 +9,7 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import inspect
 import json
 import logging
 import os
@@ -347,6 +348,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
+    # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
+    # UTF-8 bytes. Content above this is sent via the legacy chunking path.
+    RICH_MESSAGE_MAX_BYTES = 32768
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -412,6 +416,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # Bot API 10.1 Rich Messages: opportunistically send final replies via
+        # sendRichMessage with the raw agent markdown so tables/task lists/etc.
+        # render natively. Opt-out via platforms.telegram.extra.rich_messages.
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Latched off after a capability failure on sendRichMessage /
+        # sendRichMessageDraft (e.g. older python-telegram-bot without the
+        # endpoint) so later sends skip the doomed rich attempt entirely.
+        self._rich_send_disabled: bool = False
+        self._rich_draft_disabled: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -901,6 +914,272 @@ class TelegramAdapter(BasePlatformAdapter):
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    # ------------------------------------------------------------------
+    # Bot API 10.1 Rich Messages (sendRichMessage)
+    #
+    # Final / new-message replies opportunistically use sendRichMessage with
+    # the RAW agent markdown so richer constructs (tables, task lists,
+    # collapsible details, math, ...) render natively. The legacy MarkdownV2
+    # send() path stays as the fallback for unsupported/oversized content and
+    # older PTB/clients. Streaming edits/drafts are intentionally untouched —
+    # Telegram exposes no rich-edit method.
+    # ------------------------------------------------------------------
+    def _content_fits_rich_limits(self, content: str) -> bool:
+        """Cheap pre-check for the one hard rich limit we can count locally.
+
+        Only the 32,768 UTF-8 byte text cap is enforced here. Other Bot API
+        rich limits (500 blocks, 16 nesting levels, 20 table columns, ...) are
+        not pre-counted; if exceeded Telegram returns a BadRequest, which
+        :meth:`_is_rich_fallback_error` classifies as permanent so the send
+        degrades to the legacy chunking path.
+        """
+        return len(content.encode("utf-8")) <= self.RICH_MESSAGE_MAX_BYTES
+
+    def _bot_supports_rich(self) -> bool:
+        """True when the bound bot can issue raw ``sendRichMessage`` calls.
+
+        Gates on ``do_api_request`` being an *async* callable. The real
+        ``telegram.Bot.do_api_request`` is a coroutine function; test doubles
+        that opt into rich set it to an ``AsyncMock`` (also a coroutine
+        function). Plain ``MagicMock`` bots expose a *sync* auto-child and
+        ``SimpleNamespace`` bots lack the attribute entirely — both resolve to
+        ``False`` here, so the legacy path is used unchanged.
+        """
+        return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
+
+    def _should_attempt_rich(self, content: str) -> bool:
+        # getattr defaults: tests build adapters via object.__new__() (no
+        # __init__), so the flags may be unset — default rich OFF (the
+        # feature is opt-in via platforms.telegram.extra.rich_messages).
+        return bool(
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_send_disabled", False)
+            and content
+            and content.strip()
+            and self._content_fits_rich_limits(content)
+            and self._bot_supports_rich()
+        )
+
+    def _rich_message_payload(
+        self, content: str, *, skip_entity_detection: bool = False
+    ) -> Dict[str, Any]:
+        """Build the ``InputRichMessage`` object from RAW markdown.
+
+        Never pass ``format_message(content)`` here — that converts to
+        MarkdownV2 and would escape/destroy rich syntax like table pipes.
+        """
+        payload: Dict[str, Any] = {"markdown": content}
+        if skip_entity_detection:
+            payload["skip_entity_detection"] = True
+        return payload
+
+    def _is_rich_capability_error(self, exc: Exception) -> bool:
+        """True ⇒ the rich endpoint itself is unavailable (old PTB/server).
+
+        These latch rich off for the rest of the adapter's life — retrying is
+        pointless and would cost a failed roundtrip on every send. Per-message
+        rejections (BadRequest from a parser/limit issue) are NOT capability
+        errors: the next message may be fine.
+        """
+        if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
+            return True
+        if getattr(exc, "error_code", None) == 404:
+            return True
+        s = str(exc).lower()
+        if ("method" in s and "not found" in s) or "no such method" in s:
+            return True
+        if "unsupported" in s or "not implemented" in s:
+            return True
+        return False
+
+    def _is_rich_fallback_error(self, exc: Exception) -> bool:
+        """True ⇒ permanent/capability error ⇒ safe to fall back to legacy.
+
+        Conservative on purpose: only clearly-permanent failures (BadRequest,
+        capability errors, unknown/unsupported endpoint) qualify. Everything
+        else is treated as transient — the rich request may have reached
+        Telegram, so we must NOT legacy-resend and risk a duplicate.
+        """
+        if self._is_bad_request_error(exc):
+            return True
+        return self._is_rich_capability_error(exc)
+
+    def _compute_single_send_routing(
+        self,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        thread_id: Optional[str],
+    ) -> Optional[tuple]:
+        """Routing for a single (rich) send — mirrors send()'s index-0 block.
+
+        Returns ``(reply_to_id, thread_kwargs)``, or ``None`` to signal "skip
+        rich, let the legacy path handle it" — used for the DM-topic fail-loud
+        case so the legacy path stays the single source of the refuse result.
+        """
+        metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+        private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
+        dm_topic_reply_to_off = (
+            private_dm_topic_send
+            and self._reply_to_mode == "off"
+            and bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+        )
+        reply_to_source = reply_to or (
+            str(metadata_reply_to)
+            if private_dm_topic_send and metadata_reply_to is not None
+            else None
+        )
+        if private_dm_topic_send:
+            should_thread = reply_to_source is not None and self._reply_to_mode != "off"
+        else:
+            should_thread = self._should_thread_reply(reply_to_source, 0)
+        reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+            # Refusing to send outside the requested DM topic — defer to the
+            # legacy path, which returns the canonical fail-loud SendResult.
+            return None
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=reply_to_id,
+            reply_to_mode=self._reply_to_mode,
+        )
+        return reply_to_id, thread_kwargs
+
+    async def _try_send_rich(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        """Attempt a single ``sendRichMessage`` send.
+
+        Returns a :class:`SendResult` (success, or a transient failure that the
+        caller must NOT legacy-resend), or ``None`` to signal "fall back to the
+        legacy MarkdownV2 path" (permanent/capability error or DM-topic skip).
+        """
+        thread_id = self._metadata_thread_id(metadata)
+        routing = self._compute_single_send_routing(chat_id, reply_to, metadata, thread_id)
+        if routing is None:
+            return None
+        reply_to_id, thread_kwargs = routing
+
+        payload: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "rich_message": self._rich_message_payload(content),
+        }
+        # Only forward non-None routing keys: when direct_messages_topic_id is
+        # present _thread_kwargs_for_send pairs it with message_thread_id=None,
+        # which must not be sent as a stray field on the raw endpoint.
+        payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
+        payload.update(self._notification_kwargs(metadata))
+        if reply_to_id is not None:
+            # Spec: sendRichMessage takes reply_parameters (ReplyParameters
+            # object), NOT the legacy reply_to_message_id scalar. Unknown
+            # params are silently ignored by the Bot API, so the scalar would
+            # quietly drop the reply anchor instead of erroring.
+            payload["reply_parameters"] = {"message_id": reply_to_id}
+
+        try:
+            msg = await self._bot.do_api_request(
+                "sendRichMessage", api_kwargs=payload, return_type=Message
+            )
+        except Exception as exc:
+            if self._is_rich_fallback_error(exc):
+                if self._is_rich_capability_error(exc):
+                    # Endpoint missing (old PTB/server) — latch rich off so
+                    # every later send doesn't pay a doomed extra roundtrip.
+                    self._rich_send_disabled = True
+                logger.debug(
+                    "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
+                    self.name, exc,
+                )
+                return None
+            # Transient / network / unknown: the request may have reached
+            # Telegram. Do NOT legacy-resend (duplicate risk); surface a
+            # failure with retry semantics mirroring the legacy send() except.
+            err_str = str(exc).lower()
+            try:
+                from telegram.error import TimedOut as _TimedOut
+            except (ImportError, AttributeError):
+                _TimedOut = None
+            is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
+            is_connect_timeout = self._looks_like_connect_timeout(exc)
+            logger.warning(
+                "[%s] sendRichMessage transient failure (no legacy resend): %s",
+                self.name, exc,
+            )
+            return SendResult(
+                success=False,
+                error=str(exc),
+                retryable=(is_connect_timeout or not is_timeout),
+            )
+
+        message_id = None
+        if isinstance(msg, dict):
+            message_id = msg.get("message_id")
+            if message_id is None:
+                message_id = msg.get("result", {}).get("message_id")
+        else:
+            message_id = getattr(msg, "message_id", None)
+        return SendResult(
+            success=True,
+            message_id=str(message_id) if message_id is not None else None,
+        )
+
+    def _should_attempt_rich_draft(self, content: str) -> bool:
+        return bool(
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_send_disabled", False)
+            and not getattr(self, "_rich_draft_disabled", False)
+            and content
+            and content.strip()
+            and self._content_fits_rich_limits(content)
+            and self._bot_supports_rich()
+        )
+
+    async def _try_send_rich_draft(
+        self,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Emit one ``sendRichMessageDraft`` preview frame; True on success.
+
+        Draft frames are ephemeral and overwritten by the next frame / the
+        final ``sendRichMessage``, so a duplicate or lost rich draft is
+        harmless — any failure simply returns False and the caller renders the
+        legacy plain-text draft. A permanent/capability failure additionally
+        latches ``_rich_draft_disabled`` so later frames skip the rich attempt.
+        """
+        payload: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "draft_id": int(draft_id),
+            "rich_message": self._rich_message_payload(content),
+        }
+        thread_id = self._metadata_thread_id(metadata)
+        if thread_id is not None:
+            payload["message_thread_id"] = int(thread_id)
+        try:
+            ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
+            return bool(ok)
+        except Exception as exc:
+            if self._is_rich_capability_error(exc):
+                self._rich_draft_disabled = True
+                logger.debug(
+                    "[%s] sendRichMessageDraft unsupported (%s) — using legacy drafts",
+                    self.name, exc,
+                )
+            else:
+                logger.debug(
+                    "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame",
+                    self.name, exc,
+                )
+            return False
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
@@ -1869,6 +2148,22 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            # Bot API 10.1 rich fast-path: send the raw agent markdown via
+            # sendRichMessage so tables/task lists/etc. render natively. Falls
+            # through to the legacy MarkdownV2 path on permanent/capability
+            # errors or DM-topic routing skips; returns directly on success or
+            # on a transient failure (which must NOT be legacy-resent).
+            if self._should_attempt_rich(content):
+                rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
+                if rich_result is not None:
+                    if rich_result.success:
+                        # Re-trigger typing like the legacy success path does.
+                        try:
+                            await self.send_typing(chat_id, metadata=metadata)
+                        except Exception:
+                            pass  # Typing failures are non-fatal
+                    return rich_result
+
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(
@@ -2550,17 +2845,30 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Stream a partial message via Telegram's native sendMessageDraft.
+        """Stream a partial message via Telegram's native draft API.
 
-        The Bot API animates the preview when the same ``draft_id`` is reused
-        across consecutive calls in the same chat.  When the response
-        finishes, the caller sends the final text via the normal ``send``
-        path; the draft preview clears naturally on the client (Telegram has
-        no Bot API to "promote" a draft to a real message — the final
-        ``sendMessage`` is what the user receives in their history).
+        Uses ``sendRichMessageDraft`` (Bot API 10.1) with the raw markdown when
+        rich messages are enabled and supported, otherwise the plain-text
+        ``sendMessageDraft``. The Bot API animates the preview when the same
+        ``draft_id`` is reused across consecutive calls in the same chat.  When
+        the response finishes, the caller sends the final text via the normal
+        ``send`` path; the draft preview clears naturally on the client
+        (Telegram has no Bot API to "promote" a draft to a real message — the
+        final ``sendMessage``/``sendRichMessage`` is what the user receives in
+        their history).
         """
         if not self._bot:
             return SendResult(success=False, error="not_connected")
+
+        # Rich draft fast-path (Bot API 10.1 sendRichMessageDraft): render the
+        # streaming preview with the same raw markdown the final
+        # sendRichMessage will persist, so the animated draft matches the final
+        # message. Any failure degrades to the legacy plain-text draft below.
+        if self._should_attempt_rich_draft(content):
+            if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
+                # Drafts have no message_id; report success without one.
+                return SendResult(success=True, message_id=None)
+
         if not hasattr(self._bot, "send_message_draft"):
             return SendResult(success=False, error="api_unavailable")
 

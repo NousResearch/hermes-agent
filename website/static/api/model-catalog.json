@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-09T17:20:16Z",
+  "updated_at": "2026-06-13T08:41:46Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,10 +12,6 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing."
       },
       "models": [
-        {
-          "id": "anthropic/claude-fable-5",
-          "description": ""
-        },
         {
           "id": "anthropic/claude-opus-4.8",
           "description": ""
@@ -85,6 +81,10 @@
           "description": "recommended"
         },
         {
+          "id": "moonshotai/kimi-k2.7-code",
+          "description": ""
+        },
+        {
           "id": "minimax/minimax-m3",
           "description": ""
         },
@@ -149,9 +149,6 @@
       },
       "models": [
         {
-          "id": "anthropic/claude-fable-5"
-        },
-        {
           "id": "anthropic/claude-opus-4.8"
         },
         {
@@ -198,6 +195,9 @@
         },
         {
           "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "moonshotai/kimi-k2.7-code"
         },
         {
           "id": "minimax/minimax-m3"

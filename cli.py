@@ -8070,6 +8070,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._console_print(
                 "  \U0001f512 Read-only mode ON — only whitelisted tools allowed."
             )
+            self._pending_ro_note = "[Read-only mode is now ON — only whitelisted tools are available. Use /ro off to disable.]"
         elif _sub == "off":
             if not _currently:
                 self._console_print("  Read-only mode already OFF.")
@@ -8078,12 +8079,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._console_print(
                 "  \U0001f513 Read-only mode OFF — all tools available."
             )
+            self._pending_ro_note = "[Read-only mode is now OFF — all tools are available.]"
         else:
             if _currently:
                 disable_read_only(session_key)
                 self._console_print(
                     "  \U0001f513 Read-only mode OFF — all tools available."
                 )
+                self._pending_ro_note = "[Read-only mode is now OFF — all tools are available.]"
             else:
                 enable_read_only(session_key)
                 _tools_sorted = sorted(READ_ONLY_WHITELIST)
@@ -8092,6 +8095,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     "  \U0001f512 Read-only mode ON — only whitelisted tools allowed."
                 )
                 self._console_print(f"  Whitelist: {_whitelist_str}")
+                self._pending_ro_note = "[Read-only mode is now ON — only whitelisted tools are available. Use /ro off to disable.]"
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -10248,6 +10252,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if _srn:
                     agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
+                # Prepend pending /ro toggle note so the model knows the
+                # current read-only state when its turn starts.
+                _ron = getattr(self, '_pending_ro_note', None)
+                if _ron:
+                    agent_message = _prepend_note_to_message(agent_message, _ron)
+                    self._pending_ro_note = None
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,

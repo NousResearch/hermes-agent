@@ -188,6 +188,24 @@ class TestSessionLifecycle:
         # Pre-existing root is preserved, not clobbered.
         assert db.get_session("s2")["git_repo_root"] == "/already"
 
+    def test_delegate_child_session_ids_filters_marked_rows(self, db):
+        """#45336: only rows carrying the ``_delegate_from`` marker are
+        reported. A normal root session and unknown ids are not."""
+        db.create_session(session_id="root1", source="tui")
+        db.create_session(
+            session_id="child1",
+            source="tui",
+            parent_session_id="root1",
+            model_config={"_delegate_from": "root1"},
+        )
+
+        assert db.delegate_child_session_ids(
+            ["root1", "child1", "missing"]
+        ) == {"child1"}
+        # Falsy / empty input is a no-op, never a full-table scan.
+        assert db.delegate_child_session_ids([]) == set()
+        assert db.delegate_child_session_ids(["", None]) == set()
+
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
         db.end_session("s1", end_reason="user_exit")

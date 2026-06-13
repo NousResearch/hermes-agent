@@ -3629,6 +3629,30 @@ class SessionDB:
             "bookend_end": [_hydrate(r) for r in bookend_end_rows],
         }
 
+    def delegate_child_session_ids(self, session_ids: List[str]) -> set:
+        """Return the subset of *session_ids* that are delegate-subagent rows.
+
+        A delegate child carries the ``_delegate_from`` marker in its
+        ``model_config`` (set at creation in ``delegate_tool`` and backfilled
+        by the v16 migration). The TUI's active-session switcher uses this to
+        keep subagent *watch* windows out of the switchable-conversation list —
+        mirroring the child-exclusion ``list_sessions_rich`` and
+        ``session.most_recent`` already apply — so a follow-up prompt never
+        silently lands in a delegated child's transcript (#45336).
+        """
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return set()
+        df = _delegate_from_json()
+        placeholders = ",".join("?" * len(ids))
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({placeholders}) "
+                f"AND {df} IS NOT NULL",
+                ids,
+            ).fetchall()
+        return {row["id"] for row in rows}
+
     def resolve_resume_session_id(self, session_id: str) -> str:
         """Redirect a resume target to the descendant session that holds the messages.
 

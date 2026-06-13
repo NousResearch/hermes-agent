@@ -129,6 +129,54 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_active_list_excludes_delegate_child_watch_sessions(monkeypatch):
+    """#45336: a delegated child's watch session must not appear as a
+    switchable sibling in ``session.active_list`` — only as the
+    currently-focused window — so a follow-up prompt can't silently land in
+    the child's transcript via the switcher or the close-fallback."""
+    root_sid, child_sid = "root_sd", "child_sd"
+    root_key, child_key = "root-key", "child-key"
+
+    class _Db:
+        def delegate_child_session_ids(self, ids):
+            return {child_key} & set(ids)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _Db())
+    monkeypatch.setattr(
+        server,
+        "_session_live_item",
+        lambda sid, session, current="": {
+            "id": sid,
+            "session_key": session.get("session_key"),
+        },
+    )
+
+    saved = dict(server._sessions)
+    server._sessions.clear()
+    try:
+        server._sessions[root_sid] = {"session_key": root_key}
+        server._sessions[child_sid] = {
+            "session_key": child_key,
+            "lazy": True,
+            "agent": None,
+        }
+
+        # Focused on the parent: the delegated child watch window is withheld.
+        res = server._methods["session.active_list"](
+            "r1", {"current_session_id": root_sid}
+        )
+        assert {r["id"] for r in res["result"]["sessions"]} == {root_sid}
+
+        # Focused on the child watch window itself: it still renders.
+        res = server._methods["session.active_list"](
+            "r2", {"current_session_id": child_sid}
+        )
+        assert {r["id"] for r in res["result"]["sessions"]} == {root_sid, child_sid}
+    finally:
+        server._sessions.clear()
+        server._sessions.update(saved)
+
+
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back

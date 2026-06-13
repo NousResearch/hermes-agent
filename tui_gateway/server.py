@@ -5809,10 +5809,34 @@ def _(rid, params: dict) -> dict:
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
+    # Delegate-subagent "watch" windows — a parent's delegated child mirrored
+    # for live viewing (``session.resume`` lazy path) — are NOT switchable
+    # top-level conversations. They carry the ``_delegate_from`` marker, and if
+    # they leak into this list they become switcher targets and, worse,
+    # ``closeFallbackAfterClose`` auto-activation candidates, so a follow-up
+    # prompt meant for the parent silently lands in the child's transcript
+    # (#45336). Drop them here — mirroring the child-exclusion that
+    # ``list_sessions_rich`` / ``session.most_recent`` already apply — but keep
+    # the currently-focused window (a watch window the user deliberately opened
+    # should still render); we only withhold delegate children from the
+    # *sibling* set so they can never become current without an explicit open.
+    delegate_keys: set = set()
+    db = _get_db()
+    if db is not None:
+        try:
+            delegate_keys = db.delegate_child_session_ids(
+                [str(session.get("session_key") or sid) for sid, session in snapshot]
+            )
+        except Exception:
+            logger.exception("session.active_list: delegate-child filter failed")
     rows = [
         _session_live_item(sid, session, current)
         for sid, session in snapshot
         if not session.get("_finalized")
+        and (
+            sid == current
+            or str(session.get("session_key") or sid) not in delegate_keys
+        )
     ]
     return _ok(rid, {"sessions": rows})
 

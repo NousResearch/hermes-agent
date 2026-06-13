@@ -252,6 +252,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
     ],
     "zai": [
+        # 2026-06-13 — GLM-5.2 is the latest flagship on the GLM Coding Plan
+        # (https://docs.z.ai/devpack/latest-model). 1M ctx, 131K max output,
+        # reasoning-capable, text-only. Live /v1/models will surface it
+        # automatically when a ZAI_API_KEY is set; this curated entry is the
+        # offline / no-key fallback so the picker still lists it.
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -262,18 +268,24 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "xai": _xai_curated_models(),
     "nvidia": [
-        # NVIDIA flagship reasoning models
+        # 2026-06-12 refresh — verified working via live probe
+        # (see ~/.hermes/audits/2026-06-12-nvidia-model-probe.md).
+        # Replaces 6 broken/EOL entries from upstream default list.
+        # Removed: nemotron-3-nano-30b-a3b, llama-3.3-nemotron-super-49b-v1.5,
+        #   qwen3.5-397b-a17b (broken JSON), deepseek-v3.2 (404),
+        #   minimax-m2.5 (410 EOL 2026-05-12), glm5 (410 EOL 2026-05-18).
+        # NVIDIA's own reasoning flagship
         "nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nemotron-3-nano-30b-a3b",
-        "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-        # Third-party agentic models hosted on build.nvidia.com
-        # (map to OpenRouter defaults — users get familiar picks on NIM)
-        "qwen/qwen3.5-397b-a17b",
-        "deepseek-ai/deepseek-v3.2",
-        "moonshotai/kimi-k2.6",
-        "minimaxai/minimax-m2.5",
-        "z-ai/glm5",
-        "openai/gpt-oss-120b",
+        # Frontier agentic + reasoning (all verified working + fast where possible)
+        "minimaxai/minimax-m3",                            # newest M-series
+        "minimaxai/minimax-m2.7",                          # thinking model — Hermes preserves reasoning_content
+        "z-ai/glm-5.1",                                    # 400B MoE, agentic
+        "moonshotai/kimi-k2.6",                            # 1T MoE
+        "mistralai/mistral-large-3-675b-instruct-2512",     # 675B, fastest
+        "deepseek-ai/deepseek-v4-flash",                   # 284B MoE, 1M ctx
+        "openai/gpt-oss-120b",                             # 120B open-weight
+        "mistralai/mistral-medium-3.5-128b",               # 128B, verified reliable (3/3 re-probe)
+        "qwen/qwen3-next-80b-a3b-instruct",                # 80B MoE, fast
     ],
     "kimi-coding": [
         "kimi-k2.6",

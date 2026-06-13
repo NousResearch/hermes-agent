@@ -124,6 +124,74 @@ class TestStartRun:
                 assert status["status"] in {"queued", "running", "completed"}
                 assert status["object"] == "hermes.run"
 
+    def test_normalize_run_request_builds_shared_model(self, adapter):
+        with patch.object(
+            adapter._response_store,
+            "get",
+            return_value={
+                "conversation_history": [{"role": "assistant", "content": "stored"}],
+                "session_id": "stored-session",
+                "instructions": "stored instructions",
+            },
+        ):
+            normalized, err = adapter._normalize_run_request(
+                {"input": "hello", "previous_response_id": "resp_prev"},
+                run_id="run_test",
+                gateway_session_key="client-42",
+                request_context={"path": "/v1/runs"},
+            )
+
+        assert err is None
+        assert normalized is not None
+        assert normalized.mode == "background_run"
+        assert normalized.request_id == "run_test"
+        assert normalized.user_message == "hello"
+        assert normalized.conversation_history == [{"role": "assistant", "content": "stored"}]
+        assert normalized.session_id == "stored-session"
+        assert normalized.session_key == "client-42"
+        assert normalized.ephemeral_system_prompt == "stored instructions"
+        assert normalized.metadata["endpoint"] == "runs"
+        assert normalized.metadata["request_context"] == {"path": "/v1/runs"}
+        assert normalized.reply_target == {"run_id": "run_test"}
+
+    @pytest.mark.asyncio
+    async def test_start_routes_through_normalized_run_helper(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, patch.object(
+                adapter,
+                "_normalize_run_request",
+                wraps=adapter._normalize_run_request,
+            ) as wrapped_normalize:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {"role": "assistant", "content": "earlier"},
+                            {"role": "user", "content": "hello"},
+                        ]
+                    },
+                )
+                assert resp.status == 202
+
+                for _ in range(20):
+                    if mock_agent.run_conversation.called:
+                        break
+                    await asyncio.sleep(0.05)
+
+                wrapped_normalize.assert_called_once()
+                mock_agent.run_conversation.assert_called_once()
+                kwargs = mock_agent.run_conversation.call_args.kwargs
+                assert kwargs["user_message"] == "hello"
+                assert kwargs["conversation_history"] == [{"role": "assistant", "content": "earlier"}]
+
     @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):
         app = _create_runs_app(adapter)

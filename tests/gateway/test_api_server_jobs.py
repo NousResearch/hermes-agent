@@ -168,6 +168,35 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
 
+    def test_cron_origin_from_request_sanitizes_metadata(self, adapter):
+        from types import SimpleNamespace
+
+        request = SimpleNamespace(
+            remote="198.51.100.9\nspoof",
+            transport=None,
+            headers={
+                "X-Forwarded-For": "203.0.113.11\r\nsecond-hop",
+                "X-Real-IP": "198.51.100.10",
+                "User-Agent": "cron-client\nscanner",
+            },
+            method="POST\n",
+            path_qs="/api/jobs\nignored",
+        )
+
+        origin = adapter._cron_origin_from_request(request)
+        audit = adapter._request_audit_context(request)
+
+        assert origin == {
+            "platform": "api_server",
+            "chat_id": "api",
+            "source_ip": "198.51.100.9 spoof",
+            "forwarded_for": "203.0.113.11  second-hop",
+            "real_ip": "198.51.100.10",
+            "user_agent": "cron-client scanner",
+        }
+        assert audit["method"] == "POST"
+        assert audit["path"] == "/api/jobs ignored"
+
     @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
         """POST /api/jobs without name returns 400."""

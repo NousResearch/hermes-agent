@@ -53,6 +53,12 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.ingress import (
+    NormalizedIngressRequest,
+    build_http_ingress_origin,
+    extract_http_ingress_request_context,
+    format_http_ingress_request_context,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -842,47 +848,18 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _request_audit_context(self, request: "web.Request") -> Dict[str, str]:
         """Return non-secret source metadata for security/audit warnings."""
-        peer_ip = ""
-        try:
-            peer = request.transport.get_extra_info("peername") if request.transport else None
-            if isinstance(peer, (tuple, list)) and peer:
-                peer_ip = str(peer[0])
-        except Exception:
-            peer_ip = ""
-
-        return {
-            "remote": self._clean_log_value(getattr(request, "remote", "") or peer_ip),
-            "peer_ip": self._clean_log_value(peer_ip),
-            "forwarded_for": self._clean_log_value(request.headers.get("X-Forwarded-For", "")),
-            "real_ip": self._clean_log_value(request.headers.get("X-Real-IP", "")),
-            "method": self._clean_log_value(request.method, max_len=16),
-            "path": self._clean_log_value(request.path_qs, max_len=500),
-            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
-        }
+        return extract_http_ingress_request_context(request).to_dict()
 
     def _request_audit_log_suffix(self, request: "web.Request") -> str:
-        ctx = self._request_audit_context(request)
-        fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
-        return " ".join(fields) if fields else "source='unknown'"
+        return format_http_ingress_request_context(extract_http_ingress_request_context(request))
 
     def _cron_origin_from_request(self, request: "web.Request") -> Dict[str, str]:
         """Persist safe API source metadata on cron jobs created over HTTP."""
-        ctx = self._request_audit_context(request)
-        origin = {
-            "platform": "api_server",
-            "chat_id": "api",
-        }
-        if ctx.get("remote"):
-            origin["source_ip"] = ctx["remote"]
-        if ctx.get("peer_ip"):
-            origin["peer_ip"] = ctx["peer_ip"]
-        if ctx.get("forwarded_for"):
-            origin["forwarded_for"] = ctx["forwarded_for"]
-        if ctx.get("real_ip"):
-            origin["real_ip"] = ctx["real_ip"]
-        if ctx.get("user_agent"):
-            origin["user_agent"] = ctx["user_agent"]
-        return origin
+        return build_http_ingress_origin(
+            platform="api_server",
+            chat_id="api",
+            context=extract_http_ingress_request_context(request),
+        )
 
     # ------------------------------------------------------------------
     # Auth helper
@@ -1353,6 +1330,107 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    def _normalize_session_chat_request(
+        self,
+        body: Dict[str, Any],
+        *,
+        session_id: str,
+        gateway_session_key: Optional[str],
+        mode: str = "sync_turn",
+        request_id: Optional[str] = None,
+    ) -> tuple[Optional[NormalizedIngressRequest], Optional["web.Response"]]:
+        user_message, err = _session_chat_user_message(body)
+        if err is not None:
+            return None, err
+        system_prompt = body.get("system_message") or body.get("instructions")
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            return None, web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
+        return NormalizedIngressRequest(
+            mode=mode,
+            request_id=request_id or f"session:{session_id}:{mode}",
+            user_message=user_message,
+            conversation_history=self._conversation_history_for_session(session_id),
+            session_id=session_id,
+            session_key=gateway_session_key,
+            ephemeral_system_prompt=system_prompt,
+            metadata={"endpoint": "session_chat"},
+            reply_target={"session_id": session_id},
+        ), None
+
+    def _normalize_run_request(
+        self,
+        body: Dict[str, Any],
+        *,
+        run_id: str,
+        gateway_session_key: Optional[str],
+        request_context: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Optional[NormalizedIngressRequest], Optional["web.Response"]]:
+        raw_input = body.get("input")
+        if not raw_input:
+            return None, web.json_response(_openai_error("Missing 'input' field"), status=400)
+
+        instructions = body.get("instructions")
+        previous_response_id = body.get("previous_response_id")
+        conversation_history: List[Dict[str, Any]] = []
+        user_message: Any = ""
+
+        if isinstance(raw_input, str):
+            user_message = raw_input
+        elif isinstance(raw_input, list):
+            normalized_messages: List[Dict[str, Any]] = []
+            for idx, item in enumerate(raw_input):
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "user")
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    try:
+                        content = _normalize_multimodal_content(content)
+                    except ValueError as exc:
+                        return None, _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                normalized_messages.append({"role": role, "content": content})
+            if normalized_messages:
+                user_message = normalized_messages[-1]["content"]
+                conversation_history.extend(normalized_messages[:-1])
+
+        if not user_message:
+            return None, web.json_response(_openai_error("No user message found in input"), status=400)
+
+        raw_history = body.get("conversation_history")
+        if raw_history:
+            if not isinstance(raw_history, list):
+                return None, web.json_response(_openai_error("'conversation_history' must be an array of message objects"), status=400)
+            explicit_history: List[Dict[str, Any]] = []
+            for i, entry in enumerate(raw_history):
+                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                    return None, web.json_response(_openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"), status=400)
+                explicit_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            conversation_history = explicit_history
+            if previous_response_id:
+                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+
+        stored_session_id = None
+        if not conversation_history and previous_response_id:
+            stored = self._response_store.get(previous_response_id)
+            if stored:
+                conversation_history = list(stored.get("conversation_history", []))
+                stored_session_id = stored.get("session_id")
+                if instructions is None:
+                    instructions = stored.get("instructions")
+
+        session_id = body.get("session_id") or stored_session_id or run_id
+        return NormalizedIngressRequest(
+            mode="background_run",
+            request_id=run_id,
+            user_message=user_message,
+            conversation_history=conversation_history,
+            session_id=session_id,
+            session_key=gateway_session_key,
+            ephemeral_system_prompt=instructions,
+            metadata={"endpoint": "runs", "request_context": dict(request_context or {}), "previous_response_id": previous_response_id},
+            reply_target={"run_id": run_id},
+        ), None
+
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
         auth_err = self._check_auth(request)
@@ -1550,19 +1628,20 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        user_message, err = _session_chat_user_message(body)
-        if err is not None:
-            return err
-        system_prompt = body.get("system_message") or body.get("instructions")
-        if system_prompt is not None and not isinstance(system_prompt, str):
-            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
-        history = self._conversation_history_for_session(session_id)
-        result, usage = await self._run_agent(
-            user_message=user_message,
-            conversation_history=history,
-            ephemeral_system_prompt=system_prompt,
+        normalized, err = self._normalize_session_chat_request(
+            body,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            mode="sync_turn",
+        )
+        if err:
+            return err
+        result, usage = await self._run_agent(
+            user_message=normalized.user_message,
+            conversation_history=normalized.conversation_history,
+            ephemeral_system_prompt=normalized.ephemeral_system_prompt,
+            session_id=normalized.session_id,
+            gateway_session_key=normalized.session_key,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = result.get("final_response", "") if isinstance(result, dict) else ""
@@ -1594,12 +1673,15 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        user_message, err = _session_chat_user_message(body)
-        if err is not None:
+        normalized, err = self._normalize_session_chat_request(
+            body,
+            session_id=session_id,
+            gateway_session_key=gateway_session_key,
+            mode="sync_turn",
+            request_id=f"session:{session_id}:stream",
+        )
+        if err:
             return err
-        system_prompt = body.get("system_message") or body.get("instructions")
-        if system_prompt is not None and not isinstance(system_prompt, str):
-            return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
 
         loop = asyncio.get_running_loop()
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
@@ -1643,21 +1725,20 @@ class APIServerAdapter(BasePlatformAdapter):
 
         async def _run_and_signal() -> None:
             try:
-                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
+                await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": normalized.user_message}}))
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
-                history = self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
-                    user_message=user_message,
-                    conversation_history=history,
-                    ephemeral_system_prompt=system_prompt,
-                    session_id=session_id,
+                    user_message=normalized.user_message,
+                    conversation_history=normalized.conversation_history,
+                    ephemeral_system_prompt=normalized.ephemeral_system_prompt,
+                    session_id=normalized.session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
-                    gateway_session_key=gateway_session_key,
+                    gateway_session_key=normalized.session_key,
                 )
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
-                turn_messages = self._turn_transcript_messages(history, user_message, result) if isinstance(result, dict) else []
+                turn_messages = self._turn_transcript_messages(normalized.conversation_history, normalized.user_message, result) if isinstance(result, dict) else []
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id,
                     "message_id": message_id,
@@ -3645,65 +3726,20 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
 
-        raw_input = body.get("input")
-        if not raw_input:
-            return web.json_response(_openai_error("Missing 'input' field"), status=400)
-
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
-        if not user_message:
-            return web.json_response(_openai_error("No user message found in input"), status=400)
-
-        instructions = body.get("instructions")
-        previous_response_id = body.get("previous_response_id")
-
-        # Accept explicit conversation_history from the request body.
-        # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
-        raw_history = body.get("conversation_history")
-        if raw_history:
-            if not isinstance(raw_history, list):
-                return web.json_response(
-                    _openai_error("'conversation_history' must be an array of message objects"),
-                    status=400,
-                )
-            for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
-                        status=400,
-                    )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
-
-        stored_session_id = None
-        if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
-            if stored:
-                conversation_history = list(stored.get("conversation_history", []))
-                stored_session_id = stored.get("session_id")
-                if instructions is None:
-                    instructions = stored.get("instructions")
-
-        # When input is a multi-message array, extract all but the last
-        # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
-        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
-            for msg in raw_input[:-1]:
-                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
-                    content = msg["content"]
-                    if isinstance(content, list):
-                        # Flatten multi-part content blocks to text
-                        content = " ".join(
-                            part.get("text", "") for part in content
-                            if isinstance(part, dict) and part.get("type") == "text"
-                        )
-                    conversation_history.append({"role": msg["role"], "content": str(content)})
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be a JSON object"), status=400)
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
-        approval_session_key = gateway_session_key or session_id or run_id
-        ephemeral_system_prompt = instructions
+        normalized, err = self._normalize_run_request(
+            body,
+            run_id=run_id,
+            gateway_session_key=gateway_session_key,
+            request_context=extract_http_ingress_request_context(request).to_dict(),
+        )
+        if err:
+            return err
+        session_id = normalized.session_id or run_id
+        approval_session_key = normalized.session_key or session_id or run_id
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
@@ -3739,7 +3775,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 self._set_run_status(run_id, "running")
                 agent = self._create_agent(
-                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    ephemeral_system_prompt=normalized.ephemeral_system_prompt,
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
@@ -3788,8 +3824,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(
-                            user_message=user_message,
-                            conversation_history=conversation_history,
+                            user_message=normalized.user_message,
+                            conversation_history=normalized.conversation_history,
                             task_id=effective_task_id,
                         )
                     finally:

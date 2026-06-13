@@ -5,6 +5,8 @@ on:
   push:
     tags:
       - "v*-noverhead"
+      - "v*-noverhead-rc.*"
+      - "v*-noverhead-beta.*"
 
 permissions:
   contents: write
@@ -16,6 +18,35 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release channel
+        id: channel
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+
+          if ($tag -notmatch '^v.+-noverhead(?:-rc\.\d+|-beta\.\d+)?$') {
+            throw "Unsupported tag schema: $tag. Expected v*-noverhead, v*-noverhead-rc.*, or v*-noverhead-beta.*."
+          }
+
+          $isPrerelease = $tag -match '-rc\.' -or $tag -match '-beta\.'
+
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "prerelease=$($isPrerelease.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Enforce stable tags on main
+        if: steps.channel.outputs.prerelease == 'false'
+        shell: pwsh
+        run: |
+          git fetch origin main
+          $tagCommit = git rev-parse HEAD
+          $mainContains = git branch -r --contains $tagCommit | Select-String 'origin/main'
+
+          if (-not $mainContains) {
+            throw "Stable release tags must point to commits contained in origin/main. Use an -rc or -beta tag for feature branches."
+          }
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -47,8 +78,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: NOverhead Agent Desktop ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
+          name: NOverhead Agent Desktop ${{ steps.channel.outputs.tag }}
+          tag_name: ${{ steps.channel.outputs.tag }}
           files: apps/bootstrap-installer/src-tauri/target/release/NOverhead-Agent-Desktop-Setup.exe
           generate_release_notes: true
-          prerelease: true
+          prerelease: ${{ steps.channel.outputs.prerelease }}

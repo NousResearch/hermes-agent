@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -291,6 +292,23 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+
+def _is_under_system_temp(path: str) -> bool:
+    """Return True for the OS temp tree, including macOS /private/var/folders.
+
+    Path.resolve()/realpath() canonicalizes /tmp into /private/tmp and pytest's
+    tmp_path on macOS lives under /private/var/folders/.../T. Those are normal
+    user-writable scratch spaces, not privileged system configuration. Without
+    this exception, the broad /private/var/ guard blocks harmless file-tool
+    writes in tests and real sessions.
+    """
+    try:
+        resolved = os.path.realpath(os.path.expanduser(str(path)))
+        temp_root = os.path.realpath(tempfile.gettempdir())
+    except Exception:
+        return False
+    return resolved == temp_root or resolved.startswith(temp_root + os.sep)
+
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
@@ -324,7 +342,9 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if (
+            resolved.startswith(prefix) or normalized.startswith(prefix)
+        ) and not _is_under_system_temp(resolved):
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err

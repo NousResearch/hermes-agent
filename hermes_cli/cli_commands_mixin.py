@@ -1371,11 +1371,14 @@ class CLICommandsMixin:
         handle_skills_slash(cmd, ChatConsole())
 
     def _handle_memory_command(self, cmd: str):
-        """Handle /memory slash command — pending review + approval-gate toggle."""
+        """Handle /memory — pending review + approval-gate toggle, plus `show` readout."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
+        if args and args[0].lower() == "show":
+            self._handle_memory_show(args[1:])
+            return
         store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
         out = handle_pending_subcommand(
             wa.MEMORY, args,
@@ -1384,8 +1387,33 @@ class CLICommandsMixin:
         )
         if out is None:
             out = ("Unknown /memory subcommand. "
-                   "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+                   "Use: pending, approve <id>, reject <id>, approval <on|off>, show [memory|user].")
         print(out)
+
+    def _handle_memory_show(self, target_args: list) -> None:
+        """Render the persistent-memory readout (MEMORY.md + USER.md) to the CLI."""
+        from tools.memory_tool import MemoryStore, parse_memory_show_args
+        from tools.memory_format import format_memory_cli
+
+        parsed = parse_memory_show_args(" ".join(target_args))
+        if "error" in parsed:
+            self._console_print(f"  [red]{parsed['error']}[/]")
+            return
+
+        # Prefer the live agent store (configured limits, already loaded);
+        # fall back to a config-built store when no agent is attached.
+        store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
+        if store is None:
+            store = MemoryStore.from_config()
+        try:
+            data = store.get_readout()
+        except Exception as exc:
+            self._console_print(f"  [red]Couldn't read memory: {exc}[/]")
+            return
+
+        self._console_print()
+        self._console_print(format_memory_cli(data, parsed["target"]))
+        self._console_print()
 
     def _save_write_approval(self, subsystem: str, enabled: bool):
         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""

@@ -2024,6 +2024,10 @@ async function applyUpdatesPosixInApp() {
       message: 'Backend updated. Restart Hermes to load the new version.',
       percent: 100
     })
+    // On macOS the swap+relaunch script calls app.quit() after the handoff,
+    // but this early-return path (Linux / AppImage / dev) has no such script.
+    // Quit now so the next launch picks up the update automatically.
+    setTimeout(() => app.quit(), 600)
     return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
   }
 
@@ -2061,6 +2065,8 @@ fi
       percent: 100
     })
     rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)
+    // The swap script couldn't be written — quit so the user can restart manually.
+    setTimeout(() => app.quit(), 600)
     return { ok: true, backendUpdated: true, rebuiltApp }
   }
 

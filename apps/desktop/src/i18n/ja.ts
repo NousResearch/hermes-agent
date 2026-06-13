@@ -1417,6 +1417,7 @@ export const ja = defineLocale({
       pull: 'もうすぐ完了…',
       pydeps: '仕上げ中…',
       restart: 'Hermes を再起動中…',
+      done: '更新完了',
       manual: 'ターミナルから更新',
       error: '更新が一時停止中'
     },

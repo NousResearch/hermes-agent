@@ -1467,6 +1467,7 @@ export const zh: Translations = {
       pull: '马上完成…',
       pydeps: '收尾中…',
       restart: '正在重启 Hermes…',
+      done: '更新完成',
       manual: '从终端更新',
       error: '更新已暂停'
     },

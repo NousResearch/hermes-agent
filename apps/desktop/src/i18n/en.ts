@@ -1279,6 +1279,7 @@ export const en: Translations = {
       pull: 'Almost there…',
       pydeps: 'Finishing up…',
       restart: 'Restarting Hermes…',
+      done: 'Update complete',
       manual: 'Update from your terminal',
       error: 'Update paused'
     },

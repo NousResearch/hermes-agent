@@ -1373,6 +1373,7 @@ export const zhHant = defineLocale({
       pull: '快完成了…',
       pydeps: '收尾中…',
       restart: '正在重新啟動 Hermes…',
+      done: '更新完成',
       manual: '從終端機更新',
       error: '更新已暫停'
     },

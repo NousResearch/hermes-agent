@@ -296,6 +296,8 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      translucencyTitle: 'Window Translucency',
+      translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       product: 'Product',
       productDesc: 'Human-friendly tool activity with concise summaries.',
       technical: 'Technical',
@@ -1184,14 +1186,14 @@ export const en: Translations = {
       '/quit': 'exit hermes'
     },
     hotkeyDescs: {
-      '@': 'reference files, folders, urls, git',
-      '/': 'slash command palette',
-      '?': 'this quick help (delete to dismiss)',
-      Enter: 'send · Shift+Enter for newline',
-      'Cmd/Ctrl+Shift+K': 'send next queued turn',
-      'Cmd/Ctrl+/': 'all keyboard shortcuts',
-      Esc: 'close popover · cancel run',
-      '↑ / ↓': 'cycle popover / history'
+      'composer.mention': 'reference files, folders, urls, git',
+      'composer.slash': 'slash command palette',
+      'composer.help': 'this quick help (delete to dismiss)',
+      'composer.sendNewline': 'send · Shift+Enter for newline',
+      'composer.sendQueued': 'send next queued turn',
+      'keybinds.openPanel': 'all keyboard shortcuts',
+      'composer.cancel': 'close popover · cancel run',
+      'composer.history': 'cycle popover / history'
     },
     attachUrlTitle: 'Attach a URL',
     attachUrlDesc: 'Hermes will fetch the page and include it as context for this turn.',
@@ -1204,10 +1206,10 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
-    editQueued: 'Edit queued turn',
-    sendQueuedNext: 'Send queued turn next',
-    sendQueuedNow: 'Send queued turn now',
-    deleteQueued: 'Delete queued turn',
+    queueEdit: 'Edit',
+    queueSendNext: 'Next',
+    queueSend: 'Send',
+    queueDelete: 'Delete',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,
@@ -1252,6 +1254,17 @@ export const en: Translations = {
     }
   },
 
+  statusStack: {
+    agents: 'Agents',
+    background: count => `${count} Background`,
+    subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
+    todos: (done, total) => `Tasks ${done}/${total}`,
+    running: 'Running',
+    stop: 'Stop',
+    dismiss: 'Dismiss',
+    exit: code => `exit ${code}`
+  },
+
   updates: {
     stages: {
       idle: 'Getting ready…',
@@ -1287,7 +1300,8 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
-    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
+    applyingBodyBackend:
+      'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
@@ -1372,6 +1386,7 @@ export const en: Translations = {
     getKey: 'Get a key',
     replaceCurrent: 'Replace current value',
     pasteApiKey: 'Paste API key',
+    localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',
@@ -1532,6 +1547,9 @@ export const en: Translations = {
     terminal: 'Terminal',
     noFolderSelected: 'No folder selected',
     changeCwdTitle: 'Change working directory',
+    remotePickerTitle: 'Choose remote folder',
+    remotePickerDescription: 'Browse folders on the connected backend.',
+    remotePickerSelect: 'Select folder',
     folderTip: cwd => `${cwd} — click to change folder`,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
@@ -1648,10 +1666,14 @@ export const en: Translations = {
       stopReading: 'Stop reading',
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
+      scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
-      editableCheckpoint: 'Editable checkpoint',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',
+      restoreFromHere: 'Restore checkpoint — rerun from this prompt',
+      restoreTitle: 'Restore to this checkpoint?',
+      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+      restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
       sendEdited: 'Send edited message',
@@ -1677,7 +1699,7 @@ export const en: Translations = {
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
-      shortcut: '⌘/Ctrl + Enter to send',
+      shortcutSuffix: ' to send',
       back: 'Back',
       skip: 'Skip',
       send: 'Send'
@@ -1778,7 +1800,14 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files'
+    dropFiles: 'Drop files',
+    handoff: {
+      pickPlatform: 'Choose a destination',
+      success: platform => `Handed off to ${platform}. Resume here anytime.`,
+      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
+      failed: error => `Handoff failed: ${error}`,
+      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
   },
 
   errors: {

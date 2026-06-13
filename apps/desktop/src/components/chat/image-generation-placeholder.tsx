@@ -24,19 +24,26 @@ const smoothstep = (edge0: number, edge1: number, value: number) => {
 }
 
 const parseColor = (value: string, fallback: Rgb): Rgb => {
-  const hex = value.trim().match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i)
+  const v = value.trim()
+
+  const hex = v.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i)
 
   if (hex) {
-    return {
-      r: Number.parseInt(hex[1], 16),
-      g: Number.parseInt(hex[2], 16),
-      b: Number.parseInt(hex[3], 16)
-    }
+    return { r: Number.parseInt(hex[1], 16), g: Number.parseInt(hex[2], 16), b: Number.parseInt(hex[3], 16) }
   }
 
-  const rgb = value.trim().match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
+  const rgb = v.match(/rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i)
 
-  return rgb ? { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) } : fallback
+  if (rgb) {
+    return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) }
+  }
+
+  // Chromium serialises `color-mix(in srgb, …)` as `color(srgb r g b / a)` with 0–1 floats.
+  const srgb = v.match(/color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/i)
+
+  return srgb
+    ? { r: Math.round(Number(srgb[1]) * 255), g: Math.round(Number(srgb[2]) * 255), b: Math.round(Number(srgb[3]) * 255) }
+    : fallback
 }
 
 const mix = (a: Rgb, b: Rgb, amount: number): Rgb => ({
@@ -82,17 +89,22 @@ const fbm = (x: number, y: number) => {
   return value
 }
 
-const readTheme = () => {
-  const styles = getComputedStyle(document.documentElement)
+type Theme = Record<keyof typeof FALLBACKS, Rgb>
 
-  return {
-    card: parseColor(styles.getPropertyValue('--dt-card'), FALLBACKS.card),
-    muted: parseColor(styles.getPropertyValue('--dt-muted'), FALLBACKS.muted),
-    foreground: parseColor(styles.getPropertyValue('--dt-foreground'), FALLBACKS.foreground),
-    primary: parseColor(styles.getPropertyValue('--dt-primary'), FALLBACKS.primary),
-    ring: parseColor(styles.getPropertyValue('--dt-ring'), FALLBACKS.ring)
-  }
-}
+const TOKENS = Object.keys(FALLBACKS) as (keyof typeof FALLBACKS)[]
+
+// `--dt-*` resolve through `var()` chains into `color-mix()`, which
+// getPropertyValue hands back verbatim — unreadable. Bouncing each token through
+// a probe's `color` lets the browser compute it to a concrete color we can
+// parse, so the canvas tracks the live theme instead of a hardcoded fallback.
+const readTheme = (probe: HTMLElement): Theme =>
+  Object.fromEntries(
+    TOKENS.map(key => {
+      probe.style.color = `var(--dt-${key})`
+
+      return [key, parseColor(getComputedStyle(probe).color, FALLBACKS[key])]
+    })
+  ) as Theme
 
 const fitCanvas = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
   const rect = canvas.getBoundingClientRect()
@@ -107,8 +119,13 @@ const fitCanvas = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => 
   return { width, height }
 }
 
-const drawAsciiDiffusion = (ctx: CanvasRenderingContext2D, width: number, height: number, time: number) => {
-  const theme = readTheme()
+const drawAsciiDiffusion = (
+  ctx: CanvasRenderingContext2D,
+  theme: Theme,
+  width: number,
+  height: number,
+  time: number
+) => {
   const bg = ctx.createLinearGradient(0, 0, width, height)
   bg.addColorStop(0, rgba(mix(theme.card, theme.primary, 0.08), 1))
   bg.addColorStop(0.54, rgba(mix(theme.card, theme.muted, 0.68), 1))
@@ -227,6 +244,7 @@ const drawAsciiDiffusion = (ctx: CanvasRenderingContext2D, width: number, height
 const DiffusionCanvas: FC = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const sizeRef = useRef({ width: 0, height: 0 })
+  const themeRef = useRef<Theme>(FALLBACKS)
 
   const fitToContainer = useCallback(() => {
     const canvas = canvasRef.current
@@ -242,6 +260,28 @@ const DiffusionCanvas: FC = () => {
   useResizeObserver(fitToContainer, canvasRef)
 
   useEffect(() => {
+    const probe = document.createElement('span')
+    probe.style.cssText = 'position:absolute;width:0;height:0;visibility:hidden;pointer-events:none'
+    document.documentElement.appendChild(probe)
+
+    const sync = () => {
+      themeRef.current = readTheme(probe)
+    }
+
+    sync()
+
+    // Re-resolve when the theme repaints (`applyTheme` toggles `.dark` and
+    // rewrites inline custom props on the root) instead of per animation frame.
+    const observer = new MutationObserver(sync)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-hermes-mode'] })
+
+    return () => {
+      observer.disconnect()
+      probe.remove()
+    }
+  }, [])
+
+  useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas?.getContext('2d')
 
@@ -254,7 +294,7 @@ const DiffusionCanvas: FC = () => {
     let frame = requestAnimationFrame(function draw(now) {
       const { width, height } = sizeRef.current
       ctx.clearRect(0, 0, width, height)
-      drawAsciiDiffusion(ctx, width, height, now / 1000)
+      drawAsciiDiffusion(ctx, themeRef.current, width, height, now / 1000)
       frame = requestAnimationFrame(draw)
     })
 

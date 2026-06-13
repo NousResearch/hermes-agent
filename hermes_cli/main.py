@@ -334,21 +334,66 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
+    profile_index = None
 
-    # 1. Check for explicit -p / --profile flag
-    for i, arg in enumerate(argv):
+    def _inside_mcp_add_args(index: int) -> bool:
+        """True once argv reaches `hermes mcp add ... --args <command argv>`.
+
+        ``mcp add --args`` is command-argv passthrough. Flags after that point
+        belong to the child MCP command (for example Docker MCP Toolkit's
+        ``--profile``), not to Hermes' own profile selector.
+        """
+        try:
+            mcp_index = argv.index("mcp", 0, index)
+            argv.index("add", mcp_index + 1, index)
+        except ValueError:
+            return False
+        return True
+
+    # 1. Check for explicit -p / --profile flag. Historically this worked even
+    # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
+    # The exception is command-argv passthrough regions such as `mcp add --args`.
+    value_flags = {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+    }
+    optional_value_flags = {"-c", "--continue"}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            break
+        if arg == "--args" and _inside_mcp_add_args(i):
+            break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2
+            profile_index = i
             break
-        elif arg.startswith("--profile="):
+        if arg.startswith("--profile="):
             profile_name = arg.split("=", 1)[1]
             consume = 1
+            profile_index = i
             break
+        if "=" not in arg and arg in value_flags and i + 1 < len(argv):
+            i += 2
+        elif (
+            "=" not in arg
+            and arg in optional_value_flags
+            and i + 1 < len(argv)
+            and not argv[i + 1].startswith("-")
+        ):
+            i += 2
+        else:
+            i += 1
 
     # 1b. Reject values that can't be valid profile names (e.g. pytest's
     # "-p no:xdist" would be misread as profile "no:xdist" otherwise).
@@ -360,6 +405,7 @@ def _apply_profile_override() -> None:
         if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
             profile_name = None
             consume = 0
+            profile_index = None
 
     # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
     # only when it already points to a specific profile directory.  The
@@ -407,16 +453,9 @@ def _apply_profile_override() -> None:
             return
         os.environ["HERMES_HOME"] = hermes_home
         # Strip the flag from argv so argparse doesn't choke
-        if consume > 0:
-            for i, arg in enumerate(argv):
-                if arg in {"--profile", "-p"}:
-                    start = i + 1  # +1 because argv is sys.argv[1:]
-                    sys.argv = sys.argv[:start] + sys.argv[start + consume :]
-                    break
-                elif arg.startswith("--profile="):
-                    start = i + 1
-                    sys.argv = sys.argv[:start] + sys.argv[start + 1 :]
-                    break
+        if consume > 0 and profile_index is not None:
+            start = profile_index + 1  # +1 because argv is sys.argv[1:]
+            sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
 _apply_profile_override()
@@ -1523,6 +1562,8 @@ def _ensure_tui_node() -> None:
             env={**os.environ, "HERMES_HOME": hermes_home},
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1623,7 +1664,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         npm_cwd = _workspace_root(tui_dir)
         # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
         # See #38772.
-        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
+        # When ui-tui/ has its own package-lock.json (e.g. curl install),
+        # _workspace_root() returns tui_dir itself.  Passing --workspace in
+        # that case fails because npm cannot find a workspace named "ui-tui"
+        # inside ui-tui/.  See #42973.
+        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -1643,6 +1688,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "CI": "1"},
         )
         if result.returncode != 0:
@@ -1667,6 +1714,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             cwd=str(ink_dir),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -1695,6 +1744,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             cwd=str(tui_dir),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -2368,6 +2419,8 @@ def cmd_whatsapp(args):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except KeyboardInterrupt:
             print("\n  ✗ Install cancelled")
@@ -2459,6 +2512,25 @@ def cmd_whatsapp(args):
         print("  Or install as a service: hermes gateway install")
     else:
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
+
+
+def cmd_whatsapp_cloud(args):
+    """Set up WhatsApp Business Cloud API (official Meta integration).
+
+    Walks the user through the Meta-side credentials (Phone Number ID,
+    Access Token, App Secret, optional App/WABA IDs) plus webhook
+    configuration. Includes field-shape validators that catch the most
+    common setup mistakes (e.g. pasting a phone number into the Phone
+    Number ID field).
+
+    Distinct from ``hermes whatsapp`` (the Baileys bridge wizard) — the
+    two adapters are complementary, not alternatives. See
+    ``hermes_cli/setup_whatsapp_cloud.py``.
+    """
+    _require_tty("whatsapp-cloud")
+    from hermes_cli.setup_whatsapp_cloud import run_whatsapp_cloud_setup
+
+    return run_whatsapp_cloud_setup()
 
 
 def cmd_setup(args):
@@ -4556,13 +4628,18 @@ def _run_npm_install_deterministic(
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
     """
+    # unicode-animations' postinstall animates to /dev/tty (bypasses
+    # --silent/capture_output). It no-ops when CI is set — same as the TUI
+    # install path and nix/lib.nix npm ci hooks.
+    run_env = {**os.environ, **(env or {}), "CI": "1"}
+
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
-            env=env,
+            env=run_env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -4577,7 +4654,7 @@ def _run_npm_install_deterministic(
     return subprocess.run(
         install_cmd,
         cwd=cwd,
-        env=env,
+        env=run_env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",
@@ -4642,7 +4719,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # graph (including apps/desktop with its Electron + node-pty deps) is never
     # resolved here.  Without --workspace the root package.json's apps/* glob
     # would pull in desktop on every web build. See #38772.
-    npm_workspace_args: tuple[str, ...] = ("--workspace", "web")
+    # When web/ has its own package-lock.json, _workspace_root() returns
+    # web_dir itself and --workspace would fail.  See #42973.
+    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(
@@ -8671,6 +8750,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             pass  # profiles module not available or no profiles
 
+        # Backfill per-profile .env files for profiles created before the
+        # .env-seeding fix (#44792). Copies the default install's .env so
+        # those profiles keep the credentials they were effectively using.
+        try:
+            from hermes_cli.profiles import backfill_profile_envs
+
+            backfilled = backfill_profile_envs(quiet=True)
+            if backfilled:
+                print()
+                print(
+                    f"→ Seeded .env for {len(backfilled)} profile(s) "
+                    f"(copied from default): {', '.join(backfilled)}"
+                )
+        except Exception:
+            pass  # profiles module not available or no profiles
+
         # Sync Honcho host blocks to all profiles
         try:
             from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
@@ -8986,6 +9081,66 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             break
                 return total if matched else default
 
+            _manage_cmd_cache: dict = {}
+
+            def _resolve_manage_cmd(scope_: str, scope_cmd_: list, svc_name_: str):
+                """Resolve the command prefix for manage-units operations.
+
+                Read-only systemctl calls (``is-active``, ``show``,
+                ``list-units``) work unprivileged, but manage-units verbs
+                (``reset-failed``, ``start``, ``restart``) on a *system*
+                service trigger a polkit ``org.freedesktop.systemd1.manage-units``
+                authentication prompt when run as a non-root user.  That
+                interactive prompt runs inside our captured subprocess with a
+                10-15s timeout — the user sees the prompt flash and "exit
+                directly" before they can answer, and the resulting
+                TimeoutExpired used to be swallowed silently.
+
+                Strategy: if root, plain systemctl.  If not root, try
+                non-interactive sudo (``sudo -n``) — first a blanket probe,
+                then a targeted ``systemctl reset-failed`` probe so a
+                least-privilege sudoers entry scoped to
+                ``systemctl ... hermes-gateway*`` also qualifies
+                (``reset-failed`` is an idempotent no-op we run before every
+                privileged restart anyway).  If neither works, return None —
+                the caller must SKIP the restart (without draining the
+                gateway first!) and tell the user how to restart manually.
+                ``--no-ask-password`` guarantees polkit can never hang a
+                captured subprocess on this path.
+                """
+                if scope_ in _manage_cmd_cache:
+                    return _manage_cmd_cache[scope_]
+                cmd = scope_cmd_ + ["--no-ask-password"]
+                if (
+                    scope_ == "system"
+                    and hasattr(os, "geteuid")
+                    and os.geteuid() != 0  # windows-footgun: ok — systemd path, Linux-only
+                ):
+                    sudo_cmd = ["sudo", "-n"] + scope_cmd_ + ["--no-ask-password"]
+                    sudo_ok = False
+                    try:
+                        _probe = subprocess.run(
+                            ["sudo", "-n", "true"],
+                            capture_output=True,
+                            timeout=5,
+                        )
+                        sudo_ok = _probe.returncode == 0
+                        if not sudo_ok:
+                            # Blanket sudo refused — a targeted sudoers entry
+                            # (NOPASSWD for systemctl ... hermes-gateway*)
+                            # may still allow the exact commands we need.
+                            _probe = subprocess.run(
+                                sudo_cmd + ["reset-failed", svc_name_],
+                                capture_output=True,
+                                timeout=5,
+                            )
+                            sudo_ok = _probe.returncode == 0
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        sudo_ok = False
+                    cmd = sudo_cmd if sudo_ok else None
+                _manage_cmd_cache[scope_] = cmd
+                return cmd
+
             # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
             # for up to ``agent.restart_drain_timeout`` (default 60s) before
             # exiting with code 75; we wait slightly longer so the drain
@@ -9068,6 +9223,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             if check.stdout.strip() != "active":
                                 continue
 
+                            # Resolve how we may run manage-units verbs
+                            # (reset-failed/start/restart) for this scope.
+                            # None ⇒ no non-interactive privilege path; we
+                            # must avoid those verbs entirely or polkit will
+                            # throw an interactive auth prompt inside our
+                            # captured 10-15s subprocess (the user sees it
+                            # flash and "exit directly" — reported June 2026).
+                            _manage_cmd = _resolve_manage_cmd(
+                                scope, scope_cmd, svc_name
+                            )
+
                             # Prefer a graceful SIGUSR1 restart so in-flight
                             # agent runs drain instead of being SIGKILLed.
                             # The gateway's SIGUSR1 handler calls
@@ -9127,35 +9293,40 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # ``start`` is a no-op and we fall through to
                                 # the poll below. Either way we collapse the
                                 # 60s+ delay to a ~5s one.
-                                subprocess.run(
-                                    scope_cmd + ["reset-failed", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10,
-                                )
-                                subprocess.run(
-                                    scope_cmd + ["start", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=15,
-                                )
-                                # Short poll: the gateway should be up within
-                                # a few seconds now that we bypassed
-                                # RestartSec. Fall back to the longer
-                                # RestartSec + slack budget ONLY if the
-                                # explicit start failed and we need to rely
-                                # on systemd's auto-restart.
-                                if _wait_for_service_active(
-                                    scope_cmd,
-                                    svc_name,
-                                    timeout=10.0,
-                                ):
-                                    restarted_services.append(svc_name)
-                                    continue
-                                # Explicit start didn't take. Fall back to
-                                # the original passive poll (systemd's
-                                # auto-restart WILL fire after RestartSec
-                                # regardless).
+                                #
+                                # The shortcut needs manage-units privileges.
+                                # Without them (system service, non-root, no
+                                # passwordless sudo) skip it — systemd's own
+                                # auto-restart still relaunches the unit after
+                                # RestartSec, no privileges required.
+                                if _manage_cmd is not None:
+                                    subprocess.run(
+                                        _manage_cmd + ["reset-failed", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=10,
+                                    )
+                                    subprocess.run(
+                                        _manage_cmd + ["start", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=15,
+                                    )
+                                    # Short poll: the gateway should be up
+                                    # within a few seconds now that we
+                                    # bypassed RestartSec.
+                                    if _wait_for_service_active(
+                                        scope_cmd,
+                                        svc_name,
+                                        timeout=10.0,
+                                    ):
+                                        restarted_services.append(svc_name)
+                                        continue
+                                # Passive poll: systemd's auto-restart fires
+                                # after RestartSec regardless of privileges.
+                                # This is the primary path when _manage_cmd is
+                                # None, and the fallback when the explicit
+                                # start didn't take.
                                 _restart_sec = _service_restart_sec(
                                     scope_cmd,
                                     svc_name,
@@ -9165,6 +9336,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     10.0,
                                     _restart_sec + 10.0,
                                 )
+                                if _manage_cmd is None and _restart_sec > 5.0:
+                                    print(
+                                        f"  → {svc_name}: waiting for systemd "
+                                        f"auto-restart (~{int(_restart_sec)}s; "
+                                        "no root for an immediate restart)..."
+                                    )
                                 if _wait_for_service_active(
                                     scope_cmd,
                                     svc_name,
@@ -9179,6 +9356,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 print(
                                     f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
                                 )
+
+                            # Forcing a restart requires manage-units
+                            # privileges.  Without a non-interactive path,
+                            # running systemctl here would spawn a polkit
+                            # auth prompt inside a captured 10-15s subprocess
+                            # — it flashes and dies before the user can
+                            # answer.  Skip with clear instructions instead.
+                            if _manage_cmd is None:
+                                print(
+                                    f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
+                                    f"    Restart it manually to load the new version:\n"
+                                    f"      sudo systemctl restart {svc_name}\n"
+                                    f"    To let `hermes update` restart it automatically, allow\n"
+                                    f"    passwordless sudo for systemctl, or run updates with sudo."
+                                )
+                                continue
 
                             # Fallback: blunt systemctl restart.  This is
                             # what the old code always did; we get here only
@@ -9197,13 +9390,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # path in `hermes gateway restart`
                             # (`systemd_restart()`) as of PR #20949.
                             subprocess.run(
-                                scope_cmd + ["reset-failed", svc_name],
+                                _manage_cmd + ["reset-failed", svc_name],
                                 capture_output=True,
                                 text=True,
                                 timeout=10,
                             )
                             restart = subprocess.run(
-                                scope_cmd + ["restart", svc_name],
+                                _manage_cmd + ["restart", svc_name],
                                 capture_output=True,
                                 text=True,
                                 timeout=15,
@@ -9229,13 +9422,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         f"  ⚠ {svc_name} died after restart, retrying..."
                                     )
                                     subprocess.run(
-                                        scope_cmd + ["reset-failed", svc_name],
+                                        _manage_cmd + ["reset-failed", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=10,
                                     )
                                     subprocess.run(
-                                        scope_cmd + ["restart", svc_name],
+                                        _manage_cmd + ["restart", svc_name],
                                         capture_output=True,
                                         text=True,
                                         timeout=15,
@@ -9249,19 +9442,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         print(f"  ✓ {svc_name} recovered on retry")
                                     else:
                                         _scope_flag = "--user " if scope == "user" else ""
+                                        _sudo_hint = "sudo " if scope == "system" else ""
                                         print(
                                             f"  ✗ {svc_name} failed to stay running after restart.\n"
-                                            f"    Check logs: journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
+                                            f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
                                             f"    Recover manually:\n"
-                                            f"      systemctl {_scope_flag}reset-failed {svc_name}\n"
-                                            f"      systemctl {_scope_flag}restart {svc_name}"
+                                            f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
+                                            f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
                                         )
                             else:
                                 print(
                                     f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
                                 )
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                    except FileNotFoundError:
                         pass
+                    except subprocess.TimeoutExpired as exc:
+                        # Don't swallow this silently — a wedged systemctl
+                        # call here used to make the whole restart phase
+                        # vanish with no output (June 2026 report).
+                        print(
+                            f"  ⚠ systemctl timed out during the {scope}-scope "
+                            f"gateway restart ({exc.cmd if exc.cmd else 'unknown command'}). "
+                            f"Check the gateway with: hermes gateway status"
+                        )
 
             # --- Launchd services (macOS) ---
             if is_macos():
@@ -9480,6 +9683,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "gateway",
         "setup",
         "whatsapp",
+        "whatsapp-cloud",
         "login",
         "logout",
         "auth",
@@ -9661,7 +9865,10 @@ def cmd_profile(args):
                     getattr(args, "clone_from", None) or get_active_profile_name()
                 )
                 if clone_all:
-                    print(f"Full copy from {source_label}.")
+                    print(
+                        f"Full copy from {source_label} "
+                        "(excluding session history, backups, and snapshots)."
+                    )
                 else:
                     print(
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."
@@ -10214,6 +10421,21 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _dashboard_listening(host: str, port: int) -> bool:
+    """True when something is accepting TCP connections at host:port.
+
+    Any listener counts — even a 401 response proves a dashboard is up.
+    Used by the unified profile-launch routing to decide attach-vs-start.
+    """
+    import socket
+
+    try:
+        with socket.create_connection((host or "127.0.0.1", port), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -10233,6 +10455,76 @@ def cmd_dashboard(args):
         # we killed at least one, 1 if they were all unkillable.
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
+
+    # ── Unified profile launch routing ────────────────────────────────
+    # The dashboard is a MACHINE management surface: it can read/write any
+    # profile via the per-request ?profile= scoping. Running one dashboard
+    # per profile just fragments that (port collisions, N processes, and a
+    # "which dashboard am I on?" guessing game). So when a NAMED profile
+    # launches the dashboard (`worker dashboard` → HERMES_HOME points into
+    # profiles/), default to the machine dashboard:
+    #   - already running → open the browser at ?profile=<name> and exit
+    #   - not running     → re-exec as the machine dashboard (pinned to the
+    #     default profile so _apply_profile_override can't re-route through
+    #     the sticky active_profile file) with the launching profile
+    #     preselected in the UI's switcher.
+    # `--isolated` opts out and preserves the old per-profile behavior.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _launch_profile = get_active_profile_name()
+    except Exception:
+        _launch_profile = "default"
+
+    if (
+        _launch_profile not in ("default", "custom")
+        and not getattr(args, "isolated", False)
+        and not getattr(args, "open_profile", "")
+        # Desktop pool backends are intentionally per-profile.
+        and os.environ.get("HERMES_DESKTOP") != "1"
+    ):
+        url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
+        if _dashboard_listening(args.host, args.port):
+            print(f"Machine dashboard already running on port {args.port}.")
+            print(f"  Managing profile '{_launch_profile}': {url}")
+            if not args.no_open:
+                try:
+                    import webbrowser
+                    webbrowser.open(url)
+                except Exception:
+                    pass
+            sys.exit(0)
+
+        print(
+            f"Routing to the machine dashboard (profile '{_launch_profile}' "
+            f"preselected). Use --isolated for a dedicated per-profile server."
+        )
+        reexec_argv = [
+            sys.executable, "-m", "hermes_cli.main",
+            "-p", "default",
+            "dashboard",
+            "--port", str(args.port),
+            "--host", args.host,
+            "--open-profile", _launch_profile,
+        ]
+        if args.no_open:
+            reexec_argv.append("--no-open")
+        if getattr(args, "insecure", False):
+            reexec_argv.append("--insecure")
+        if getattr(args, "skip_build", False):
+            reexec_argv.append("--skip-build")
+        env = os.environ.copy()
+        # Drop the profile HERMES_HOME so the child binds the machine root.
+        env.pop("HERMES_HOME", None)
+        # On Windows, os.execvpe() does not truly replace the process — it
+        # spawns via CreateProcess then the parent exits.  Under Python 3.14+
+        # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when
+        # re-executing the dashboard for a non-default profile.  Use
+        # subprocess.Popen + sys.exit() on Windows to avoid the crash.
+        if sys.platform == "win32":
+            proc = subprocess.Popen(reexec_argv, env=env)
+            sys.exit(proc.wait())
+        else:
+            os.execvpe(sys.executable, reexec_argv, env)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
@@ -10297,6 +10589,26 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
+    # agents via tui_gateway.server._make_agent.  That path only snapshots the
+    # tool registry — it never starts MCP discovery (the stdio TUI does that in
+    # tui_gateway/entry.py, which the dashboard process doesn't run).  Without
+    # this, a profile's configured MCP servers never connect, so desktop
+    # sessions show no MCP tools.  Spawn discovery in the background here so a
+    # slow/dead server can't block dashboard startup.
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="dashboard-mcp-discovery",
+        )
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
+
     from hermes_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
@@ -10307,6 +10619,7 @@ def cmd_dashboard(args):
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        initial_profile=getattr(args, "open_profile", "") or "",
     )
 
 
@@ -10376,7 +10689,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat", "secrets", "security",
+        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -11036,6 +11349,21 @@ def main():
     # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
     # =========================================================================
     build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
+
+    # =========================================================================
+    # whatsapp-cloud command (official Meta Cloud API; complement to Baileys)
+    # =========================================================================
+    whatsapp_cloud_parser = subparsers.add_parser(
+        "whatsapp-cloud",
+        help="Set up WhatsApp Business Cloud API integration",
+        description=(
+            "Configure the official Meta WhatsApp Business Cloud API "
+            "adapter (Business account required, public webhook URL "
+            "required). Distinct from `hermes whatsapp` which sets up "
+            "the Baileys bridge for personal accounts."
+        ),
+    )
+    whatsapp_cloud_parser.set_defaults(func=cmd_whatsapp_cloud)
 
     # =========================================================================
     # slack command  (parser built in hermes_cli/subcommands/slack.py)

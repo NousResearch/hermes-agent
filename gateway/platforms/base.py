@@ -1916,16 +1916,21 @@ class BasePlatformAdapter(ABC):
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
 
-        The gateway's env-based allowlist check runs *after* the adapter, so for
-        these platforms a message arriving at ``_is_user_authorized`` has, by
-        definition, already been authorized by the adapter. Without this flag the
-        gateway would then deny it again (no env allowlist → default deny),
-        silently breaking ``dm_policy: open`` and config-only allowlists.
+        The gateway's env-based allowlist check runs *after* the adapter. When
+        no env allowlist is configured, the gateway consults this flag so it can
+        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
+        adapter already enforced) instead of double-denying it. Crucially, the
+        flag alone is NOT "already authorized": these adapters default
+        ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
+        sender, so the gateway trusts the adapter only when its effective policy
+        for the chat type is an actual ``"allowlist"`` restriction — never for
+        ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
+        forbids). Open access still requires an explicit
+        ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.
-        The gateway treats that as "already authorized at intake" and skips the
-        env-allowlist default-deny. Adapters that delegate access control to the
-        gateway leave it ``False`` (the default).
+        Adapters that delegate access control to the gateway leave it ``False``
+        (the default).
         """
         return False
 

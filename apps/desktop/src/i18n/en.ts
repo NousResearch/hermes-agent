@@ -1666,6 +1666,7 @@ export const en: Translations = {
       stopReading: 'Stop reading',
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
+      scrollToBottom: 'Scroll to bottom',
       stop: 'Stop',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',

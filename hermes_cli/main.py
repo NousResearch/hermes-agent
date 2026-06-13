@@ -8750,6 +8750,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             pass  # profiles module not available or no profiles
 
+        # Backfill per-profile .env files for profiles created before the
+        # .env-seeding fix (#44792). Copies the default install's .env so
+        # those profiles keep the credentials they were effectively using.
+        try:
+            from hermes_cli.profiles import backfill_profile_envs
+
+            backfilled = backfill_profile_envs(quiet=True)
+            if backfilled:
+                print()
+                print(
+                    f"→ Seeded .env for {len(backfilled)} profile(s) "
+                    f"(copied from default): {', '.join(backfilled)}"
+                )
+        except Exception:
+            pass  # profiles module not available or no profiles
+
         # Sync Honcho host blocks to all profiles
         try:
             from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
@@ -9849,7 +9865,10 @@ def cmd_profile(args):
                     getattr(args, "clone_from", None) or get_active_profile_name()
                 )
                 if clone_all:
-                    print(f"Full copy from {source_label}.")
+                    print(
+                        f"Full copy from {source_label} "
+                        "(excluding session history, backups, and snapshots)."
+                    )
                 else:
                     print(
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."

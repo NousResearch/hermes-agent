@@ -147,6 +147,60 @@ function ToolCallBlock({
   );
 }
 
+// Context-compaction handoff blocks are persisted as ``role="user"`` or
+// ``role="assistant"`` with content starting with one of these prefixes —
+// they're metadata inserted by ``agent/context_compressor.py``, NOT real
+// turns the user typed or the model replied with. Rendering them with
+// the same styling as regular messages confuses operators scrolling the
+// session timeline (#29824 — "WebUI can show context compaction block
+// instead of latest assistant response after compression"), so we
+// detect them here and downgrade them to a muted, clearly-labelled
+// "Context handoff" row.
+//
+// Keep these prefixes (and the END marker below) in sync with
+// ``SUMMARY_PREFIX`` / ``LEGACY_SUMMARY_PREFIX`` and the
+// merge-into-tail marker in ``agent/context_compressor.py``.
+const COMPACTION_PREFIXES = [
+  "[CONTEXT COMPACTION — REFERENCE ONLY]",
+  "[CONTEXT COMPACTION - REFERENCE ONLY]",
+  "[CONTEXT SUMMARY]:",
+] as const;
+
+// Marker the compressor inserts between a merged summary and the
+// original tail message content. When the summary role would collide
+// with both head and tail roles (e.g. head ends with ``user`` and tail
+// starts with ``assistant``), the compressor merges the summary as a
+// prefix on the first tail message instead of inserting a standalone
+// row. We split on this marker so the WebUI still shows the original
+// assistant reply as its own readable bubble — otherwise the merged
+// row reads as a single opaque "Context compaction" block and the
+// user can't see the reply (#29824).
+const COMPACTION_END_MARKER =
+  "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
+
+interface CompactionSplit {
+  /** Summary text (header + body, without the end marker). */
+  summary: string;
+  /** Original message content that came after the end marker. */
+  remainder: string;
+}
+
+function splitCompactionContent(content: string): CompactionSplit | null {
+  const head = content.trimStart();
+  if (!COMPACTION_PREFIXES.some((p) => head.startsWith(p))) return null;
+  const markerIdx = content.indexOf(COMPACTION_END_MARKER);
+  if (markerIdx < 0) {
+    return { summary: content, remainder: "" };
+  }
+  return {
+    summary: content.slice(0, markerIdx),
+    remainder: content
+      .slice(markerIdx + COMPACTION_END_MARKER.length)
+      .replace(/^\s+/, ""),
+  };
+}
+
+
 function MessageBubble({
   msg,
   highlight,
@@ -180,12 +234,60 @@ function MessageBubble({
       text: "text-warning",
       label: t.sessions.roles.tool,
     },
+    // Compaction handoffs render as faded system-style metadata with a
+    // distinctive label so they can't be mistaken for real assistant
+    // replies during a scroll-back review (#29824).
+    compaction: {
+      bg: "bg-muted/50",
+      text: "text-muted-foreground italic",
+      label: "Context handoff",
+    },
   };
 
-  const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
-  const label = msg.tool_name
-    ? `${t.sessions.roles.tool}: ${msg.tool_name}`
-    : style.label;
+  // When a compaction handoff is merged into the front of the first
+  // tail message (the compressor's double-collision path —
+  // ``_merge_summary_into_tail`` in ``agent/context_compressor.py``),
+  // the message we received is ``[CONTEXT COMPACTION ...] + END_MARKER
+  // + <original assistant reply>``. We split it back into two visual
+  // rows here so the operator's actual answer survives as a readable
+  // bubble next to the (clearly-labelled) handoff metadata (#29824).
+  const compactionSplit =
+    typeof msg.content === "string"
+      ? splitCompactionContent(msg.content)
+      : null;
+
+  if (compactionSplit && compactionSplit.remainder) {
+    return (
+      <>
+        <MessageBubble
+          msg={{ ...msg, content: compactionSplit.summary }}
+          highlight={highlight}
+        />
+        <MessageBubble
+          msg={{
+            ...msg,
+            content: compactionSplit.remainder,
+            // The remainder is the original assistant reply that the
+            // compressor pre-pended the summary to — render with the
+            // normal assistant styling, NOT the muted handoff style.
+            // ``isCompactionMessage`` returns false on this stripped
+            // content because it no longer starts with the prefix.
+          }}
+          highlight={highlight}
+        />
+      </>
+    );
+  }
+
+  const isCompaction = compactionSplit !== null;
+  const style = isCompaction
+    ? ROLE_STYLES.compaction
+    : ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
+  const label = isCompaction
+    ? ROLE_STYLES.compaction.label
+    : msg.tool_name
+      ? `${t.sessions.roles.tool}: ${msg.tool_name}`
+      : style.label;
 
   // Check if any search term appears as a prefix of any word in content
   const isHit = (() => {

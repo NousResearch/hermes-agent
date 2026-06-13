@@ -88,15 +88,39 @@ _CLONE_ALL_STRIP: list[str] = [
 #   node_modules  — npm packages (hundreds of MB)
 #
 # See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
-# exclusion list (export drops state.db / logs / caches too because the
-# archive is a portable snapshot; clone-all keeps those because the cloned
-# profile is meant to keep working immediately).
+# exclusion list (export also drops logs / caches because the archive is a
+# portable snapshot; clone-all keeps those because the cloned profile is
+# meant to keep working immediately).
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent",
     ".worktrees",
     "profiles",
     "bin",
     "node_modules",
+})
+
+# Per-profile history artifacts excluded from --clone-all regardless of the
+# source profile.  A new profile is a fresh workspace — inheriting the source
+# profile's session history, backup archives, or quick-backup snapshots is
+# never useful (restoring one inside the clone would resurrect the SOURCE
+# profile's state) and can balloon the copy by tens of GB.  Unlike
+# ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` this set is NOT gated on the default
+# profile: named profiles accumulate the same artifacts.
+#
+# Rationale per item:
+#   state.db (+wal/shm) — SQLite session store (can reach many GB)
+#   sessions            — per-session transcript/data dirs
+#   backups             — `hermes backup` archives
+#   state-snapshots     — quick-backup snapshot trees
+#   checkpoints         — session checkpoint data
+_CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
+    "state.db",
+    "state.db-wal",
+    "state.db-shm",
+    "sessions",
+    "backups",
+    "state-snapshots",
+    "checkpoints",
 })
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
@@ -119,13 +143,16 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    Two categories:
-      1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
+    Three categories:
+      1. Root-level entries in ``_CLONE_ALL_HISTORY_EXCLUDE_ROOT`` — session
+         history, backups, and snapshots that belong to the SOURCE profile
+         and should never carry into a fresh clone.  Applies to any source.
+      2. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
          Hermes infrastructure directories that only the default profile
          (``~/.hermes``) ever contains.  Gated on ``source_dir`` actually
          being the default profile so a named-profile source never has its
          own data silently dropped.
-      2. Universal exclusions at any depth — Python bytecode caches that
+      3. Universal exclusions at any depth — Python bytecode caches that
          are stale or regenerable (``__pycache__``, ``*.pyc``, ``*.pyo``)
          and runtime sockets / temp files (``*.sock``, ``*.tmp``).
 
@@ -147,17 +174,21 @@ def _clone_all_copytree_ignore(source_dir: Path):
             ):
                 ignored.append(entry)
                 continue
-            # Root-level exclusions only apply when cloning the default profile.
-            if is_default_source:
-                try:
-                    if Path(directory).resolve() == source_resolved:
-                        if entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
-                            ignored.append(entry)
-                except (OSError, ValueError):
-                    # ``resolve()`` can fail on unusual FS layouts (broken
-                    # symlinks, missing parents).  Fail open — better to
-                    # over-copy than silently drop user data.
-                    pass
+            try:
+                at_root = Path(directory).resolve() == source_resolved
+            except (OSError, ValueError):
+                # ``resolve()`` can fail on unusual FS layouts (broken
+                # symlinks, missing parents).  Fail open — better to
+                # over-copy than silently drop user data.
+                at_root = False
+            if at_root:
+                # History artifacts: excluded for ANY source profile.
+                if entry in _CLONE_ALL_HISTORY_EXCLUDE_ROOT:
+                    ignored.append(entry)
+                    continue
+                # Infrastructure: only the default profile contains these.
+                if is_default_source and entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
+                    ignored.append(entry)
         return ignored
 
     return _ignore
@@ -944,6 +975,58 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         if not quiet:
             print(f"⚠ Skill seeding failed: {e}")
         return None
+
+
+def backfill_profile_envs(quiet: bool = False) -> List[str]:
+    """Give every named profile that predates per-profile ``.env`` files one.
+
+    Profiles created before the dashboard/CLI started seeding a ``.env``
+    (PR #44792) have none, so once the Channels/Keys endpoints became
+    profile-scoped those profiles stopped inheriting the root install's
+    credentials and showed everything as unconfigured. To avoid breaking
+    anyone on update, copy the DEFAULT install's ``.env`` into each named
+    profile that lacks one — that preserves the effective credentials those
+    profiles were already running with (they previously read the root
+    ``.env`` via the process environment). Users can then diverge per
+    profile from there.
+
+    Falls back to the placeholder header when the default install has no
+    ``.env`` itself. Never overwrites an existing profile ``.env``.
+
+    Returns the list of profile names that received a backfilled ``.env``.
+    """
+    backfilled: List[str] = []
+    profiles_root = _get_profiles_root()
+    if not profiles_root.is_dir():
+        return backfilled
+
+    default_env = _get_default_hermes_home() / ".env"
+
+    for entry in sorted(profiles_root.iterdir()):
+        if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
+            continue
+        if entry.name == "default":
+            continue
+        env_path = entry / ".env"
+        if env_path.exists():
+            continue
+        try:
+            if default_env.is_file():
+                shutil.copy2(default_env, env_path)
+            else:
+                env_path.write_text(
+                    "# Per-profile secrets for this Hermes profile.\n"
+                    "# API keys and tokens set here override the shell environment.\n"
+                    "# Behavioral settings belong in config.yaml, not here.\n",
+                    encoding="utf-8",
+                )
+            os.chmod(str(env_path), 0o600)
+            backfilled.append(entry.name)
+        except OSError as e:
+            if not quiet:
+                print(f"⚠ Could not seed .env for profile '{entry.name}': {e}")
+
+    return backfilled
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:

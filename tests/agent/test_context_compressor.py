@@ -1252,6 +1252,48 @@ class TestCompressWithClient:
             "respond to the message below, not the summary above ---"
         )
 
+    def test_assistant_role_summary_carries_end_marker(self):
+        """When the summary lands as standalone role='assistant' (head ends
+        with user), the message body must include the explicit
+        '--- END OF CONTEXT SUMMARY ---' marker. Without it, models may
+        regurgitate the summary text as their own output (#33256).
+        """
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        # head_last=user → summary_role="assistant" (same setup as
+        # test_summary_role_avoids_consecutive_user_when_head_ends_with_user).
+        # With min_tail=3, tail = last 3 messages (indices 5-7).
+        # head_last=user, tail_first=user → the assistant-role summary does
+        # not collide with either neighbor and should be inserted standalone.
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "user", "content": "msg 2"},  # last head — user
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        summary_msg = next(
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        )
+        assert summary_msg["role"] == "assistant"
+        assert "END OF CONTEXT SUMMARY" in summary_msg["content"]
+        assert summary_msg["content"].rstrip().endswith(
+            "respond to the message below, not the summary above ---"
+        )
+
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
         mock_client = MagicMock()
@@ -1761,6 +1803,40 @@ class TestTokenBudgetTailProtection:
         cut = c._find_tail_cut_by_tokens(messages, head_end)
         tail_size = len(messages) - cut
         assert tail_size >= 3, f"Tail is only {tail_size} messages, min should be 3"
+
+    def test_tiny_budget_preserves_bounded_recent_turns(self, budget_compressor):
+        """A token-exhausted tail must preserve more than just the latest ask.
+
+        Regression for #9413: the previous hard-coded 3-message floor could
+        leave the latest user message live while summarizing the assistant/tool
+        context immediately before it, which made the post-compression turn feel
+        like a fresh conversation.
+        """
+        c = budget_compressor
+        c.tail_token_budget = 10
+        c.protect_last_n = 20
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "old start"},
+            {"role": "assistant", "content": "old ack"},
+            {"role": "user", "content": "middle work"},
+            {"role": "assistant", "content": "middle ack"},
+            {"role": "user", "content": "middle ask 2"},
+            {"role": "assistant", "content": "middle answer 2"},
+            {"role": "user", "content": "middle ask 3"},
+            {"role": "assistant", "content": "middle answer 3"},
+            {"role": "user", "content": "recent ask 1"},
+            {"role": "assistant", "content": "recent answer 1"},
+            {"role": "user", "content": "recent ask 2"},
+            {"role": "assistant", "content": "recent answer 2"},
+            {"role": "user", "content": "latest ask"},
+        ]
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+
+        assert len(messages) - cut >= 8
+        assert messages[cut]["content"] == "middle answer 2"
+        assert messages[-1]["content"] == "latest ask"
 
     def test_soft_ceiling_allows_oversized_message(self, budget_compressor):
         """The 1.5x soft ceiling allows an oversized message to be included

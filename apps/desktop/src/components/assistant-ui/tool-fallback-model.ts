@@ -1,6 +1,6 @@
+import { translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
-import { translateNow } from '@/i18n'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
 export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
@@ -901,8 +901,9 @@ function fallbackDetailText(args: unknown, result: unknown): string {
 }
 
 function cronScalar(value: unknown): string {
-  if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  if (typeof value === 'string') {return value.trim()}
+
+  if (typeof value === 'number' && Number.isFinite(value)) {return String(value)}
 
   return ''
 }
@@ -910,7 +911,7 @@ function cronScalar(value: unknown): string {
 function formatCronTime(iso: string): string {
   const ts = Date.parse(iso)
 
-  if (Number.isNaN(ts)) return iso
+  if (Number.isNaN(ts)) {return iso}
 
   return new Date(ts).toLocaleString(undefined, {
     month: 'short',
@@ -932,7 +933,7 @@ function cronjobSubtitle(
 
   const message = firstStringField(resultRecord, ['message'])
 
-  if (message) return message
+  if (message) {return message}
 
   const action = firstStringField(argsRecord, ['action']) || 'manage'
   const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
@@ -948,7 +949,7 @@ function cronjobDetail(
   const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
 
   if (jobs) {
-    if (!jobs.length) return 'No cron jobs scheduled'
+    if (!jobs.length) {return 'No cron jobs scheduled'}
 
     return jobs
       .slice(0, 20)
@@ -963,12 +964,14 @@ function cronjobDetail(
   }
 
   const nextRun = cronScalar(resultRecord.next_run_at)
+
   const rows: [string, string][] = [
     ['Schedule', cronScalar(resultRecord.schedule)],
     ['Repeat', cronScalar(resultRecord.repeat)],
     ['Delivery', cronScalar(resultRecord.deliver)],
     ['Next run', nextRun ? formatCronTime(nextRun) : '']
   ]
+
   const lines = rows.filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`)
 
   return lines.length ? lines.join('\n') : fallbackDetailText(argsRecord, resultRecord)
@@ -1190,6 +1193,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     url: translateNow('assistant.tool.copyUrl'),
     generic: translateNow('common.copy')
   }
+
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
   const detail = view.detail.trim()

@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+from agent.memory_manager import (
+    MemoryManager,
+    inject_memory_provider_tools,
+    memory_provider_tools_enabled,
+)
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -1517,7 +1521,7 @@ class TestMemoryToolToolsetGate:
         if (
             memory_manager
             and tools is not None
-            and (enabled_toolsets is None or "memory" in enabled_toolsets)
+            and memory_provider_tools_enabled(enabled_toolsets)
         ):
             _existing = {
                 t.get("function", {}).get("name") for t in tools if isinstance(t, dict)

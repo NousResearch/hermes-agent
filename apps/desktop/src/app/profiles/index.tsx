@@ -11,8 +11,6 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   deleteProfile,
@@ -30,6 +28,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+
 import { CreateProfileDialog } from './create-profile-dialog'
 import { RenameProfileDialog } from './rename-profile-dialog'
 

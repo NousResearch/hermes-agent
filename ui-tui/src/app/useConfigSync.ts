@@ -143,24 +143,32 @@ const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceR
 }
 
 const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) return 5
+  if (!cfg?.config) {return 5}
   const raw = cfg.config.paste_collapse_threshold
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw)
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {return Math.round(raw)}
+
   if (typeof raw === 'string') {
     const n = parseInt(raw, 10)
-    if (Number.isFinite(n) && n >= 0) return n
+
+    if (Number.isFinite(n) && n >= 0) {return n}
   }
+
   return 5
 }
 
 const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) return 2000
+  if (!cfg?.config) {return 2000}
   const raw = cfg.config.paste_collapse_char_threshold
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) return Math.round(raw)
+
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {return Math.round(raw)}
+
   if (typeof raw === 'string') {
     const n = parseInt(raw, 10)
-    if (Number.isFinite(n) && n >= 0) return n
+
+    if (Number.isFinite(n) && n >= 0) {return n}
   }
+
   return 2000
 }
 

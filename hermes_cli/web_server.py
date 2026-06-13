@@ -2680,12 +2680,14 @@ async def get_sessions(
             detail="order must be one of: created, recent",
         )
     profile_name: Optional[str] = None
+    db_path: Optional[Path] = None
     if profile:
-        profile_name, _ = _cron_profile_home(profile)
+        profile_name, profile_home = _cron_profile_home(profile)
+        db_path = profile_home / "state.db"
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB(db_path=db_path) if db_path else SessionDB()
         try:
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
@@ -9475,9 +9477,10 @@ async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
 
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    skills = _find_all_skills(skip_disabled=True)
+    with _profile_scope(profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        skills = _find_all_skills(skip_disabled=True)
     for s in skills:
         s["enabled"] = s["name"] not in disabled
     return skills
@@ -9487,13 +9490,14 @@ async def get_skills(profile: Optional[str] = None):
 async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    if body.enabled:
-        disabled.discard(body.name)
-    else:
-        disabled.add(body.name)
-    save_disabled_skills(config, disabled)
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        if body.enabled:
+            disabled.discard(body.name)
+        else:
+            disabled.add(body.name)
+        save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
@@ -9636,13 +9640,14 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    enabled = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
-    if body.enabled:
-        enabled.add(name)
-    else:
-        enabled.discard(name)
-    _save_platform_tools(config, "cli", enabled)
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        enabled = set(_get_platform_tools(config, "cli", include_default_mcp_servers=False))
+        if body.enabled:
+            enabled.add(name)
+        else:
+            enabled.discard(name)
+        _save_platform_tools(config, "cli", enabled)
     return {"ok": True, "name": name, "enabled": body.enabled}
 
 
@@ -10022,8 +10027,45 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
         )
         rows = [dict(r) for r in cur.fetchall()]
 
-        models = []
+        by_model: Dict[str, List[Dict[str, Any]]] = {}
         for row in rows:
+            by_model.setdefault(row["model"], []).append(row)
+
+        merged_rows: List[Dict[str, Any]] = []
+        for model_rows in by_model.values():
+            accounted = [r for r in model_rows if r.get("billing_provider")]
+            session_only = [r for r in model_rows if not r.get("billing_provider")]
+            if accounted and session_only:
+                target = max(
+                    accounted,
+                    key=lambda r: (
+                        int(r.get("input_tokens") or 0) + int(r.get("output_tokens") or 0),
+                        int(r.get("api_calls") or 0),
+                    ),
+                )
+                for src in session_only:
+                    for key in (
+                        "input_tokens",
+                        "output_tokens",
+                        "cache_read_tokens",
+                        "reasoning_tokens",
+                        "estimated_cost",
+                        "actual_cost",
+                        "sessions",
+                        "api_calls",
+                        "tool_calls",
+                    ):
+                        target[key] = (target.get(key) or 0) + (src.get(key) or 0)
+                    target["last_used_at"] = max(target.get("last_used_at") or 0, src.get("last_used_at") or 0)
+                total_tokens = (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
+                sessions = target.get("sessions") or 0
+                target["avg_tokens_per_session"] = total_tokens / sessions if sessions else 0
+                merged_rows.extend(accounted)
+            else:
+                merged_rows.extend(model_rows)
+
+        models = []
+        for row in merged_rows:
             provider = row.get("billing_provider") or ""
             model_name = row["model"]
             caps = {}

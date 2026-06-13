@@ -87,6 +87,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+
   const effectiveVisibleModels = useMemo(
     () => effectiveVisibleKeys(visibleModels, providers ?? []),
     [visibleModels, providers]

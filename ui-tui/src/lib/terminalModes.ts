@@ -31,6 +31,7 @@ export function resetTerminalModes(stream: ResettableStream = process.stdout): b
   }
 
   const fd = typeof stream.fd === 'number' ? stream.fd : stream === process.stdout ? 1 : undefined
+
   if (fd !== undefined) {
     try {
       writeSync(fd, TERMINAL_MODE_RESET)

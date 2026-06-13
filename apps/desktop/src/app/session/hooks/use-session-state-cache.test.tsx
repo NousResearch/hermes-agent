@@ -29,6 +29,7 @@ interface HarnessProps {
 
 function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
+
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
@@ -141,6 +142,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
 
   it('mirrors the focused session model metadata when switching from a cached session', () => {
     let cache!: Cache
+
     const { rerender } = render(
       <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
     )
@@ -189,6 +191,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     setCurrentFastMode(true)
 
     let cache!: Cache
+
     const { rerender } = render(
       <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
     )

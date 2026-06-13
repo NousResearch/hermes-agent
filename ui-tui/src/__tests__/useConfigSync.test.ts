@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
@@ -9,7 +9,6 @@ import {
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
-import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {

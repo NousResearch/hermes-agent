@@ -79,9 +79,22 @@ export function useSessionStateCache({
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
+  // Track the last `busy`/`needsInput` values we saw at flush time so
+  // `isCriticalTransition` fires only on the *edge* (the flag flipping),
+  // not on every periodic `session.info` heartbeat that arrives while the
+  // session is in steady-state `needsInput` (e.g. blocked on a clarify
+  // prompt). Without this, every heartbeat bypasses RAF coalescing and
+  // re-renders the thread — jerking scroll and resetting the textarea
+  // the user is typing into.
+  const lastFlushedBusyRef = useRef<boolean | undefined>(undefined)
+  const lastFlushedNeedsInputRef = useRef<boolean | undefined>(undefined)
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
+    // Reset edge tracking on session switch so the first flush on the new
+    // session is treated as critical.
+    lastFlushedBusyRef.current = undefined
+    lastFlushedNeedsInputRef.current = undefined
   }, [activeSessionId])
 
   useEffect(() => {
@@ -156,6 +169,12 @@ export function useSessionStateCache({
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).
     setTurnStartedAt(pending.state.turnStartedAt)
+
+    // Record what we just flushed so the next `isCriticalTransition` check
+    // can distinguish edges (busy/needsInput flipping) from steady-state
+    // heartbeats that carry the same flags.
+    lastFlushedBusyRef.current = pending.state.busy
+    lastFlushedNeedsInputRef.current = pending.state.needsInput
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
@@ -186,7 +205,16 @@ export function useSessionStateCache({
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
       // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !state.busy || state.needsInput
+      //
+      // But only the *edge* is critical — the first flush where `busy`
+      // flipped to false or `needsInput` flipped to true. Once the session
+      // is in steady-state `needsInput` (e.g. blocked on a clarify prompt),
+      // periodic heartbeats would otherwise bypass the RAF coalescing and
+      // re-render the thread on every tick — jerking the scroll position
+      // and resetting the clarify textarea while the user is typing.
+      const isCriticalTransition =
+        (!state.busy || state.needsInput) &&
+        (lastFlushedBusyRef.current !== state.busy || lastFlushedNeedsInputRef.current !== state.needsInput)
 
       if (isCriticalTransition) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {

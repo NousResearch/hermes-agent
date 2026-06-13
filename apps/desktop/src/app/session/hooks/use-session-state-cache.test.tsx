@@ -80,18 +80,12 @@ describe('useSessionStateCache — per-session turn timer', () => {
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
     let cache!: Cache
     // Active session is "fg-runtime"; the turn starts on the BACKGROUND session.
-    render(
-      <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
-    )
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
 
     const startedAt = 1_700_000_000_000
 
     act(() => {
-      cache.updateSessionState(
-        'bg-runtime',
-        state => ({ ...state, busy: true, turnStartedAt: startedAt }),
-        'bg-stored'
-      )
+      cache.updateSessionState('bg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'bg-stored')
     })
 
     // The background session's own cache entry holds the clock...
@@ -110,11 +104,7 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // A turn on the ACTIVE session stages into the view; the flush mirrors its
     // turnStartedAt into the global atom the statusbar reads.
     act(() => {
-      cache.updateSessionState(
-        'fg-runtime',
-        state => ({ ...state, busy: true, turnStartedAt: startedAt }),
-        'fg-stored'
-      )
+      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
     })
 
     expect($turnStartedAt.get()).toBe(startedAt)
@@ -211,5 +201,41 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('does not synchronously flush steady-state needsInput heartbeats (clarify scroll-jitter fix)', () => {
+    // The first needsInput=true update is a critical *edge* — it must flush
+    // synchronously so the clarify UI appears immediately. But a second
+    // heartbeat that arrives with the same busy/needsInput flags is
+    // steady-state, not an edge. It must defer to the RAF batch path so
+    // it doesn't re-render the thread and jerk the scroll / reset the
+    // textarea the user is typing into.
+    let cache!: Cache
+
+    // Don't fire rAF synchronously — we want to observe whether it's called.
+    const rafSpy = vi.fn().mockReturnValue(42)
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(rafSpy)
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
+
+    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
+
+    rafSpy.mockClear()
+
+    // First update: needsInput flips to true → critical edge → synchronous flush.
+    act(() => {
+      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, needsInput: true }), 'fg-stored')
+    })
+
+    // Critical edge flushes synchronously — rAF must NOT have been called
+    // (the sync path cancels any pending rAF and flushes directly).
+    expect(rafSpy).not.toHaveBeenCalled()
+
+    // Second update: same busy=true, needsInput=true → steady-state, not an edge.
+    act(() => {
+      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, needsInput: true }), 'fg-stored')
+    })
+
+    // Non-critical flush defers to the RAF batch path.
+    expect(rafSpy).toHaveBeenCalled()
   })
 })

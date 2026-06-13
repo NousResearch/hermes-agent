@@ -13,6 +13,8 @@ import inspect
 import json
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 import html as _html
 import re
@@ -3764,6 +3766,94 @@ class TelegramAdapter(BasePlatformAdapter):
                 # button click.
                 if count and query_chat_id is not None:
                     self.resume_typing_for_chat(str(query_chat_id))
+            return
+
+        # --- AI Ops / Paperclip approval callbacks (aiops:approve|deny:JPP-123) ---
+        if data.startswith("aiops:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid AI Ops approval data.")
+                return
+
+            choice = parts[1].strip().lower()
+            issue = parts[2].strip().upper()
+            if choice not in {"approve", "deny"}:
+                await query.answer(text="Invalid AI Ops approval data.")
+                return
+            if not re.match(r"^JPP-[A-Z0-9._-]+$", issue):
+                await query.answer(text="Invalid AI Ops approval issue.")
+                return
+            normalized_callback = f"aiops:{choice}:{issue}"
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to approve AI Ops gates.")
+                return
+
+            await query.answer(text="Registrando decisão…")
+            bridge = os.getenv(
+                "AIOPS_APPROVAL_BRIDGE",
+                "/Users/imac/.hermes/scripts/aiops-approval-bridge.py",
+            )
+            cmd = [sys.executable, bridge, "route", "--text", normalized_callback, "--json"]
+            bridge_failed = False
+            try:
+                completed = await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    text=True,
+                    capture_output=True,
+                    timeout=90,
+                    check=False,
+                )
+            except Exception as exc:
+                bridge_failed = True
+                completed = None
+                logger.error("[%s] AI Ops approval callback failed: %s", self.name, exc, exc_info=True)
+
+            if completed is not None and completed.returncode != 0:
+                bridge_failed = True
+                logger.warning(
+                    "[%s] AI Ops approval bridge returned %s for %s",
+                    self.name,
+                    completed.returncode,
+                    issue,
+                )
+
+            if bridge_failed:
+                try:
+                    await query.edit_message_text(
+                        text=(
+                            f"{_html.escape(getattr(query.message, 'text', '') or '')}\n\n"
+                            "<b>AI Ops:</b> ⚠️ Falha transitória ao registrar a decisão localmente. "
+                            "Tente novamente pelos botões."
+                        ),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=getattr(query.message, "reply_markup", None),
+                    )
+                except Exception:
+                    pass
+                return
+
+            label = "✅ Aprovado" if choice == "approve" else "❌ Negado"
+            user_display = getattr(query.from_user, "first_name", "JP")
+            try:
+                await query.edit_message_text(
+                    text=(
+                        f"{_html.escape(getattr(query.message, 'text', '') or '')}\n\n"
+                        f"<b>{_html.escape(str(user_display))}:</b> {_html.escape(label)} {issue}"
+                    ),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---

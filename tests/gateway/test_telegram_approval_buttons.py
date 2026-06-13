@@ -450,6 +450,188 @@ class TestTelegramApprovalCallback:
         assert "already been resolved" in query.answer.call_args[1]["text"]
 
     @pytest.mark.asyncio
+    async def test_aiops_approval_callback_routes_to_bridge(self):
+        """AI Ops approval buttons should reuse the text approval bridge route."""
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "aiops:approve:JPP-224"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "🔐 Aprova push + PR JPP-224."
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "JP_Test"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        completed = SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.subprocess.run", return_value=completed) as mock_run:
+                await adapter._handle_callback_query(update, context)
+
+        mock_run.assert_called_once()
+        args = mock_run.call_args.args[0]
+        assert args[-4:] == ["route", "--text", "aiops:approve:JPP-224", "--json"]
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_called_once()
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert edit_kwargs["reply_markup"] is None
+        assert "JP_Test" in edit_kwargs["text"]
+        assert "Aprovado JPP-224" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_aiops_approval_callback_normalizes_callback_before_bridge(self):
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "aiops: APPROVE : jpp-224 "
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "🔐 Aprova push + PR JPP-224."
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "JP_Test"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        completed = SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.subprocess.run", return_value=completed) as mock_run:
+                await adapter._handle_callback_query(update, context)
+
+        args = mock_run.call_args.args[0]
+        assert args[-4:] == ["route", "--text", "aiops:approve:JPP-224", "--json"]
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert edit_kwargs["reply_markup"] is None
+        assert "Aprovado JPP-224" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_aiops_approval_callback_rejects_invalid_issue_before_bridge(self):
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "aiops:approve:../../bad"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.subprocess.run") as mock_run:
+                await adapter._handle_callback_query(update, context)
+
+        mock_run.assert_not_called()
+        query.answer.assert_called_once()
+        assert "invalid" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_aiops_approval_callback_preserves_buttons_on_bridge_nonzero(self):
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "aiops:deny:JPP-224"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "🔐 Gate JPP-224."
+        query.message.reply_markup = "original-buttons"
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "JP_Test"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        completed = SimpleNamespace(returncode=2, stdout="", stderr="temporary failure")
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.subprocess.run", return_value=completed):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert edit_kwargs["reply_markup"] == "original-buttons"
+        assert "Falha transitória" in edit_kwargs["text"]
+        assert "Tente novamente" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_aiops_approval_callback_preserves_buttons_on_bridge_exception(self):
+        adapter = _make_adapter()
+
+        query = AsyncMock()
+        query.data = "aiops:approve:JPP-224"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "🔐 Gate JPP-224."
+        query.message.reply_markup = "original-buttons"
+        query.from_user = MagicMock()
+        query.from_user.id = "12345"
+        query.from_user.first_name = "JP_Test"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.subprocess.run", side_effect=RuntimeError("boom")):
+                await adapter._handle_callback_query(update, context)
+
+        edit_kwargs = query.edit_message_text.call_args[1]
+        assert edit_kwargs["reply_markup"] == "original-buttons"
+        assert "Falha transitória" in edit_kwargs["text"]
+        assert "Tente novamente" in edit_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_aiops_approval_callback_rejects_unauthorized_user(self):
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "aiops:deny:JPP-224"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch("gateway.platforms.telegram.subprocess.run") as mock_run:
+            await adapter._handle_callback_query(update, context)
+
+        mock_run.assert_not_called()
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert runner.last_source is not None
+        assert runner.last_source.platform == Platform.TELEGRAM
+        assert runner.last_source.user_id == "222"
+
+    @pytest.mark.asyncio
     async def test_model_picker_callback_not_affected(self):
         """Ensure model picker callbacks still route correctly."""
         adapter = _make_adapter()

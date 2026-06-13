@@ -44,15 +44,25 @@ def clarify_tool(
 
     question = question.strip()
 
-    # Validate and trim choices
+    # Validate and trim choices – accept both list and JSON‑string representations
     if choices is not None:
+        # Allow callers (LLMs) to supply a JSON‑encoded string instead of a list
+        if isinstance(choices, str):
+            try:
+                parsed = json.loads(choices)
+            except Exception:
+                return tool_error("choices string must be valid JSON representing a list of strings.")
+            choices = parsed
+
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
+
+        # Normalise and prune empty items
         choices = [str(c).strip() for c in choices if str(c).strip()]
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
-            choices = None  # empty list → open-ended
+            choices = None  # empty list → open‑ended
 
     if callback is None:
         return json.dumps(

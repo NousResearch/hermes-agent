@@ -5928,11 +5928,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        # Reasoning effort changes are session-scoped by default. A fresh
+        # session returns to the persisted default unless the user explicitly
+        # used `/reasoning <level> --global`.
+        self.reasoning_config = _parse_reasoning_config(
+            os.getenv("HERMES_REASONING_EFFORT", "")
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
         _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
+            self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0

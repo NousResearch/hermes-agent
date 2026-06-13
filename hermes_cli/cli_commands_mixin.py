@@ -2033,10 +2033,11 @@ class CLICommandsMixin:
         """Handle /reasoning — manage effort level and display toggle.
 
         Usage:
-            /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
-            /reasoning show|on      Show model thinking/reasoning in output
-            /reasoning hide|off     Hide model thinking/reasoning from output
+            /reasoning                    Show current effort level and display state
+            /reasoning <level>            Set reasoning effort for this session only
+            /reasoning <level> --global   Persist reasoning effort to config.yaml
+            /reasoning show|on            Show model thinking/reasoning in output
+            /reasoning hide|off           Hide model thinking/reasoning from output
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2053,10 +2054,14 @@ class CLICommandsMixin:
             display_state = "on ✓" if self.show_reasoning else "off"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide> [--global]{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        raw_arg = parts[1].strip()
+        tokens = raw_arg.split()
+        persist_global = any(t.lower() in {"--global", "--save"} for t in tokens)
+        tokens = [t for t in tokens if t.lower() not in {"--global", "--save"}]
+        arg = " ".join(tokens).strip().lower()
 
         # Display toggle
         if arg in {"show", "on"}:
@@ -2086,10 +2091,20 @@ class CLICommandsMixin:
         self.reasoning_config = parsed
         self.agent = None  # Force agent re-init with new reasoning config
 
-        if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+        if persist_global:
+            if save_config_value("agent.reasoning_effort", arg):
+                try:
+                    import cli as _cli
+                    if isinstance(getattr(_cli, "CLI_CONFIG", None), dict):
+                        _cli.CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = arg
+                except Exception:
+                    pass
+                _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+            else:
+                _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only; config save failed){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+            _cprint(f"  {_DIM}  Use /reasoning {arg} --global to make it the default for new sessions.{_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.

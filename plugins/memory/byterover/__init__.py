@@ -94,7 +94,6 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
         result = subprocess.run(
             cmd, capture_output=True, text=True,
             timeout=timeout, cwd=effective_cwd, env=env,
-            stdin=subprocess.DEVNULL,
         )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()

@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner

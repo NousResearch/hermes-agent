@@ -324,24 +324,11 @@ function InlineContent({
                 <HighlightedText text={node.content} terms={highlightTerms} />
               </em>
             );
-          case "link": {
-            // Security: only render http(s)/mailto links. Other schemes
-            // (javascript:, data:, vbscript:) are dropped to plain text so a
-            // crafted link in agent/message content can't execute on click.
-            const href = node.href.trim();
-            if (!/^(https?:|mailto:)/i.test(href)) {
-              return (
-                <HighlightedText
-                  key={i}
-                  text={node.text}
-                  terms={highlightTerms}
-                />
-              );
-            }
+          case "link":
             return (
               <a
                 key={i}
-                href={href}
+                href={node.href}
                 target="_blank"
                 rel="noreferrer"
                 className="text-primary underline underline-offset-2 decoration-primary/30 hover:decoration-primary/60 transition-colors"
@@ -349,7 +336,6 @@ function InlineContent({
                 {node.text}
               </a>
             );
-          }
           case "br":
             return <br key={i} />;
         }

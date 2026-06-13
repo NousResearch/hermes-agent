@@ -1,5 +1,6 @@
 """Tests for Xiaomi MiMo provider support."""
 
+import os
 
 import pytest
 
@@ -8,6 +9,7 @@ from hermes_cli.auth import (
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
+    AuthError,
 )
 
 
@@ -80,7 +82,7 @@ class TestXiaomiAutoDetection:
         for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                      "DEEPSEEK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
                      "DASHSCOPE_API_KEY", "XAI_API_KEY", "KIMI_API_KEY",
-                     "MINIMAX_API_KEY", "KILOCODE_API_KEY",
+                     "MINIMAX_API_KEY", "AI_GATEWAY_API_KEY", "KILOCODE_API_KEY",
                      "HF_TOKEN", "GLM_API_KEY", "COPILOT_GITHUB_TOKEN",
                      "GH_TOKEN", "GITHUB_TOKEN", "MINIMAX_CN_API_KEY",
                      "TOKENHUB_API_KEY", "ARCEEAI_API_KEY"):

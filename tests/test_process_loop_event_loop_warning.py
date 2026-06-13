@@ -8,6 +8,7 @@ running loop.
 """
 
 import asyncio
+import sys
 import threading
 import warnings
 

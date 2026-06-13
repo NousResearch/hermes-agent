@@ -4,7 +4,8 @@ Verifies that _align_boundary_backward correctly handles tool result groups
 so that parallel tool calls are never split during compression.
 """
 
-from unittest.mock import patch
+import pytest
+from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import ContextCompressor
 

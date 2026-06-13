@@ -6,7 +6,10 @@ httpx tries to encode the Authorization header as ASCII.
 """
 
 import os
+import sys
+import tempfile
 
+import pytest
 
 from hermes_cli.config import _check_non_ascii_credential
 

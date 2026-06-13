@@ -1,6 +1,7 @@
 """Tests for composite toolset expansion in delegate_task intersection."""
 
 import unittest
+from unittest.mock import patch
 
 from tools.delegate_tool import _expand_parent_toolsets
 

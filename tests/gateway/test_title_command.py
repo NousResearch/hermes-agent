@@ -4,8 +4,9 @@ Tests the _handle_title_command handler (set/show session titles)
 across all gateway messenger platforms.
 """
 
+import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

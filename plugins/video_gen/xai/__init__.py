@@ -11,7 +11,7 @@ Originally salvaged from PR #10600 by @Jaaneek; reshaped into the
 generate-only surface.
 
 Authentication: xAI Grok OAuth tokens (preferred — billed against the
-user's SuperGrok or X Premium+ subscription) or ``XAI_API_KEY``. Both routes are
+user's SuperGrok subscription) or ``XAI_API_KEY``. Both routes are
 resolved through ``tools.xai_http.resolve_xai_http_credentials`` so a
 single login covers chat + TTS + image gen + video gen + transcription.
 Output is an HTTPS URL from xAI's CDN; the gateway downloads and
@@ -21,12 +21,9 @@ delivers it.
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
-import mimetypes
 import os
 import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -45,9 +42,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
-DEFAULT_TEXT_TO_VIDEO_MODEL = "grok-imagine-video"
-DEFAULT_IMAGE_TO_VIDEO_MODEL = "grok-imagine-video-1.5-preview"
-DEFAULT_MODEL = DEFAULT_TEXT_TO_VIDEO_MODEL
+DEFAULT_MODEL = "grok-imagine-video"
 DEFAULT_DURATION = 8
 DEFAULT_ASPECT_RATIO = "16:9"
 DEFAULT_RESOLUTION = "720p"
@@ -63,17 +58,9 @@ _MODELS: Dict[str, Dict[str, Any]] = {
     "grok-imagine-video": {
         "display": "Grok Imagine Video",
         "speed": "~60-240s",
-        "strengths": "Text-to-video; legacy image-to-video fallback.",
-        "price": "see https://docs.x.ai/developers/models/grok-imagine-video",
+        "strengths": "Text-to-video + image-to-video; up to 7 reference images for style/character.",
+        "price": "see https://docs.x.ai/docs/models",
         "modalities": ["text", "image"],
-    },
-    "grok-imagine-video-1.5-preview": {
-        "display": "Grok Imagine Video 1.5 Preview",
-        "speed": "~60-240s",
-        "strengths": "Latest xAI image-to-video model.",
-        "price": "see https://docs.x.ai/developers/models/grok-imagine-video-1.5-preview",
-        "modalities": ["image"],
-        "aliases": ["grok-imagine-video-1.5-2026-05-30"],
     },
 }
 
@@ -124,31 +111,10 @@ def _xai_headers(api_key: str) -> Dict[str, str]:
     }
 
 
-def _image_ref_to_xai_url(value: str) -> str:
-    """Return a URL/data URI accepted by xAI for image inputs."""
-    ref = (value or "").strip()
-    if not ref:
-        return ""
-    lower = ref.lower()
-    if lower.startswith(("http://", "https://", "data:image/")):
-        return ref
-
-    path = Path(ref).expanduser()
-    if not path.is_file():
-        return ref
-
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    if not mime.startswith("image/"):
-        return ref
-
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{encoded}"
-
-
 def _normalize_reference_images(reference_image_urls: Optional[List[str]]):
     refs = []
     for url in reference_image_urls or []:
-        normalized = _image_ref_to_xai_url(url)
+        normalized = (url or "").strip()
         if normalized:
             refs.append({"url": normalized})
     return refs or None
@@ -163,28 +129,6 @@ def _clamp_duration(duration: Optional[int], has_reference_images: bool) -> int:
     if has_reference_images and value > 10:
         value = 10
     return value
-
-
-def _resolve_model_for_modality(
-    model: Optional[str],
-    *,
-    modality: str,
-    explicit_model: bool,
-) -> str:
-    """Select xAI's text/video model without treating config as a prompt override.
-
-    ``grok-imagine-video-1.5-preview`` currently rejects text-only video
-    generation, but it is the desired image-to-video backend. Explicit tool
-    ``model=`` still wins for users who intentionally request another model.
-    """
-    requested = (model or "").strip()
-    if explicit_model and requested:
-        return requested
-    if modality == "image":
-        return DEFAULT_IMAGE_TO_VIDEO_MODEL
-    if requested == DEFAULT_IMAGE_TO_VIDEO_MODEL:
-        return DEFAULT_TEXT_TO_VIDEO_MODEL
-    return requested or DEFAULT_TEXT_TO_VIDEO_MODEL
 
 
 async def _submit(
@@ -248,7 +192,7 @@ async def _poll(
 
 
 class XAIVideoGenProvider(VideoGenProvider):
-    """xAI Grok Imagine video backend (text-to-video + image-to-video)."""
+    """xAI grok-imagine-video backend (text-to-video + image-to-video)."""
 
     @property
     def name(self) -> str:
@@ -272,13 +216,13 @@ class XAIVideoGenProvider(VideoGenProvider):
         # Auth resolution lives entirely in the shared ``xai_grok`` post_setup
         # hook (``hermes_cli/tools_config.py``) so the picker doesn't blindly
         # prompt for an API key when the user is already signed in via xAI
-        # Grok OAuth (SuperGrok / Premium+) — TTS / image gen / video gen
+        # Grok OAuth (SuperGrok Subscription) — TTS / image gen / video gen
         # all share the same credential resolver. The hook offers an
         # OAuth-vs-API-key choice when neither is configured.
         return {
             "name": "xAI Grok Imagine",
             "badge": "paid",
-            "tag": "grok-imagine-video for text-to-video; grok-imagine-video-1.5-preview for image-to-video; uses xAI Grok OAuth or XAI_API_KEY",
+            "tag": "grok-imagine-video — text-to-video & image-to-video; uses xAI Grok OAuth or XAI_API_KEY",
             "env_vars": [],
             "post_setup": "xai_grok",
         }
@@ -316,7 +260,6 @@ class XAIVideoGenProvider(VideoGenProvider):
                 return loop.run_until_complete(self._generate_async(
                     prompt=prompt,
                     model=model,
-                    explicit_model=bool(kwargs.get("_model_override_explicit")),
                     image_url=image_url,
                     reference_image_urls=reference_image_urls,
                     duration=duration,
@@ -341,7 +284,6 @@ class XAIVideoGenProvider(VideoGenProvider):
         *,
         prompt: str,
         model: Optional[str],
-        explicit_model: bool,
         image_url: Optional[str],
         reference_image_urls: Optional[List[str]],
         duration: Optional[int],
@@ -353,7 +295,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             return error_response(
                 error=(
                     "No xAI credentials found. Sign in via `hermes auth add xai-oauth` "
-                    "(SuperGrok / Premium+) or set XAI_API_KEY from "
+                    "(SuperGrok subscription) or set XAI_API_KEY from "
                     "https://console.x.ai/."
                 ),
                 error_type="auth_required",
@@ -361,15 +303,10 @@ class XAIVideoGenProvider(VideoGenProvider):
             )
 
         prompt = (prompt or "").strip()
-        image_url_norm = _image_ref_to_xai_url(image_url or "") or None
+        image_url_norm = (image_url or "").strip() or None
         normalized_aspect_ratio = (aspect_ratio or DEFAULT_ASPECT_RATIO).strip()
         normalized_resolution = (resolution or DEFAULT_RESOLUTION).strip().lower()
         modality_used = "image" if image_url_norm else "text"
-        resolved_model = _resolve_model_for_modality(
-            model,
-            modality=modality_used,
-            explicit_model=explicit_model,
-        )
 
         if not prompt:
             return error_response(
@@ -403,7 +340,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             normalized_resolution = DEFAULT_RESOLUTION
 
         payload: Dict[str, Any] = {
-            "model": resolved_model,
+            "model": model or DEFAULT_MODEL,
             "prompt": prompt,
             "duration": clamped_duration,
             "aspect_ratio": normalized_aspect_ratio,
@@ -429,7 +366,7 @@ class XAIVideoGenProvider(VideoGenProvider):
                     error=f"xAI submit failed ({exc.response.status_code}): {detail or exc}",
                     error_type="api_error",
                     provider="xai",
-                    model=resolved_model,
+                    model=model or DEFAULT_MODEL,
                     prompt=prompt,
                 )
 
@@ -451,7 +388,7 @@ class XAIVideoGenProvider(VideoGenProvider):
                     error="xAI video generation completed without a video URL",
                     error_type="empty_response",
                     provider="xai",
-                    model=body.get("model") or resolved_model,
+                    model=body.get("model") or model or DEFAULT_MODEL,
                     prompt=prompt,
                 )
             extra: Dict[str, Any] = {
@@ -462,7 +399,7 @@ class XAIVideoGenProvider(VideoGenProvider):
                 extra["usage"] = body["usage"]
             return success_response(
                 video=url,
-                model=body.get("model") or resolved_model,
+                model=body.get("model") or model or DEFAULT_MODEL,
                 prompt=prompt,
                 modality=modality_used,
                 aspect_ratio=normalized_aspect_ratio,
@@ -476,7 +413,7 @@ class XAIVideoGenProvider(VideoGenProvider):
                 error=f"Timed out waiting for video generation after {DEFAULT_TIMEOUT_SECONDS}s",
                 error_type="timeout",
                 provider="xai",
-                model=resolved_model,
+                model=model or DEFAULT_MODEL,
                 prompt=prompt,
             )
 
@@ -489,7 +426,7 @@ class XAIVideoGenProvider(VideoGenProvider):
             error=message,
             error_type=f"xai_{status}",
             provider="xai",
-            model=resolved_model,
+            model=model or DEFAULT_MODEL,
             prompt=prompt,
         )
 

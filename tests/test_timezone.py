@@ -14,7 +14,7 @@ import logging
 import sys
 import pytest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 
 import hermes_time

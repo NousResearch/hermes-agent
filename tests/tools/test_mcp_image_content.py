@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import base64
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import pytest
 
 
 def _png_bytes():

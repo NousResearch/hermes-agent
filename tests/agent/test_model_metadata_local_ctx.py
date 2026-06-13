@@ -6,10 +6,12 @@ All tests use synthetic inputs — no filesystem or live server required.
 
 import sys
 import os
+import json
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +562,7 @@ class TestGetModelContextLengthLocalFallback:
 
     def test_non_local_endpoint_does_not_query_local_server(self):
         """For non-local endpoints, _query_local_context_length is not called."""
-        from agent.model_metadata import get_model_context_length
+        from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \

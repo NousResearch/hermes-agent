@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Optional
 
 
 def register_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -247,13 +248,19 @@ def _cmd_restart() -> int:
 
 
 def _cmd_which(server_id: str) -> int:
-    from agent.lsp.install import INSTALL_RECIPES, _existing_binary
+    from agent.lsp.install import INSTALL_RECIPES, hermes_lsp_bin_dir
+    import os
+    import shutil as _shutil
 
     recipe = INSTALL_RECIPES.get(server_id)
     bin_name = (recipe or {}).get("bin", server_id)
-    resolved = _existing_binary(bin_name)
-    if resolved:
-        sys.stdout.write(resolved + "\n")
+    staged = hermes_lsp_bin_dir() / bin_name
+    if staged.exists():
+        sys.stdout.write(str(staged) + "\n")
+        return 0
+    on_path = _shutil.which(bin_name)
+    if on_path:
+        sys.stdout.write(on_path + "\n")
         return 0
     sys.stderr.write(f"{server_id}: not installed\n")
     return 1
@@ -287,9 +294,11 @@ def _backend_warnings() -> list:
     suggestion across common platforms.
     """
     import shutil as _shutil
-    from agent.lsp.install import _existing_binary
+    from agent.lsp.install import hermes_lsp_bin_dir
     notes: list = []
-    bash_installed = _existing_binary("bash-language-server") is not None
+    bash_installed = _shutil.which("bash-language-server") is not None or (
+        (hermes_lsp_bin_dir() / "bash-language-server").exists()
+    )
     if bash_installed and _shutil.which("shellcheck") is None:
         notes.append(
             "bash-language-server is installed but shellcheck is missing — "

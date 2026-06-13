@@ -2,7 +2,10 @@
 daemons whose Python parent exited without cleaning up."""
 
 import os
-from unittest.mock import patch
+import signal
+import textwrap
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -69,7 +72,7 @@ class TestReapOrphanedBrowserSessions:
         assert not d.exists()
 
     def test_orphaned_alive_daemon_is_killed(self, fake_tmpdir):
-        """Alive daemon not tracked by _active_sessions is terminated (legacy path).
+        """Alive daemon not tracked by _active_sessions gets SIGTERM (legacy path).
 
         No owner_pid file => falls back to tracked_names check.
         """
@@ -79,17 +82,18 @@ class TestReapOrphanedBrowserSessions:
 
         kill_calls = []
 
-        def mock_terminate(pid):
-            kill_calls.append(pid)
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
+            # Don't actually kill anything
 
         # Post-#21561 the liveness probe goes through
         # ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
         # so it's safe on Windows — ``os.kill(pid, 0)`` is bpo-14484).
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        assert 12345 in kill_calls
+        assert (12345, signal.SIGTERM) in kill_calls
 
     def test_tracked_session_is_not_reaped(self, fake_tmpdir):
         """Sessions tracked in _active_sessions are left alone (legacy path)."""
@@ -104,13 +108,13 @@ class TestReapOrphanedBrowserSessions:
 
         kill_calls = []
 
-        def mock_terminate(pid):
-            kill_calls.append(pid)
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
 
-        with patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+        with patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        # Should NOT have tried to terminate anything
+        # Should NOT have tried to kill anything
         assert len(kill_calls) == 0
         # Dir should still exist
         assert d.exists()
@@ -122,24 +126,23 @@ class TestReapOrphanedBrowserSessions:
         ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
         because ``os.kill(pid, 0)`` is a footgun on Windows — bpo-14484).
         With no owner_pid file and no tracked-name entry, the reaper
-        terminates the daemon (and its process tree) and removes its socket
-        dir regardless of whether termination succeeded (best-effort
-        semantics).
+        SIGTERMs the daemon and removes its socket dir regardless of
+        whether SIGTERM succeeded (best-effort semantics).
         """
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_perm1234567", pid=12345)
 
-        terminate_calls = []
+        sigterm_calls = []
 
-        def mock_terminate(pid):
-            terminate_calls.append(pid)
+        def mock_kill(pid, sig):
+            sigterm_calls.append((pid, sig))
 
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        assert 12345 in terminate_calls
+        assert (12345, signal.SIGTERM) in sigterm_calls
         assert not d.exists()
 
     def test_cdp_sessions_are_also_reaped(self, fake_tmpdir):
@@ -200,15 +203,15 @@ class TestOwnerPidCrossProcess:
 
         kill_calls = []
 
-        def mock_terminate(pid):
-            kill_calls.append(pid)
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
 
         # Owner alive → reaper skips without ever probing the daemon.
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        assert 12345 not in kill_calls
+        assert (12345, signal.SIGTERM) not in kill_calls
         assert d.exists()
 
     def test_dead_owner_triggers_reap(self, fake_tmpdir):
@@ -222,17 +225,17 @@ class TestOwnerPidCrossProcess:
 
         kill_calls = []
 
-        def mock_terminate(pid):
-            kill_calls.append(pid)
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
 
         # Owner 999999999 dead, daemon 12345 alive.
         pid_alive = {999999999: False, 12345: True}
         with patch("gateway.status._pid_exists",
                    side_effect=lambda pid: pid_alive.get(int(pid), False)), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        assert 12345 in kill_calls
+        assert (12345, signal.SIGTERM) in kill_calls
         assert not d.exists()
 
     def test_corrupt_owner_pid_falls_back_to_legacy(self, fake_tmpdir):
@@ -250,15 +253,15 @@ class TestOwnerPidCrossProcess:
 
         kill_calls = []
 
-        def mock_terminate(pid):
-            kill_calls.append(pid)
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
 
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
         # Legacy path took over → tracked → not reaped
-        assert 12345 not in kill_calls
+        assert (12345, signal.SIGTERM) not in kill_calls
         assert d.exists()
 
     def test_owner_pid_permission_error_treated_as_alive(self, fake_tmpdir):
@@ -277,16 +280,16 @@ class TestOwnerPidCrossProcess:
 
         kill_calls = []
 
-        def mock_terminate(pid):
-            kill_calls.append(pid)
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
 
         # Owner 22222 reported alive (PermissionError collapses to True
-        # inside _pid_exists). Daemon never probed, never terminated.
+        # inside _pid_exists). Daemon never probed, never SIGTERMed.
         with patch("gateway.status._pid_exists", return_value=True), \
-             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=mock_terminate):
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        assert 12345 not in kill_calls
+        assert (12345, signal.SIGTERM) not in kill_calls
         assert d.exists()
 
     def test_write_owner_pid_creates_file_with_current_pid(

@@ -41,8 +41,7 @@ hermes acp --bootstrap      # print install snippet for an ACP-capable IDE
 
 ```
 prompt.submit           prompt.background       session.steer
-session.create          session.list            session.active_list
-session.activate        session.close           session.interrupt
+session.create          session.list            session.interrupt
 session.history         session.compress        session.branch
 session.title           session.usage           session.status
 clarify.respond         sudo.respond            secret.respond
@@ -52,8 +51,6 @@ reload.mcp              reload.env              process.stop
 delegation.status       subagent.interrupt      spawn_tree.save / list / load
 terminal.resize         clipboard.paste         image.attach
 ```
-
-`session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
 
 ### Events streamed back
 

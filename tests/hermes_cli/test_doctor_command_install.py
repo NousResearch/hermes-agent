@@ -1,5 +1,6 @@
 """Tests for the Command Installation check in hermes doctor."""
 
+import os
 import sys
 import types
 from argparse import Namespace

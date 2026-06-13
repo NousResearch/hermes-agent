@@ -1,5 +1,7 @@
 """Tests for gateway/hooks.py — event hook system."""
 
+import asyncio
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest

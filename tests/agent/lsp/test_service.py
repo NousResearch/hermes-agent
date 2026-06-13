@@ -7,6 +7,7 @@ on.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from agent.lsp.servers import (
     ServerContext,
     ServerDef,
     SpawnSpec,
+    find_server_for_file,
 )
 
 

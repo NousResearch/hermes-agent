@@ -14,8 +14,7 @@ def test_prompt_strips_bracketed_paste_markers(monkeypatch):
 
 def test_password_prompt_strips_bracketed_paste_markers(monkeypatch):
     monkeypatch.setattr(
-        setup_mod,
-        "masked_secret_prompt",
+        "getpass.getpass",
         lambda _prompt="": "\x1b[200~secret-token\x1b[201~",
     )
 

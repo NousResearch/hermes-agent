@@ -1,5 +1,6 @@
 """Tests for tool token estimation and curses_ui status_fn support."""
 
+from unittest.mock import patch
 
 import pytest
 
@@ -19,7 +20,7 @@ _needs_tiktoken = pytest.mark.skipif(not _has_tiktoken, reason="tiktoken not ins
 @_needs_tiktoken
 def test_estimate_tool_tokens_returns_positive_counts():
     """_estimate_tool_tokens should return a non-empty dict with positive values."""
-    from hermes_cli.tools_config import _estimate_tool_tokens
+    from hermes_cli.tools_config import _estimate_tool_tokens, _tool_token_cache
 
     # Clear cache to force fresh computation
     import hermes_cli.tools_config as tc

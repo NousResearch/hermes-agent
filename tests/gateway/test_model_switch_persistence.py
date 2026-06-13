@@ -15,6 +15,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key

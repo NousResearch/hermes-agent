@@ -36,7 +36,7 @@ The REST Admin API is legacy since 2024-04 and only receives security fixes. **U
 1. In Shopify admin: **Settings → Apps and sales channels → Develop apps → Create an app**.
 2. Click **Configure Admin API scopes**, select what you need (examples below), save.
 3. **Install app** → the Admin API access token appears ONCE. Copy it immediately — Shopify will never show it again. Tokens start with `shpat_`.
-4. Save to `${HERMES_HOME:-~/.hermes}/.env`:
+4. Save to `~/.hermes/.env`:
    ```
    SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxx
    SHOPIFY_STORE_DOMAIN=my-store.myshopify.com

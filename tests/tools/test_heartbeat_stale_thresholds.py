@@ -1,5 +1,6 @@
 """Tests for delegate heartbeat stale threshold configuration."""
 
+import pytest
 
 
 class TestHeartbeatStaleThresholds:

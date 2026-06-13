@@ -2,6 +2,7 @@
 
 Updated for the mautrix-python SDK (no more matrix-nio / nio imports).
 """
+import io
 import os
 import tempfile
 import types

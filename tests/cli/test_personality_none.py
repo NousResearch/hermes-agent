@@ -1,6 +1,6 @@
 """Tests for /personality none — clearing personality overlay."""
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, mock_open
 import yaml
 
 

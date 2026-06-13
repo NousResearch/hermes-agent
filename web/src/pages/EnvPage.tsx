@@ -17,9 +17,9 @@ import {
 import { api } from "@/lib/api";
 import type { EnvVarInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { Toast } from "@/components/Toast";
+import { useConfirmDelete } from "@/hooks/useConfirmDelete";
+import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
@@ -30,10 +30,10 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@nous-research/ui/ui/components/card";
+} from "@/components/ui/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -133,12 +133,12 @@ function EnvVarRow({
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 py-1.5 min-w-0 overflow-hidden text-text-secondary hover:text-foreground transition-colors">
+      <div className="flex items-center justify-between gap-3 py-1.5 min-w-0 overflow-hidden opacity-50 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono-ui text-xs">
+          <span className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
           </span>
-          <span className="text-xs text-text-tertiary truncate hidden sm:block">
+          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">
             {info.description}
           </span>
         </div>
@@ -148,7 +148,7 @@ function EnvVarRow({
               href={info.url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
             >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
@@ -169,12 +169,12 @@ function EnvVarRow({
   // Non-compact unset row
   if (!info.is_set && !isEditing) {
     return (
-      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden text-text-secondary hover:text-foreground transition-colors">
+      <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden opacity-60 hover:opacity-100 transition-opacity">
         <div className="flex items-center gap-3 min-w-0">
-          <Label className="font-mono-ui text-xs">
+          <Label className="font-mono-ui text-[0.7rem] text-muted-foreground">
             {varKey}
           </Label>
-          <span className="text-xs text-text-tertiary truncate hidden sm:block">
+          <span className="text-[0.65rem] text-muted-foreground/60 truncate hidden sm:block">
             {info.description}
           </span>
         </div>
@@ -184,7 +184,7 @@ function EnvVarRow({
               href={info.url}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
             >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
@@ -207,7 +207,7 @@ function EnvVarRow({
     <div className="grid gap-2 border border-border p-4 min-w-0 overflow-hidden">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
-          <Label className="font-mono-ui text-xs">{varKey}</Label>
+          <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
           <Badge tone={info.is_set ? "success" : "outline"}>
             {info.is_set ? t.common.set : t.env.notSet}
           </Badge>
@@ -217,7 +217,7 @@ function EnvVarRow({
             href={info.url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+            className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
           >
             {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
           </a>
@@ -232,7 +232,7 @@ function EnvVarRow({
             <Badge
               key={tool}
               tone="secondary"
-              className="text-xs py-0 px-1.5"
+              className="text-[0.6rem] py-0 px-1.5"
             >
               {tool}
             </Badge>
@@ -396,7 +396,7 @@ function ProviderGroupCard({
             {group.name === "Other" ? t.common.other : group.name}
           </span>
           {hasAnyConfigured && (
-            <Badge tone="success" className="text-xs">
+            <Badge tone="success" className="text-[0.6rem]">
               {configuredCount} {t.common.set.toLowerCase()}
             </Badge>
           )}
@@ -407,13 +407,13 @@ function ProviderGroupCard({
               href={keyUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
               onClick={(e) => e.stopPropagation()}
             >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <span className="text-xs text-text-tertiary">
+          <span className="text-[0.65rem] text-muted-foreground/60">
             {t.env.keysCount
               .replace("{count}", String(group.entries.length))
               .replace("{s}", group.entries.length !== 1 ? "s" : "")}
@@ -513,12 +513,12 @@ export default function EnvPage() {
       const categories = ["tool", "messaging", "setting"];
       const CATEGORY_LABELS: Record<string, string> = {
         tool: "Tools",
-        messaging: t.common.gateway ?? "Gateway",
+        messaging: "Messaging",
         setting: "Settings",
       };
       for (const cat of categories) {
         const hasEntries = Object.values(vars).some(
-          (info) => info.category === cat && !info.channel_managed,
+          (info) => info.category === cat,
         );
         if (hasEntries) {
           items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
@@ -526,7 +526,7 @@ export default function EnvPage() {
       }
     }
     return items;
-  }, [vars, t]);
+  }, [vars]);
 
   useLayoutEffect(() => {
     if (!vars) {
@@ -537,16 +537,13 @@ export default function EnvPage() {
       document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
     };
     setAfterTitle(
-      <nav
-        className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
-      >
+      <nav className="flex items-center gap-1" aria-label="Jump to section">
         {sections.map((s) => (
           <button
             key={s.id}
             type="button"
             onClick={() => scrollTo(s.id)}
-            className="shrink-0 cursor-pointer px-2 py-0.5 font-mondwest text-display text-xs tracking-wider text-text-secondary hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
+            className="cursor-pointer px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:text-foreground border border-border/50 hover:border-foreground/30 transition-colors"
           >
             {s.label}
           </button>
@@ -681,33 +678,21 @@ export default function EnvPage() {
       }))
       .sort((a, b) => a.priority - b.priority);
 
-    // Non-provider categories — use translated labels. Platform credentials
-    // (channel_managed) are configured on the Channels page, so the messaging
-    // category here is trimmed down to cross-cutting gateway / API / proxy
-    // settings and relabelled accordingly.
+    // Non-provider categories — use translated labels
     const CATEGORY_META_LABELS: Record<string, string> = {
       tool: t.app.nav.keys,
-      messaging: t.common.gateway ?? "Gateway",
+      messaging: t.common.messaging,
       setting: t.app.nav.config,
-    };
-    const CATEGORY_META_HINTS: Record<string, string | undefined> = {
-      messaging:
-        t.common.gatewayHint ??
-        "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     };
     const otherCategories = ["tool", "messaging", "setting"];
     const nonProvider = otherCategories.map((cat) => {
       const entries = Object.entries(vars).filter(
-        ([, info]) =>
-          info.category === cat &&
-          !info.channel_managed &&
-          (showAdvanced || !info.advanced),
+        ([, info]) => info.category === cat && (showAdvanced || !info.advanced),
       );
       const setEntries = entries.filter(([, info]) => info.is_set);
       const unsetEntries = entries.filter(([, info]) => !info.is_set);
       return {
         label: CATEGORY_META_LABELS[cat] ?? cat,
-        hint: CATEGORY_META_HINTS[cat],
         icon: CATEGORY_META_ICONS[cat] ?? KeyRound,
         category: cat,
         setEntries,
@@ -757,7 +742,7 @@ export default function EnvPage() {
           <p className="text-sm text-muted-foreground">
             {t.env.description} <code>~/.hermes/.env</code>
           </p>
-          <p className="text-xs text-text-tertiary">
+          <p className="text-[0.7rem] text-muted-foreground/70">
             {t.env.changesNote}
           </p>
         </div>
@@ -809,36 +794,80 @@ export default function EnvPage() {
         </CardContent>
       </Card>
 
-      {nonProviderGrouped.map((section) => {
-        if (section.totalEntries === 0) return null;
+      {nonProviderGrouped.map(
+        ({
+          label,
+          icon: Icon,
+          setEntries,
+          unsetEntries,
+          totalEntries,
+          category,
+        }) => {
+          if (totalEntries === 0) return null;
 
-        return (
-          <EnvCategoryCard
-            key={section.category}
-            section={section}
-            edits={edits}
-            setEdits={setEdits}
-            revealed={revealed}
-            saving={saving}
-            onSave={handleSave}
-            onClear={keyClear.requestDelete}
-            onReveal={handleReveal}
-            onCancelEdit={cancelEdit}
-            clearDialogOpen={keyClear.isOpen}
-          />
-        );
-      })}
+          return (
+            <Card key={category} id={`section-${category}`}>
+              <CardHeader className="border-b border-border bg-card">
+                <div className="flex items-center gap-2">
+                  <Icon className="h-5 w-5 text-muted-foreground" />
+                  <CardTitle className="text-base">{label}</CardTitle>
+                </div>
+                <CardDescription>
+                  {setEntries.length} {t.common.of} {totalEntries}{" "}
+                  {t.common.configured}
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="grid gap-3 pt-4 overflow-hidden">
+                {setEntries.map(([key, info]) => (
+                  <EnvVarRow
+                    key={key}
+                    varKey={key}
+                    info={info}
+                    edits={edits}
+                    setEdits={setEdits}
+                    revealed={revealed}
+                    saving={saving}
+                    onSave={handleSave}
+                    onClear={keyClear.requestDelete}
+                    onReveal={handleReveal}
+                    onCancelEdit={cancelEdit}
+                    clearDialogOpen={keyClear.isOpen}
+                  />
+                ))}
+
+                {unsetEntries.length > 0 && (
+                  <CollapsibleUnset
+                    category={category}
+                    unsetEntries={unsetEntries}
+                    edits={edits}
+                    setEdits={setEdits}
+                    revealed={revealed}
+                    saving={saving}
+                    onSave={handleSave}
+                    onClear={keyClear.requestDelete}
+                    onReveal={handleReveal}
+                    onCancelEdit={cancelEdit}
+                    clearDialogOpen={keyClear.isOpen}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          );
+        },
+      )}
       <PluginSlot name="env:bottom" />
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/*  EnvCategoryCard — keys / messaging / settings sections             */
+/*  CollapsibleUnset — for non-provider categories                     */
 /* ------------------------------------------------------------------ */
 
-function EnvCategoryCard({
-  section,
+function CollapsibleUnset({
+  category: _category,
+  unsetEntries,
   edits,
   setEdits,
   revealed,
@@ -849,15 +878,8 @@ function EnvCategoryCard({
   onCancelEdit,
   clearDialogOpen = false,
 }: {
-  section: {
-    category: string;
-    hint?: string;
-    icon: React.ComponentType<{ className?: string }>;
-    label: string;
-    setEntries: [string, EnvVarInfo][];
-    totalEntries: number;
-    unsetEntries: [string, EnvVarInfo][];
-  };
+  category: string;
+  unsetEntries: [string, EnvVarInfo][];
   edits: Record<string, string>;
   setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   revealed: Record<string, string>;
@@ -868,70 +890,39 @@ function EnvCategoryCard({
   onCancelEdit: (key: string) => void;
   clearDialogOpen?: boolean;
 }) {
-  const noneConfigured = section.setEntries.length === 0;
-  const [showAll, setShowAll] = useState(noneConfigured);
+  const [collapsed, setCollapsed] = useState(true);
   const { t } = useI18n();
-  const Icon = section.icon;
-  const hasContent = section.setEntries.length > 0 || showAll;
-  const rowProps = {
-    edits,
-    setEdits,
-    revealed,
-    saving,
-    onSave,
-    onClear,
-    onReveal,
-    onCancelEdit,
-    clearDialogOpen,
-  };
 
   return (
-    <Card id={`section-${section.category}`}>
-      <CardHeader
-        className={`bg-card${hasContent ? " border-b border-border" : ""}`}
+    <>
+      <Button
+        ghost
+        size="sm"
+        prefix={collapsed ? <ChevronRight /> : <ChevronDown />}
+        onClick={() => setCollapsed(!collapsed)}
+        aria-expanded={!collapsed}
+        className="self-start mt-1 normal-case tracking-normal text-xs text-muted-foreground hover:text-foreground"
       >
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <Icon className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-base">{section.label}</CardTitle>
-          </div>
+        {t.env.notConfigured.replace("{count}", String(unsetEntries.length))}
+      </Button>
 
-          {section.unsetEntries.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setShowAll((open) => !open)}
-              aria-expanded={showAll}
-              className="shrink-0 cursor-pointer border-0 bg-transparent p-0 font-mondwest text-xs tracking-[0.08em] text-text-secondary transition-colors hover:text-foreground"
-            >
-              {showAll ? t.env.showLess : t.env.showMore}
-            </button>
-          )}
-        </div>
-
-        <CardDescription>
-          {section.setEntries.length} {t.common.of} {section.totalEntries}{" "}
-          {t.common.configured}
-        </CardDescription>
-
-        {section.hint && (
-          <CardDescription className="text-text-tertiary">
-            {section.hint}
-          </CardDescription>
-        )}
-      </CardHeader>
-
-      {hasContent && (
-        <CardContent className="grid gap-3 overflow-hidden pt-4">
-          {section.setEntries.map(([key, info]) => (
-            <EnvVarRow key={key} varKey={key} info={info} {...rowProps} />
-          ))}
-
-          {showAll &&
-            section.unsetEntries.map(([key, info]) => (
-              <EnvVarRow key={key} varKey={key} info={info} {...rowProps} />
-            ))}
-        </CardContent>
-      )}
-    </Card>
+      {!collapsed &&
+        unsetEntries.map(([key, info]) => (
+          <EnvVarRow
+            key={key}
+            varKey={key}
+            info={info}
+            edits={edits}
+            setEdits={setEdits}
+            revealed={revealed}
+            saving={saving}
+            onSave={onSave}
+            onClear={onClear}
+            onReveal={onReveal}
+            onCancelEdit={onCancelEdit}
+            clearDialogOpen={clearDialogOpen}
+          />
+        ))}
+    </>
   );
 }

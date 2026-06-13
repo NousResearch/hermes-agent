@@ -14,12 +14,15 @@ This module verifies:
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.lsp.manager import LSPService
+from agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
 from agent.lsp.workspace import clear_cache
 
 

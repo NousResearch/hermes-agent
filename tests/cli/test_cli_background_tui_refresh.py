@@ -4,8 +4,11 @@ Ensures the TUI is properly refreshed before printing background task output
 to prevent spinner/status bar overlap (#2718).
 """
 
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from cli import HermesCLI
 

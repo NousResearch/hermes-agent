@@ -1,6 +1,9 @@
 """Tests for skill fuzzy patching via tools.fuzzy_match."""
 
 import json
+import os
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 

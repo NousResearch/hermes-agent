@@ -6,6 +6,7 @@ parent's enabled_toolsets, it can escalate privileges by requesting
 arbitrary toolsets.
 """
 
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 from tools.delegate_tool import _strip_blocked_tools

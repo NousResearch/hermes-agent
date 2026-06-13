@@ -16,6 +16,7 @@ These tests pin the expanded whitelist so it doesn't regress.
 """
 from __future__ import annotations
 
+import pytest
 
 from gateway.run import _ASSISTANT_REPLAY_FIELDS, _build_replay_entry
 

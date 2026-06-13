@@ -1,34 +1,31 @@
 # nix/web.nix — Hermes Web Dashboard (Vite/React) frontend build
 { pkgs, hermesNpmLib, ... }:
 let
+  src = ../web;
+  npmDeps = pkgs.fetchNpmDeps {
+    inherit src;
+    hash = "sha256-HWB1piIPglTXbzQHXFYHLgVZIbDb60esupXSQGa1+lI=";
+  };
+
   npm = hermesNpmLib.mkNpmPassthru { folder = "web"; attr = "web"; pname = "hermes-web"; };
 
-  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/web/package.json"));
+  packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
   version = packageJson.version;
 in
 pkgs.buildNpmPackage (npm // {
   pname = "hermes-web";
-  inherit version;
+  inherit src npmDeps version;
 
   doCheck = false;
 
   buildPhase = ''
-    # Build from web/ so vite.config.ts and tsconfig resolve correctly.
-    # The workspace root's node_modules/ is at ../node_modules/.
-    cd web
-    node ../node_modules/typescript/bin/tsc -b
-    # outDir in vite.config.ts points to ../hermes_cli/web_dist for the
-    # monorepo layout.  Override with --outDir dist for the nix build.
-    node ../node_modules/vite/bin/vite.js build --outDir dist
-
-    # Return to source root so installPhase paths are correct.
-    cd ..
+    npx tsc -b
+    npx vite build --outDir dist
   '';
 
   installPhase = ''
     runHook preInstall
-    # vite writes to web/dist/ (we cd'd there, overrode outDir, then cd'd back).
-    cp -r web/dist $out
+    cp -r dist $out
     runHook postInstall
   '';
 })

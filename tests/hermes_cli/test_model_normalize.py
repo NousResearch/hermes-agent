@@ -8,6 +8,7 @@ import pytest
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
     _DOT_TO_HYPHEN_PROVIDERS,
+    _AGGREGATOR_PROVIDERS,
     _normalize_for_deepseek,
     detect_vendor,
 )

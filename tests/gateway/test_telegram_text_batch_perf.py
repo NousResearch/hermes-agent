@@ -13,6 +13,8 @@ or out-of-bounds values that could break asyncio.sleep().
 from __future__ import annotations
 
 import math
+import os
+from unittest.mock import MagicMock
 
 import pytest
 

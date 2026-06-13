@@ -25,12 +25,12 @@
 
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card } from "@nous-research/ui/ui/components/card";
+import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { HERMES_BASE_PATH } from "@/lib/api";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -120,11 +120,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         if (cancelled) {
           return;
         }
-        // close_on_disconnect: the gateway reaps this sidecar session (and its
-        // slash_worker subprocess) when the WS drops, instead of leaking it.
-        return gw.request<{ session_id: string }>("session.create", {
-          close_on_disconnect: true,
-        });
+        return gw.request<{ session_id: string }>("session.create", {});
       })
       .then((created) => {
         if (cancelled || !created?.session_id) {
@@ -156,44 +152,36 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   // JSON-RPC sidecar so the sidebar matches its documented best-effort
   // UX and the user always has a reconnect affordance.
   useEffect(() => {
-    if (!channel) {
+    const token = window.__HERMES_SESSION_TOKEN__;
+
+    if (!token || !channel) {
       return;
     }
-    // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
+
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const qs = new URLSearchParams({ token, channel });
+    const ws = new WebSocket(
+      `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
+    );
+
+    // `unmounting` suppresses the banner during cleanup — `ws.close()`
+    // from the effect's return fires a close event with code 1005 that
+    // would otherwise look like an unexpected drop.
+    const DISCONNECTED = "events feed disconnected — tool calls may not appear";
     let unmounting = false;
-    let ws: WebSocket | null = null;
-    void (async () => {
-      const [authName, authValue] = await buildWsAuthParam();
-      if (!authValue || unmounting) {
-        return;
+    const surface = (msg: string) => !unmounting && setError(msg);
+
+    ws.addEventListener("error", () => surface(DISCONNECTED));
+
+    ws.addEventListener("close", (ev) => {
+      if (ev.code === 4401 || ev.code === 4403) {
+        surface(`events feed rejected (${ev.code}) — reload the page`);
+      } else if (ev.code !== 1000) {
+        surface(DISCONNECTED);
       }
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const qs = new URLSearchParams({ [authName]: authValue, channel });
-      ws = new WebSocket(
-        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
-      );
+    });
 
-      // `unmounting` suppresses the banner during cleanup — `ws.close()`
-      // from the effect's return fires a close event with code 1005 that
-      // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-      const surface = (msg: string) => !unmounting && setError(msg);
-
-      ws.addEventListener("error", () => surface(DISCONNECTED));
-
-      ws.addEventListener("close", (ev) => {
-        if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
-        }
-      });
-
-      ws.addEventListener("message", (ev) => {
+    ws.addEventListener("message", (ev) => {
       let frame: RpcEnvelope;
 
       try {
@@ -277,12 +265,11 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           ),
         );
       }
-      });
-    })();
+    });
 
     return () => {
       unmounting = true;
-      ws?.close();
+      ws.close();
     };
   }, [channel, version]);
 
@@ -292,6 +279,24 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     setVersion((v) => v + 1);
   }, []);
 
+  // Picker hands us a fully-formed slash command (e.g. "/model anthropic/...").
+  // Fire-and-forget through `slash.exec`; the TUI pane will render the result
+  // via PTY, so the sidebar doesn't need to surface output of its own.
+  const onModelSubmit = useCallback(
+    (slashCommand: string) => {
+      if (!sessionId) {
+        return;
+      }
+
+      void gw.request("slash.exec", {
+        session_id: sessionId,
+        command: slashCommand,
+      });
+      setModelOpen(false);
+    },
+    [gw, sessionId],
+  );
+
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
   const banner = error ?? info.credential_warning ?? null;
@@ -299,13 +304,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   return (
     <aside
       className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 lg:w-80",
+        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1 normal-case lg:w-80",
         className,
       )}
     >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0">
-          <div className="text-display text-xs tracking-wider text-text-tertiary">
+          <div className="text-xs uppercase tracking-wider text-muted-foreground">
             model
           </div>
 
@@ -316,7 +321,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
             onClick={() => setModelOpen(true)}
             suffix={
               canPickModel ? (
-                <ChevronDown className="text-text-secondary" />
+                <ChevronDown className="opacity-60" />
               ) : undefined
             }
             className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium hover:underline disabled:no-underline"
@@ -352,13 +357,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       )}
 
       <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
-        <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
+        <div className="px-1 pb-2 text-xs uppercase tracking-wider text-muted-foreground">
           tools
         </div>
 
         <div className="flex min-h-0 flex-col gap-1.5">
           {tools.length === 0 ? (
-            <div className="px-2 py-4 text-center text-xs text-text-secondary">
+            <div className="px-2 py-4 text-center text-xs text-muted-foreground">
               no tool calls yet
             </div>
           ) : (
@@ -372,6 +377,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           gw={gw}
           sessionId={sessionId}
           onClose={() => setModelOpen(false)}
+          onSubmit={onModelSubmit}
         />
       )}
     </aside>

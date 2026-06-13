@@ -1,5 +1,6 @@
 """Tests for hermes_cli/skills_config.py and skills_tool disabled filtering."""
-from unittest.mock import patch
+import pytest
+from unittest.mock import patch, MagicMock
 
 
 # ---------------------------------------------------------------------------

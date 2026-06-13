@@ -308,24 +308,9 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
 
-/** Per-tool copy arguments: wl-copy reads stdin, xclip/xsel need clipboard flags. */
-function linuxCopyArgs(tool: 'wl-copy' | 'xclip' | 'xsel'): string[] {
-  switch (tool) {
-    case 'wl-copy':
-      return []
-    case 'xclip':
-      return ['-selection', 'clipboard']
-    case 'xsel':
-      return ['--clipboard', '--input']
-  }
-}
-
 /** Internal: probe once and cache — wl-copy first, then xclip, then xsel. */
 async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
-  // resolveOnExit: wl-copy daemonizes and the daemon inherits stdio pipes,
-  // so 'close' never fires and the await would hang past the timeout.
-  // 'exit' fires on the immediate child's exit — what we actually care about.
-  const opts = { useCwd: false, timeout: 500, resolveOnExit: true }
+  const opts = { useCwd: false, timeout: 500 }
 
   const r = await execFileNoThrow('wl-copy', [], opts)
 
@@ -333,13 +318,13 @@ async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
     return 'wl-copy'
   }
 
-  const r2 = await execFileNoThrow('xclip', linuxCopyArgs('xclip'), opts)
+  const r2 = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
 
   if (r2.code === 0) {
     return 'xclip'
   }
 
-  const r3 = await execFileNoThrow('xsel', linuxCopyArgs('xsel'), opts)
+  const r3 = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
 
   return r3.code === 0 ? 'xsel' : null
 }
@@ -362,11 +347,7 @@ async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
  * we skip probing entirely and treat linuxCopy as permanently null.
  */
 function copyNative(text: string): boolean {
-  // resolveOnExit: pbcopy/wl-copy/xclip/xsel/clip all daemonize or hold
-  // the system selection live in a forked process. Without resolveOnExit,
-  // the inherited stdio pipes keep node from seeing 'close' → the
-  // fire-and-forget await never resolves and the actual copy never runs.
-  const opts = { input: text, useCwd: false, timeout: 2000, resolveOnExit: true }
+  const opts = { input: text, useCwd: false, timeout: 2000 }
 
   switch (process.platform) {
     case 'darwin':
@@ -382,13 +363,17 @@ function copyNative(text: string): boolean {
         }
 
         // linuxCopy is a known-working tool; fire-and-forget.
-        void execFileNoThrow(linuxCopy, linuxCopyArgs(linuxCopy), opts)
+        void execFileNoThrow(linuxCopy, linuxCopy === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
 
         return true
       }
 
       // No display server → native tools will fail immediately. Cache null.
       if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] [native] Linux: no DISPLAY or WAYLAND_DISPLAY — native clipboard unavailable')
+        }
+
         linuxCopy = null
 
         return false
@@ -401,9 +386,13 @@ function copyNative(text: string): boolean {
         const winner = await probeLinuxCopy()
         linuxCopy = winner
 
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error(`[clipboard] [native] Linux: clipboard probe complete → ${winner ?? 'no tool available'}`)
+        }
+
         // Actually perform the copy with the discovered tool.
         if (winner) {
-          void execFileNoThrow(winner, linuxCopyArgs(winner), opts)
+          void execFileNoThrow(winner, winner === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
         }
       })()
 

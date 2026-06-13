@@ -1,28 +1,13 @@
 # nix/devShell.nix — Dev shell that delegates setup to each package
 #
-# Each npm workspace package exposes passthru.packageJsonPath (e.g.
-# "ui-tui/package.json").  This file collects them all and passes the
-# list to mkNpmDevShellHook, which stamps all package.jsons at once,
-# then runs a single `npm i --package-lock-only` if any changed and
-# `npm ci` if the lockfile changed.
+# Each package in inputsFrom might expose passthru.devShellHook — a bash snippet
+# with stamp-checked setup logic. This file collects and runs them all.
 { ... }:
 {
   perSystem =
     { pkgs, self', ... }:
     let
       packages = builtins.attrValues self'.packages;
-      hermesNpmLib = self'.packages.default.passthru.hermesNpmLib;
-      fixLockfilesExe = pkgs.lib.getExe self'.packages.fix-lockfiles;
-
-      # Collect all packageJsonPath values from npm workspace packages.
-      npmPackageJsonPaths = builtins.filter (p: p != null) (
-        map (p: p.passthru.packageJsonPath or null) packages
-      );
-
-      # Non-npm packages may have their own devShellHook (e.g. hermes-agent
-      # stamps pyproject.toml + uv.lock for Python venv setup).
-      nonNpmHooks = map (p: p.passthru.devShellHook or "") packages;
-      combinedNonNpm = pkgs.lib.concatStringsSep "\n" (builtins.filter (h: h != "") nonNpmHooks);
     in
     {
       devShells.default = pkgs.mkShell {
@@ -30,12 +15,16 @@
         packages = with pkgs; [
           uv
         ];
-        shellHook = ''
-          echo "Hermes Agent dev shell"
-          ${combinedNonNpm}
-          ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths fixLockfilesExe}
-          echo "Ready. Run 'hermes' to start."
-        '';
+        shellHook =
+          let
+            hooks = map (p: p.passthru.devShellHook or "") packages;
+            combined = pkgs.lib.concatStringsSep "\n" (builtins.filter (h: h != "") hooks);
+          in
+          ''
+            echo "Hermes Agent dev shell"
+            ${combined}
+            echo "Ready. Run 'hermes' to start."
+          '';
       };
     };
 }

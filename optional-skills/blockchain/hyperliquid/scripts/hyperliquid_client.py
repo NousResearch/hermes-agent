@@ -115,7 +115,7 @@ def _resolve_user(user: Optional[str]) -> str:
 
     sys.exit(
         "Missing Hyperliquid address. Pass <address> explicitly or set "
-        f"{DEFAULT_USER_ENV} in your environment or {_hermes_home() / '.env'}."
+        f"{DEFAULT_USER_ENV} in your environment or ~/.hermes/.env."
     )
 
 

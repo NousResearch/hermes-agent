@@ -1,6 +1,7 @@
 """Test that setup.py has shutil available for Matrix E2EE auto-install."""
 import ast
 
+import pytest
 
 
 def _parse_setup_imports():

@@ -48,16 +48,22 @@
     return tier ? "ha-tier-" + tier.toLowerCase() : "ha-tier-pending";
   };
 
-  function api(path, options) {
-    // Delegate to the host SDK's fetchJSON so auth is handled correctly in
-    // BOTH dashboard modes: loopback (X-Hermes-Session-Token header) and
-    // gated OAuth (hermes_session_at cookie via credentials:'include').
-    // Hand-rolling fetch + reading window.__HERMES_SESSION_TOKEN__ directly
-    // 401s in gated mode (the token isn't injected there). fetchJSON throws
-    // Error("<status>: <body>") on non-2xx — the call sites' .catch() relies
-    // on that to surface errors, so we let it propagate (don't swallow).
+  async function api(path, options) {
     const url = "/api/plugins/hermes-achievements" + path;
-    return SDK.fetchJSON(url, options);
+    const token = window.__HERMES_SESSION_TOKEN__ || "";
+    const headers = { ...((options && options.headers) || {}) };
+    if (token) headers["X-Hermes-Session-Token"] = token;
+    const res = await fetch(url, { ...(options || {}), headers });
+    if (!res.ok) {
+      const text = await res.text().catch(function () { return res.statusText; });
+      throw new Error(res.status + ": " + text);
+    }
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      return null;
+    }
   }
 
   function AchievementIcon({ icon }) {

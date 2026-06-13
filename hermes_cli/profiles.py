@@ -30,8 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
-from agent.skill_utils import is_excluded_skill_path
-
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -88,39 +86,15 @@ _CLONE_ALL_STRIP: list[str] = [
 #   node_modules  — npm packages (hundreds of MB)
 #
 # See ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` below for the broader export-side
-# exclusion list (export also drops logs / caches because the archive is a
-# portable snapshot; clone-all keeps those because the cloned profile is
-# meant to keep working immediately).
+# exclusion list (export drops state.db / logs / caches too because the
+# archive is a portable snapshot; clone-all keeps those because the cloned
+# profile is meant to keep working immediately).
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent",
     ".worktrees",
     "profiles",
     "bin",
     "node_modules",
-})
-
-# Per-profile history artifacts excluded from --clone-all regardless of the
-# source profile.  A new profile is a fresh workspace — inheriting the source
-# profile's session history, backup archives, or quick-backup snapshots is
-# never useful (restoring one inside the clone would resurrect the SOURCE
-# profile's state) and can balloon the copy by tens of GB.  Unlike
-# ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` this set is NOT gated on the default
-# profile: named profiles accumulate the same artifacts.
-#
-# Rationale per item:
-#   state.db (+wal/shm) — SQLite session store (can reach many GB)
-#   sessions            — per-session transcript/data dirs
-#   backups             — `hermes backup` archives
-#   state-snapshots     — quick-backup snapshot trees
-#   checkpoints         — session checkpoint data
-_CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
-    "state.db",
-    "state.db-wal",
-    "state.db-shm",
-    "sessions",
-    "backups",
-    "state-snapshots",
-    "checkpoints",
 })
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
@@ -143,16 +117,13 @@ def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
 def _clone_all_copytree_ignore(source_dir: Path):
     """Exclude infrastructure artifacts when cloning a profile via --clone-all.
 
-    Three categories:
-      1. Root-level entries in ``_CLONE_ALL_HISTORY_EXCLUDE_ROOT`` — session
-         history, backups, and snapshots that belong to the SOURCE profile
-         and should never carry into a fresh clone.  Applies to any source.
-      2. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
+    Two categories:
+      1. Root-level entries in ``_CLONE_ALL_DEFAULT_EXCLUDE_ROOT`` — known
          Hermes infrastructure directories that only the default profile
          (``~/.hermes``) ever contains.  Gated on ``source_dir`` actually
          being the default profile so a named-profile source never has its
          own data silently dropped.
-      3. Universal exclusions at any depth — Python bytecode caches that
+      2. Universal exclusions at any depth — Python bytecode caches that
          are stale or regenerable (``__pycache__``, ``*.pyc``, ``*.pyo``)
          and runtime sockets / temp files (``*.sock``, ``*.tmp``).
 
@@ -174,21 +145,17 @@ def _clone_all_copytree_ignore(source_dir: Path):
             ):
                 ignored.append(entry)
                 continue
-            try:
-                at_root = Path(directory).resolve() == source_resolved
-            except (OSError, ValueError):
-                # ``resolve()`` can fail on unusual FS layouts (broken
-                # symlinks, missing parents).  Fail open — better to
-                # over-copy than silently drop user data.
-                at_root = False
-            if at_root:
-                # History artifacts: excluded for ANY source profile.
-                if entry in _CLONE_ALL_HISTORY_EXCLUDE_ROOT:
-                    ignored.append(entry)
-                    continue
-                # Infrastructure: only the default profile contains these.
-                if is_default_source and entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
-                    ignored.append(entry)
+            # Root-level exclusions only apply when cloning the default profile.
+            if is_default_source:
+                try:
+                    if Path(directory).resolve() == source_resolved:
+                        if entry in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT:
+                            ignored.append(entry)
+                except (OSError, ValueError):
+                    # ``resolve()`` can fail on unusual FS layouts (broken
+                    # symlinks, missing parents).  Fail open — better to
+                    # over-copy than silently drop user data.
+                    pass
         return ignored
 
     return _ignore
@@ -360,19 +327,16 @@ def check_alias_collision(name: str) -> Optional[str]:
 
     # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
-    is_windows = sys.platform == "win32"
     try:
         result = subprocess.run(
-            ["where" if is_windows else "which", canon],
-            capture_output=True, text=True, timeout=5,
+            ["which", canon], capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            existing_path = result.stdout.strip().splitlines()[0]
+            existing_path = result.stdout.strip()
             # Allow overwriting our own wrappers
-            expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
-            if existing_path == str(expected):
+            if existing_path == str(wrapper_dir / canon):
                 try:
-                    content = expected.read_text()
+                    content = (wrapper_dir / canon).read_text()
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
@@ -390,18 +354,12 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
-def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[Path]:
+def create_wrapper_script(name: str) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
-    The wrapper file is named after ``name`` (the alias). The profile it
-    activates is ``target`` if given, otherwise ``name`` — this lets a custom
-    alias name point at a differently-named profile without a post-hoc rewrite.
-
-    On Windows, creates a ``.bat`` file instead of a POSIX shell script.
     Returns the path to the created wrapper, or None if creation failed.
     """
     canon = normalize_profile_name(name)
-    profile = normalize_profile_name(target) if target else canon
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -409,92 +367,29 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
-    is_windows = sys.platform == "win32"
-    if is_windows:
-        wrapper_path = wrapper_dir / f"{canon}.bat"
-        try:
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n")
-            return wrapper_path
-        except OSError as e:
-            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
-            return None
-    else:
-        wrapper_path = wrapper_dir / canon
-        try:
-            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
-            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-            return wrapper_path
-        except OSError as e:
-            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
-            return None
+    wrapper_path = wrapper_dir / canon
+    try:
+        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
+        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return wrapper_path
+    except OSError as e:
+        print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
+        return None
 
 
 def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
-    wrapper_dir = _get_wrapper_dir()
-    canon = normalize_profile_name(name)
-    is_windows = sys.platform == "win32"
-
-    # Check both the extensionless path (POSIX) and .bat (Windows)
-    candidates = [wrapper_dir / canon]
-    if is_windows:
-        candidates.insert(0, wrapper_dir / f"{canon}.bat")
-
-    for wrapper_path in candidates:
-        if wrapper_path.exists():
-            try:
-                # Verify it's our wrapper before removing
-                content = wrapper_path.read_text()
-                if "hermes -p" in content:
-                    wrapper_path.unlink()
-                    return True
-            except Exception:
-                pass
-    return False
-
-
-def find_alias_for_profile(profile_name: str) -> Optional[str]:
-    """Return the alias name of the wrapper that activates *profile_name*, or None.
-
-    A wrapper created by :func:`create_wrapper_script` is a file named after the
-    alias whose body invokes ``hermes -p <profile>``. When the alias name equals
-    the profile name this is trivial, but a custom alias (``hermes profile alias
-    <profile> --name <custom>``) produces a differently-named file — so the
-    display side cannot assume ``wrapper == profile`` and must reverse-look-up.
-
-    A custom alias (name != profile) is preferred over the profile-named wrapper
-    so ``profile list``/``show`` surface the command the user actually typed.
-    Results are sorted for deterministic output when several aliases match.
-    """
-    wrapper_dir = _get_wrapper_dir()
-    if not wrapper_dir.is_dir():
-        return None
-    canon = normalize_profile_name(profile_name)
-    is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
-
-    custom: Optional[str] = None
-    profile_named: Optional[str] = None
-    for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
-            continue
+    wrapper_path = _get_wrapper_dir() / normalize_profile_name(name)
+    if wrapper_path.exists():
         try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if needle not in content:
-            continue
-        alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            profile_named = alias
-        elif custom is None:
-            custom = alias
-    return custom if custom is not None else profile_named
+            # Verify it's our wrapper before removing
+            content = wrapper_path.read_text()
+            if "hermes -p" in content:
+                wrapper_path.unlink()
+                return True
+        except Exception:
+            pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -513,10 +408,6 @@ class ProfileInfo:
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
-    # Custom alias name (the wrapper file name) when it differs from ``name``;
-    # falls back to ``name`` when a profile-named wrapper exists. None if no
-    # wrapper points at this profile. See ``find_alias_for_profile``.
-    alias_name: Optional[str] = None
     # Distribution metadata (None if the profile wasn't installed from a distribution).
     distribution_name: Optional[str] = None
     distribution_version: Optional[str] = None
@@ -594,9 +485,8 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     count = 0
     for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
+        if "/.hub/" not in str(md) and "/.git/" not in str(md):
+            count += 1
     return count
 
 
@@ -714,17 +604,10 @@ def list_profiles() -> List[ProfileInfo]:
             if not entry.is_dir():
                 continue
             name = entry.name
-            if name == "default":
-                continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_name = find_alias_for_profile(name)
-            if alias_name:
-                is_windows = sys.platform == "win32"
-                alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
-            else:
-                alias_path = None
+            alias_path = wrapper_dir / name
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             meta = read_profile_meta(entry)
             profiles.append(ProfileInfo(
@@ -736,8 +619,7 @@ def list_profiles() -> List[ProfileInfo]:
                 provider=provider,
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
-                alias_path=alias_path if (alias_path and alias_path.exists()) else None,
-                alias_name=alias_name,
+                alias_path=alias_path if alias_path.exists() else None,
                 distribution_name=dist_name,
                 distribution_version=dist_version,
                 distribution_source=dist_source,
@@ -838,17 +720,7 @@ def create_profile(
             for filename in _CLONE_CONFIG_FILES:
                 src = source_dir / filename
                 if src.exists():
-                    dst = profile_dir / filename
-                    shutil.copy2(src, dst)
-                    # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
-                    if filename == ".env":
-                        try:
-                            os.chmod(str(dst), 0o600)
-                        except OSError:
-                            pass
+                    shutil.copy2(src, profile_dir / filename)
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled
@@ -865,25 +737,6 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
-
-    # Seed an empty .env so the profile has its own credentials file from
-    # day one. Without it, profile-scoped env writes (dashboard Channels /
-    # Keys pages, `hermes -p <name> auth add`) had no file until first
-    # write, and the profile silently inherited API keys from the shell
-    # environment — users reasonably read that as "the new profile reads
-    # the root .env". Skipped when --clone/--clone-all already copied one.
-    env_path = profile_dir / ".env"
-    if not env_path.exists():
-        try:
-            env_path.write_text(
-                "# Per-profile secrets for this Hermes profile.\n"
-                "# API keys and tokens set here override the shell environment.\n"
-                "# Behavioral settings belong in config.yaml, not here.\n",
-                encoding="utf-8",
-            )
-            os.chmod(str(env_path), 0o600)
-        except OSError:
-            pass  # best-effort — save_env_value creates the file on demand
 
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).
@@ -920,14 +773,6 @@ def create_profile(
             )
         except Exception:
             pass  # non-fatal — user can describe later with `hermes profile describe`
-
-    # Phase 4: when running inside a container under s6, register the
-    # new profile's gateway as a runtime s6 service so
-    # `hermes -p <profile> gateway start` can supervise it via
-    # `s6-svc -u` instead of spawning a bare process. On host (systemd
-    # / launchd / windows) this is a no-op — the existing per-profile
-    # unit-generation paths handle gateway lifecycle.
-    _maybe_register_gateway_service(canon)
 
     return profile_dir
 
@@ -975,58 +820,6 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
         if not quiet:
             print(f"⚠ Skill seeding failed: {e}")
         return None
-
-
-def backfill_profile_envs(quiet: bool = False) -> List[str]:
-    """Give every named profile that predates per-profile ``.env`` files one.
-
-    Profiles created before the dashboard/CLI started seeding a ``.env``
-    (PR #44792) have none, so once the Channels/Keys endpoints became
-    profile-scoped those profiles stopped inheriting the root install's
-    credentials and showed everything as unconfigured. To avoid breaking
-    anyone on update, copy the DEFAULT install's ``.env`` into each named
-    profile that lacks one — that preserves the effective credentials those
-    profiles were already running with (they previously read the root
-    ``.env`` via the process environment). Users can then diverge per
-    profile from there.
-
-    Falls back to the placeholder header when the default install has no
-    ``.env`` itself. Never overwrites an existing profile ``.env``.
-
-    Returns the list of profile names that received a backfilled ``.env``.
-    """
-    backfilled: List[str] = []
-    profiles_root = _get_profiles_root()
-    if not profiles_root.is_dir():
-        return backfilled
-
-    default_env = _get_default_hermes_home() / ".env"
-
-    for entry in sorted(profiles_root.iterdir()):
-        if not entry.is_dir() or not _PROFILE_ID_RE.match(entry.name):
-            continue
-        if entry.name == "default":
-            continue
-        env_path = entry / ".env"
-        if env_path.exists():
-            continue
-        try:
-            if default_env.is_file():
-                shutil.copy2(default_env, env_path)
-            else:
-                env_path.write_text(
-                    "# Per-profile secrets for this Hermes profile.\n"
-                    "# API keys and tokens set here override the shell environment.\n"
-                    "# Behavioral settings belong in config.yaml, not here.\n",
-                    encoding="utf-8",
-                )
-            os.chmod(str(env_path), 0o600)
-            backfilled.append(entry.name)
-        except OSError as e:
-            if not quiet:
-                print(f"⚠ Could not seed .env for profile '{entry.name}': {e}")
-
-    return backfilled
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:
@@ -1097,10 +890,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 1. Disable service (prevents auto-restart)
     _cleanup_gateway_service(canon, profile_dir)
-    # 1b. Phase 4: unregister the s6 service slot (container path).
-    # On host this is a no-op; on container it removes
-    # /run/service/gateway-<profile>/ so s6-supervise drops it.
-    _maybe_unregister_gateway_service(canon)
 
     # 2. Stop running gateway
     if gw_running:
@@ -1112,54 +901,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory
-    remove_error: Exception | None = None
     try:
-        def _make_writable(func, path, exc):
-            """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
-
-            Handles two cases on NixOS (and other systems with read-only
-            copies from immutable stores):
-            1. The path itself isn't writable (e.g. a file with mode 0444)
-            2. The *parent* directory isn't writable (e.g. mode 0555)
-
-            Compatible with both the ``onexc`` API (3.12+, receives an
-            exception instance) and the ``onerror`` API (3.11-, receives
-            ``sys.exc_info()`` tuple).
-            """
-            import stat as _stat
-
-            # Normalise the two callback signatures:
-            #   onexc(func, path, exc_instance)   — 3.12+
-            #   onerror(func, path, exc_info_tuple) — 3.11
-            if isinstance(exc, tuple):
-                exc = exc[1]  # exc_info → actual exception object
-
-            if isinstance(exc, PermissionError):
-                # Make the path writable
-                try:
-                    os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
-                except OSError:
-                    pass
-                # Also make the parent writable (needed for unlink/rmdir)
-                parent = os.path.dirname(path)
-                if parent:
-                    try:
-                        os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
-                    except OSError:
-                        pass
-                func(path)
-            else:
-                raise
-
-        # ``onexc`` was added in 3.12; fall back to ``onerror`` on 3.11.
-        try:
-            shutil.rmtree(profile_dir, onexc=_make_writable)
-        except TypeError:
-            shutil.rmtree(profile_dir, onerror=_make_writable)
+        shutil.rmtree(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
-        remove_error = e
 
     # 5. Clear active_profile if it pointed to this profile
     try:
@@ -1170,98 +916,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     except Exception:
         pass
 
-    if remove_error is not None:
-        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
-
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir
-
-
-def _maybe_register_gateway_service(profile_name: str) -> None:
-    """Register a profile's gateway with s6 inside the container.
-
-    No-op on host (systemd/launchd/windows) — those backends raise
-    ``NotImplementedError`` on ``register_profile_gateway`` and the
-    existing per-profile unit-generation paths handle lifecycle.
-
-    Best-effort: any error (no backend detected, s6 not yet ready,
-    etc.) is logged and swallowed so profile creation doesn't fail
-    because the s6 supervision tree is in a weird state. The user
-    can re-register manually later via the gateway start command,
-    which goes through the same dispatch path.
-
-    Port selection: each supervised profile gateway loads its own
-    ``HERMES_HOME`` and binds the port resolved by ``gateway/config.py``
-    from that profile's environment — ``API_SERVER_PORT`` (or
-    ``platforms.api_server.extra.port`` in the profile's
-    ``config.yaml``), defaulting to 8642. There is no ``[gateway] port``
-    key and no Python-side allocator (PR #30136 review item I5 retired
-    the SHA-256-derived range [9200, 9800) as dead code), so two
-    profiles that both leave the port at its default will both try to
-    bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in its
-    ``.env``.
-
-    Host short-circuit: check ``detect_service_manager()`` first and
-    return immediately if it isn't ``"s6"``. This keeps host
-    (systemd/launchd/windows) profile creation completely silent —
-    no ``get_service_manager()`` call, no exception path, no chance
-    of the ``⚠ Could not register s6 gateway service`` warning ever
-    rendering on a non-container machine. The earlier
-    ``supports_runtime_registration()`` check still catches the case
-    where detection somehow returns ``"s6"`` but the backend isn't
-    actually the S6 one.
-    """
-    try:
-        from hermes_cli.service_manager import detect_service_manager
-        if detect_service_manager() != "s6":
-            return  # host path — silent, no registration needed
-        from hermes_cli.service_manager import get_service_manager
-        mgr = get_service_manager()
-    except RuntimeError:
-        return  # no backend on this host — nothing to do
-    except Exception:
-        # Defensive: detect_service_manager failed for some other
-        # reason. Stay silent on host rather than printing a confusing
-        # s6 warning to users who have never touched the container.
-        return
-    if not mgr.supports_runtime_registration():
-        return  # host backend; no-op
-    try:
-        mgr.register_profile_gateway(profile_name)
-    except ValueError:
-        # Already registered (e.g. the container-boot reconciler ran
-        # first and brought up a stale slot). That's fine.
-        pass
-    except Exception as exc:
-        # Don't fail profile create over a supervision-tree hiccup.
-        print(f"⚠ Could not register s6 gateway service: {exc}")
-
-
-def _maybe_unregister_gateway_service(profile_name: str) -> None:
-    """Tear down a profile's s6 gateway service inside the container.
-
-    No-op on host. Idempotent: absent services are silently skipped
-    by ``unregister_profile_gateway``.
-
-    Same host short-circuit as :func:`_maybe_register_gateway_service`
-    — see that docstring.
-    """
-    try:
-        from hermes_cli.service_manager import detect_service_manager
-        if detect_service_manager() != "s6":
-            return  # host path — silent
-        from hermes_cli.service_manager import get_service_manager
-        mgr = get_service_manager()
-    except RuntimeError:
-        return
-    except Exception:
-        return
-    if not mgr.supports_runtime_registration():
-        return
-    try:
-        mgr.unregister_profile_gateway(profile_name)
-    except Exception as exc:
-        print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
 def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
@@ -1640,9 +1296,8 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
     """Rename Honcho host blocks for a renamed profile without changing peers."""
-    old_host = f"hermes_{old_name}"
-    legacy_old_host = f"hermes.{old_name}"
-    new_host = f"hermes_{new_name}"
+    old_host = f"hermes.{old_name}"
+    new_host = f"hermes.{new_name}"
 
     candidates = [
         new_dir / "honcho.json",
@@ -1666,24 +1321,18 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
 
         hosts = raw.get("hosts")
-        if not isinstance(hosts, dict):
-            continue
-        source_host = old_host if old_host in hosts else legacy_old_host
-        if source_host not in hosts:
+        if not isinstance(hosts, dict) or old_host not in hosts:
             continue
 
         if new_host in hosts:
             print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
             continue
 
-        block = hosts[source_host]
+        block = hosts[old_host]
         if isinstance(block, dict) and "aiPeer" not in block:
-            if source_host.startswith("hermes_"):
-                bare = source_host.split("_", 1)[1]
-            else:
-                bare = source_host.split(".", 1)[1] if "." in source_host else source_host
+            bare = old_host.split(".", 1)[1] if "." in old_host else old_host
             block["aiPeer"] = bare
-        hosts[new_host] = hosts.pop(source_host)
+        hosts[new_host] = hosts.pop(old_host)
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
             tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1695,7 +1344,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
                 pass
             continue
 
-        print(f"✓ Honcho host updated: {source_host} → {new_host}")
+        print(f"✓ Honcho host updated: {old_host} → {new_host}")
 
 
 def rename_profile(old_name: str, new_name: str) -> Path:

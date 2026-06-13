@@ -2,7 +2,7 @@
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 

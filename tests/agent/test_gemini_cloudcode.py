@@ -18,6 +18,8 @@ import json
 import stat
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 

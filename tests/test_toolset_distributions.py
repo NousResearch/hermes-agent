@@ -1,6 +1,7 @@
 """Tests for toolset_distributions.py — distribution CRUD, sampling, validation."""
 
 import pytest
+from unittest.mock import patch
 
 from toolset_distributions import (
     DISTRIBUTIONS,

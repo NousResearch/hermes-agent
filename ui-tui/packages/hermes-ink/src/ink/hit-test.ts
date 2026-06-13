@@ -4,36 +4,6 @@ import type { EventHandlerProps } from './events/event-handlers.js'
 import { MouseEvent } from './events/mouse-event.js'
 import { nodeCache } from './node-cache.js'
 
-function hitTestAbsoluteDescendants(node: DOMElement, col: number, row: number): DOMElement | null {
-  for (let i = node.childNodes.length - 1; i >= 0; i--) {
-    const child = node.childNodes[i]!
-
-    if (child.nodeName === '#text') {
-      continue
-    }
-
-    if (!nodeCache.get(child)) {
-      continue
-    }
-
-    if (child.style.position === 'absolute') {
-      const hit = hitTest(child, col, row)
-
-      if (hit) {
-        return hit
-      }
-    }
-
-    const nestedHit = hitTestAbsoluteDescendants(child, col, row)
-
-    if (nestedHit) {
-      return nestedHit
-    }
-  }
-
-  return null
-}
-
 /**
  * Find the deepest DOM element whose rendered rect contains (col, row).
  *
@@ -53,10 +23,8 @@ export function hitTest(node: DOMElement, col: number, row: number): DOMElement 
     return null
   }
 
-  const inside = col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
-
-  if (!inside) {
-    return hitTestAbsoluteDescendants(node, col, row)
+  if (col < rect.x || col >= rect.x + rect.width || row < rect.y || row >= rect.y + rect.height) {
+    return null
   }
 
   // Later siblings paint on top; reversed traversal returns topmost hit.

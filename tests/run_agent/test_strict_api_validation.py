@@ -2,7 +2,9 @@
 
 import sys
 import types
+from unittest.mock import patch, MagicMock
 
+import pytest
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))

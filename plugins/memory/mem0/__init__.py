@@ -155,8 +155,7 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
-        from utils import atomic_json_write
-        atomic_json_write(config_path, existing, mode=0o600)
+        config_path.write_text(json.dumps(existing, indent=2))
 
     def get_config_schema(self):
         return [

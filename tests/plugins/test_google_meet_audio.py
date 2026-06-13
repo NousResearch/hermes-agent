@@ -6,6 +6,7 @@ without actually invoking those tools on the host.
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest

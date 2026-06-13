@@ -151,12 +151,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return patchOverlayState({ skillsHub: false })
     }
 
-    if (overlay.pluginsHub) {
-      return patchOverlayState({ pluginsHub: false })
-    }
-
-    if (overlay.sessions) {
-      return patchOverlayState({ sessions: false })
+    if (overlay.picker) {
+      return patchOverlayState({ picker: false })
     }
 
     if (overlay.agents) {
@@ -345,8 +341,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       if (isCtrl(key, ch, 'c')) {
         cancelOverlayFromCtrlC()
-      } else if (key.escape && overlay.sessions) {
-        patchOverlayState({ sessions: false })
+      } else if (key.escape && overlay.picker) {
+        patchOverlayState({ picker: false })
       }
 
       // When a prompt overlay is up and the user pressed a scroll key, fall
@@ -481,10 +477,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       cActions.removeQueue(cState.queueEditIdx)
 
       return cActions.clearIn()
-    }
-
-    if (isCtrl(key, ch, 'x')) {
-      return patchOverlayState({ sessions: true })
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

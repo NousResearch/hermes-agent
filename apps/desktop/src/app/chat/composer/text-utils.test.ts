@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs } from './text-utils'
+import {
+  blobDedupeKey,
+  detectTrigger,
+  extractClipboardImageBlobs,
+  isOversizedDataImageUrl,
+  isOversizedPastedText,
+  MAX_CLIPBOARD_IMAGE_BYTES,
+  MAX_INLINE_DATA_IMAGE_CHARS,
+  MAX_PASTED_TEXT_CHARS
+} from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -92,6 +101,54 @@ describe('extractClipboardImageBlobs', () => {
     } as unknown as DataTransfer
 
     expect(extractClipboardImageBlobs(clipboard)).toEqual([image])
+  })
+
+  it('does not decode oversized inline data-url images from text', () => {
+    const pastedImage = `data:image/png;base64,${'a'.repeat(MAX_INLINE_DATA_IMAGE_CHARS)}`
+
+    const clipboard = {
+      files: { length: 0, item: () => null },
+      getData: (type: string) => (type === 'text/plain' ? pastedImage : ''),
+      items: []
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([])
+  })
+
+  it('ignores clipboard image blobs above the safe render limit', () => {
+    const image = new File([new Uint8Array(MAX_CLIPBOARD_IMAGE_BYTES + 1)], 'huge.png', {
+      type: 'image/png',
+      lastModified: 1_700_000_000_002
+    })
+
+    const clipboard = {
+      files: { length: 0, item: () => null },
+      getData: () => '',
+      items: [
+        {
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => image
+        }
+      ]
+    } as unknown as DataTransfer
+
+    expect(extractClipboardImageBlobs(clipboard)).toEqual([])
+  })
+})
+
+describe('paste guardrails', () => {
+  it('flags oversized text pastes', () => {
+    expect(isOversizedPastedText('x'.repeat(MAX_PASTED_TEXT_CHARS))).toBe(false)
+    expect(isOversizedPastedText('x'.repeat(MAX_PASTED_TEXT_CHARS + 1))).toBe(true)
+  })
+
+  it('flags oversized data-url image pastes', () => {
+    const prefix = 'data:image/png;base64,'
+
+    expect(isOversizedDataImageUrl(`${prefix}${'a'.repeat(MAX_INLINE_DATA_IMAGE_CHARS - prefix.length)}`)).toBe(false)
+    expect(isOversizedDataImageUrl(`${prefix}${'a'.repeat(MAX_INLINE_DATA_IMAGE_CHARS)}`)).toBe(true)
+    expect(isOversizedDataImageUrl('plain text')).toBe(false)
   })
 })
 

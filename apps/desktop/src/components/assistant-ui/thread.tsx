@@ -51,7 +51,14 @@ import {
   renderComposerContents,
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
-import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import {
+  detectTrigger,
+  isOversizedDataImageUrl,
+  isOversizedPastedText,
+  pasteLimitMessage,
+  textBeforeCaret,
+  type TriggerState
+} from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import {
   extractDroppedFiles,
@@ -1548,6 +1555,17 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
     if (!pastedText || DATA_IMAGE_URL_RE.test(pastedText.trim())) {
       event.preventDefault()
+
+      if (isOversizedDataImageUrl(pastedText)) {
+        notifyError(null, pasteLimitMessage('image'))
+      }
+
+      return
+    }
+
+    if (isOversizedPastedText(pastedText)) {
+      event.preventDefault()
+      notifyError(null, pasteLimitMessage('text'))
 
       return
     }

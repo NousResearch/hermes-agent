@@ -52,7 +52,7 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { useTheme } from '@/themes'
@@ -93,7 +93,15 @@ import {
   slashChipElement
 } from './rich-editor'
 import { ComposerStatusStack } from './status-stack'
-import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
+import {
+  detectTrigger,
+  extractClipboardImageBlobs,
+  isOversizedDataImageUrl,
+  isOversizedPastedText,
+  pasteLimitMessage,
+  textBeforeCaret,
+  type TriggerState
+} from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -557,6 +565,20 @@ export function ChatBar({
 
     if (!pastedText) {
       event.preventDefault()
+
+      return
+    }
+
+    if (isOversizedDataImageUrl(pastedText)) {
+      event.preventDefault()
+      notifyError(null, pasteLimitMessage('image'))
+
+      return
+    }
+
+    if (isOversizedPastedText(pastedText)) {
+      event.preventDefault()
+      notifyError(null, pasteLimitMessage('text'))
 
       return
     }

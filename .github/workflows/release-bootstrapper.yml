@@ -1,0 +1,54 @@
+name: Release NOverhead Bootstrapper
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*-noverhead"
+
+permissions:
+  contents: write
+
+jobs:
+  release-bootstrapper:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pin time crate if needed
+        working-directory: apps/bootstrap-installer/src-tauri
+        run: cargo update -p time --precise 0.3.47
+
+      - name: Build bootstrapper
+        working-directory: apps/bootstrap-installer
+        run: npm run tauri:build
+
+      - name: Verify setup exe exists
+        shell: pwsh
+        run: |
+          $path = "apps/bootstrap-installer/src-tauri/target/release/NOverhead-Agent-Desktop-Setup.exe"
+          if (-not (Test-Path $path)) {
+            throw "Missing setup exe: $path"
+          }
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: NOverhead Agent Desktop ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: apps/bootstrap-installer/src-tauri/target/release/NOverhead-Agent-Desktop-Setup.exe
+          generate_release_notes: true
+          prerelease: true

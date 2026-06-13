@@ -872,6 +872,24 @@ def _emit_post_tool_call_hook(
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
+def _redact_tool_result(result: Any) -> Any:
+    """Centralized secret redaction for tool results (defense-in-depth).
+
+    Called at the end of the dispatch path in handle_function_call.
+    If ``result`` is a non-empty string, passes it through
+    :func:`agent.redact.redact_sensitive_text`.  Non-string results
+    are returned unchanged.  Fail-open: any exception is caught and
+    the original result is returned.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+        if isinstance(result, str) and result:
+            result = redact_sensitive_text(result)
+    except Exception:
+        logger.debug("centralized tool-result redaction skipped", exc_info=True)
+    return result
+
+
 
 def handle_function_call(
     function_name: str,
@@ -1192,18 +1210,8 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
-        # Centralized secret redaction for ALL tool results (defense-in-depth).
-        # While individual tools redact their own output (terminal, code_exec,
-        # file, browser), not all tools do (MCP, web, custom plugins, etc.).
-        # This ensures NO tool result reaches the LLM unredacted.
-        # Config flag `security.redact_secrets` is respected indirectly:
-        # redact_sensitive_text() checks _REDACT_ENABLED internally.
-        try:
-            from agent.redact import redact_sensitive_text
-            if isinstance(result, str) and result:
-                result = redact_sensitive_text(result)
-        except Exception:
-            logger.debug("centralized tool-result redaction skipped", exc_info=True)
+        result = _redact_tool_result(result)
+
         return result
 
     except Exception as e:

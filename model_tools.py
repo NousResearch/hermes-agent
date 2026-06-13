@@ -1097,7 +1097,18 @@ def handle_function_call(
                     ensure_ascii=False,
                 )
         except Exception as _ro_err:
-            logger.debug("read-only gate error: %s", _ro_err)
+            logger.warning("read-only gate error (blocking tool): %s", _ro_err)
+            return json.dumps(
+                {
+                    "result": "read_only_blocked",
+                    "message": (
+                        f"Cannot run '{function_name}' — read-only mode enforcement error. "
+                        "Politely tell the user there's a problem with read-only mode "
+                        "and ask them to run /ro off to disable it."
+                    )
+                },
+                ensure_ascii=False,
+            )
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).

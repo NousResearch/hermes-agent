@@ -1657,7 +1657,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 _ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
 _BOLD = "\033[1m"
 _RST = "\033[0m"
-_STREAM_PAD = ""  # 0-space indent for streamed response text
+_STREAM_PAD = "    "  # 4-space indent for streamed response text (matches Panel padding)
 
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
@@ -10547,7 +10547,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         border_style=_resp_color,
                         style=_resp_text,
                         box=rich_box.HORIZONTALS,
-                        padding=(1, 0),
+                        padding=(1, 4),
                         width=self._scrollback_box_width(),
                     ))
 

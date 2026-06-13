@@ -100,6 +100,35 @@ export function previewItemsAtAnchor<T extends { id: string }>(
   return nextIds.map(id => byId.get(id)).filter((item): item is T => Boolean(item))
 }
 
+export type SessionDropPreviewMode = 'native' | 'pointer' | null | undefined
+
+export function previewItemsForSessionDrop<T extends { id: string }>(
+  items: T[],
+  movingItem: null | T | undefined,
+  anchor: null | SessionDropAnchor,
+  options: { active: boolean; mode: SessionDropPreviewMode }
+): T[] {
+  if (!options.active || options.mode !== 'native') {
+    return items
+  }
+
+  return previewItemsAtAnchor(items, movingItem, anchor)
+}
+
+export function sessionDropMarkerIndex(ids: readonly string[], anchor: null | SessionDropAnchor): number {
+  if (!anchor) {
+    return ids.length
+  }
+
+  const index = ids.indexOf(anchor.sessionId)
+
+  if (index < 0) {
+    return ids.length
+  }
+
+  return anchor.before ? index : index + 1
+}
+
 function rowAnchorFromRect(
   sessionId: string,
   rect: DOMRect,

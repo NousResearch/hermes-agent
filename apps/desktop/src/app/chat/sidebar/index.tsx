@@ -123,9 +123,10 @@ import { resolveSidebarSessionReleaseDrop, type SidebarSessionReleaseSection } f
 import { SidebarSessionRow } from './session-row'
 import {
   placeSessionIdAtAnchor,
-  previewItemsAtAnchor,
+  previewItemsForSessionDrop,
   sessionDropAnchor,
   type SessionDropAnchor,
+  sessionDropMarkerIndex,
   useSessionDropZone
 } from './use-session-drop-zone'
 import { VirtualSessionList } from './virtual-session-list'
@@ -1462,6 +1463,7 @@ export function ChatSidebar({
               activeSessionId={activeSidebarSessionId}
               contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
               draggingSession={draggingSession}
+              draggingSessionMode={draggingSessionMode}
               draggingSessionSourceSection={draggingSessionSourceSection}
               dragPreviewSession={dragPreviewSession}
               emptyState={
@@ -1498,6 +1500,7 @@ export function ChatSidebar({
               activeSessionId={activeSidebarSessionId}
               contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
               draggingSession={draggingSession}
+              draggingSessionMode={draggingSessionMode}
               draggingSessionSourceSection={draggingSessionSourceSection}
               dragPreviewSession={dragPreviewSession}
               dropActive={pinnedDropZone.active || sessionDndTarget?.sectionKey === 'pinned'}
@@ -1539,6 +1542,7 @@ export function ChatSidebar({
                 showAllProfiles ? 'gap-3' : 'gap-px'
               )}
               draggingSession={draggingSession}
+              draggingSessionMode={draggingSessionMode}
               draggingSessionSourceSection={draggingSessionSourceSection}
               dragPreviewSession={dragPreviewSession}
               dropActive={sessionsDropZone.active || sessionDndTarget?.sectionKey === 'sessions'}
@@ -1619,6 +1623,7 @@ export function ChatSidebar({
                 activeSessionId={activeSidebarSessionId}
                 contentClassName="flex max-h-56 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
                 draggingSession={draggingSession}
+                draggingSessionMode={draggingSessionMode}
                 draggingSessionSourceSection={draggingSessionSourceSection}
                 dragPreviewSession={dragPreviewSession}
                 emptyState={null}
@@ -1701,6 +1706,7 @@ export function ChatSidebar({
               archivedRows
               contentClassName="flex max-h-56 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
               draggingSession={draggingSession}
+              draggingSessionMode={draggingSessionMode}
               draggingSessionSourceSection={draggingSessionSourceSection}
               dragPreviewSession={dragPreviewSession}
               dropActive={archivedDropZone.active || sessionDndTarget?.sectionKey === 'archived'}
@@ -1938,6 +1944,7 @@ interface SidebarSessionsSectionProps {
   labelMeta?: React.ReactNode
   labelIcon?: React.ReactNode
   draggingSession?: null | SessionDragPayload
+  draggingSessionMode?: null | SidebarSessionDragMode
   draggingSessionSourceSection?: null | string
   dragPreviewSession?: null | SessionInfo
   onSessionDragEnd?: () => void
@@ -1983,6 +1990,7 @@ function SidebarSessionsSection({
   labelMeta,
   labelIcon,
   draggingSession,
+  draggingSessionMode,
   draggingSessionSourceSection,
   dragPreviewSession,
   onSessionDragEnd,
@@ -2007,9 +2015,21 @@ function SidebarSessionsSection({
     [selectionActive, selection.ids]
   )
 
+  const showCrossSectionDropMarker =
+    sessionDragEnabled &&
+    draggingSessionMode === 'pointer' &&
+    dropActive &&
+    Boolean(draggingSession) &&
+    (sectionKey === 'pinned' || sectionKey === 'sessions') &&
+    draggingSessionSourceSection !== sectionKey
+
   const previewSessions = useMemo(
-    () => (dropActive ? previewItemsAtAnchor(sessions, dragPreviewSession, dropAnchor ?? null) : sessions),
-    [dragPreviewSession, dropActive, dropAnchor, sessions]
+    () =>
+      previewItemsForSessionDrop(sessions, dragPreviewSession, dropAnchor ?? null, {
+        active: dropActive,
+        mode: draggingSessionMode
+      }),
+    [dragPreviewSession, draggingSessionMode, dropActive, dropAnchor, sessions]
   )
 
   // Range anchors resolve against this flat order. In grouped views it can
@@ -2065,13 +2085,7 @@ function SidebarSessionsSection({
       session
     }
 
-    const crossSectionPreview =
-      sessionDragEnabled &&
-      dropActive &&
-      draggingSession?.id === session.id &&
-      draggingSessionSourceSection !== sectionKey
-
-    return sessionDragEnabled && !crossSectionPreview ? (
+    return sessionDragEnabled ? (
       <SortableSidebarSessionRow
         archivedRows={archivedRows}
         key={session.id}
@@ -2081,16 +2095,36 @@ function SidebarSessionsSection({
         session={session}
       />
     ) : (
-      <SidebarSessionRow
-        key={session.id}
-        {...rowProps}
-        nativeDraggable={!crossSectionPreview}
-        reorderable={sortable || crossSectionPreview}
-      />
+      <SidebarSessionRow key={session.id} {...rowProps} reorderable={sortable} />
     )
   }
 
-  const renderRows = (items: SessionInfo[]) => items.map(renderRow)
+  const renderRows = (items: SessionInfo[]) => {
+    if (!showCrossSectionDropMarker) {
+      return items.map(renderRow)
+    }
+
+    const markerIndex = sessionDropMarkerIndex(
+      items.map(session => session.id),
+      dropAnchor ?? null
+    )
+
+    const rows: React.ReactNode[] = []
+
+    for (let index = 0; index <= items.length; index += 1) {
+      if (index === markerIndex) {
+        rows.push(<SidebarSessionDropMarker key="__session-drop-marker" />)
+      }
+
+      const session = items[index]
+
+      if (session) {
+        rows.push(renderRow(session))
+      }
+    }
+
+    return rows
+  }
 
   const wrapSessionDnd = (node: React.ReactNode, items: SessionInfo[]) =>
     sessionDragEnabled ? (
@@ -2101,7 +2135,8 @@ function SidebarSessionsSection({
       node
     )
 
-  const flatVirtualized = !showEmptyState && !groups?.length && previewSessions.length >= VIRTUALIZE_THRESHOLD
+  const flatVirtualized =
+    !showCrossSectionDropMarker && !showEmptyState && !groups?.length && previewSessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
 
@@ -2209,6 +2244,18 @@ interface SortableSidebarSessionRowProps {
   rowProps: React.ComponentProps<typeof SidebarSessionRow>
   sectionKey?: string
   session: SessionInfo
+}
+
+function SidebarSessionDropMarker() {
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none px-1 py-0.5"
+      data-sidebar-session-drop-marker="true"
+    >
+      <div className="h-0.5 rounded-full bg-(--ui-accent) opacity-85 shadow-sm" />
+    </div>
+  )
 }
 
 function SortableSidebarSessionRow({ archivedRows, pinned, rowProps, sectionKey, session }: SortableSidebarSessionRowProps) {

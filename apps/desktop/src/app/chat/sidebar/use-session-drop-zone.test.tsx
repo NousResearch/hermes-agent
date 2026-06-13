@@ -14,9 +14,11 @@ import {
 import {
   placeSessionIdAtAnchor,
   previewItemsAtAnchor,
+  previewItemsForSessionDrop,
   type SessionDragFlags,
   type SessionDropAnchor,
   sessionDropAnchor,
+  sessionDropMarkerIndex,
   useSessionDropZone
 } from './use-session-drop-zone'
 
@@ -488,5 +490,41 @@ describe('previewItemsAtAnchor', () => {
     expect(previewItemsAtAnchor(items, items[0], null)).toBe(items)
     expect(previewItemsAtAnchor(items, items[0], { before: true, sessionId: 'missing' })).toBe(items)
     expect(previewItemsAtAnchor(items, items[0], { before: false, sessionId: 'a' })).toBe(items)
+  })
+})
+
+describe('previewItemsForSessionDrop', () => {
+  const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+  const moving = { id: 'moving' }
+  const anchor = { before: true, sessionId: 'b' }
+
+  it('keeps pointer drags on the real section order instead of cloning the active row', () => {
+    expect(previewItemsForSessionDrop(items, moving, anchor, { active: true, mode: 'pointer' })).toBe(items)
+  })
+
+  it('still previews native HTML drags where no sortable overlay owns the row motion', () => {
+    expect(previewItemsForSessionDrop(items, moving, anchor, { active: true, mode: 'native' })).toEqual([
+      { id: 'a' },
+      moving,
+      { id: 'b' },
+      { id: 'c' }
+    ])
+  })
+
+  it('leaves inactive zones untouched', () => {
+    expect(previewItemsForSessionDrop(items, moving, anchor, { active: false, mode: 'native' })).toBe(items)
+  })
+})
+
+describe('sessionDropMarkerIndex', () => {
+  it('places the marker before or after the anchored row', () => {
+    expect(sessionDropMarkerIndex(['a', 'b', 'c'], { before: true, sessionId: 'b' })).toBe(1)
+    expect(sessionDropMarkerIndex(['a', 'b', 'c'], { before: false, sessionId: 'b' })).toBe(2)
+  })
+
+  it('falls back to the end for section-level drops without a row anchor', () => {
+    expect(sessionDropMarkerIndex(['a', 'b'], null)).toBe(2)
+    expect(sessionDropMarkerIndex(['a', 'b'], { before: true, sessionId: 'missing' })).toBe(2)
+    expect(sessionDropMarkerIndex([], null)).toBe(0)
   })
 })

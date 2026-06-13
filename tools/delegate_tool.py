@@ -1458,11 +1458,20 @@ def _run_single_child(
     _stale_count = [0]
 
     def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+        # Emit once immediately, then on the configured interval.  Without an
+        # initial touch, short-but-legitimate slow tools can spend almost a full
+        # heartbeat interval with the parent looking idle; tight gateway/test
+        # intervals then miss the final refresh because the child finishes just
+        # before the next wait expires.
+        while not _heartbeat_stop.is_set():
             if parent_agent is None:
+                if _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                    break
                 continue
             touch = getattr(parent_agent, "_touch_activity", None)
             if not touch:
+                if _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                    break
                 continue
             # Pull detail from the child's own activity tracker
             desc = f"delegate_task: subagent {task_index} working"
@@ -1525,6 +1534,8 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            if _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                break
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 

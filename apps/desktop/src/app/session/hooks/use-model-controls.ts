@@ -30,12 +30,30 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   const copy = t.desktop
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
-      const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
+      const patch = (prev: ModelOptionsResponse | undefined): ModelOptionsResponse | undefined => {
+        // Avoid writing a provider/model-only stub into the cache — that makes
+        // the status-bar menu think options are loaded while `providers` is empty.
+        if (!prev?.providers?.length) {
+          return prev
+        }
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
+        return { ...prev, provider, model }
+      }
+
+      const sessionKey = ['model-options', activeSessionId || 'global'] as const
+      const sessionPatched = patch(queryClient.getQueryData<ModelOptionsResponse>(sessionKey))
+
+      if (sessionPatched) {
+        queryClient.setQueryData<ModelOptionsResponse>(sessionKey, sessionPatched)
+      }
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
+        const globalKey = ['model-options', 'global'] as const
+        const globalPatched = patch(queryClient.getQueryData<ModelOptionsResponse>(globalKey))
+
+        if (globalPatched) {
+          queryClient.setQueryData<ModelOptionsResponse>(globalKey, globalPatched)
+        }
       }
     },
     [activeSessionId, queryClient]

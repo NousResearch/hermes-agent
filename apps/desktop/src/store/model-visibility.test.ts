@@ -29,6 +29,16 @@ describe('model visibility', () => {
     expect(visible.has(modelVisibilityKey('local-ollama', 'llama3.2:latest'))).toBe(true)
   })
 
+  it('falls back to curated defaults when the stored visibility set is empty', () => {
+    const visible = effectiveVisibleKeys(new Set(), [
+      provider('copilot', ['claude-sonnet-4.6', 'gpt-4.1']),
+      provider('local-ollama', ['qwen3:latest'])
+    ])
+
+    expect(visible.has(modelVisibilityKey('copilot', 'claude-sonnet-4.6'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('local-ollama', 'qwen3:latest'))).toBe(true)
+  })
+
   it('does not re-add models from a provider that already has stored choices', () => {
     const stored = new Set([modelVisibilityKey('local-ollama', 'qwen3:latest')])
 

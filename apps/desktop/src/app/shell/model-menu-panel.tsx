@@ -73,12 +73,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       }
 
       return getGlobalModelOptions()
-    }
+    },
+    placeholderData: previousData => previousData,
+    staleTime: 30_000
   })
 
   const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
   const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
-  const loading = modelOptions.isPending && !modelOptions.data
+  const loading = modelOptions.isPending && !modelOptions.data?.providers?.length
 
   const error = modelOptions.error
     ? modelOptions.error instanceof Error

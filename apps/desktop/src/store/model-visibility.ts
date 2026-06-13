@@ -117,12 +117,8 @@ export function effectiveVisibleKeys(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[]
 ): Set<string> {
-  if (!stored) {
+  if (!stored || stored.size === 0) {
     return defaultVisibleKeys(providers)
-  }
-
-  if (stored.size === 0) {
-    return new Set()
   }
 
   const next = new Set(stored)

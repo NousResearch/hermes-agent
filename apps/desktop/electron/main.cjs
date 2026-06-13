@@ -112,6 +112,27 @@ if (USER_DATA_OVERRIDE) {
   app.setPath('userData', resolvedUserData)
 }
 
+// One OS-level app instance. A second launch (double-click, shortcut, etc.)
+// should focus the existing window instead of spawning a fresh process that
+// repaints in the default light theme before settings load.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      focusWindow(mainWindow)
+      return
+    }
+
+    if (app.isReady()) {
+      createWindow()
+    }
+  })
+}
+
+const PORT_FLOOR = 9120
+const PORT_CEILING = 9199
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged
 const IS_MAC = process.platform === 'darwin'
@@ -469,6 +490,23 @@ function getTitleBarOverlayOptions() {
     height: TITLEBAR_HEIGHT,
     symbolColor: useDarkColors ? '#f7f7f7' : '#242424'
   }
+}
+
+function getWindowBackgroundColor() {
+  if (rendererTitleBarTheme?.background) {
+    return rendererTitleBarTheme.background
+  }
+
+  return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
+}
+
+function applyTitleBarThemeToWindow(win, theme = rendererTitleBarTheme) {
+  if (!win || win.isDestroyed() || !theme) {
+    return
+  }
+
+  win.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+  win.setBackgroundColor?.(theme.background)
 }
 
 const MEDIA_MIME_TYPES = {
@@ -5113,6 +5151,7 @@ function createSessionWindow(sessionId, { watch = false } = {}) {
     win.once('ready-to-show', () => {
       if (!win.isDestroyed()) win.show()
     })
+    applyTitleBarThemeToWindow(win)
 
     win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
     win.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -5709,7 +5748,7 @@ ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(Stri
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 
-ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
+ipcMain.on('hermes:titlebar-theme', (event, payload) => {
   if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {
     return
   }
@@ -5718,7 +5757,15 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     background: payload.background,
     foreground: payload.foreground
   }
-  mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+
+  const senderWindow = BrowserWindow.fromWebContents(event.sender)
+  applyTitleBarThemeToWindow(senderWindow)
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win !== senderWindow) {
+      applyTitleBarThemeToWindow(win)
+    }
+  }
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).

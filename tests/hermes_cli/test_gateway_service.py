@@ -1980,6 +1980,16 @@ class TestProfileArg:
         result = gateway_cli._profile_arg(str(profile_dir))
         assert result == "--profile mybot"
 
+    def test_named_profile_under_target_user_root_returns_flag(self, tmp_path):
+        """System installs generated under sudo must compare against target user's root."""
+        target_root = tmp_path / "home" / "alice" / ".hermes"
+        profile_dir = target_root / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+
+        result = gateway_cli._profile_arg(str(profile_dir), default_root=target_root)
+
+        assert result == "--profile mybot"
+
     def test_hash_path_returns_empty(self, tmp_path, monkeypatch):
         """Arbitrary non-profile HERMES_HOME should return empty string."""
         custom_home = tmp_path / "custom" / "hermes"
@@ -2022,6 +2032,28 @@ class TestProfileArg:
         # NOT use --replace; the supervisor owns the lifecycle. (--replace stays
         # on the manual launchd fallback path — see test_launchd_plist_includes_profile.)
         assert "--replace" not in unit
+
+    def test_systemd_unit_for_target_user_includes_named_profile(self, tmp_path, monkeypatch):
+        """sudo system install must keep the target user's named profile in ExecStart."""
+        root_home = tmp_path / "root"
+        target_home = tmp_path / "home" / "alice"
+        root_profile = root_home / ".hermes" / "profiles" / "mybot"
+        root_profile.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(root_profile))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_profile)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", str(target_home)),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert "ExecStart=" in unit
+        assert "--profile mybot gateway run" in unit
+        assert f'HERMES_HOME={target_home / ".hermes" / "profiles" / "mybot"}' in unit
 
     def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
         """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""

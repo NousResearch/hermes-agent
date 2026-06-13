@@ -4579,12 +4579,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ) -> None:
                 """Ensure the pre-claimed sentinel is always released.
 
-                In the normal flow, ``_process_message_background`` sets
-                its own sentinel and releases it in its ``finally`` block.
-                If ``handle_message`` raises *before* reaching that
-                method (e.g. during topic recovery or session key
+                In the normal flow the resume turn reaches
+                ``_handle_message``, which replaces our pre-claim with
+                its own ``_AGENT_PENDING_SENTINEL`` (and releases it in
+                its ``finally`` block) once the run begins.  If
+                ``handle_message`` raises *before* the runner takes over
+                the slot (e.g. during topic recovery or session-key
                 resolution), nobody clears our pre-claim — so we do it
-                here unconditionally.
+                here unconditionally.  The ``is _AGENT_PENDING_SENTINEL``
+                guard below only releases the slot we ourselves placed,
+                never one a live run currently owns.
                 """
                 try:
                     await _adapter.handle_message(_event)

@@ -291,6 +291,10 @@ def build_turn_context(
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
+            # Mark compression as started — if the turn is interrupted before
+            # completion, this flag signals that an incomplete compression
+            # occurred and shouldn't count against anti-thrashing.
+            _compressor._last_compression_interrupted = True
             for _pass in range(3):
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
@@ -310,7 +314,10 @@ def build_turn_context(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if not _compressor.should_compress(_preflight_tokens):
+                # After interrupt recovery, force compression past anti-thrashing
+                # to ensure we compress even if previous passes were blocked.
+                _force_compress = getattr(agent, "_interrupt_requested", False)
+                if not _compressor.should_compress(_preflight_tokens, force=_force_compress):
                     break
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).

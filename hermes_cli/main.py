@@ -354,6 +354,37 @@ def _apply_profile_override() -> None:
             return False
         return True
 
+    def _resolve_sudo_user_profile_env(name: str) -> str | None:
+        """Resolve `sudo hermes -p <name>` against the invoking user's home.
+
+        `_apply_profile_override()` runs before argparse, so `--run-as-user`
+        is not available yet. For sudo invocations, the best available signal
+        is SUDO_USER: root is only doing the privileged install/start action,
+        while the profile store normally belongs to the user who invoked sudo.
+        """
+        if name == "default":
+            return None
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return None
+        sudo_user = os.environ.get("SUDO_USER", "").strip()
+        if not sudo_user or sudo_user == "root":
+            return None
+
+        try:
+            import pwd
+
+            home = Path(pwd.getpwnam(sudo_user).pw_dir)
+        except Exception:
+            return None
+
+        candidate = home / ".hermes" / "profiles" / name
+        try:
+            if candidate.is_dir():
+                return str(candidate)
+        except OSError:
+            return None
+        return None
+
     # 1. Check for explicit -p / --profile flag. Historically this worked even
     # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
     # The exception is command-argv passthrough regions such as `mcp add --args`.
@@ -441,7 +472,12 @@ def _apply_profile_override() -> None:
             from hermes_cli.profiles import resolve_profile_env
 
             hermes_home = resolve_profile_env(profile_name)
-        except (ValueError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            hermes_home = _resolve_sudo_user_profile_env(profile_name)
+            if not hermes_home:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+        except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         except Exception as exc:

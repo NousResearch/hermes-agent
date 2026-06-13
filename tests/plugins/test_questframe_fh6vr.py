@@ -195,6 +195,8 @@ def test_plugin_registers_full_questframe_tool_surface():
         "questframe_fh6_capture_preflight",
         "questframe_live_capture_selftest",
         "questframe_depth_surface_selftest",
+        "questframe_hermes_bridge_selftest",
+        "questframe_hmd_controller_input_selftest",
         "questframe_support_report",
         "questframe_unity_scan",
     }.issubset(set(calls["tools"]))
@@ -335,6 +337,61 @@ def test_cli_openxr_presentation_require_hmd_dispatch(monkeypatch):
     assert "1280" in extra
     assert "--frames" in extra
     assert "72" in extra
+
+
+def test_cli_hermes_bridge_selftest_dispatch(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+    parser = questframe_cli.argparse.ArgumentParser()
+    questframe_cli.register_cli(parser)
+    args = parser.parse_args(["hermes-bridge-selftest", "--timeout-seconds", "75"])
+
+    exit_code = questframe_cli.questframe_command(args)
+
+    assert exit_code == 0
+    assert seen["command"] == "hermes-bridge-selftest"
+    assert seen["kwargs"]["extra_args"] == ["--json"]
+    assert seen["kwargs"]["timeout_seconds"] == 75
+
+
+def test_cli_hmd_controller_input_selftest_dispatch(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+    parser = questframe_cli.argparse.ArgumentParser()
+    questframe_cli.register_cli(parser)
+    args = parser.parse_args(
+        [
+            "hmd-controller-input-selftest",
+            "--allow-missing-runtime",
+            "--require-virtual-gamepad",
+            "--no-process-list",
+            "--timeout-seconds",
+            "75",
+        ]
+    )
+
+    exit_code = questframe_cli.questframe_command(args)
+
+    assert exit_code == 0
+    assert seen["command"] == "hmd-controller-input-selftest"
+    extra = seen["kwargs"]["extra_args"]
+    assert "--json" in extra
+    assert "--allow-missing-runtime" in extra
+    assert "--require-virtual-gamepad" in extra
+    assert "--no-process-list" in extra
+    assert seen["kwargs"]["timeout_seconds"] == 75
 
 
 def test_cli_depth_surface_selftest_dispatch(monkeypatch):

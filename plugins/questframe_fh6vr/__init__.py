@@ -113,6 +113,18 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_hermes_bridge_selftest",
+        core.HERMES_BRIDGE_SELFTEST_SCHEMA,
+        core.handle_hermes_bridge_selftest,
+        "Q",
+    ),
+    (
+        "questframe_hmd_controller_input_selftest",
+        core.HMD_CONTROLLER_INPUT_SELFTEST_SCHEMA,
+        core.handle_hmd_controller_input_selftest,
+        "Q",
+    ),
+    (
         "questframe_vcc_health",
         core.VCC_HEALTH_SCHEMA,
         core.handle_vcc_health,
@@ -151,7 +163,8 @@ def register(ctx) -> None:
             "live-capture-selftest|depth-surface-selftest|depth-reader-selftest|"
             "depth-producer-selftest|companion-depth-producer-selftest|"
             "color-depth-pairing-selftest|openxr-presentation-selftest|"
-            "pcvr-management-selftest|support-report|unity-scan]"
+            "pcvr-management-selftest|hermes-bridge-selftest|"
+            "hmd-controller-input-selftest|support-report|unity-scan]"
         ),
     )
     ctx.register_cli_command(

@@ -156,6 +156,23 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     pcvr_management.add_argument("--no-process-list", action="store_true")
     pcvr_management.add_argument("--timeout-seconds", type=int, default=None)
 
+    hermes_bridge = subs.add_parser(
+        "hermes-bridge-selftest",
+        help="Validate QuestFrame C# backend contract for the Hermes Agent plugin",
+    )
+    hermes_bridge.add_argument("--launcher-exe", default="")
+    hermes_bridge.add_argument("--timeout-seconds", type=int, default=None)
+
+    hmd_controller_input = subs.add_parser(
+        "hmd-controller-input-selftest",
+        help="Validate HMD controller driving mapping and virtual gamepad readiness",
+    )
+    hmd_controller_input.add_argument("--launcher-exe", default="")
+    hmd_controller_input.add_argument("--allow-missing-runtime", action="store_true")
+    hmd_controller_input.add_argument("--require-virtual-gamepad", action="store_true")
+    hmd_controller_input.add_argument("--no-process-list", action="store_true")
+    hmd_controller_input.add_argument("--timeout-seconds", type=int, default=None)
+
     vcc_health = subs.add_parser(
         "vcc-health",
         help="Check VRChat Creator Companion and Unity Hub readiness",
@@ -226,6 +243,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "openxr-presentation-selftest,live-color-loop-selftest,"
             "immersive-presentation-loop-selftest,cockpit-presence-selftest,"
             "kofi-parity-selftest,pcvr-management-selftest,vcc-health,"
+            "hermes-bridge-selftest,hmd-controller-input-selftest,"
             "support-report,unity-scan}"
         )
         return 2
@@ -492,6 +510,31 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "pcvr-management-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "hermes-bridge-selftest":
+        return _print(
+            core.run_launcher(
+                "hermes-bridge-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "hmd-controller-input-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "allow_missing_runtime", False)):
+            extra.append("--allow-missing-runtime")
+        if bool(getattr(args, "require_virtual_gamepad", False)):
+            extra.append("--require-virtual-gamepad")
+        if bool(getattr(args, "no_process_list", False)):
+            extra.append("--no-process-list")
+        return _print(
+            core.run_launcher(
+                "hmd-controller-input-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),

@@ -17,6 +17,8 @@ def test_status_lists_019_tools():
     assert "questframe_openxr_presentation_selftest" in tools
     assert "questframe_cockpit_presence_selftest" in tools
     assert "questframe_pcvr_management_selftest" in tools
+    assert "questframe_hermes_bridge_selftest" in tools
+    assert "questframe_hmd_controller_input_selftest" in tools
 
 
 def test_color_depth_pairing_dispatches_launcher():
@@ -151,6 +153,46 @@ def test_pcvr_management_dispatches_launcher():
     assert "--json" in extra
 
 
+def test_hermes_bridge_dispatches_launcher():
+    fake = {"ok": True, "command": "hermes-bridge-selftest", "exit_code": 0}
+    with patch.object(core, "run_launcher", return_value=fake) as run:
+        payload = json.loads(
+            core.handle_hermes_bridge_selftest(
+                {
+                    "timeout_seconds": 30,
+                }
+            )
+        )
+    assert payload["ok"] is True
+    run.assert_called_once()
+    assert run.call_args.args[0] == "hermes-bridge-selftest"
+    assert run.call_args.kwargs["extra_args"] == ["--json"]
+    assert run.call_args.kwargs["timeout_seconds"] == 30
+
+
+def test_hmd_controller_input_dispatches_launcher():
+    fake = {"ok": True, "command": "hmd-controller-input-selftest", "exit_code": 0}
+    with patch.object(core, "run_launcher", return_value=fake) as run:
+        payload = json.loads(
+            core.handle_hmd_controller_input_selftest(
+                {
+                    "allow_missing_runtime": True,
+                    "require_virtual_gamepad": True,
+                    "no_process_list": True,
+                    "timeout_seconds": 30,
+                }
+            )
+        )
+    assert payload["ok"] is True
+    run.assert_called_once()
+    assert run.call_args.args[0] == "hmd-controller-input-selftest"
+    extra = run.call_args.kwargs["extra_args"]
+    assert "--allow-missing-runtime" in extra
+    assert "--require-virtual-gamepad" in extra
+    assert "--no-process-list" in extra
+    assert "--json" in extra
+
+
 def test_slash_pcvr_management_alias():
     with patch.object(core, "handle_pcvr_management_selftest", return_value='{"ok":true}') as handler:
         out = core.handle_slash("pcvr-management-selftest --allow-missing-runtime")
@@ -158,3 +200,15 @@ def test_slash_pcvr_management_alias():
     handler.assert_called_once()
     args = handler.call_args.args[0]
     assert args["allow_missing_runtime"] is True
+
+
+def test_slash_hmd_controller_input_alias():
+    with patch.object(core, "handle_hmd_controller_input_selftest", return_value='{"ok":true}') as handler:
+        out = core.handle_slash(
+            "hmd-controller-input-selftest --allow-missing-runtime --require-virtual-gamepad"
+        )
+    assert '"ok":true' in out.replace(" ", "")
+    handler.assert_called_once()
+    args = handler.call_args.args[0]
+    assert args["allow_missing_runtime"] is True
+    assert args["require_virtual_gamepad"] is True

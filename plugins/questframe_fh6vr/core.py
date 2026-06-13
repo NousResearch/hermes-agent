@@ -678,6 +678,58 @@ PCVR_MANAGEMENT_SELFTEST_SCHEMA = {
     },
 }
 
+HERMES_BRIDGE_SELFTEST_SCHEMA = {
+    "name": "questframe_hermes_bridge_selftest",
+    "description": "Validate the QuestFrame C# backend command contract used by the Hermes Agent plugin.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+HMD_CONTROLLER_INPUT_SELFTEST_SCHEMA = {
+    "name": "questframe_hmd_controller_input_selftest",
+    "description": "Validate Quest/OpenXR/SteamVR controller driving mappings and virtual gamepad readiness.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "allow_missing_runtime": {
+                "type": "boolean",
+                "description": "When true, pass --allow-missing-runtime for offline package checks.",
+            },
+            "require_virtual_gamepad": {
+                "type": "boolean",
+                "description": "When true, require an installed virtual gamepad backend before passing.",
+            },
+            "no_process_list": {
+                "type": "boolean",
+                "description": "When true, pass --no-process-list to avoid enumerating local processes.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 UNITY_SCAN_SCHEMA = {
     "name": "questframe_unity_scan",
     "description": "Read-only scan of Unity/VCC project packages for VRChat tool risk.",
@@ -1187,6 +1239,8 @@ def status() -> dict[str, Any]:
             "questframe_cockpit_presence_selftest",
             "questframe_kofi_parity_selftest",
             "questframe_pcvr_management_selftest",
+            "questframe_hermes_bridge_selftest",
+            "questframe_hmd_controller_input_selftest",
             "questframe_vcc_health",
             "questframe_support_report",
             "questframe_unity_scan",
@@ -1618,6 +1672,37 @@ def handle_pcvr_management_selftest(args: dict[str, Any] | None = None, **_: Any
     )
 
 
+def handle_hermes_bridge_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "hermes-bridge-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_hmd_controller_input_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("allow_missing_runtime")):
+        extra.append("--allow-missing-runtime")
+    if bool(args.get("require_virtual_gamepad")):
+        extra.append("--require-virtual-gamepad")
+    if bool(args.get("no_process_list")):
+        extra.append("--no-process-list")
+    return _json(
+        run_launcher(
+            "hmd-controller-input-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 HELP = """questframe commands:
   /questframe status
   /questframe preflight
@@ -1638,6 +1723,8 @@ HELP = """questframe commands:
   /questframe cockpit-presence-selftest [--approve] [--attempt-window-capture] [--seconds N]
   /questframe kofi-parity-selftest [--approve] [--attempt-window-capture]
   /questframe pcvr-management-selftest [--allow-missing-runtime]
+  /questframe hermes-bridge-selftest
+  /questframe hmd-controller-input-selftest [--allow-missing-runtime] [--require-virtual-gamepad]
   /questframe vcc-health [project_path]
   /questframe support-report
   /questframe unity-scan [project_path]
@@ -1657,6 +1744,16 @@ def handle_slash(raw_args: str) -> str:
         return handle_rtx3060_profiles({})
     if command in {"rtx3060-selftest", "rtx3060"}:
         return handle_rtx3060_selftest({})
+    if command in {"hermes-bridge-selftest", "hermes-bridge"}:
+        return handle_hermes_bridge_selftest({})
+    if command in {"hmd-controller-input-selftest", "hmd-controller-input", "controller-input"}:
+        return handle_hmd_controller_input_selftest(
+            {
+                "allow_missing_runtime": "--allow-missing-runtime" in argv,
+                "require_virtual_gamepad": "--require-virtual-gamepad" in argv,
+                "no_process_list": "--no-process-list" in argv,
+            }
+        )
     if command in {"session", "session-readiness"}:
         return handle_session_readiness({})
     if command in {"graphics-session", "graphics"}:

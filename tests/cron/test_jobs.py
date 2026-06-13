@@ -1010,12 +1010,11 @@ class TestFallbackProvidersPersistence:
         assert job["fallback_providers"] is None
         reloaded = get_job(job["id"])
         assert reloaded["fallback_providers"] is None
-        # The key itself is always written by create_job. The scheduler's
-        # _effective_fallback_chain() gates on key MEMBERSHIP, not on
-        # `is not None`, so every job created here resolves to "no
-        # fallback" instead of inheriting the profile chain.
-        # TODO: suspected bug — scheduler should treat None as "inherit";
-        # flagged in the PR body. Pinning the storage shape that triggers it.
+        # create_job always writes the key with value None; the scheduler's
+        # _effective_fallback_chain() resolves by VALUE (None = inherit the
+        # profile chain), so this stored shape inherits — see
+        # tests/cron/test_scheduler.py::TestEffectiveFallbackChain for the
+        # resolution side of the round trip.
         raw = load_jobs()[0]
         assert "fallback_providers" in raw
         assert raw["fallback_providers"] is None
@@ -1042,22 +1041,45 @@ class TestFallbackProvidersPersistence:
         reloaded = get_job(job["id"])
         assert reloaded["fallback_providers"] == job["fallback_providers"]
 
-    def test_all_garbage_list_normalizes_to_inherit(self, tmp_cron_dir):
-        # Current behavior: a non-empty list with no dict entries is treated
-        # as if fallback_providers was never passed (None = inherit), NOT as
-        # an explicit "no fallback" empty list.
-        job = create_job("p", "30m", fallback_providers=["just-a-string"])
-        assert job["fallback_providers"] is None
+    def test_all_garbage_list_rejected_at_create_time(self, tmp_cron_dir):
+        # A non-empty list with no dict entries is malformed config. It must
+        # never silently normalize to None — stored None means "inherit the
+        # profile chain", which would widen behavior on a typo.
+        with pytest.raises(ValueError, match="fallback_providers"):
+            create_job("p", "30m", fallback_providers=["just-a-string"])
+        assert load_jobs() == []
 
-    def test_non_list_scalar_normalizes_to_inherit(self, tmp_cron_dir):
-        job = create_job("p", "30m", fallback_providers="openrouter")
-        assert job["fallback_providers"] is None
+    def test_non_list_scalar_rejected_at_create_time(self, tmp_cron_dir):
+        # Same malformed-input class: a scalar is not a provider chain and
+        # must not silently re-enable inheritance.
+        with pytest.raises(ValueError, match="fallback_providers"):
+            create_job("p", "30m", fallback_providers="openrouter")
+        assert load_jobs() == []
 
     def test_update_round_trips_empty_list(self, tmp_cron_dir):
         job = create_job("p", "30m", fallback_providers=[{"provider": "x", "model": "y"}])
         updated = update_job(job["id"], {"fallback_providers": []})
         assert updated["fallback_providers"] == []
         assert get_job(job["id"])["fallback_providers"] == []
+
+    def test_update_none_restores_inherit(self, tmp_cron_dir):
+        # Clearing the override with None must round-trip back to the
+        # "inherit profile chain" stored shape.
+        job = create_job("p", "30m", fallback_providers=[{"provider": "x", "model": "y"}])
+        updated = update_job(job["id"], {"fallback_providers": None})
+        assert updated["fallback_providers"] is None
+        assert get_job(job["id"])["fallback_providers"] is None
+
+    def test_update_malformed_value_rejected(self, tmp_cron_dir):
+        # update_job() guards writers that bypass the cronjob tool (the web
+        # API passes raw update bodies straight through) — malformed values
+        # must be rejected, never stored or silently widened to inherit.
+        job = create_job("p", "30m", fallback_providers=[{"provider": "x", "model": "y"}])
+        with pytest.raises(ValueError, match="fallback_providers"):
+            update_job(job["id"], {"fallback_providers": "openrouter"})
+        with pytest.raises(ValueError, match="fallback_providers"):
+            update_job(job["id"], {"fallback_providers": ["just-a-string"]})
+        assert get_job(job["id"])["fallback_providers"] == [{"provider": "x", "model": "y"}]
 
 
 class TestJobProfileField:

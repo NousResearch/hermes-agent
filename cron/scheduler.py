@@ -111,6 +111,41 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _effective_fallback_chain(job: dict, cfg: dict) -> list[dict[str, Any]]:
+    """Return the effective fallback chain for a cron job.
+
+    Per-job ``fallback_providers`` overrides the profile config by VALUE,
+    matching the storage contract in ``cron.jobs._normalize_fallback_providers``:
+
+    - ``None`` (or absent key) → inherit the profile's configured chain.
+    - explicit ``[]``          → no fallback; the job fails fast.
+    - non-empty list/dict      → use it as the chain.
+
+    ``create_job()`` always writes the ``fallback_providers`` key (``None``
+    when not passed), so gating on key membership would silently drop the
+    profile chain for every tool-created job.
+    """
+    raw = job.get("fallback_providers")
+    if raw is None:
+        raw = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
+    elif not isinstance(raw, (list, dict)):
+        # Malformed per-job value (hand-edited storage; create/update reject
+        # these). Fail closed to "no fallback" rather than silently widening
+        # to the profile chain.
+        logger.warning(
+            "Job '%s': malformed fallback_providers %r; treating as no fallback",
+            job.get("id") or job.get("name") or "?",
+            raw,
+        )
+        return []
+    if isinstance(raw, list):
+        return [e for e in raw if isinstance(e, dict)]
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1669,26 +1704,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # example DeepSeek) for cron jobs that do not pin provider/model.
             _resolved_model = job.get("model") or _cfg.get("model", {}).get("default") if isinstance(_cfg, dict) and isinstance(_cfg.get("model"), dict) else job.get("model")
             _resolved_provider = job.get("provider") or _cfg.get("model", {}).get("provider") if isinstance(_cfg, dict) and isinstance(_cfg.get("model"), dict) else job.get("provider")
-
-            def _effective_fallback_chain(_job: dict, _cfg: dict) -> list[dict[str, Any]]:
-                """Return the effective fallback chain for this job.
-
-                Per-job ``fallback_providers`` overrides the profile config.
-                An explicit empty list means no fallback — the job fails fast.
-                """
-                if "fallback_providers" in _job:
-                    raw = _job["fallback_providers"]
-                    if isinstance(raw, list):
-                        return [e for e in raw if isinstance(e, dict)]
-                    if isinstance(raw, dict):
-                        return [raw]
-                    return []
-                raw = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
-                if isinstance(raw, list):
-                    return [e for e in raw if isinstance(e, dict)]
-                if isinstance(raw, dict):
-                    return [raw]
-                return []
 
             runtime_kwargs = {
                 "requested": _resolved_provider,

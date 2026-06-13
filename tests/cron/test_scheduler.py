@@ -1672,6 +1672,132 @@ class TestRunJobConfigEnvVarExpansion:
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
 
 
+class TestEffectiveFallbackChain:
+    """Value-based per-job fallback resolution.
+
+    Storage contract (cron.jobs._normalize_fallback_providers): None =
+    inherit the profile chain, explicit [] = no fallback, non-empty list =
+    explicit chain. create_job() always writes the key (None when not
+    passed), so resolution must gate on the VALUE, never key membership.
+    """
+
+    _PROFILE_CHAIN = [{"provider": "openrouter", "model": "profile-fallback"}]
+
+    def test_stored_none_inherits_profile_chain(self):
+        from cron.scheduler import _effective_fallback_chain
+
+        job = {"id": "j1", "fallback_providers": None}
+        cfg = {"fallback_providers": self._PROFILE_CHAIN}
+        assert _effective_fallback_chain(job, cfg) == self._PROFILE_CHAIN
+
+    def test_absent_key_inherits_profile_chain(self):
+        from cron.scheduler import _effective_fallback_chain
+
+        cfg = {"fallback_providers": self._PROFILE_CHAIN}
+        assert _effective_fallback_chain({"id": "j1"}, cfg) == self._PROFILE_CHAIN
+
+    def test_explicit_empty_list_means_no_fallback(self):
+        from cron.scheduler import _effective_fallback_chain
+
+        job = {"id": "j1", "fallback_providers": []}
+        cfg = {"fallback_providers": self._PROFILE_CHAIN}
+        assert _effective_fallback_chain(job, cfg) == []
+
+    def test_explicit_list_overrides_profile_chain(self):
+        from cron.scheduler import _effective_fallback_chain
+
+        mine = [{"provider": "nous", "model": "hermes-4"}]
+        job = {"id": "j1", "fallback_providers": mine}
+        cfg = {"fallback_providers": self._PROFILE_CHAIN}
+        assert _effective_fallback_chain(job, cfg) == mine
+
+    def test_inherit_uses_legacy_fallback_model_key(self):
+        from cron.scheduler import _effective_fallback_chain
+
+        legacy = {"provider": "openrouter", "model": "legacy-model"}
+        job = {"id": "j1", "fallback_providers": None}
+        assert _effective_fallback_chain(job, {"fallback_model": legacy}) == [legacy]
+
+    def test_no_job_value_and_no_config_chain_is_empty(self):
+        from cron.scheduler import _effective_fallback_chain
+
+        assert _effective_fallback_chain({"id": "j1", "fallback_providers": None}, {}) == []
+
+    def test_malformed_job_value_fails_closed_to_no_fallback(self, caplog):
+        from cron.scheduler import _effective_fallback_chain
+
+        # Hand-edited storage carrying a scalar must not silently widen to
+        # the profile chain — fail closed to "no fallback" with a warning.
+        job = {"id": "j1", "fallback_providers": "openrouter"}
+        cfg = {"fallback_providers": self._PROFILE_CHAIN}
+        with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            assert _effective_fallback_chain(job, cfg) == []
+        assert "malformed fallback_providers" in caplog.text
+
+
+class TestRunJobFallbackInheritance:
+    """End-to-end: a tool-created job (stored fallback_providers=None) must
+    inherit the profile's fallback chain at AIAgent construction time, and
+    explicit [] must disable fallback."""
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def _run(self, tmp_path, job):
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+        assert success is True
+        assert error is None
+        return mock_agent_cls.call_args.kwargs
+
+    def test_stored_none_inherits_config_chain(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: profile-fallback-model\n"
+        )
+        job = {
+            "id": "fb-none-job",
+            "name": "fb none",
+            "prompt": "hi",
+            "fallback_providers": None,
+        }
+        kwargs = self._run(tmp_path, job)
+        assert kwargs.get("fallback_model") == [
+            {"provider": "openrouter", "model": "profile-fallback-model"}
+        ]
+
+    def test_explicit_empty_list_disables_fallback(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: profile-fallback-model\n"
+        )
+        job = {
+            "id": "fb-empty-job",
+            "name": "fb empty",
+            "prompt": "hi",
+            "fallback_providers": [],
+        }
+        kwargs = self._run(tmp_path, job)
+        assert kwargs.get("fallback_model") is None
+
+
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {

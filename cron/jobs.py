@@ -528,13 +528,28 @@ def _normalize_fallback_providers(
     Returns None when ``fb`` is None (inherit profile default).
     Returns a list of dicts otherwise — including explicit empty ``[]``
     which means "no fallback".
+
+    Malformed input is rejected with ValueError at create/update time, the
+    same way invalid ``workdir`` / ``profile`` / ``schedule`` values are.
+    Stored ``None`` widens behaviour to "inherit the profile chain", so a
+    bad value must never silently normalize to it.
     """
     if fb is None:
         return None
-    if isinstance(fb, list):
-        cleaned = [{str(k): v for k, v in e.items()} for e in fb if isinstance(e, dict)]
-        return cleaned if cleaned or fb == [] else None
-    return None
+    if not isinstance(fb, list):
+        raise ValueError(
+            "fallback_providers must be a list of provider dicts "
+            f"(got {type(fb).__name__}). Pass [] for no fallback or omit "
+            "to inherit the profile chain."
+        )
+    cleaned = [{str(k): v for k, v in e.items()} for e in fb if isinstance(e, dict)]
+    if fb and not cleaned:
+        raise ValueError(
+            "fallback_providers contains no valid entries — each entry must "
+            "be a dict with at least 'provider' and 'model'. Pass [] for no "
+            "fallback or omit to inherit the profile chain."
+        )
+    return cleaned
 
 
 def _normalize_profile(profile: Optional[str]) -> Optional[str]:
@@ -823,6 +838,16 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = None
             else:
                 updates["profile"] = _normalize_profile(_profile)
+
+        # Validate / normalize fallback_providers if present in updates.
+        # None clears the per-job override (the job inherits the profile
+        # chain again); explicit [] pins "no fallback"; malformed values
+        # raise ValueError — same contract as create_job(). Guards writers
+        # that bypass the cronjob tool (e.g. the web API passes raw updates).
+        if "fallback_providers" in updates:
+            updates["fallback_providers"] = _normalize_fallback_providers(
+                updates["fallback_providers"]
+            )
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

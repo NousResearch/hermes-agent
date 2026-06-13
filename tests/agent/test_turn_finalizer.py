@@ -74,19 +74,15 @@ class TestCaptureInvalidWorkspaces:
 
 @pytest.mark.skipif(not HAS_GIT, reason="git binary required")
 class TestCaptureRealRepo:
-    def test_clean_repo_reports_branch_header_only(self, git_repo):
-        # NOTE: `git status --short --branch` always emits the `## <branch>`
-        # header, so `raw` is never empty after a successful run and the
-        # `{"git_repo": True, "dirty": False}` early return is unreachable
-        # through the real git path. A clean repo is therefore reported with
-        # dirty=True and a header-only status.
-        # TODO: suspected bug — clean workspaces should report dirty=False;
-        # the empty-output check predates the --branch flag. Flagged in the
-        # PR body; pinning current behavior here.
+    def test_clean_repo_reports_dirty_false_with_branch(self, git_repo):
+        # `git status --short --branch` always emits the `## <branch>` header,
+        # so dirtiness is decided by the porcelain change lines only. A clean
+        # repo must report dirty=False while still carrying branch info and
+        # the header-only status.
         result = _capture_safe_workspace_status(str(git_repo))
         assert result is not None
         assert result["git_repo"] is True
-        assert result["dirty"] is True
+        assert result["dirty"] is False
         assert result["branch"] == "hermes-test-branch"
         assert result["git_status_raw"] == "## hermes-test-branch"
 
@@ -145,6 +141,7 @@ class TestCaptureParsingAndRedaction:
         )
         result = _capture_safe_workspace_status(str(tmp_path))
         assert result["branch"] == "main"
+        assert result["dirty"] is True
         assert " M run_agent.py" in result["git_status_raw"]
 
     def test_nonzero_exit_returns_none(self, tmp_path, monkeypatch):
@@ -152,11 +149,21 @@ class TestCaptureParsingAndRedaction:
         assert _capture_safe_workspace_status(str(tmp_path)) is None
 
     def test_empty_output_reports_clean(self, tmp_path, monkeypatch):
-        # Unreachable via real git (see TestCaptureRealRepo) but pinned so
-        # the contract of the early return does not silently change.
+        # Real git always emits the `## <branch>` header, so empty output only
+        # occurs with degenerate/mocked git. Pinned so the early-return
+        # contract for that case does not silently change.
         self._fake_run(monkeypatch, "\n")
         result = _capture_safe_workspace_status(str(tmp_path))
         assert result == {"git_repo": True, "dirty": False}
+
+    def test_header_only_output_reports_clean_with_branch(self, tmp_path, monkeypatch):
+        # Clean repo through the real-git output shape: header line only,
+        # no porcelain change lines → dirty=False, branch still extracted.
+        self._fake_run(monkeypatch, "## main...origin/main\n")
+        result = _capture_safe_workspace_status(str(tmp_path))
+        assert result["dirty"] is False
+        assert result["branch"] == "main"
+        assert result["git_status_raw"] == "## main...origin/main"
 
     @pytest.mark.parametrize(
         "leak",

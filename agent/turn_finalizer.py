@@ -63,8 +63,12 @@ def _capture_safe_workspace_status(workspace_path: str) -> Optional[dict]:
         raw = out.stdout.strip()
         if not raw:
             return {"git_repo": True, "dirty": False}
-        # Cap output
         lines = raw.split("\n")
+        # ``--branch`` always emits a ``## <branch>`` header line, so the
+        # output is never empty for a real repo. Only the porcelain change
+        # lines decide dirtiness — a clean repo has just the header.
+        dirty = any(line.strip() and not line.startswith("##") for line in lines)
+        # Cap output
         capped_lines = lines[:_WORKSPACE_DIAG_MAX_LINES]
         capped = "\n".join(capped_lines)
         if len(capped) > _WORKSPACE_DIAG_MAX_BYTES:
@@ -80,7 +84,7 @@ def _capture_safe_workspace_status(workspace_path: str) -> Optional[dict]:
         return {
             "git_repo": True,
             "branch": branch or None,
-            "dirty": True,
+            "dirty": dirty,
             "git_status_raw": capped,
         }
     except Exception:

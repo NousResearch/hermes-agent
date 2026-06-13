@@ -1,9 +1,29 @@
-from gateway.config import PlatformConfig, Platform
+from gateway.config import PlatformConfig, Platform, is_slack_compatible
 from gateway.platforms.slack import SlackAdapter
 
 
 def _cfg():
     return PlatformConfig(enabled=True, token="xoxb-test")
+
+
+def test_time_plugin_package_exports_register():
+    # Regression guard: the gateway plugin loader imports the PACKAGE
+    # (__init__.py) and calls getattr(module, "register"). An empty
+    # __init__.py would silently disable the whole platform.
+    import importlib
+
+    pkg = importlib.import_module("plugins.platforms.time")
+    assert callable(getattr(pkg, "register", None)), (
+        "plugins/platforms/time/__init__.py must re-export register()"
+    )
+
+
+def test_time_is_slack_protocol_compatible():
+    # Time shares Slack's wire protocol, so Slack-protocol behaviors
+    # (slash dispatch, thread_ts progress fallback) must apply to it.
+    assert is_slack_compatible(Platform("time")) is True
+    assert is_slack_compatible(Platform.SLACK) is True
+    assert is_slack_compatible(Platform.TELEGRAM) is False
 
 
 def test_slack_seam_defaults():

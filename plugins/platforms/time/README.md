@@ -58,5 +58,21 @@ What stays intact (core functionality): conversation, the self‑improving
 skills loop, persistent memory, cross‑session search, web/vision, and
 scheduled automations — just without any physically dangerous tools.
 
+### Known residual considerations (prototype)
+
+These are out of scope for the prototype but should be reviewed before a
+production rollout:
+
+- **Custom MCP servers pass through the hard-deny by design.** The hard-deny
+  filters built-in toolsets; an MCP server name listed in `platform_toolsets.time`
+  is not inspected. Only add MCP servers to Time whose tools are known-safe.
+- **`HERMES_KANBAN_TASK` worker context.** If Time messages are ever routed
+  through the kanban dispatcher (which sets `HERMES_KANBAN_TASK`), the kanban
+  toolset can be re-added downstream of the gateway hard-deny. Don't run Time
+  sessions as kanban workers. (`kanban` is denied in the normal gateway and
+  cron paths.)
+- **System-prompt platform note.** Time relies on its registry `platform_hint`
+  rather than the hardcoded Slack note in `gateway/session.py`.
+
 See `docs/superpowers/specs/2026-06-12-time-messenger-safe-integration-design.md`
 for the full design and threat model.

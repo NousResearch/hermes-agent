@@ -1232,6 +1232,7 @@ from gateway.config import (
     GatewayConfig,
     HomeChannel,
     PlatformConfig,
+    is_slack_compatible,
     load_gateway_config,
 )
 from gateway.session import (
@@ -8476,7 +8477,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # registered and would fail with "app did not respond".
                 sethome_cmd = (
                     "/hermes sethome"
-                    if source.platform == Platform.SLACK
+                    if is_slack_compatible(source.platform)
                     else "/sethome"
                 )
                 notice = (
@@ -13393,7 +13394,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
         # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
+        if is_slack_compatible(source.platform):
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id

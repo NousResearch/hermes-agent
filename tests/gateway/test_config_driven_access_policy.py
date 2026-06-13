@@ -207,6 +207,49 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
     assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
 
 
+def test_wecom_open_group_with_per_group_sender_allowlist_is_authorized(monkeypatch):
+    """WeCom ``groups.<id>.allow_from`` is an adapter-enforced restriction.
+
+    The top-level group policy is still ``open`` for the chat ID, but the
+    adapter has already checked the sender allowlist before dispatching to the
+    gateway. That is not the fail-open case and must not be double-denied.
+    """
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "open",
+                    "groups": {"some-chat": {"allow_from": ["some-user"]}},
+                },
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
+
+
+def test_wecom_open_group_with_wildcard_sender_allowlist_is_authorized(monkeypatch):
+    """Wildcard group config also gates senders before gateway auth runs."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WECOM: PlatformConfig(
+                enabled=True,
+                extra={
+                    "group_policy": "open",
+                    "groups": {"*": {"allow_from": ["user_admin"]}},
+                },
+            )
+        }
+    )
+    runner, _adapter = _make_runner(Platform.WECOM, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(Platform.WECOM, chat_type="group")) is True
+
+
 def test_non_owning_platform_still_default_denies(monkeypatch):
     """Adapters that don't own their policy keep the env-only default-deny."""
     _clear_auth_env(monkeypatch)

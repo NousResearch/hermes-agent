@@ -46,6 +46,22 @@ class TestNvidiaProfile:
         assert p.default_headers == {}
 
 
+class TestRequestyProfile:
+    def test_discovery_and_name(self):
+        p = get_provider_profile("requesty")
+        assert p is not None
+        assert p.name == "requesty"
+
+    def test_alias_resolves(self):
+        assert get_provider_profile("rq").name == "requesty"
+
+    def test_no_attribution_headers(self):
+        # Attribution headers (HTTP-Referer / X-Title) must not be sent by
+        # default — see openrouter, which sets none. Regression guard.
+        p = get_provider_profile("requesty")
+        assert p.default_headers == {}
+
+
 class TestKimiProfile:
     def test_temperature_omit(self):
         p = get_provider_profile("kimi")

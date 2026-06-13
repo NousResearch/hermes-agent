@@ -7,7 +7,7 @@ from providers.base import ProviderProfile
 
 
 class RequestyProfile(ProviderProfile):
-    """Requesty — attribution headers + reasoning config passthrough."""
+    """Requesty — reasoning config passthrough."""
 
     def build_api_kwargs_extras(
         self,
@@ -33,10 +33,6 @@ requesty = RequestyProfile(
     signup_url="https://app.requesty.ai/api-keys",
     base_url="https://router.requesty.ai/v1",
     models_url="https://router.requesty.ai/v1/models",
-    default_headers={
-        "HTTP-Referer": "https://hermes-agent.nousresearch.com",
-        "X-Title": "Hermes Agent",
-    },
     default_aux_model="anthropic/claude-sonnet-4-6",
     fallback_models=(
         "anthropic/claude-sonnet-4-6",

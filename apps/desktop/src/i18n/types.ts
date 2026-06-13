@@ -213,6 +213,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
       product: string
       productDesc: string
       technical: string
@@ -1323,6 +1325,7 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      scrollToBottom: string
       stop: string
       restorePrevious: string
       restoreCheckpoint: string

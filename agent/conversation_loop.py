@@ -595,7 +595,11 @@ def run_conversation(
         # landed after an orphan tool result). Most providers return
         # empty content on malformed sequences, which would otherwise
         # retrigger the empty-retry loop indefinitely.
-        repaired_seq = agent._repair_message_sequence(messages)
+        # repair_message_sequence_with_cursor also recomputes the SessionDB
+        # flush cursor (_last_flushed_db_idx) when repair compacts the list,
+        # so the turn-end flush doesn't skip the assistant/tool chain (#44837).
+        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
                 "Repaired %s message-alternation violations before request (session=%s)",
@@ -2631,10 +2635,13 @@ def run_conversation(
                     except Exception:
                         pass
                     if _genuine_nous_rate_limit:
-                        # Skip straight to max_retries -- the
-                        # top-of-loop guard will handle fallback or
-                        # bail cleanly.
-                        retry_count = max_retries
+                        # Re-enter the loop exactly once so the
+                        # top-of-loop Nous guard handles fallback or
+                        # bails cleanly. (Setting retry_count to
+                        # max_retries would make the while condition
+                        # false immediately and the guard would never
+                        # run -- no fallback, generic exhaustion error.)
+                        retry_count = max(0, max_retries - 1)
                         continue
                     # Upstream capacity 429: fall through to normal
                     # retry logic.  A different model (or the same

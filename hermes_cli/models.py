@@ -57,6 +57,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k2.6",                   "recommended"),
+    ("moonshotai/kimi-k2.7-code",              ""),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
@@ -178,6 +179,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI

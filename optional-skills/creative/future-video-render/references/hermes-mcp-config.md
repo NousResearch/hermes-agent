@@ -25,13 +25,13 @@ Use `fvs_create_paid_render_quote` to create a Link payment quote. The response 
 Set the API key outside chat:
 
 ```bash
-export FVS_AGENT_API_KEY="fvs_live_replace_me"
+export FVS_AGENT_API_KEY="<set through secret manager>"
 ```
 
 On Windows PowerShell:
 
 ```powershell
-$env:FVS_AGENT_API_KEY = "fvs_live_replace_me"
+$env:FVS_AGENT_API_KEY = "<set through secret manager>"
 ```
 
 Then configure the MCP header:

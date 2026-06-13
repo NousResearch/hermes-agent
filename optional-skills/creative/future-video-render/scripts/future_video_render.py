@@ -98,10 +98,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_common_connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--api-key",
-        help=f"Agent API key. Defaults to ${API_KEY_ENV}.",
-    )
-    parser.add_argument(
         "--base-url",
         help=f"App origin or /api/agent base. Defaults to ${BASE_URL_ENV} or {DEFAULT_BASE_URL}.",
     )
@@ -122,7 +118,7 @@ def add_lookup_args(parser: argparse.ArgumentParser) -> None:
 
 
 def handle_submit(args: argparse.Namespace) -> int:
-    api_key = resolve_api_key(args.api_key)
+    api_key = resolve_api_key()
     agent_base = normalize_agent_base(
         args.base_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL,
         allow_custom_host=resolve_allow_custom_host(args),
@@ -132,7 +128,7 @@ def handle_submit(args: argparse.Namespace) -> int:
         raise RenderToolError(f"request file not found: {request_path}")
 
     request_json = read_request_json(request_path)
-    payload = json.loads(request_json)
+    payload = parse_request_payload(request_json, request_path)
     file_paths = [Path(p) for p in args.file]
     for path in file_paths:
         if not path.is_file():
@@ -178,7 +174,7 @@ def handle_submit(args: argparse.Namespace) -> int:
 
 
 def handle_status(args: argparse.Namespace) -> int:
-    api_key = resolve_api_key(args.api_key)
+    api_key = resolve_api_key()
     agent_base = normalize_agent_base(
         args.base_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL,
         allow_custom_host=resolve_allow_custom_host(args),
@@ -190,7 +186,7 @@ def handle_status(args: argparse.Namespace) -> int:
 
 
 def handle_cancel(args: argparse.Namespace) -> int:
-    api_key = resolve_api_key(args.api_key)
+    api_key = resolve_api_key()
     agent_base = normalize_agent_base(
         args.base_url or os.getenv(BASE_URL_ENV) or DEFAULT_BASE_URL,
         allow_custom_host=resolve_allow_custom_host(args),
@@ -201,12 +197,10 @@ def handle_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
-def resolve_api_key(explicit_value: str | None) -> str:
-    value = explicit_value or os.getenv(API_KEY_ENV)
+def resolve_api_key() -> str:
+    value = os.getenv(API_KEY_ENV)
     if not value:
-        raise RenderToolError(
-            f"missing API key; pass --api-key or set {API_KEY_ENV}"
-        )
+        raise RenderToolError(f"missing API key; set {API_KEY_ENV}")
     return value.strip()
 
 
@@ -310,6 +304,16 @@ def validate_asset_filenames(payload: dict, file_paths: list[Path]) -> None:
 
 def read_request_json(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
+
+
+def parse_request_payload(request_json: str, path: Path) -> dict:
+    try:
+        payload = json.loads(request_json)
+    except json.JSONDecodeError as exc:
+        raise RenderToolError(f"invalid request JSON in {path}: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise RenderToolError(f"request JSON in {path} must be an object")
+    return payload
 
 
 def encode_multipart(

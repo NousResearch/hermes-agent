@@ -1,6 +1,6 @@
 ---
 name: future-video-render
-description: Create cinematic AI videos with Future Video Studio through hosted MCP. Use for multi-shot scene renders, product teasers, music videos, reference-guided custom productions, account API-key renders, Link pay-as-you-go quotes, render status polling, cancellation, and final video retrieval.
+description: Create hosted Future Video Studio renders.
 version: 1.0.0
 author: Future Video Studio
 license: MIT
@@ -16,21 +16,22 @@ metadata:
 
 # Future Video Render
 
-Use this skill to create Future Video Studio renders through the hosted FVS MCP server.
+Create Future Video Studio renders through the hosted FVS MCP server.
 
-FVS turns creative briefs, scripts, shot lists, and public reference assets into finished cinematic videos. The MCP supports two billing paths:
+Use this skill for multi-shot scenes, music videos, product teasers, reference-guided custom productions, account-wallet renders, Link pay-as-you-go quotes, status polling, cancellation, and final signed video URLs.
 
-- account mode: the user configures `FVS_AGENT_API_KEY`, approves wallet-credit spending, and Hermes calls `fvs_submit_render`
-- pay-as-you-go mode: Hermes creates a Link payment quote with `fvs_create_paid_render_quote`, the user pays the returned URL, and Hermes polls with the claim token
-
-The hosted MCP endpoint is:
-
-```text
-https://mcp.future.video/mcp
-```
+The MCP endpoint is `https://mcp.future.video/mcp`.
 
 For Hermes MCP setup details, load `references/hermes-mcp-config.md`.
 For request fields and response shapes, load `references/api.md`.
+
+## Prerequisites
+
+- Prefer the hosted MCP server at `https://mcp.future.video/mcp`.
+- Account mode uses `FVS_AGENT_API_KEY` or the MCP secret header `X-FVS-Agent-Key`.
+- Treat account keys as wallet-backed credentials. Show a concise render summary and get explicit approval before spending wallet credits.
+- Pay-as-you-go mode omits the API key and uses `fvs_create_paid_render_quote`.
+- Never ask for raw card details. Link payment happens through the returned `payment_url`.
 
 ## When to Use
 
@@ -46,7 +47,7 @@ Use this skill when the user asks to:
 
 Do not use this skill for local-only HTML or code-rendered videos that should be built directly in the workspace. Use `hyperframes`, `blender-mcp`, `concept-diagrams`, or direct FFmpeg workflows when those are a better fit.
 
-## Setup Check
+## Hermes Setup
 
 Before submitting or quoting a render, check whether the FVS MCP server is configured in Hermes.
 
@@ -68,7 +69,7 @@ mcp_servers:
       X-FVS-Agent-Key: "${FVS_AGENT_API_KEY}"
 ```
 
-If the MCP tools are not available, tell the user to add the config above to `~/.hermes/config.yaml` and restart Hermes. Do not ask the user to paste API keys into chat.
+If the MCP tools are unavailable, tell the user to add the config above to `~/.hermes/config.yaml` and restart Hermes. Do not ask the user to paste API keys into chat.
 
 ## Tool Names in Hermes
 
@@ -84,7 +85,7 @@ Hermes prefixes MCP tools with the configured server name. If the server is name
 
 If the server uses another name, adjust the prefix accordingly. In normal reasoning, prefer the tool descriptions over hardcoding a prefixed name.
 
-## Core Workflow
+## How to Run
 
 1. Convert the user's brief into an FVS render request.
 2. Ask for clarification only when missing details affect cost, legality, or feasibility.
@@ -121,6 +122,23 @@ Useful fields:
 - `music_model`
 
 Hosted MCP clients must use public HTTPS `upload_urls` for assets. Local file paths are not visible to the hosted MCP. For trusted local-file account workflows only, use the bundled helper script in `scripts/future_video_render.py`.
+
+## Verification
+
+Poll with the matching status tool until the render completes, fails, halts for review, or the user asks to stop.
+
+Inspect:
+
+- `status`
+- `current_stage`
+- `is_running`
+- `final_video_url`
+- `last_error`
+- `payment_url`, `quote_id`, and `claim_token` for paid quotes
+
+Treat the job as terminal when `status` is `completed` or `failed`, `current_stage` is `halted_for_review`, or the job is not running and has no active queued or running state.
+
+Return `final_video_url` promptly when present. If the signed URL expires, poll status again for a fresh result URL.
 
 ## Pay-As-You-Go Flow
 
@@ -165,4 +183,4 @@ The bundled Python helper is for account-mode direct Agent API calls when a trus
 python ${HERMES_SKILL_DIR}/scripts/future_video_render.py submit --request-file request.json --file reference.png --poll
 ```
 
-It uses only the Python standard library and reads `FVS_AGENT_API_KEY` from the environment. Prefer the hosted MCP tools whenever they are available.
+It uses only the Python standard library and reads `FVS_AGENT_API_KEY` from the environment. It does not accept API keys on the command line. Prefer the hosted MCP tools whenever they are available.

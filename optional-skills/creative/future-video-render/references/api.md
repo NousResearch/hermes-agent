@@ -260,7 +260,7 @@ Remote MCP account mode:
     "future-video-studio": {
       "url": "https://mcp.future.video/mcp",
       "headers": {
-        "X-FVS-Agent-Key": "fvs_live_replace_me"
+        "X-FVS-Agent-Key": "<set through secret manager>"
       }
     }
   }
@@ -287,7 +287,7 @@ Skill environment fallback for direct API helper:
     "entries": {
       "future-video-render": {
         "env": {
-          "FVS_AGENT_API_KEY": "fvs_live_replace_me",
+          "FVS_AGENT_API_KEY": "<set through secret manager>",
           "FVS_AGENT_BASE_URL": "https://app.future.video"
         }
       }

@@ -274,6 +274,12 @@ class TestNormalizeModelForProvider:
         assert changed is False
         assert cli.model == "gpt-5.4"
 
+    def test_nous_repairs_hyphenated_claude_slug(self):
+        cli = _make_cli(model="anthropic/claude-sonnet-4-6")
+        changed = cli._normalize_model_for_provider("nous")
+        assert changed is True
+        assert cli.model == "anthropic/claude-sonnet-4.6"
+
     def test_native_provider_prefix_is_stripped_before_agent_startup(self):
         cli = _make_cli(model="zai/glm-5.1")
         changed = cli._normalize_model_for_provider("zai")

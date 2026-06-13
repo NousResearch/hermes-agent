@@ -4305,7 +4305,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 normalize_model_for_provider,
             )
 
-            if resolved_provider not in _AGGREGATOR_PROVIDERS:
+            if resolved_provider == "nous" or resolved_provider not in _AGGREGATOR_PROVIDERS:
                 normalized_model = normalize_model_for_provider(current_model, resolved_provider)
                 if normalized_model and normalized_model != current_model:
                     if not self._model_is_default:

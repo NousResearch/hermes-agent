@@ -357,7 +357,7 @@ def init_agent(
             normalize_model_for_provider,
         )
 
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
+        if agent.provider == "nous" or agent.provider not in _AGGREGATOR_PROVIDERS:
             agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
         pass

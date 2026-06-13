@@ -2015,6 +2015,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
+        # Per-platform reasoning_stream map.  Resolved lazily in
+        # _handle_message_with_agent because we need source.platform
+        # at run time, not at init time.  Cached on the runner so
+        # cross-call reads stay cheap and config-reload (via
+        # _handle_reasoning_command) can mutate a single dict.
+        self._reasoning_stream_per_platform: Dict[str, bool] = {}
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
@@ -3387,6 +3393,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cfg_get(cfg, "display", "show_reasoning"),
             default=False,
         )
+
+    @staticmethod
+    def _load_reasoning_stream(platform: "Platform") -> bool:
+        """Load reasoning_stream toggle from per-platform display section.
+
+        Reads ``display.platforms.<platform>.reasoning_stream``.  The
+        top-level ``display.reasoning_stream`` is intentionally NOT
+        consulted here — there is no meaningful "global" stream mode,
+        because the user-visible UX (an edit-in-place bubble on a
+        specific platform's chat) only exists per-platform.
+        """
+        cfg = _load_gateway_runtime_config()
+        key = f"display.platforms.{_platform_config_key(platform)}.reasoning_stream"
+        return is_truthy_value(
+            cfg_get(cfg, *key.split(".")),
+            default=False,
+        )
+
+    @staticmethod
+    def _load_reasoning_stream_ttl(platform: "Platform") -> int:
+        """Load reasoning_stream_ttl_seconds from per-platform display section.
+
+        Reads ``display.platforms.<platform>.reasoning_stream_ttl_seconds``.
+        0 means delete immediately after the answer lands (OpenClaw parity).
+        Positive integers keep the reasoning bubble visible for that many
+        seconds as a breadcrumb before cleaning it up.
+        """
+        cfg = _load_gateway_runtime_config()
+        key = f"display.platforms.{_platform_config_key(platform)}.reasoning_stream_ttl_seconds"
+        raw = cfg_get(cfg, *key.split("."))
+        if raw is None:
+            return 0
+        try:
+            _val = int(float(raw))
+            return max(0, _val)
+        except (ValueError, TypeError):
+            return 0
 
     @staticmethod
     def _load_busy_input_mode() -> str:
@@ -8711,7 +8754,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
+            # ``_reasoning_consumer_emitted`` is set below by the
+            # /reasoning stream path; if True, the reasoning was
+            # already shown in its own message and must NOT be
+            # duplicated into the final response body.  The fallback
+            # is the existing prepend (legacy /reasoning show behavior).
+            _reasoning_consumer_emitted = bool(
+                agent_result.get("_reasoning_stream_emitted", False)
+            )
+            if _show_reasoning_effective and response and not _reasoning_consumer_emitted:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
@@ -10296,9 +10347,547 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
 
+    async def _handle_reasoning_command(self, event: MessageEvent) -> str:
+        """Handle /reasoning command — manage reasoning effort and display toggle.
 
+        Usage:
+            /reasoning                       Show current effort level and display state
+            /reasoning <level>               Set reasoning effort for this session only
+            /reasoning <level> --global      Persist reasoning effort to config.yaml
+            /reasoning reset                 Clear this session's reasoning override
+            /reasoning show|on               Show model reasoning inline in the final response
+            /reasoning stream                Stream reasoning in a transient bubble
+                                             (auto-deleted after the answer lands)
+            /reasoning hide|off              Hide model reasoning from responses
+        """
+        import yaml
 
+        raw_args = event.get_command_args().strip()
+        args, persist_global = self._parse_reasoning_command_args(raw_args)
+        config_path = _hermes_home / "config.yaml"
+        session_key = self._session_key_for_source(event.source)
+        platform_key = _platform_config_key(event.source.platform)
+        self._show_reasoning = self._load_show_reasoning()
+        # Mirror the per-platform reasoning_stream state into the
+        # runner's in-memory map.  This keeps /reasoning consistent
+        # with what was on disk at command time.  ``getattr`` keeps
+        # bare-__new__ tests working.
+        if not hasattr(self, "_reasoning_stream_per_platform"):
+            self._reasoning_stream_per_platform = {}
+        self._reasoning_stream_per_platform[platform_key] = self._load_reasoning_stream(
+            event.source.platform
+        )
+        self._reasoning_config = self._resolve_session_reasoning_config(
+            source=event.source,
+            session_key=session_key,
+        )
 
+        def _save_config_key(key_path: str, value):
+            """Save a dot-separated key to config.yaml."""
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                keys = key_path.split(".")
+                current = user_config
+                for k in keys[:-1]:
+                    if k not in current or not isinstance(current[k], dict):
+                        current[k] = {}
+                    current = current[k]
+                current[keys[-1]] = value
+                atomic_yaml_write(config_path, user_config)
+                return True
+            except Exception as e:
+                logger.error("Failed to save config key %s: %s", key_path, e)
+                return False
+
+        if not raw_args:
+            # Show current state
+            rc = self._reasoning_config
+            if rc is None:
+                level = t("gateway.reasoning.level_default")
+            elif rc.get("enabled") is False:
+                level = t("gateway.reasoning.level_disabled")
+            else:
+                level = rc.get("effort", "medium")
+            _stream_active = bool(
+                getattr(self, "_reasoning_stream_per_platform", {}).get(platform_key, False)
+            )
+            if _stream_active:
+                display_state = t("gateway.reasoning.display_stream")
+            else:
+                display_state = (
+                    t("gateway.reasoning.display_on")
+                    if self._show_reasoning
+                    else t("gateway.reasoning.display_off")
+                )
+            has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
+            scope = (
+                t("gateway.reasoning.scope_session")
+                if has_session_override
+                else t("gateway.reasoning.scope_global")
+            )
+            return t(
+                "gateway.reasoning.status",
+                level=level,
+                scope=scope,
+                display=display_state,
+            )
+
+        # Display toggle (per-platform)
+        if args in {"show", "on"}:
+            self._show_reasoning = True
+            if not hasattr(self, "_reasoning_stream_per_platform"):
+                self._reasoning_stream_per_platform = {}
+            self._reasoning_stream_per_platform[platform_key] = False
+            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", False)
+            return t("gateway.reasoning.display_set_on", platform=platform_key)
+
+        if args in {"hide", "off"}:
+            self._show_reasoning = False
+            if not hasattr(self, "_reasoning_stream_per_platform"):
+                self._reasoning_stream_per_platform = {}
+            self._reasoning_stream_per_platform[platform_key] = False
+            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
+            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", False)
+            return t("gateway.reasoning.display_set_off", platform=platform_key)
+
+        if args == "stream":
+            # Stream mode is "show + ephemeral" — reasoning is shown
+            # in a transient bubble that auto-deletes, and the final
+            # answer has no reasoning text.  Forcing show_reasoning=true
+            # means the legacy /reasoning show path is the fallback
+            # for non-streaming models (agent_result.last_reasoning
+            # present but no streaming reasoning_callback fired).
+            self._show_reasoning = True
+            if not hasattr(self, "_reasoning_stream_per_platform"):
+                self._reasoning_stream_per_platform = {}
+            self._reasoning_stream_per_platform[platform_key] = True
+            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+            _save_config_key(f"display.platforms.{platform_key}.reasoning_stream", True)
+            return t("gateway.reasoning.display_set_stream", platform=platform_key)
+
+        # Effort level change
+        effort = args.strip()
+        if effort == "reset":
+            if persist_global:
+                return t("gateway.reasoning.reset_global_unsupported")
+            self._set_session_reasoning_override(session_key, None)
+            self._reasoning_config = self._load_reasoning_config()
+            self._evict_cached_agent(session_key)
+            return t("gateway.reasoning.reset_done")
+        if effort == "none":
+            parsed = {"enabled": False}
+        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
+            parsed = {"enabled": True, "effort": effort}
+        else:
+            return t(
+                "gateway.reasoning.unknown_arg",
+                arg=effort or raw_args.lower(),
+            )
+
+        self._reasoning_config = parsed
+        if persist_global:
+            if _save_config_key("agent.reasoning_effort", effort):
+                self._set_session_reasoning_override(session_key, None)
+                self._evict_cached_agent(session_key)
+                return t("gateway.reasoning.set_global", effort=effort)
+            self._set_session_reasoning_override(session_key, parsed)
+            self._evict_cached_agent(session_key)
+            return t("gateway.reasoning.set_global_save_failed", effort=effort)
+
+        self._set_session_reasoning_override(session_key, parsed)
+        self._evict_cached_agent(session_key)
+        return t("gateway.reasoning.set_session", effort=effort)
+
+    async def _handle_fast_command(self, event: MessageEvent) -> str:
+        """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
+        import yaml
+        from hermes_cli.models import model_supports_fast_mode
+
+        args = event.get_command_args().strip().lower()
+        config_path = _hermes_home / "config.yaml"
+        self._service_tier = self._load_service_tier()
+
+        user_config = _load_gateway_config()
+        model = _resolve_gateway_model(user_config)
+        if not model_supports_fast_mode(model):
+            return t("gateway.fast.not_supported")
+
+        def _save_config_key(key_path: str, value):
+            """Save a dot-separated key to config.yaml."""
+            try:
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                keys = key_path.split(".")
+                current = user_config
+                for k in keys[:-1]:
+                    if k not in current or not isinstance(current[k], dict):
+                        current[k] = {}
+                    current = current[k]
+                current[keys[-1]] = value
+                atomic_yaml_write(config_path, user_config)
+                return True
+            except Exception as e:
+                logger.error("Failed to save config key %s: %s", key_path, e)
+                return False
+
+        if not args or args == "status":
+            status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
+            return t("gateway.fast.status", mode=status)
+
+        if args in {"fast", "on"}:
+            self._service_tier = "priority"
+            saved_value = "fast"
+            label = t("gateway.fast.label_fast")
+        elif args in {"normal", "off"}:
+            self._service_tier = None
+            saved_value = "normal"
+            label = t("gateway.fast.label_normal")
+        else:
+            return t("gateway.fast.unknown_arg", arg=args)
+
+        if _save_config_key("agent.service_tier", saved_value):
+            return t("gateway.fast.saved", label=label)
+        return t("gateway.fast.session_only", label=label)
+
+    async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+        )
+
+        session_key = self._session_key_for_source(event.source)
+        current = is_session_yolo_enabled(session_key)
+        if current:
+            disable_session_yolo(session_key)
+            return EphemeralReply(t("gateway.yolo.disabled"))
+        else:
+            enable_session_yolo(session_key)
+            return EphemeralReply(t("gateway.yolo.enabled"))
+
+    async def _handle_verbose_command(self, event: MessageEvent) -> str:
+        """Handle /verbose command — cycle tool progress display mode.
+
+        Gated by ``display.tool_progress_command`` in config.yaml (default off).
+        When enabled, cycles the tool progress mode through off → new → all →
+        verbose → off for the *current platform*.  The setting is saved to
+        ``display.platforms.<platform>.tool_progress`` so each channel can
+        have its own verbosity level independently.
+        """
+
+        config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+
+        # --- check config gate ------------------------------------------------
+        try:
+            user_config = _load_gateway_config()
+            gate_enabled = is_truthy_value(
+                cfg_get(user_config, "display", "tool_progress_command"),
+                default=False,
+            )
+        except Exception:
+            gate_enabled = False
+
+        if not gate_enabled:
+            return t("gateway.verbose.not_enabled")
+
+        # --- cycle mode (per-platform) ----------------------------------------
+        cycle = ["off", "new", "all", "verbose"]
+        descriptions = {
+            "off": t("gateway.verbose.mode_off"),
+            "new": t("gateway.verbose.mode_new"),
+            "all": t("gateway.verbose.mode_all"),
+            "verbose": t("gateway.verbose.mode_verbose"),
+        }
+
+        # Read current effective mode for this platform via the resolver
+        from gateway.display_config import resolve_display_setting
+        current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+        if current not in cycle:
+            current = "all"
+        idx = (cycle.index(current) + 1) % len(cycle)
+        new_mode = cycle[idx]
+
+        # Save to display.platforms.<platform>.tool_progress
+        try:
+            if "display" not in user_config or not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            display = user_config["display"]
+            if "platforms" not in display or not isinstance(display.get("platforms"), dict):
+                display["platforms"] = {}
+            if platform_key not in display["platforms"] or not isinstance(display["platforms"].get(platform_key), dict):
+                display["platforms"][platform_key] = {}
+            display["platforms"][platform_key]["tool_progress"] = new_mode
+            atomic_yaml_write(config_path, user_config)
+            return (
+                f"{descriptions[new_mode]}\n"
+                + t("gateway.verbose.saved_suffix", platform=platform_key)
+            )
+        except Exception as e:
+            logger.warning("Failed to save tool_progress mode: %s", e)
+            return f"{descriptions[new_mode]}\n" + t("gateway.verbose.save_failed", error=e)
+
+    async def _handle_footer_command(self, event: MessageEvent) -> str:
+        """Handle /footer command — toggle the runtime-metadata footer.
+
+        Usage:
+            /footer           → toggle on/off
+            /footer on        → enable globally
+            /footer off       → disable globally
+            /footer status    → show current state + fields
+
+        The footer is saved to ``display.runtime_footer.enabled`` (global).
+        Per-platform overrides under ``display.platforms.<platform>.runtime_footer``
+        are respected but not modified here — edit config.yaml directly for
+        per-platform control.
+        """
+        from gateway.runtime_footer import resolve_footer_config
+
+        config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+
+        # --- parse argument -------------------------------------------------
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        # --- load config ----------------------------------------------------
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+
+        effective = resolve_footer_config(user_config, platform_key)
+
+        if arg in {"status", "?"}:
+            state = t("gateway.footer.state_on") if effective["enabled"] else t("gateway.footer.state_off")
+            fields = ", ".join(effective.get("fields") or [])
+            return t(
+                "gateway.footer.status",
+                state=state,
+                fields=fields,
+                platform=platform_key,
+            )
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not effective["enabled"]
+        else:
+            return t("gateway.footer.usage")
+
+        # --- write global flag ---------------------------------------------
+        try:
+            if not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            display = user_config["display"]
+            if not isinstance(display.get("runtime_footer"), dict):
+                display["runtime_footer"] = {}
+            display["runtime_footer"]["enabled"] = new_state
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save runtime_footer.enabled: %s", e)
+            return t("gateway.config_save_failed", error=e)
+
+        state = t("gateway.footer.state_on") if new_state else t("gateway.footer.state_off")
+        example = ""
+        if new_state:
+            # Show a preview using current agent state if available.
+            from gateway.runtime_footer import format_runtime_footer
+            preview = format_runtime_footer(
+                model=_resolve_gateway_model(user_config) or None,
+                context_tokens=0,
+                context_length=None,
+                fields=effective.get("fields") or ["model", "context_pct", "cwd"],
+            )
+            if preview:
+                example = t("gateway.footer.example_line", preview=preview)
+        return t("gateway.footer.saved", state=state, example=example)
+
+    async def _handle_compress_command(self, event: MessageEvent) -> str:
+        """Handle /compress command -- manually compress conversation context.
+
+        Accepts an optional focus topic: ``/compress <focus>`` guides the
+        summariser to preserve information related to *focus* while being
+        more aggressive about discarding everything else.
+
+        Also accepts the boundary-aware form ``/compress here [N]``:
+        summarize everything except the most recent ``N`` exchanges
+        (default 2), kept verbatim. Inspired by Claude Code's Rewind
+        "Summarize up to here" action (v2.1.139, May 2026,
+        https://code.claude.com/docs/en/whats-new/2026-w20).
+        """
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+
+        if not history or len(history) < 4:
+            return t("gateway.compress.not_enough")
+
+        # Parse args: either a focus topic (full compress) or the
+        # boundary-aware "here [N]" form (partial compress).
+        from hermes_cli.partial_compress import (
+            parse_partial_compress_args,
+            rejoin_compressed_head_and_tail,
+            split_history_for_partial_compress,
+        )
+        _raw_args = (event.get_command_args() or "").strip()
+        partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
+
+        try:
+            from run_agent import AIAgent
+            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            session_key = self._session_key_for_source(source)
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+            )
+            if not runtime_kwargs.get("api_key"):
+                return t("gateway.compress.no_provider")
+
+            msgs = [
+                {"role": m.get("role"), "content": m.get("content")}
+                for m in history
+                if m.get("role") in {"user", "assistant"} and m.get("content")
+            ]
+
+            # Boundary-aware split: only the head is summarized; the most
+            # recent `keep_last` exchanges are preserved verbatim. The
+            # split snaps the tail to a user-turn start so the rejoined
+            # transcript keeps role alternation valid.
+            tail: list = []
+            head = msgs
+            if partial:
+                head, tail = split_history_for_partial_compress(msgs, keep_last)
+                if not tail:
+                    # Degenerate split — fall back to full compression.
+                    partial = False
+                    head = msgs
+
+            tmp_agent = AIAgent(
+                **runtime_kwargs,
+                model=model,
+                max_iterations=4,
+                quiet_mode=True,
+                skip_memory=True,
+                enabled_toolsets=["memory"],
+                session_id=session_entry.session_id,
+            )
+            try:
+                tmp_agent._print_fn = lambda *a, **kw: None
+
+                # Estimate with system prompt + tool schemas included so the
+                # figure reflects real request pressure, not a transcript-only
+                # underestimate (#6217). Must be computed after tmp_agent is
+                # built so _cached_system_prompt/tools are populated.
+                _sys_prompt = getattr(tmp_agent, "_cached_system_prompt", "") or ""
+                _tools = getattr(tmp_agent, "tools", None) or None
+                approx_tokens = estimate_request_tokens_rough(
+                    msgs, system_prompt=_sys_prompt, tools=_tools
+                )
+
+                compressor = tmp_agent.context_compressor
+                if not compressor.has_content_to_compress(head):
+                    return t("gateway.compress.nothing_to_do")
+
+                loop = asyncio.get_running_loop()
+                compressed, _ = await loop.run_in_executor(
+                    None,
+                    lambda: tmp_agent._compress_context(head, "", approx_tokens=approx_tokens, focus_topic=focus_topic, force=True)
+                )
+
+                # Re-append the verbatim tail after the compressed head,
+                # guarding the seam against illegal role adjacency.
+                if partial and tail:
+                    compressed = rejoin_compressed_head_and_tail(compressed, tail)
+
+                # _compress_context already calls end_session() on the old session
+                # (preserving its full transcript in SQLite) and creates a new
+                # session_id for the continuation.  Write the compressed messages
+                # into the NEW session so the original history stays searchable.
+                new_session_id = tmp_agent.session_id
+                if new_session_id != session_entry.session_id:
+                    session_entry.session_id = new_session_id
+                    self.session_store._save()
+                    self._sync_telegram_topic_binding(
+                        source, session_entry, reason="compress-command",
+                    )
+
+                self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Reset stored token count — transcript changed, old value is stale
+                self.session_store.update_session(
+                    session_entry.session_key, last_prompt_tokens=0
+                )
+                new_tokens = estimate_request_tokens_rough(
+                    compressed, system_prompt=_sys_prompt, tools=_tools
+                )
+                summary = summarize_manual_compression(
+                    msgs,
+                    compressed,
+                    approx_tokens,
+                    new_tokens,
+                )
+                # Detect summary-generation failure so we can surface a
+                # visible warning to the user even on the manual /compress
+                # path (otherwise the failure is silently logged).
+                # _last_compress_aborted means the aux LLM returned no
+                # usable summary and the compressor preserved messages
+                # unchanged (no drop, no placeholder).  force=True was
+                # passed above so any active cooldown is bypassed.
+                _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
+                _summary_err = getattr(compressor, "_last_summary_error", None)
+                # Separately: did the user's CONFIGURED aux model fail
+                # and we recovered via main?  Surface that as an info
+                # note so they can fix their config.
+                _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
+                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
+            finally:
+                # Evict cached agent so next turn rebuilds system prompt
+                # from current files (SOUL.md, memory, etc.).
+                self._evict_cached_agent(session_key)
+                self._cleanup_agent_resources(tmp_agent)
+            lines = [f"🗜️ {summary['headline']}"]
+            if focus_topic:
+                lines.append(t("gateway.compress.focus_line", topic=focus_topic))
+            lines.append(summary["token_line"])
+            if summary["note"]:
+                lines.append(summary["note"])
+            if _summary_aborted:
+                lines.append(
+                    t(
+                        "gateway.compress.aborted",
+                        error=(_summary_err or "unknown error"),
+                    )
+                )
+            elif _aux_fail_model:
+                lines.append(
+                    t(
+                        "gateway.compress.aux_failed",
+                        model=_aux_fail_model,
+                        error=(_aux_fail_err or "unknown error"),
+                    )
+                )
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning("Manual compress failed: %s", e)
+            return t("gateway.compress.failed", error=e)
 
 
     async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
@@ -13822,6 +14411,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        reasoning_consumer_holder = [None]  # Mutable container for /reasoning stream consumer
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -14044,6 +14634,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
+            # ── /reasoning stream consumer setup ─────────────────────────
+            # Issue #8080 parity.  Sends a single reasoning message that
+            # is edited in place as the model thinks, then auto-deleted
+            # once the final answer lands.  The model is wired through
+            # ``agent.reasoning_callback``; the consumer drains the
+            # callback queue and edits the bubble.
+            #
+            # Gating:
+            #   - /reasoning stream must be enabled for this platform.
+            #   - Reasoning config must be enabled (effort != "none").
+            #   - The platform must support message editing (we edit
+            #     in place; if it doesn't, the initial send is wasted).
+            # ``getattr`` with a default keeps bare-__new__ tests
+            # (object.__new__(GatewayRunner)) from breaking.
+            _reasoning_stream_active = bool(
+                getattr(self, "_reasoning_stream_per_platform", {}).get(platform_key, False)
+            )
+            if (
+                _reasoning_stream_active
+                and reasoning_config
+                and reasoning_config.get("enabled")
+                and reasoning_config.get("effort") not in (None, "", "none")
+            ):
+                try:
+                    from gateway.stream_consumer import ReasoningStreamConsumer
+                    _rc_adapter = self.adapters.get(source.platform)
+                    if _rc_adapter and getattr(
+                        _rc_adapter, "SUPPORTS_MESSAGE_EDITING", True
+                    ):
+                        _reasoning_consumer = ReasoningStreamConsumer(
+                            adapter=_rc_adapter,
+                            chat_id=source.chat_id,
+                            metadata=_status_thread_metadata,
+                        )
+                        reasoning_consumer_holder[0] = _reasoning_consumer
+                except Exception as _rc_err:
+                    logger.debug("Could not set up reasoning consumer: %s", _rc_err)
+
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
@@ -14183,6 +14811,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.notice_callback = _notice_callback_sync
             agent.notice_clear_callback = None
             agent.reasoning_config = reasoning_config
+            # /reasoning stream: wire the agent's reasoning_callback to the
+            # reasoning consumer's on_delta so the bubble edits in place.
+            # The consumer is created above (reasoning_consumer_holder) and
+            # may be None if /reasoning stream isn't active for this
+            # platform, in which case we leave reasoning_callback unset so
+            # the agent's default (no-op) behavior applies.
+            _rc0 = reasoning_consumer_holder[0]
+            if _rc0 is not None:
+                def _reasoning_delta_cb(text: str) -> None:
+                    if _run_still_current():
+                        _rc0.on_delta(text)
+
+                agent.reasoning_callback = _reasoning_delta_cb
+            else:
+                agent.reasoning_callback = None
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
@@ -14814,6 +15457,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await asyncio.sleep(0.05)
 
         stream_task = asyncio.create_task(_start_stream_consumer())
+
+        # Reasoning consumer task — same pattern as the main stream
+        # consumer, plus an initial-send phase that creates the
+        # placeholder reasoning bubble.  We kick off ``send_initial``
+        # immediately (before the agent starts) so the bubble is
+        # visible from the first token.  The async ``run()`` is then
+        # started the same way the main stream consumer is.
+        reasoning_task = None
+        async def _start_reasoning_consumer() -> None:
+            """Send the placeholder reasoning bubble, then drain deltas."""
+            # Wait for consumer to be constructed inside the agent's
+            # setup block (which runs on a thread).
+            for _ in range(200):  # up to 10s
+                if reasoning_consumer_holder[0] is not None:
+                    break
+                await asyncio.sleep(0.05)
+            _rc = reasoning_consumer_holder[0]
+            if _rc is None:
+                return
+            try:
+                _sent = await _rc.send_initial()
+            except Exception as _rc_send_err:
+                logger.debug("Reasoning consumer initial send error: %s", _rc_send_err)
+                return
+            if not _sent:
+                return
+            try:
+                await _rc.run()
+            except Exception as _rc_run_err:
+                logger.debug("Reasoning consumer run error: %s", _rc_run_err)
+
+        # Always spawn: the task waits for the holder to populate, so
+        # it's safe to create unconditionally.  The 10s wait inside
+        # the task ensures we don't leak tasks if the consumer is never
+        # set up (e.g. /reasoning stream turned off mid-flight).
+        reasoning_task = asyncio.create_task(_start_reasoning_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created
@@ -15202,6 +15881,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "failed": True,
                 }
 
+            # ── /reasoning stream finalization (non-queued path) ────────
+            # The queued-message branch handles this just below; this
+            # block covers the normal completion path where the agent
+            # finished and we now need to flush the reasoning bubble
+            # before delivering the final answer.  Skipped when the
+            # agent had no reasoning to stream (the consumer was
+            # never populated by the setup block).
+            _rc_final = reasoning_consumer_holder[0]
+            if _rc_final is not None:
+                try:
+                    _rc_final.finish()
+                except Exception as _rc_fin_err:
+                    logger.debug("Reasoning consumer finish failed: %s", _rc_fin_err)
+                if reasoning_task is not None:
+                    try:
+                        await asyncio.wait_for(reasoning_task, timeout=3.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        reasoning_task.cancel()
+                        try:
+                            await reasoning_task
+                        except asyncio.CancelledError:
+                            pass
+                    except Exception as _rc_wait_err:
+                        logger.debug("Reasoning consumer wait failed: %s", _rc_wait_err)
+                # Mirror the emitted flag into the result dict so the
+                # post-processing block can detect the streaming path
+                # and skip the legacy prepend.
+                _rh_result = result_holder[0]
+                if (
+                    _rc_final.emitted_any
+                    and isinstance(_rh_result, dict)
+                    and not _rh_result.get("_reasoning_stream_emitted")
+                ):
+                    _rh_result["_reasoning_stream_emitted"] = True
+
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
             # the actually-active model instead of the config default.
@@ -15377,6 +16091,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
+
+                    # Reasoning consumer: signal finish() so any
+                    # remaining deltas flush, then await the task
+                    # so we know the bubble is finalized before
+                    # scheduling cleanup.  We also capture the
+                    # emitted flag here so the post-processing block
+                    # can skip the legacy prepend.
+                    _rc = reasoning_consumer_holder[0]
+                    if _rc is not None:
+                        try:
+                            _rc.finish()
+                        except Exception as _rc_fin_err:
+                            logger.debug("Reasoning consumer finish failed: %s", _rc_fin_err)
+                        if reasoning_task is not None:
+                            try:
+                                await asyncio.wait_for(reasoning_task, timeout=3.0)
+                            except (asyncio.TimeoutError, asyncio.CancelledError):
+                                reasoning_task.cancel()
+                                try:
+                                    await reasoning_task
+                                except asyncio.CancelledError:
+                                    pass
+                            except Exception as _rc_wait_err:
+                                logger.debug("Reasoning consumer wait failed: %s", _rc_wait_err)
+                        # Record into the result so the post-processing
+                        # block knows the streaming path already showed
+                        # the reasoning and should NOT prepend it.
+                        _res = result or {}
+                        if _rc.emitted_any and not _res.get("_reasoning_stream_emitted"):
+                            _res["_reasoning_stream_emitted"] = True
+                            # Mirror into result_holder so the post-
+                            # processing block (which reads via
+                            # agent_result.get(...)) sees the flag.
+                            if result is not None and isinstance(result, dict):
+                                result["_reasoning_stream_emitted"] = True
                     _previewed = bool(result.get("response_previewed"))
                     _already_streamed = bool(
                         (_sc and getattr(_sc, "final_response_sent", False))
@@ -15644,6 +16393,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        # /reasoning stream cleanup: delete the reasoning bubble after
+        # the final response lands.  Skipped on failed runs so the
+        # bubble stays as a breadcrumb the user can reference.  All
+        # adapter/delete exceptions are logged at debug — this is
+        # best-effort cleanup and must not affect message delivery.
+        _rc_cleanup = reasoning_consumer_holder[0]
+        if (
+            _rc_cleanup is not None
+            and _rc_cleanup.finalized_message_id
+            and session_key
+            and isinstance(response, dict)
+            and not response.get("failed")
+        ):
+            _rs_adapter = self.adapters.get(source.platform)
+            if _rs_adapter and hasattr(_rs_adapter, "delete_message"):
+                _rs_msg_id = str(_rc_cleanup.finalized_message_id)
+                _rs_chat_id = source.chat_id
+                _rs_adapter_ref = _rs_adapter
+                _rs_loop = asyncio.get_running_loop()
+                # Read TTL at registration time (single read, not on
+                # every potential cleanup retry).  0 = delete immediately
+                # (OpenClaw parity), >0 = keep as breadcrumb for N secs.
+                _rs_ttl = self._load_reasoning_stream_ttl(source.platform)
+
+                def _cleanup_reasoning_bubble() -> None:
+                    async def _delete_one() -> None:
+                        if _rs_ttl > 0:
+                            try:
+                                await asyncio.sleep(_rs_ttl)
+                            except asyncio.CancelledError:
+                                return
+                        try:
+                            await _rs_adapter_ref.delete_message(
+                                _rs_chat_id, _rs_msg_id
+                            )
+                        except Exception as _de:
+                            logger.debug(
+                                "Reasoning bubble delete failed (chat=%s msg=%s): %s",
+                                _rs_chat_id, _rs_msg_id, _de,
+                            )
+                    try:
+                        safe_schedule_threadsafe(
+                            _delete_one(), _rs_loop,
+                            logger=logger,
+                            log_message="Reasoning bubble cleanup scheduling error",
+                        )
+                    except Exception:
+                        pass
+
+                try:
+                    _rs_adapter.register_post_delivery_callback(
+                        session_key,
+                        _cleanup_reasoning_bubble,
+                        generation=run_generation,
+                    )
+                except Exception as _rs_reg:
+                    logger.debug(
+                        "Reasoning bubble post-delivery registration failed: %s",
+                        _rs_reg,
+                    )
 
         return response
 

@@ -43,6 +43,7 @@ def _make_runner():
     runner.hooks.loaded_hooks = []
     runner._session_db = None
     runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
+    runner._reasoning_stream_per_platform = {}
     return runner
 
 
@@ -71,7 +72,7 @@ class TestReasoningCommand:
 
         result = await runner._handle_help_command(event)
 
-        assert "/reasoning [level|show|hide]" in result
+        assert "/reasoning [level|show|hide|stream]" in result
 
     def test_reasoning_is_known_command(self):
         source = inspect.getsource(gateway_run.GatewayRunner._handle_message)

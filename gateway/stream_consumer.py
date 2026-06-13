@@ -1559,3 +1559,206 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
             return False
+
+
+# ── Reasoning Stream Consumer ─────────────────────────────────────────────
+# Issue #8080 / PR #41549: `/reasoning stream` shows the model's thinking
+# as a single, progressively-edited message that auto-deletes when the
+# final answer lands.  This implements OpenClaw's `stream` UX parity:
+# users get live visibility into reasoning while the answer generates,
+# and the final conversation stays clean (no reasoning in the answer
+# bubble, no leftover reasoning bubble after the answer is delivered).
+#
+# Why a separate consumer class instead of reusing GatewayStreamConsumer:
+#   - Reasoning text is logically distinct from the assistant reply
+#     (different lifecycle, different cleanup policy).
+#   - We don't need rate-limited progressive edits for reasoning — a
+#     single initial send + throttled edits is enough, and reasoning
+#     bursts are short enough that the existing edit-interval logic
+#     would add latency without benefit.
+#   - The cleanup contract (delete-after-final-answer) is unique to
+#     this consumer, so it owns its own state instead of overloading
+#     GatewayStreamConsumer with a "is this the reasoning stream?"
+#     branch.
+
+
+class ReasoningStreamConsumer:
+    """Edit-in-place consumer for streaming reasoning text.
+
+    Lifecycle:
+      1. ``send_initial()`` is called by the gateway before the agent
+         starts, creating the placeholder reasoning message.
+      2. ``on_delta(text)`` is wired as the agent's ``reasoning_callback``
+         and pushes reasoning deltas to a thread-safe queue.
+      3. ``run()`` is the async task that drains the queue and edits
+         the message in place, throttled by ``edit_interval``.
+      4. ``finish()`` signals completion; the final edit lands, then
+         the gateway schedules deletion via ``register_post_delivery_callback``.
+
+    The consumer is "fire and forget" from the gateway's perspective:
+    it owns its own asyncio task and never raises into the agent loop.
+    """
+
+    _REASONING_PREFIX = "💭 "
+
+    def __init__(
+        self,
+        adapter: Any,
+        chat_id: str,
+        *,
+        edit_interval: float = 0.4,
+        metadata: Optional[dict] = None,
+    ):
+        self.adapter = adapter
+        self.chat_id = chat_id
+        self._edit_interval = edit_interval
+        self.metadata = metadata
+        self._queue: queue.Queue = queue.Queue()
+        self._accumulated: str = ""
+        self._message_id: Optional[str] = None
+        self._last_edit_time: float = 0.0
+        self._last_edited_text: str = ""
+        self._done = False
+        # Set by the gateway after run() returns True so it can be
+        # deleted by the post-delivery callback. None means the
+        # initial send failed and the consumer should not be cleaned up.
+        self.finalized_message_id: Optional[str] = None
+        # True once we've emitted at least one reasoning delta.  Used
+        # by the gateway to decide between the streaming path and the
+        # fallback "prepend" path for non-streaming models.
+        self.emitted_any: bool = False
+
+    @property
+    def message_id(self) -> Optional[str]:
+        """ID of the reasoning bubble, or None if the initial send failed."""
+        return self._message_id
+
+    def on_delta(self, text: str) -> None:
+        """Thread-safe callback — called from the agent's worker thread.
+
+        Empty/None deltas are ignored: the agent may fire a no-op
+        callback at the start of every API call to reset internal
+        counters, and we don't want to send an empty edit on those.
+        """
+        if not text:
+            return
+        self._queue.put(text)
+
+    def finish(self) -> None:
+        """Signal that no more reasoning deltas will arrive."""
+        self._queue.put(_DONE)
+
+    async def send_initial(self) -> bool:
+        """Send the placeholder reasoning bubble.
+
+        Returns True if the message was sent and we have an editable
+        message_id.  Returns False if the adapter doesn't support
+        sending a fresh message (no message_id returned) — the gateway
+        falls back to the prepend path in that case.
+        """
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=f"{self._REASONING_PREFIX}Reasoning…",
+                metadata=self.metadata,
+            )
+        except Exception as e:
+            logger.warning(
+                "Reasoning stream initial send failed for %s: %s",
+                self.chat_id, e,
+            )
+            return False
+        if result is None or not getattr(result, "message_id", None):
+            logger.debug(
+                "Reasoning stream: adapter %s did not return a message_id, "
+                "falling back to prepend path",
+                type(self.adapter).__name__,
+            )
+            return False
+        self._message_id = str(result.message_id)
+        return True
+
+    async def run(self) -> None:
+        """Drain the queue and edit the message in place.
+
+        Edits are throttled by ``_edit_interval`` to avoid hitting
+        platform rate limits.  The final edit (after ``finish()``) is
+        always sent so the placeholder cursor is removed.
+        """
+        if not self._message_id:
+            return
+        try:
+            while True:
+                # Drain available items; respect throttling on edits.
+                got_done = False
+                while True:
+                    try:
+                        item = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if item is _DONE:
+                        got_done = True
+                        break
+                    if isinstance(item, str) and item:
+                        self._accumulated += item
+                        self.emitted_any = True
+
+                # Throttle edits: only edit if we have new text and the
+                # last edit was more than ``_edit_interval`` ago.  The
+                # final edit (got_done) bypasses the throttle so the
+                # trailing cursor gets removed.
+                now = time.monotonic()
+                pending_text = self._format_text()
+                if pending_text != self._last_edited_text and (
+                    got_done
+                    or (now - self._last_edit_time) >= self._edit_interval
+                ):
+                    await self._edit_message(pending_text, finalize=got_done)
+                    self._last_edited_text = pending_text
+                    self._last_edit_time = now
+
+                if got_done:
+                    self.finalized_message_id = self._message_id
+                    return
+
+                # Sleep a little to avoid busy-looping when deltas are
+                # arriving faster than the edit interval.
+                await asyncio.sleep(0.05)
+        except Exception as e:
+            logger.warning("Reasoning stream consumer failed: %s", e)
+            # Still surface the message_id so the gateway can attempt
+            # cleanup if a partial bubble was sent.
+            if self._message_id and not self.finalized_message_id:
+                self.finalized_message_id = self._message_id
+
+    def _format_text(self) -> str:
+        """Render the accumulated reasoning into a single message body."""
+        body = self._accumulated.rstrip()
+        if not body:
+            return f"{self._REASONING_PREFIX}Reasoning…"
+        # Telegram's preview prefers MarkdownV2-friendly formatting; we
+        # avoid triple-backtick code blocks here because reasoning text
+        # frequently contains partial Markdown that would break the parse.
+        return f"{self._REASONING_PREFIX}{body}"
+
+    async def _edit_message(self, content: str, *, finalize: bool) -> None:
+        """Edit the reasoning bubble via the platform adapter."""
+        try:
+            await self.adapter.edit_message(
+                chat_id=self.chat_id,
+                message_id=self._message_id,
+                content=content,
+                finalize=finalize,
+            )
+        except Exception as e:
+            # Telegram returns 400 "message is not modified" when the
+            # text is identical to the last edit.  That's a no-op, not
+            # an error.
+            if "not modified" in str(e).lower():
+                return
+            logger.debug(
+                "Reasoning stream edit failed (chat=%s msg=%s): %s",
+                self.chat_id, self._message_id, e,
+            )
+            # Don't raise — keep the consumer alive so subsequent
+            # deltas can retry.

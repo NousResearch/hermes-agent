@@ -282,11 +282,21 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     Searches the local skills dir (~/.hermes/skills/) first, then any
     external dirs configured via skills.external_dirs.  Returns
     {"path": Path} or None.
+
+    Supports ``category/skill`` names (e.g. ``"mlops/axolotl"``) by
+    trying a direct path join first, matching ``skill_view()`` behaviour.
     """
     from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
+        # Fast path: direct join handles "category/skill" and bare "skill".
+        direct = skills_dir / name
+        direct_md = direct / "SKILL.md"
+        if direct.is_dir() and direct_md.exists():
+            if not is_excluded_skill_path(direct_md):
+                return {"path": direct}
+        # Slow path: flat name may live under a category directory.
         for skill_md in skills_dir.rglob("SKILL.md"):
             if is_excluded_skill_path(skill_md):
                 continue
@@ -350,6 +360,13 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         if not skills_dir.is_dir():
             continue
         try:
+            # Fast path: direct join handles "category/skill" names.
+            direct = skills_dir / name
+            direct_md = direct / "SKILL.md"
+            if direct.is_dir() and direct_md.exists():
+                if not is_excluded_skill_path(direct_md):
+                    matches.append((profile_name, direct))
+                    continue
             for skill_md in skills_dir.rglob("SKILL.md"):
                 if is_excluded_skill_path(skill_md):
                     continue

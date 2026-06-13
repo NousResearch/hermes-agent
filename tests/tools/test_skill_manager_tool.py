@@ -12,6 +12,7 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
+    _find_skill,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -196,6 +197,51 @@ class TestValidateFilePath:
         # Only SKILL.md gets the root-level exception, not arbitrary files.
         err = _validate_file_path("README.md")
         assert "File must be under one of:" in err
+
+
+# ---------------------------------------------------------------------------
+# _find_skill
+# ---------------------------------------------------------------------------
+
+
+class TestFindSkill:
+    """_find_skill must resolve both bare and category/skill names."""
+
+    def test_bare_name(self, tmp_path):
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("my-skill")
+        assert result is not None
+        assert result["path"] == skill_dir
+
+    def test_category_slash_skill_name(self, tmp_path):
+        cat_dir = tmp_path / "mlops" / "axolotl"
+        cat_dir.mkdir(parents=True)
+        (cat_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("mlops/axolotl")
+        assert result is not None
+        assert result["path"] == cat_dir
+
+    def test_nonexistent_returns_none(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _find_skill("no-such-skill") is None
+
+    def test_category_slash_nonexistent_returns_none(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _find_skill("mlops/no-such-skill") is None
+
+    def test_bare_name_still_works_when_category_also_exists(self, tmp_path):
+        """Bare 'axolotl' under a category dir is found by the rglob fallback."""
+        cat_dir = tmp_path / "mlops" / "axolotl"
+        cat_dir.mkdir(parents=True)
+        (cat_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        with _skill_dir(tmp_path):
+            result = _find_skill("axolotl")
+        assert result is not None
+        assert result["path"] == cat_dir
 
 
 # ---------------------------------------------------------------------------

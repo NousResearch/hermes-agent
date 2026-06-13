@@ -626,7 +626,7 @@ class LSPClient:
         if not isinstance(diagnostics, list):
             diagnostics = []
         version = params.get("version")
-        loop_time = asyncio.get_event_loop().time()
+        loop_time = asyncio.get_running_loop().time()
 
         if self._seed_first_push and path not in self._first_push_seen:
             # First push: seed without firing the event so a waiter

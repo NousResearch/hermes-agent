@@ -190,7 +190,11 @@ def _arrange_startup_fallback(monkeypatch, tmp_path, running_pids):
 
 def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypatch):
     """Scheduled Task wrapper should launch pythonw once and avoid replace loops."""
-    monkeypatch.setattr(gateway_windows, "_derive_venv_pythonw", lambda exe: exe.replace("python.exe", "pythonw.exe"))
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (exe.replace("python.exe", "pythonw.exe"), r"C:\\Hermes\\hermes-agent\\venv", []),
+    )
 
     content = gateway_windows._build_gateway_cmd_script(
         r"C:\\Hermes\\hermes-agent\\venv\\Scripts\\python.exe",
@@ -204,6 +208,41 @@ def test_gateway_cmd_script_uses_pythonw_without_replace_or_start_churn(monkeypa
     assert "--replace" not in content
     assert "start \"\"" not in content
     assert "exit /b 0" in content
+
+
+def test_gateway_cmd_script_uses_uv_safe_base_pythonw(monkeypatch, tmp_path):
+    """Scheduled Task wrapper should share the detached uv-venv workaround."""
+    project = tmp_path / "project"
+    scripts = project / "venv" / "Scripts"
+    site_packages = project / "venv" / "Lib" / "site-packages"
+    hermes_home = tmp_path / "hermes-home"
+    base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
+    scripts.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    hermes_home.mkdir()
+    base.mkdir(parents=True)
+
+    venv_python = scripts / "python.exe"
+    venv_pythonw = scripts / "pythonw.exe"
+    base_pythonw = base / "pythonw.exe"
+    for exe in (venv_python, venv_pythonw, base_pythonw):
+        exe.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(
+        f"home = {base}\nimplementation = CPython\nuv = 0.11.14\nversion_info = 3.11.15\n",
+        encoding="utf-8",
+    )
+
+    content = gateway_windows._build_gateway_cmd_script(
+        str(venv_python),
+        str(hermes_home),
+        str(hermes_home),
+        "",
+    )
+
+    assert str(base_pythonw) in content
+    assert f'set "VIRTUAL_ENV={project / "venv"}"' in content
+    assert str(site_packages) in content
+    assert str(venv_pythonw) not in content
 
 
 def test_elevated_gateway_command_uses_pythonw_hidden_console(monkeypatch):
@@ -239,14 +278,18 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     """Install must delete+create so stale minute-repeat task settings are not preserved."""
     calls = []
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    xml_seen = {}
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: r"DOMAIN\\alice")
 
     def fake_schtasks(args):
         calls.append(tuple(args))
         if args[0] == "/Delete":
             return (0, "SUCCESS", "")
         if args[0] == "/Create":
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml_seen["text"] = xml_path.read_text(encoding="utf-16")
             return (0, "SUCCESS", "")
         raise AssertionError(f"unexpected schtasks args: {args}")
 
@@ -257,8 +300,16 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "/Change" not in [arg for call in calls for arg in call]
     assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
     assert calls[1][0] == "/Create"
-    assert "/SC" in calls[1]
-    assert "ONLOGON" in calls[1]
+    assert "/XML" in calls[1]
+    assert "/SC" not in calls[1]
+    assert "<Delay>PT30S</Delay>" in xml_seen["text"]
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in xml_seen["text"]
+    assert "<StopOnIdleEnd>false</StopOnIdleEnd>" in xml_seen["text"]
+    assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in xml_seen["text"]
+    assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in xml_seen["text"]
+    assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml_seen["text"]
+    assert "<RestartOnFailure>" in xml_seen["text"]
+    assert "<Count>999</Count>" in xml_seen["text"]
 
 
 def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run(monkeypatch, tmp_path, capsys):

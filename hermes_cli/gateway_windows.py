@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
@@ -51,6 +52,9 @@ _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IG
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_TASK_LOGON_DELAY = "PT30S"
+_TASK_RESTART_INTERVAL = "PT1M"
+_TASK_RESTART_COUNT = 999
 
 
 def _schtasks_encoding() -> str:
@@ -358,12 +362,13 @@ def _build_gateway_cmd_script(
     lines.append(f'set "HERMES_HOME={hermes_home}"')
     lines.append('set "PYTHONIOENCODING=utf-8"')
     lines.append('set "HERMES_GATEWAY_DETACHED=1"')
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     # VIRTUAL_ENV lets the gateway's own python detection find the venv
     # if someone imports hermes_constants-based logic during startup.
-    venv_dir = str(Path(python_path).resolve().parent.parent)
     lines.append(f'set "VIRTUAL_ENV={venv_dir}"')
+    pythonpath_entries = [str(Path(__file__).resolve().parent.parent), *extra_pythonpath]
+    lines.append(f'set "PYTHONPATH={";".join([*pythonpath_entries, "%PYTHONPATH%"])}"')
 
-    pythonw_path = _derive_venv_pythonw(python_path)
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]
     if profile_arg:
         prog_args.extend(profile_arg.split())
@@ -443,6 +448,69 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
+def _build_scheduled_task_xml(task_name: str, script_path: Path, user: str | None) -> str:
+    """Render a Task Scheduler XML definition with safe long-running defaults."""
+    user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{escape(_TASK_DESCRIPTION)}</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>{_TASK_LOGON_DELAY}</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">{user_principal}
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>{_TASK_RESTART_INTERVAL}</Interval>
+      <Count>{_TASK_RESTART_COUNT}</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>cmd.exe</Command>
+      <Arguments>/d /c "{escape(str(script_path))}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _write_scheduled_task_xml(task_name: str, script_path: Path, user: str | None) -> Path:
+    xml_path = script_path.with_suffix(".task.xml")
+    xml_path.write_text(
+        _build_scheduled_task_xml(task_name, script_path, user),
+        encoding="utf-16",
+        newline="",
+    )
+    return xml_path
+
+
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
@@ -451,8 +519,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
     """
-    quoted_script = _quote_schtasks_arg(str(script_path))
-
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
     if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
@@ -460,32 +526,25 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
             return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
         # Non-fatal: /Create /F below may still replace it. Keep the detail in
         # the final error if creation also fails.
-    # password" variant; if that fails, retry without /RU /NP /IT.
-    base = [
-        "/Create",
-        "/F",
-        "/SC",
-        "ONLOGON",
-        "/RL",
-        "LIMITED",
-        "/TN",
-        task_name,
-        "/TR",
-        quoted_script,
-    ]
     user = _resolve_task_user()
-    variants = []
-    if user:
-        variants.append([*base, "/RU", user, "/NP", "/IT"])
+    xml_path = _write_scheduled_task_xml(task_name, script_path, user)
+    base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
+    variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
     variants.append(base)
 
     last_code = 1
     last_err = ""
-    for argv in variants:
-        code, out, err = _exec_schtasks(argv)
-        if code == 0:
-            return (True, f"Created Scheduled Task {task_name!r}")
-        last_code, last_err = code, (err or out or "")
+    try:
+        for argv in variants:
+            code, out, err = _exec_schtasks(argv)
+            if code == 0:
+                return (True, f"Created Scheduled Task {task_name!r}")
+            last_code, last_err = code, (err or out or "")
+    finally:
+        try:
+            xml_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if delete_detail and "cannot find" not in delete_detail.lower():
         last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")

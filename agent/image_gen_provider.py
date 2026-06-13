@@ -229,23 +229,40 @@ def save_url_image(
     # private-network policy used for user-supplied URLs.  A compromised
     # or malicious provider could return a URL targeting internal hosts,
     # loopback addresses, or cloud metadata endpoints.
+    #
+    # We must intercept redirects *before* the HTTP library follows them,
+    # otherwise the request to the private address has already been made
+    # by the time we inspect ``response.url``.  Using
+    # ``allow_redirects=False`` gives us control over each hop.
     from tools.url_safety import is_safe_url
 
-    if not is_safe_url(url):
+    _current_url = url
+    if not is_safe_url(_current_url):
         raise ValueError(
-            f"Blocked: provider-returned URL targets a private or internal address: {url}"
+            f"Blocked: provider-returned URL targets a private or internal address: {_current_url}"
         )
 
-    response = requests.get(url, timeout=timeout, stream=True)
+    _MAX_REDIRECTS = 10
+    response = None
+    for _hop in range(_MAX_REDIRECTS + 1):
+        response = requests.get(
+            _current_url, timeout=timeout, stream=True, allow_redirects=False
+        )
+        # 3xx with Location → validate before following
+        if response.is_redirect and response.headers.get("Location"):
+            from urllib.parse import urljoin
+
+            next_url = urljoin(_current_url, response.headers["Location"])
+            if not is_safe_url(next_url):
+                raise ValueError(
+                    f"Blocked: redirect target is a private or internal address: {next_url}"
+                )
+            _current_url = next_url
+            response.close()
+            continue
+        # Final response (non-redirect) — break out
+        break
     response.raise_for_status()
-
-    # Re-validate after redirects: a safe initial URL may redirect to a
-    # private/internal address via a compromised CDN or provider.
-    final_url = getattr(response, "url", url) or url
-    if final_url != url and not is_safe_url(final_url):
-        raise ValueError(
-            f"Blocked: redirect target is a private or internal address: {final_url}"
-        )
 
     # Infer extension from the response content-type, falling back to the
     # URL suffix when xAI / OpenAI omit a precise type (some CDNs return

@@ -325,3 +325,38 @@ class TestOutsideWorkspaceRejection:
         outside.mkdir(exist_ok=True)
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         assert tracker._is_valid_subdir(outside) is False
+
+    def test_expanduser_runtime_error_when_home_unset(self, project):
+        """_add_path_candidate should not crash when $HOME is unset (Python 3.11+).
+
+        Path.expanduser() raises RuntimeError when $HOME is unset on some
+        platforms. The except clause must catch it.
+        """
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        with patch("pathlib.Path.expanduser", side_effect=RuntimeError("Could not determine home directory")):
+            # Should not raise — gracefully skip the path
+            candidates = set()
+            tracker._add_path_candidate("~/some/path", candidates)
+            assert candidates == set()
+
+    def test_path_home_runtime_error_in_relative_display(self, project):
+        """Relative path display should not crash when Path.home() raises RuntimeError.
+
+        When $HOME is unset, Path.home() raises RuntimeError on some platforms.
+        The relative-path fallback must catch it and keep the absolute path.
+        """
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        # Create a hint file in a subdirectory
+        subdir = project / "sub"
+        subdir.mkdir()
+        (subdir / "AGENTS.md").write_text("sub hints")
+        # Read a file in that subdirectory to trigger hint loading
+        (subdir / "main.py").write_text("print('hello')")
+        with patch("pathlib.Path.home", side_effect=RuntimeError("Could not determine home directory")):
+            # Should not raise — gracefully falls back to absolute path
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(subdir / "main.py")}
+            )
+            # Result should still contain the hint content
+            assert result is not None
+            assert "sub hints" in result

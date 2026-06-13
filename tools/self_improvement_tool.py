@@ -5365,10 +5365,32 @@ def _candidate_planning_field_present(candidate: dict[str, Any], aliases: Iterab
     return False
 
 
+def _linear_planning_missing_field_detail(
+    field: str,
+    missing_candidates: list[dict[str, Any]],
+    missing_count: int,
+) -> dict[str, Any]:
+    return {
+        "field": field,
+        "expected_aliases": list(_LINEAR_PLANNING_SURFACE_FIELD_ALIASES[field]),
+        "missing_count": missing_count,
+        "sample_candidates": [
+            {
+                "candidate_id": _candidate_identifier(candidate),
+                "title": _candidate_title(candidate),
+            }
+            for candidate in missing_candidates[:_LINEAR_PLANNING_SURFACE_SAMPLE_LIMIT]
+        ],
+    }
+
+
 def _build_linear_planning_surface(backlog_candidates: Any) -> dict[str, Any]:
     candidates = _coerce_candidate_records(backlog_candidates)
     required_fields = sorted(_LINEAR_PLANNING_SURFACE_FIELD_ALIASES)
     missing_field_counts = {field: 0 for field in required_fields}
+    missing_candidates_by_field: dict[str, list[dict[str, Any]]] = {
+        field: [] for field in required_fields
+    }
     issue_samples: list[dict[str, Any]] = []
 
     for candidate in candidates:
@@ -5382,12 +5404,17 @@ def _build_linear_planning_surface(backlog_candidates: Any) -> dict[str, Any]:
         ]
         for field in missing_fields:
             missing_field_counts[field] += 1
+            missing_candidates_by_field[field].append(candidate)
         if missing_fields and len(issue_samples) < _LINEAR_PLANNING_SURFACE_SAMPLE_LIMIT:
             issue_samples.append(
                 {
                     "candidate_id": _candidate_identifier(candidate),
                     "title": _candidate_title(candidate),
                     "missing_fields": missing_fields,
+                    "expected_aliases": {
+                        field: list(_LINEAR_PLANNING_SURFACE_FIELD_ALIASES[field])
+                        for field in missing_fields
+                    },
                 }
             )
 
@@ -5406,13 +5433,30 @@ def _build_linear_planning_surface(backlog_candidates: Any) -> dict[str, Any]:
         "missing_field_counts": {
             field: count for field, count in missing_field_counts.items() if count
         },
+        "missing_field_details": [
+            _linear_planning_missing_field_detail(
+                field,
+                missing_candidates_by_field[field],
+                missing_field_counts[field],
+            )
+            for field in required_fields
+            if missing_field_counts[field]
+        ],
         "issue_samples": issue_samples,
+        "issue_sample_limit": _LINEAR_PLANNING_SURFACE_SAMPLE_LIMIT,
         "detail": (
             "No Linear backlog candidates were provided."
             if not candidates
-            else "Linear backlog candidates expose lane, verification, and active status-comment planning fields."
+            else (
+                "Linear backlog candidates expose lane, verification, and active "
+                "status-comment planning fields."
+            )
             if missing_field_count == 0
-            else "Linear backlog candidates are missing planning fields; inspect issue_samples for exact candidates and fields."
+            else (
+                "Linear backlog candidates are missing planning fields; inspect "
+                "missing_field_details and issue_samples for exact candidates, fields, "
+                "and accepted aliases."
+            )
         ),
     }
 
@@ -5842,6 +5886,15 @@ def _format_pipeline_summary(
                 + ", ".join(
                     f"{reason}={filter_counts[reason]}"
                     for reason in sorted(filter_counts)
+                )
+            )
+        linear_surface = parallel_selection.get("linear_planning_surface") or {}
+        missing_fields = linear_surface.get("missing_field_counts") or {}
+        if missing_fields:
+            lines.append(
+                "- linear_planning_surface_missing="
+                + ", ".join(
+                    f"{field}={missing_fields[field]}" for field in sorted(missing_fields)
                 )
             )
     return "\n".join(lines)

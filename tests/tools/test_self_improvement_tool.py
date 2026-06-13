@@ -3893,8 +3893,111 @@ def test_pipeline_capacity_surfaces_partial_linear_planning_evidence(tmp_path):
             "candidate_id": "HAD-273",
             "title": "Harden the Linear self-improvement planning surface",
             "missing_fields": ["active_status_comment", "verification"],
+            "expected_aliases": {
+                "active_status_comment": [
+                    "active_status_comment",
+                    "activeStatusComment",
+                    "latest_status_comment",
+                    "latestStatusComment",
+                    "status_comment",
+                    "statusComment",
+                    "status_comments",
+                    "statusComments",
+                    "comments",
+                ],
+                "verification": [
+                    "verification",
+                    "verification_expectation",
+                    "verificationExpectation",
+                    "verification_plan",
+                    "verificationPlan",
+                    "verification_targets",
+                    "verificationTargets",
+                ],
+            },
         }
     ]
+    assert surface["missing_field_details"] == [
+        {
+            "field": "active_status_comment",
+            "expected_aliases": [
+                "active_status_comment",
+                "activeStatusComment",
+                "latest_status_comment",
+                "latestStatusComment",
+                "status_comment",
+                "statusComment",
+                "status_comments",
+                "statusComments",
+                "comments",
+            ],
+            "missing_count": 1,
+            "sample_candidates": [
+                {
+                    "candidate_id": "HAD-273",
+                    "title": "Harden the Linear self-improvement planning surface",
+                }
+            ],
+        },
+        {
+            "field": "verification",
+            "expected_aliases": [
+                "verification",
+                "verification_expectation",
+                "verificationExpectation",
+                "verification_plan",
+                "verificationPlan",
+                "verification_targets",
+                "verificationTargets",
+            ],
+            "missing_count": 1,
+            "sample_candidates": [
+                {
+                    "candidate_id": "HAD-273",
+                    "title": "Harden the Linear self-improvement planning surface",
+                }
+            ],
+        },
+    ]
+    assert surface["issue_sample_limit"] == 5
+    assert (
+        "- linear_planning_surface_missing=active_status_comment=1, verification=1"
+        in pipeline["summary_markdown"]
+    )
+
+
+def test_linear_planning_surface_bounds_missing_field_diagnostics():
+    candidates = [
+        {
+            "id": f"HAD-27{idx}",
+            "title": f"Planning candidate {idx}",
+            "lane": "Maintenance",
+        }
+        for idx in range(6)
+    ]
+
+    surface = self_improvement_tool._build_linear_planning_surface(candidates)
+
+    assert surface["status"] == "partial"
+    assert surface["missing_field_counts"] == {
+        "active_status_comment": 6,
+        "verification": 6,
+    }
+    assert surface["issue_sample_limit"] == 5
+    assert len(surface["issue_samples"]) == 5
+    details = {
+        detail["field"]: detail for detail in surface["missing_field_details"]
+    }
+    assert details["verification"]["missing_count"] == 6
+    assert len(details["verification"]["sample_candidates"]) == 5
+    assert details["verification"]["sample_candidates"][0] == {
+        "candidate_id": "HAD-270",
+        "title": "Planning candidate 0",
+    }
+    assert "verification_plan" in details["verification"]["expected_aliases"]
+    assert details["active_status_comment"]["missing_count"] == 6
+    assert len(details["active_status_comment"]["sample_candidates"]) == 5
+    assert "statusComment" in details["active_status_comment"]["expected_aliases"]
 
 
 def test_benchmark_exposes_journal_reporting_contract_from_focus_schema(tmp_path):

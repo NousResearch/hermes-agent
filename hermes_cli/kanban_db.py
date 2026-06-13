@@ -4244,7 +4244,36 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Special case: when the task was blocked with a ``review-required:`` reason,
+    the work is already done and the reviewer has approved + merged the PR.
+    Unblocking in this state triggers an infinite respawn-guard loop (the
+    ``active_pr`` guard defers re-spawn every tick because a PR URL exists
+    in recent comments).  Instead, auto-complete the task directly — no
+    respawn is needed because all the real work (coding, review, merge)
+    already happened.
     """
+    # Check whether this is a review-required block → if so, auto-complete.
+    blocked_event = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'blocked' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if blocked_event and blocked_event["payload"]:
+        try:
+            payload = json.loads(blocked_event["payload"])
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if isinstance(payload, dict) and isinstance(payload.get("reason"), str):
+            if payload["reason"].startswith("review-required:"):
+                # Work is done, review approved — complete directly.
+                return complete_task(
+                    conn, task_id,
+                    result="auto-completed on unblock (review approved)",
+                    summary=payload["reason"][len("review-required:"):].strip(),
+                )
+
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(

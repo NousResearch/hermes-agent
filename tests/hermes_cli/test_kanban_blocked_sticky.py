@@ -185,7 +185,7 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
         kb.claim_task(conn, tid)
         kb.block_task(
             conn, tid,
-            reason="review-required: ...",
+            reason="needs clarification on IP vs user_id",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.unblock_task(conn, tid)

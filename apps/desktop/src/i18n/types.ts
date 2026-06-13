@@ -5,7 +5,7 @@
 // partial locales should use `defineLocale()` so missing desktop-only strings
 // fall back to English while new keys remain type-checked.
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'pt' | 'es'
 
 interface ModeOptionCopy {
   label: string
@@ -201,10 +201,11 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      language: string
       about: string
     }
     sections: Record<string, string>
-    searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
+    searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'language' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
       title: string

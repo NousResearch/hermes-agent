@@ -19,6 +19,7 @@ import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
+import { LanguageSettings } from './language-settings'
 import { McpSettings } from './mcp-settings'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
@@ -29,6 +30,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'providers',
   'gateway',
   'keys',
+  'language',
   'mcp',
   'sessions',
   'about'
@@ -168,6 +170,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             label={t.settings.nav.archivedChats}
             onClick={() => setActiveView('sessions')}
           />
+          <OverlayNavItem
+            active={activeView === 'language'}
+            icon={Globe}
+            label={t.settings.nav.language}
+            onClick={() => setActiveView('language')}
+          />
           <div className="my-2 h-px bg-border/30" />
           <OverlayNavItem
             active={activeView === 'about'}
@@ -225,6 +233,8 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             <KeysSettings view={keysView} />
           ) : activeView === 'mcp' ? (
             <McpSettings gateway={gateway} onConfigSaved={onConfigSaved} />
+          ) : activeView === 'language' ? (
+            <LanguageSettings />
           ) : (
             <SessionsSettings />
           )}

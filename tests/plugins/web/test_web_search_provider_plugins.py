@@ -98,8 +98,8 @@ class TestBundledPluginsRegister:
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
-            # xai: search-only via Grok's agentic web_search tool.
-            ("xai", True, False),
+            # xai: Grok-backed search plus best-effort URL extraction.
+            ("xai", True, True),
         ],
     )
     def test_capability_flags_match_spec(

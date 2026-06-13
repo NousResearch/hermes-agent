@@ -163,15 +163,15 @@ def _coerce_domain_list(value: Any) -> List[str]:
 
 
 class XAIWebSearchProvider(WebSearchProvider):
-    """Search-only provider backed by xAI's agentic Web Search tool.
+    """Search and extract provider backed by xAI's agentic Web Search tool.
 
     Sends a structured prompt to Grok with ``tools=[{"type": "web_search"}]``
     enabled and asks it to return the top *limit* results as JSON. Falls
     back to the Responses API ``citations`` list if Grok ignores the JSON
     schema instruction (rare for grok-4.3 but cheap insurance).
 
-    No extract capability — pair with Firecrawl / Tavily / Exa for
-    ``web_extract`` if you need page content.
+    ``web_extract`` is best-effort: Grok reads/summarizes URLs through
+    server-side web search rather than returning raw scraper output.
 
     Trust model
     -----------
@@ -210,7 +210,7 @@ class XAIWebSearchProvider(WebSearchProvider):
         return True
 
     def supports_extract(self) -> bool:
-        return False
+        return True
 
     # -- Search -----------------------------------------------------------
 

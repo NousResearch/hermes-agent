@@ -1086,6 +1086,11 @@ def build_environment_hints() -> str:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:
             pass
+        host_lines.append(
+            f"Hermes config/state directory: {get_hermes_home()} "
+            "(your own config.yaml, .env, sessions, and skills live here "
+            "— NOT under the current working directory)"
+        )
 
         if sys.platform == "win32" and not is_wsl():
             host_lines.append(

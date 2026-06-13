@@ -473,3 +473,162 @@ async def test_reconnect_schedules_heartbeat_probe_on_success():
             await t
         except (asyncio.CancelledError, Exception):
             pass
+
+
+# ---------------------------------------------------------------------------
+# Socket/transport leak regression (fix/telegram-socket-leak)
+# ---------------------------------------------------------------------------
+#
+# PTB's HTTPXRequest.initialize() rebuilds its httpx.AsyncClient by reusing the
+# SAME _client_kwargs dict, including the original `transport` object. The
+# TelegramFallbackTransport wraps several httpcore connection pools. Reusing a
+# closed transport across reconnect cycles lets half-open sockets to an
+# unreachable peer accumulate, eventually exhausting file descriptors
+# ("OSError: [Errno 24] Too many open files"). The fix swaps in a fresh
+# transport (and force-closes the old one) on every drain.
+
+
+class _FakeTransport:
+    """Stand-in for TelegramFallbackTransport that tracks close calls."""
+
+    instances: list = []
+
+    def __init__(self):
+        self.closed = False
+        _FakeTransport.instances.append(self)
+
+    async def aclose(self):
+        self.closed = True
+
+
+def _make_mock_app_with_real_request():
+    """Mock Application whose polling request mimics PTB's HTTPXRequest.
+
+    Specifically it carries a `_client_kwargs` dict holding a `transport`
+    object, like the real HTTPXRequest, so the drain path's transport-swap
+    logic is exercised end to end.
+    """
+    polling_req = MagicMock()
+    polling_req.shutdown = AsyncMock()
+    polling_req.initialize = AsyncMock()
+    polling_req._client_kwargs = {"transport": _FakeTransport()}
+
+    mock_bot = MagicMock()
+    mock_bot._request = (polling_req, MagicMock())
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock()
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    mock_app.bot = mock_bot
+    return mock_app, polling_req
+
+
+@pytest.mark.asyncio
+async def test_drain_swaps_in_fresh_transport_and_closes_old():
+    """Each drain must install a NEW transport and close the previous one."""
+    _FakeTransport.instances.clear()
+    adapter = _make_adapter()
+    # Simulate connect() having configured a fallback transport.
+    adapter._polling_transport_factory = lambda: _FakeTransport()
+
+    mock_app, polling_req = _make_mock_app_with_real_request()
+    adapter._app = mock_app
+    original_transport = polling_req._client_kwargs["transport"]
+
+    await adapter._drain_polling_connections()
+
+    new_transport = polling_req._client_kwargs["transport"]
+    assert new_transport is not original_transport, (
+        "drain must swap in a fresh transport instance, not reuse the closed one"
+    )
+    assert original_transport.closed, "old transport must be force-closed on drain"
+    polling_req.shutdown.assert_awaited_once()
+    polling_req.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repeated_reconnects_do_not_leak_transports():
+    """N reconnect cycles must leave exactly one live (unclosed) transport.
+
+    Before the fix the single transport instance was reused across every cycle,
+    so its connection pools accumulated half-open sockets without bound. After
+    the fix each cycle closes the prior transport and installs a fresh one, so
+    the number of *unclosed* transports stays at 1 regardless of cycle count.
+    """
+    _FakeTransport.instances.clear()
+    adapter = _make_adapter()
+    adapter._polling_transport_factory = lambda: _FakeTransport()
+
+    mock_app, polling_req = _make_mock_app_with_real_request()
+    adapter._app = mock_app
+
+    N = 25
+    for _ in range(N):
+        await adapter._drain_polling_connections()
+
+    live = [t for t in _FakeTransport.instances if not t.closed]
+    closed = [t for t in _FakeTransport.instances if t.closed]
+    assert len(live) == 1, (
+        f"expected exactly 1 live transport after {N} reconnects, "
+        f"got {len(live)} (transport leak)"
+    )
+    # And the live one is the transport currently installed on the request.
+    assert live[0] is polling_req._client_kwargs["transport"]
+    # Each prior cycle's transport must have been force-closed — proving the
+    # transport is genuinely cycled rather than silently reused (the pre-fix
+    # behavior, which closed zero transports).
+    assert len(closed) == N, (
+        f"expected {N} closed transports (one per reconnect), got {len(closed)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_drain_noop_swap_without_fallback_factory():
+    """When no fallback transport is in use, the drain leaves kwargs untouched.
+
+    PTB's plain transport-less rebuild already mints a fresh pool, so there is
+    nothing to swap and the transport key must be preserved as-is.
+    """
+    _FakeTransport.instances.clear()
+    adapter = _make_adapter()
+    adapter._polling_transport_factory = None  # no fallback transport configured
+
+    mock_app, polling_req = _make_mock_app_with_real_request()
+    adapter._app = mock_app
+    original_transport = polling_req._client_kwargs["transport"]
+
+    await adapter._drain_polling_connections()
+
+    assert polling_req._client_kwargs["transport"] is original_transport
+    assert not original_transport.closed
+    polling_req.shutdown.assert_awaited_once()
+    polling_req.initialize.assert_awaited_once()
+
+
+def test_default_pool_size_fits_fd_budget(monkeypatch):
+    """The default connection_pool_size must stay within a sane FD budget.
+
+    Two request objects, each up to (1 primary + a few fallback) pools, times
+    the pool size, must stay comfortably under a launchd service's default
+    256-FD limit headroom. 64 keeps the worst case bounded; 512 did not.
+    """
+    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", raising=False)
+
+    def _env_int(name: str, default: int) -> int:
+        import os
+        try:
+            return int(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    default_pool = _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 64)
+    assert default_pool == 64
+    # Two request objects each wrapping ~3 pools (1 primary + 2 fallback IPs).
+    worst_case_ceiling = 2 * 3 * default_pool
+    assert worst_case_ceiling <= 512, (
+        "default pool ceiling must stay well under typical FD budgets"
+    )

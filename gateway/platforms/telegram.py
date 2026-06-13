@@ -16,7 +16,7 @@ import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Any
+from typing import Callable, Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +405,11 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Factory that mints a *fresh* httpx transport for the polling request
+        # when its connection pool is drained on reconnect. Set in connect()
+        # only when a fallback-IP transport is in use; left None otherwise so
+        # the drain path keeps PTB's own (transport-less) client rebuild.
+        self._polling_transport_factory: Optional[Callable[[], Any]] = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -931,6 +936,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Polling request shutdown failed (non-fatal)",
                 self.name, exc_info=True,
             )
+        # Critical: PTB's HTTPXRequest.initialize() rebuilds the httpx.AsyncClient
+        # by reusing the SAME kwargs dict — including the original `transport`
+        # object that shutdown() just closed. The fallback transport wraps
+        # multiple httpcore connection pools; reusing a closed instance across
+        # reconnect cycles lets half-open sockets to an unreachable peer pile up
+        # faster than the OS reaps them, eventually exhausting file descriptors.
+        # Swap in a brand-new transport (and force-close the old one) so each
+        # drain starts from a clean, fully-released pool.
+        await self._swap_polling_transport(polling_req)
         try:
             await polling_req.initialize()
             logger.debug(
@@ -941,6 +955,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Polling request re-initialize failed (non-fatal)",
                 self.name, exc_info=True,
             )
+
+    async def _swap_polling_transport(self, polling_req: Any) -> None:
+        """Replace the polling request's (closed) httpx transport with a fresh one.
+
+        No-op unless a fallback-IP transport is in use (``_polling_transport_factory``
+        set in ``connect()``). When PTB drives a plain transport-less client the
+        rebuild already mints a fresh pool, so there is nothing to swap.
+        """
+        factory = self._polling_transport_factory
+        if factory is None:
+            return
+        client_kwargs = getattr(polling_req, "_client_kwargs", None)
+        if not isinstance(client_kwargs, dict) or "transport" not in client_kwargs:
+            return
+        old_transport = client_kwargs.get("transport")
+        try:
+            new_transport = factory()
+        except Exception:
+            logger.debug(
+                "[%s] Failed to build fresh polling transport (keeping old)",
+                self.name, exc_info=True,
+            )
+            return
+        client_kwargs["transport"] = new_transport
+        # Force-close the old transport's pools so their sockets are released
+        # immediately rather than lingering as half-open connections.
+        if old_transport is not None and hasattr(old_transport, "aclose"):
+            try:
+                await old_transport.aclose()
+            except Exception:
+                logger.debug(
+                    "[%s] Old polling transport aclose failed (non-fatal)",
+                    self.name, exc_info=True,
+                )
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -1551,8 +1599,19 @@ class TelegramAdapter(BasePlatformAdapter):
                 except (TypeError, ValueError):
                     return default
 
+            # connection_pool_size caps httpx.Limits.max_connections *per request
+            # object*. Two HTTPXRequest objects (general + get_updates) are built,
+            # and when the fallback transport is active each wraps 1 primary +
+            # N fallback httpx.AsyncHTTPTransport pools — so the theoretical socket
+            # ceiling is 2 * (1 + N) * pool_size. The old default of 512 put that
+            # ceiling in the thousands, far above a launchd service's default
+            # 256-FD budget, so a single reconnect storm could exhaust file
+            # descriptors and crash with "OSError: [Errno 24] Too many open files".
+            # Steady-state polling needs only a couple of connections and sends a
+            # dozen at most, so 64 leaves ample headroom while keeping the worst
+            # case well within a sane FD budget. Override via env if needed.
             request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 64),
                 "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
@@ -1586,6 +1645,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
                     httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                )
+                # Remember how to mint a *fresh* fallback transport so the drain
+                # path can swap out the polling request's closed transport on
+                # reconnect instead of reusing it (see _drain_polling_connections).
+                self._polling_transport_factory = (
+                    lambda ips=tuple(fallback_ips): TelegramFallbackTransport(list(ips))
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)

@@ -1192,6 +1192,18 @@ def handle_function_call(
         except Exception as _hook_err:
             logger.debug("transform_tool_result hook error: %s", _hook_err)
 
+        # Centralized secret redaction for ALL tool results (defense-in-depth).
+        # While individual tools redact their own output (terminal, code_exec,
+        # file, browser), not all tools do (MCP, web, custom plugins, etc.).
+        # This ensures NO tool result reaches the LLM unredacted.
+        # Config flag `security.redact_secrets` is respected indirectly:
+        # redact_sensitive_text() checks _REDACT_ENABLED internally.
+        try:
+            from agent.redact import redact_sensitive_text
+            if isinstance(result, str) and result:
+                result = redact_sensitive_text(result)
+        except Exception:
+            logger.debug("centralized tool-result redaction skipped", exc_info=True)
         return result
 
     except Exception as e:

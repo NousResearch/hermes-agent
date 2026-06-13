@@ -13,6 +13,9 @@ provides_tools:
   - aituber_onair_prepare
   - aituber_onair_start
   - aituber_onair_stop
+  - aituber_onair_tts_status
+  - aituber_onair_start_tts
+  - aituber_onair_speak
   - aituber_onair_say
   - aituber_onair_smoke
 provides_cli:

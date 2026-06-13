@@ -53,6 +53,8 @@ def test_registers_tools_slash_and_cli_command():
 
     names = {tool["name"] for tool in ctx.tools}
     assert "aituber_onair_status" in names
+    assert "aituber_onair_tts_status" in names
+    assert "aituber_onair_speak" in names
     assert "aituber_onair_say" in names
     assert all(tool["toolset"] == "aituber-onair" for tool in ctx.tools)
     assert "aituber" in ctx.commands
@@ -63,6 +65,76 @@ def test_resolve_repo_root_accepts_aituber_checkout(tmp_path):
     repo = _fake_repo(tmp_path)
 
     assert core.resolve_repo_root(str(repo)) == repo
+
+
+def test_tts_status_prefers_installed_irodori(monkeypatch):
+    monkeypatch.setattr(
+        core,
+        "_irodori_status",
+        lambda: {
+            "provider": "irodori",
+            "available": True,
+            "usable": False,
+            "server": {"ok": False},
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "_voicevox_engine_status",
+        lambda: {
+            "provider": "voicevox",
+            "installed": True,
+            "reachable": False,
+        },
+    )
+    monkeypatch.setattr(core, "_read_json_file", lambda _path: {})
+
+    result = core.tts_status()
+
+    assert result["ok"] is True
+    assert result["selected_provider"] == "irodori"
+    assert result["ready"] is False
+
+
+def test_start_tts_falls_back_to_voicevox(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(core, "_irodori_status", lambda: {"available": False})
+    monkeypatch.setattr(
+        core,
+        "_voicevox_engine_status",
+        lambda: {"installed": True, "reachable": False},
+    )
+
+    def fake_start(values):
+        seen.update(values)
+        return {"ok": True, "provider": "voicevox", "ready": True}
+
+    monkeypatch.setattr(core, "_start_voicevox_tts", fake_start)
+
+    result = core.start_tts({"provider": "auto", "timeout_seconds": 12})
+
+    assert result["ok"] is True
+    assert result["provider"] == "voicevox"
+    assert seen["timeout_seconds"] == 12
+
+
+def test_speak_dispatches_selected_tts_provider(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(core, "_select_tts_provider", lambda _explicit=None: "irodori")
+
+    def fake_synthesize(values):
+        seen.update(values)
+        return {"ok": True, "provider": "irodori", "file_path": "voice.wav"}
+
+    monkeypatch.setattr(core, "_synthesize_irodori", fake_synthesize)
+
+    result = core.synthesize_speech({"text": "hello", "provider": "auto"})
+
+    assert result["ok"] is True
+    assert result["provider"] == "irodori"
+    assert seen["text"] == "hello"
 
 
 def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
@@ -108,6 +180,57 @@ def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
     assert env["CODEX_CHARACTER_SYSTEM_PROMPT"] == "Hakua prompt"
     assert cwd == repo
     assert timeout_seconds == core.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+
+    monkeypatch.setattr(core, "_node_exe", lambda: "node")
+    monkeypatch.setattr(
+        core,
+        "_codex_sdk_installed",
+        lambda _repo: {"ok": True, "installed": True},
+    )
+    monkeypatch.setattr(core, "_codex_cli_auth_status", lambda: {"has_access_token": True})
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_plugin_working_directory", lambda _repo: str(repo))
+    monkeypatch.setattr(
+        core,
+        "_run_command",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "exit_code": 0,
+            "command": args[0],
+            "cwd": str(kwargs["cwd"]),
+            "stdout": "Hakua> [happy] hello\n",
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "synthesize_speech",
+        lambda values: {
+            "ok": True,
+            "provider": values.get("provider") or "auto",
+            "file_path": "hakua.wav",
+            "text": values["text"],
+        },
+    )
+
+    result = core.run_hakua_once(
+        {
+            "repo_root": str(repo),
+            "prompt": "say hello",
+            "speak": True,
+            "tts_provider": "voicevox",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["tts"]["ok"] is True
+    assert result["tts"]["provider"] == "voicevox"
+    assert result["tts"]["text"] == "[happy] hello"
 
 
 def test_handle_smoke_uses_hakua_prompt(monkeypatch):

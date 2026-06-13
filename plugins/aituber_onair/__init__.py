@@ -16,6 +16,9 @@ _TOOLS = (
     ("aituber_onair_prepare", core.PREPARE_SCHEMA, core.handle_prepare, "A"),
     ("aituber_onair_start", core.START_SCHEMA, core.handle_start, "A"),
     ("aituber_onair_stop", core.STOP_SCHEMA, core.handle_stop, "A"),
+    ("aituber_onair_tts_status", core.TTS_STATUS_SCHEMA, core.handle_tts_status, "A"),
+    ("aituber_onair_start_tts", core.START_TTS_SCHEMA, core.handle_start_tts, "A"),
+    ("aituber_onair_speak", core.SPEAK_SCHEMA, core.handle_speak, "A"),
     ("aituber_onair_say", core.SAY_SCHEMA, core.handle_say, "A"),
     ("aituber_onair_smoke", core.SMOKE_SCHEMA, core.handle_smoke, "A"),
 )
@@ -47,6 +50,6 @@ def register(ctx) -> None:
         handler_fn=aituber_onair_command,
         description=(
             "Configure Hakua, prepare AITuber OnAir's Codex SDK example, "
-            "start the FBX app, and run Codex-auth character prompts."
+            "start the FBX app, run Codex-auth character prompts, and route Hakua voice."
         ),
     )

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,11 @@ TOOLSET = "aituber-onair"
 DEFAULT_FBX_PORT = 5174
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_RESPONSE_LENGTH = "short"
+DEFAULT_TTS_PROVIDER = "auto"
+DEFAULT_VOICEVOX_URL = "http://127.0.0.1:50021"
+DEFAULT_VOICEVOX_SPEAKER = 8
+DEFAULT_TTS_FORMAT = "wav"
+SUPPORTED_TTS_PROVIDERS = {"auto", "irodori", "voicevox", "none"}
 
 DEFAULT_HAKUA_SYSTEM_PROMPT = (
     "あなたは「はくあ」、Codex Authで動くAIVTuberです。"
@@ -67,6 +73,23 @@ CONFIGURE_HAKUA_SCHEMA = {
             "system_prompt": {
                 "type": "string",
                 "description": "Optional Hakua system prompt override.",
+            },
+            "tts_provider": {
+                "type": "string",
+                "enum": ["auto", "irodori", "voicevox", "none"],
+                "description": "Local voice backend for Hakua. auto prefers irodoriTTS, then VOICEVOX.",
+            },
+            "voicevox_url": {
+                "type": "string",
+                "description": "VOICEVOX Engine URL. Default: http://127.0.0.1:50021",
+            },
+            "voicevox_speaker": {
+                "type": "integer",
+                "description": "VOICEVOX speaker/style id.",
+            },
+            "voicevox_engine_exe": {
+                "type": "string",
+                "description": "Optional path to vv-engine/run.exe.",
             },
         },
     },
@@ -149,6 +172,16 @@ SAY_SCHEMA = {
                 "minimum": 10,
                 "maximum": 900,
             },
+            "speak": {
+                "type": "boolean",
+                "description": "Also synthesize Hakua's reply through the configured local TTS backend.",
+            },
+            "tts_provider": {
+                "type": "string",
+                "enum": ["auto", "irodori", "voicevox"],
+            },
+            "output_path": {"type": "string"},
+            "play": {"type": "boolean"},
         },
     },
 }
@@ -164,6 +197,63 @@ SMOKE_SCHEMA = {
                 "type": "integer",
                 "minimum": 10,
                 "maximum": 900,
+            },
+        },
+    },
+}
+
+TTS_STATUS_SCHEMA = {
+    "name": "aituber_onair_tts_status",
+    "description": "Show local irodoriTTS and VOICEVOX readiness for Hakua voice output.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+START_TTS_SCHEMA = {
+    "name": "aituber_onair_start_tts",
+    "description": "Start the configured local TTS backend for Hakua.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "provider": {
+                "type": "string",
+                "enum": ["auto", "irodori", "voicevox"],
+                "description": "TTS backend to start. auto prefers irodoriTTS, then VOICEVOX.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 180,
+            },
+            "voicevox_url": {"type": "string"},
+            "voicevox_speaker": {"type": "integer"},
+        },
+    },
+}
+
+SPEAK_SCHEMA = {
+    "name": "aituber_onair_speak",
+    "description": "Synthesize Hakua speech through local irodoriTTS or VOICEVOX.",
+    "parameters": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "text": {"type": "string"},
+            "provider": {
+                "type": "string",
+                "enum": ["auto", "irodori", "voicevox"],
+            },
+            "output_path": {"type": "string"},
+            "format": {
+                "type": "string",
+                "enum": ["wav", "mp3", "flac", "opus", "aac", "pcm"],
+            },
+            "voice": {"type": "string"},
+            "model": {"type": "string"},
+            "speed": {"type": "number"},
+            "voicevox_speaker": {"type": "integer"},
+            "play": {
+                "type": "boolean",
+                "description": "Play the synthesized wav locally after writing it.",
             },
         },
     },
@@ -190,9 +280,19 @@ def _active_file() -> Path:
     return _workspace_root() / "active.json"
 
 
+def _tts_active_file() -> Path:
+    return _workspace_root() / "tts-active.json"
+
+
 def _log_file(name: str) -> Path:
     path = _workspace_root() / "logs" / name
     path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _audio_dir() -> Path:
+    path = _workspace_root() / "audio"
+    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -396,6 +496,46 @@ def _plugin_fbx_port(explicit: Any = None) -> int:
     return port if 1024 <= port <= 65535 else DEFAULT_FBX_PORT
 
 
+def _plugin_tts_provider(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("tts_provider")
+    provider = _path_text(raw).lower() or DEFAULT_TTS_PROVIDER
+    if provider in {"off", "disabled"}:
+        return "none"
+    return provider if provider in SUPPORTED_TTS_PROVIDERS else DEFAULT_TTS_PROVIDER
+
+
+def _plugin_voicevox_url(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("voicevox_url")
+    return (_path_text(raw) or os.environ.get("VOICEVOX_URL") or DEFAULT_VOICEVOX_URL).rstrip("/")
+
+
+def _plugin_voicevox_speaker(explicit: Any = None) -> int:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("voicevox_speaker")
+    if raw is None:
+        raw = os.environ.get("VOICEVOX_SPEAKER")
+    if raw is None:
+        return DEFAULT_VOICEVOX_SPEAKER
+    try:
+        speaker = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_VOICEVOX_SPEAKER
+    return speaker if speaker >= 0 else DEFAULT_VOICEVOX_SPEAKER
+
+
+def _plugin_voicevox_engine_exe(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("voicevox_engine_exe")
+    return _path_text(raw) or os.environ.get("VOICEVOX_ENGINE_EXE", "")
+
+
+def _coerce_tts_format(value: Any = None) -> str:
+    fmt = _path_text(value).lower().lstrip(".")
+    return fmt if fmt in {"wav", "mp3", "flac", "opus", "aac", "pcm"} else DEFAULT_TTS_FORMAT
+
+
 def _bounded(text: str, limit: int = 16000) -> str:
     if len(text) <= limit:
         return text
@@ -565,6 +705,395 @@ def _url_ready(url: str, timeout_seconds: float = 1.0) -> bool:
         return False
 
 
+def _http_request(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: Any = None,
+    timeout_seconds: float = 5.0,
+) -> tuple[int, bytes]:
+    headers: dict[str, str] = {}
+    body: bytes | None = None
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json; charset=utf-8"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        return int(response.status), response.read()
+
+
+def _voicevox_url_parts(url: str) -> tuple[str, int]:
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port or 50021)
+    return host, port
+
+
+def _voicevox_engine_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    configured = _plugin_voicevox_engine_exe()
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.extend(
+            [
+                Path(local_appdata) / "Programs" / "VOICEVOX" / "vv-engine" / "run.exe",
+                Path(local_appdata) / "voicevox-engine" / "voicevox-engine" / "run.exe",
+            ]
+        )
+    candidates.extend(
+        [
+            Path("C:/Program Files/VOICEVOX/vv-engine/run.exe"),
+            Path("C:/Program Files (x86)/VOICEVOX/vv-engine/run.exe"),
+        ]
+    )
+
+    seen: set[str] = set()
+    found: list[Path] = []
+    for path in candidates:
+        key = str(path).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file():
+            found.append(path)
+    return found
+
+
+def _voicevox_engine_status(url: str | None = None) -> dict[str, Any]:
+    base = (url or _plugin_voicevox_url()).rstrip("/")
+    engines = _voicevox_engine_candidates()
+    try:
+        status_code, raw = _http_request(f"{base}/version", timeout_seconds=3.0)
+        version = raw.decode("utf-8", errors="replace").strip().strip('"')
+        return {
+            "ok": True,
+            "provider": "voicevox",
+            "reachable": 200 <= status_code < 300,
+            "url": base,
+            "version": version,
+            "installed": bool(engines),
+            "engine_candidates": [str(path) for path in engines],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": "voicevox",
+            "reachable": False,
+            "url": base,
+            "error": str(exc),
+            "installed": bool(engines),
+            "engine_candidates": [str(path) for path in engines],
+        }
+
+
+def _start_voicevox_tts(values: dict[str, Any]) -> dict[str, Any]:
+    url = _plugin_voicevox_url(values.get("voicevox_url"))
+    status_before = _voicevox_engine_status(url)
+    if status_before.get("reachable"):
+        return {"ok": True, "provider": "voicevox", "already_running": True, "status": status_before}
+
+    engines = _voicevox_engine_candidates()
+    if not engines:
+        return {
+            "ok": False,
+            "provider": "voicevox",
+            "error": "VOICEVOX engine executable was not found.",
+            "expected": [
+                "C:/Users/<user>/AppData/Local/Programs/VOICEVOX/vv-engine/run.exe",
+                "VOICEVOX_ENGINE_EXE",
+            ],
+            "status": status_before,
+        }
+
+    engine = engines[0]
+    host, port = _voicevox_url_parts(url)
+    log_path = _log_file("voicevox-engine.log")
+    cmd = [str(engine), "--host", host, "--port", str(port)]
+    log_fh = open(log_path, "ab", buffering=0)
+    kwargs: dict[str, Any] = {
+        "cwd": str(engine.parent),
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_fh,
+        "stderr": subprocess.STDOUT,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+    except OSError as exc:
+        log_fh.close()
+        return {"ok": False, "provider": "voicevox", "error": str(exc), "command": cmd}
+    finally:
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+
+    record = {
+        "provider": "voicevox",
+        "pid": proc.pid,
+        "url": url,
+        "engine": str(engine),
+        "command": cmd,
+        "started_at": time.time(),
+        "log_path": str(log_path),
+    }
+    _write_json_file(_tts_active_file(), record)
+
+    timeout = int(values.get("timeout_seconds") or 45)
+    deadline = time.time() + timeout
+    ready = False
+    while time.time() < deadline:
+        current = _voicevox_engine_status(url)
+        if current.get("reachable"):
+            ready = True
+            break
+        if proc.poll() is not None:
+            break
+        time.sleep(0.5)
+
+    return {
+        "ok": ready,
+        "provider": "voicevox",
+        "ready": ready,
+        **record,
+        "status": _voicevox_engine_status(url),
+    }
+
+
+def _irodori_status() -> dict[str, Any]:
+    try:
+        from plugins.irodori_tts import core as irodori_core
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": "irodori",
+            "available": False,
+            "error": f"irodori_tts plugin is not importable: {exc}",
+        }
+    payload = irodori_core.status_payload()
+    server = payload.get("server") if isinstance(payload, dict) else {}
+    server_ok = isinstance(server, dict) and server.get("ok") is True
+    return {
+        **payload,
+        "provider": "irodori",
+        "usable": bool(payload.get("available") and server_ok),
+    }
+
+
+def _start_irodori_tts(values: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from plugins.irodori_tts import core as irodori_core
+    except Exception as exc:
+        return {"ok": False, "provider": "irodori", "error": str(exc)}
+
+    before = _irodori_status()
+    if before.get("usable"):
+        return {"ok": True, "provider": "irodori", "already_running": True, "status": before}
+
+    cfg = irodori_core.settings()
+    ps = irodori_core.powershell_path()
+    if not ps:
+        return {"ok": False, "provider": "irodori", "error": "PowerShell was not found."}
+    if not cfg.start_script.is_file():
+        return {"ok": False, "provider": "irodori", "error": f"start script not found: {cfg.start_script}"}
+    if not cfg.repo_dir.exists():
+        return {"ok": False, "provider": "irodori", "error": f"repo not found: {cfg.repo_dir}"}
+
+    timeout = int(values.get("timeout_seconds") or 120)
+    result = _run_command(
+        [
+            ps,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(cfg.start_script),
+            "-RepoDir",
+            str(cfg.repo_dir),
+        ],
+        cwd=cfg.repo_dir,
+        timeout_seconds=timeout,
+    )
+    return {
+        "ok": result.get("ok") is True and _irodori_status().get("usable") is True,
+        "provider": "irodori",
+        "start": result,
+        "status": _irodori_status(),
+    }
+
+
+def _select_tts_provider(explicit: Any = None) -> str:
+    requested = _plugin_tts_provider(explicit)
+    if requested != "auto":
+        return requested
+    irodori = _irodori_status()
+    if irodori.get("available"):
+        return "irodori"
+    voicevox = _voicevox_engine_status()
+    if voicevox.get("installed") or voicevox.get("reachable"):
+        return "voicevox"
+    return "none"
+
+
+def tts_status() -> dict[str, Any]:
+    requested = _plugin_tts_provider()
+    irodori = _irodori_status()
+    voicevox = _voicevox_engine_status()
+    selected = _select_tts_provider(requested)
+    ready = (
+        (selected == "irodori" and bool(irodori.get("usable")))
+        or (selected == "voicevox" and bool(voicevox.get("reachable")))
+    )
+    available = (
+        (selected == "irodori" and bool(irodori.get("available")))
+        or (selected == "voicevox" and bool(voicevox.get("installed") or voicevox.get("reachable")))
+    )
+    return {
+        "ok": available,
+        "requested_provider": requested,
+        "selected_provider": selected,
+        "ready": ready,
+        "providers": {
+            "irodori": irodori,
+            "voicevox": voicevox,
+        },
+        "active": _read_json_file(_tts_active_file()),
+    }
+
+
+def start_tts(values: dict[str, Any]) -> dict[str, Any]:
+    provider = _select_tts_provider(values.get("provider"))
+    if provider == "irodori":
+        return _start_irodori_tts(values)
+    if provider == "voicevox":
+        return _start_voicevox_tts(values)
+    return {"ok": False, "provider": provider, "error": "No local TTS backend was found."}
+
+
+def _tts_output_path(provider: str, output_path: Any = None, output_format: Any = None) -> Path:
+    fmt = _coerce_tts_format(output_format)
+    if provider == "voicevox":
+        fmt = "wav"
+    raw = _path_text(output_path)
+    if raw:
+        path = Path(raw).expanduser()
+    else:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+        path = _audio_dir() / f"hakua-{provider}-{stamp}.{fmt}"
+    if path.suffix.lower().lstrip(".") != fmt:
+        path = path.with_suffix(f".{fmt}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _synthesize_voicevox(values: dict[str, Any]) -> dict[str, Any]:
+    text = str(values.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "provider": "voicevox", "error": "text is required."}
+    url = _plugin_voicevox_url(values.get("voicevox_url"))
+    if not _voicevox_engine_status(url).get("reachable"):
+        started = _start_voicevox_tts(values)
+        if not started.get("ok"):
+            return {"ok": False, "provider": "voicevox", "start": started}
+
+    speaker = _plugin_voicevox_speaker(values.get("voicevox_speaker"))
+    output_path = _tts_output_path("voicevox", values.get("output_path"), "wav")
+    query_url = (
+        f"{url}/audio_query?"
+        + urllib.parse.urlencode({"speaker": speaker, "text": text})
+    )
+    try:
+        status_code, query_raw = _http_request(query_url, method="POST", timeout_seconds=15.0)
+        if not 200 <= status_code < 300:
+            return {"ok": False, "provider": "voicevox", "error": f"audio_query HTTP {status_code}"}
+        query = json.loads(query_raw.decode("utf-8", errors="replace"))
+        synthesis_url = f"{url}/synthesis?" + urllib.parse.urlencode({"speaker": speaker})
+        status_code, wav_bytes = _http_request(
+            synthesis_url,
+            method="POST",
+            payload=query,
+            timeout_seconds=60.0,
+        )
+        if not 200 <= status_code < 300:
+            return {"ok": False, "provider": "voicevox", "error": f"synthesis HTTP {status_code}"}
+        output_path.write_bytes(wav_bytes)
+    except Exception as exc:
+        return {"ok": False, "provider": "voicevox", "error": str(exc)}
+
+    result: dict[str, Any] = {
+        "ok": True,
+        "provider": "voicevox",
+        "file_path": str(output_path),
+        "format": "wav",
+        "speaker": speaker,
+        "size_bytes": output_path.stat().st_size,
+        "media_tag": f"MEDIA:{output_path}",
+    }
+    if values.get("play"):
+        result["playback"] = _play_wav_file(output_path)
+    return result
+
+
+def _synthesize_irodori(values: dict[str, Any]) -> dict[str, Any]:
+    text = str(values.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "provider": "irodori", "error": "text is required."}
+    try:
+        from plugins.irodori_tts import core as irodori_core
+
+        fmt = _coerce_tts_format(values.get("format"))
+        output_path = _tts_output_path("irodori", values.get("output_path"), fmt)
+        result = irodori_core.synthesize_text(
+            text=text,
+            output_path=output_path,
+            voice=_path_text(values.get("voice")) or None,
+            model=_path_text(values.get("model")) or None,
+            output_format=fmt,
+            speed=values.get("speed"),
+        )
+        if values.get("play"):
+            result["playback"] = _play_wav_file(Path(result["file_path"]))
+        return result
+    except Exception as exc:
+        return {"ok": False, "provider": "irodori", "error": str(exc)}
+
+
+def _play_wav_file(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() != ".wav":
+        return {"ok": False, "error": "local playback currently supports wav output only."}
+    try:
+        if os.name == "nt":
+            import winsound
+
+            winsound.PlaySound(str(path), winsound.SND_FILENAME)
+            return {"ok": True, "backend": "winsound"}
+        player = shutil.which("afplay") or shutil.which("paplay") or shutil.which("aplay")
+        if not player:
+            return {"ok": False, "error": "No local wav player was found."}
+        subprocess.run([player, str(path)], check=True, capture_output=True)
+        return {"ok": True, "backend": player}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def synthesize_speech(values: dict[str, Any]) -> dict[str, Any]:
+    provider = _select_tts_provider(values.get("provider"))
+    if provider == "irodori":
+        return _synthesize_irodori(values)
+    if provider == "voicevox":
+        return _synthesize_voicevox(values)
+    return {"ok": False, "provider": provider, "error": "No local TTS backend was found."}
+
+
 def status() -> dict[str, Any]:
     cfg = _plugin_config()
     repo = resolve_repo_root()
@@ -574,6 +1103,7 @@ def status() -> dict[str, Any]:
     url = f"http://127.0.0.1:{fbx_port}/"
     active = _active_status()
     active["url_ready"] = _url_ready(str(active.get("url") or url)) if active.get("alive") else False
+    tts = tts_status()
     readiness = {
         "repo_root": bool(repo),
         "node": bool(_node_exe()),
@@ -582,6 +1112,7 @@ def status() -> dict[str, Any]:
         "fbx_app": bool(fbx_app and (fbx_app / "package.json").is_file()),
         "codex_character_cli": bool(chat_script and chat_script.is_file()),
         "chat_dist": bool(repo and _chat_agent_dist(repo).is_file()),
+        "tts_backend": bool(tts.get("ok")),
     }
     codex_sdk = _codex_sdk_installed(repo) if repo and _npm_exe() else {"installed": False}
     readiness["codex_sdk"] = bool(codex_sdk.get("installed"))
@@ -593,6 +1124,10 @@ def status() -> dict[str, Any]:
         recommended.append("hermes aituber-onair prepare")
     if not readiness["codex_cli_auth"]:
         recommended.append("Authenticate Codex locally, then rerun status.")
+    if not readiness["tts_backend"]:
+        recommended.append("Install or configure irodoriTTS or VOICEVOX, then run hermes aituber-onair tts-status.")
+    elif not tts.get("ready"):
+        recommended.append("hermes aituber-onair start-tts")
     return {
         "ok": ok,
         "checked_at": _now_utc(),
@@ -604,6 +1139,9 @@ def status() -> dict[str, Any]:
             "response_length": cfg.get("response_length") or DEFAULT_RESPONSE_LENGTH,
             "fbx_port": fbx_port,
             "url": url,
+            "tts_provider": cfg.get("tts_provider") or DEFAULT_TTS_PROVIDER,
+            "voicevox_url": _plugin_voicevox_url(),
+            "voicevox_speaker": _plugin_voicevox_speaker(),
         },
         "paths": {
             "repo_root": str(repo) if repo else "",
@@ -618,6 +1156,7 @@ def status() -> dict[str, Any]:
             "hermes_openai_codex": _hermes_codex_auth_status(),
         },
         "codex_sdk": codex_sdk,
+        "tts": tts,
         "active": active,
         "readiness": readiness,
         "recommended_actions": recommended,
@@ -660,6 +1199,14 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         Path("packages") / "core" / "examples" / "react-fbx-app"
     )
     entry["fbx_port"] = _plugin_fbx_port(values.get("fbx_port"))
+    entry["tts_provider"] = _plugin_tts_provider(values.get("tts_provider"))
+    entry["voicevox_url"] = _plugin_voicevox_url(values.get("voicevox_url"))
+    entry["voicevox_speaker"] = _plugin_voicevox_speaker(values.get("voicevox_speaker"))
+    voicevox_engine = _plugin_voicevox_engine_exe(values.get("voicevox_engine_exe"))
+    if voicevox_engine:
+        entry["voicevox_engine_exe"] = voicevox_engine
+    elif _voicevox_engine_candidates():
+        entry["voicevox_engine_exe"] = str(_voicevox_engine_candidates()[0])
     model = _path_text(values.get("model"))
     if model:
         entry["model"] = model
@@ -674,6 +1221,10 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "character_name": entry["character_name"],
         "model": entry.get("model") or "Codex CLI default",
         "fbx_url": f"http://127.0.0.1:{entry['fbx_port']}/",
+        "tts_provider": entry["tts_provider"],
+        "voicevox_url": entry["voicevox_url"],
+        "voicevox_speaker": entry["voicevox_speaker"],
+        "voicevox_engine_exe": entry.get("voicevox_engine_exe", ""),
     }
 
 
@@ -833,6 +1384,9 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     env["AITUBER_ONAIR_HERMES_PLUGIN"] = "1"
     env["AITUBER_ONAIR_CHARACTER_NAME"] = _plugin_character_name()
     env["AITUBER_ONAIR_CODEX_AUTH_SOURCE"] = "local-codex-cli"
+    env["AITUBER_ONAIR_TTS_PROVIDER"] = _select_tts_provider()
+    env["VOICEVOX_URL"] = _plugin_voicevox_url()
+    env["VOICEVOX_SPEAKER"] = str(_plugin_voicevox_speaker())
 
     log_fh = open(log_path, "ab", buffering=0)
     kwargs: dict[str, Any] = {
@@ -920,6 +1474,18 @@ def handle_stop(args: dict[str, Any] | None = None) -> str:
     return _json(stop_fbx_app(args or {}))
 
 
+def handle_tts_status(args: dict[str, Any] | None = None) -> str:
+    return _json(tts_status())
+
+
+def handle_start_tts(args: dict[str, Any] | None = None) -> str:
+    return _json(start_tts(args or {}))
+
+
+def handle_speak(args: dict[str, Any] | None = None) -> str:
+    return _json(synthesize_speech(args or {}))
+
+
 def _extract_character_reply(stdout: str, character_name: str) -> str:
     marker = f"{character_name}> "
     lines = stdout.splitlines()
@@ -1002,18 +1568,30 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     result = _run_command(cmd, cwd=repo, env=env, timeout_seconds=timeout)
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
-    return {
+    reply = _extract_character_reply(stdout, character_name)
+    payload = {
         "ok": result.get("ok") is True,
         "character_name": character_name,
         "provider": "codex-sdk",
         "model": model or "Codex CLI default",
-        "reply": _extract_character_reply(stdout, character_name),
+        "reply": reply,
         "stdout": stdout,
         "stderr": stderr,
         "exit_code": result.get("exit_code"),
         "command": result.get("command"),
         "cwd": result.get("cwd"),
     }
+    if values.get("speak") and reply:
+        payload["tts"] = synthesize_speech(
+            {
+                "text": reply,
+                "provider": values.get("tts_provider"),
+                "output_path": values.get("output_path"),
+                "format": values.get("format"),
+                "play": values.get("play"),
+            }
+        )
+    return payload
 
 
 def handle_say(args: dict[str, Any] | None = None) -> str:
@@ -1035,7 +1613,11 @@ HELP = """aituber commands:
   /aituber prepare
   /aituber start [--force]
   /aituber stop [--force]
+  /aituber tts-status
+  /aituber start-tts
+  /aituber speak <text>
   /aituber say <prompt>
+  /aituber say --speak <prompt>
   /aituber smoke
 """
 
@@ -1058,9 +1640,16 @@ def handle_slash(raw_args: str) -> str:
         return handle_start({"force": "--force" in argv})
     if command == "stop":
         return handle_stop({"force": "--force" in argv})
+    if command in {"tts-status", "tts"}:
+        return handle_tts_status({})
+    if command == "start-tts":
+        return handle_start_tts({})
+    if command == "speak":
+        prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
+        return handle_speak({"text": prompt, "play": "--play" in argv})
     if command == "smoke":
         return handle_smoke({})
     if command == "say":
-        prompt = " ".join(arg for arg in argv[1:] if arg != "--")
-        return handle_say({"prompt": prompt})
+        prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
+        return handle_say({"prompt": prompt, "speak": "--speak" in argv, "play": "--play" in argv})
     return HELP

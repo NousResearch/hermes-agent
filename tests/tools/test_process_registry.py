@@ -992,6 +992,17 @@ def test_format_completion_event():
     assert "Output:\ndone]" in result
 
 
+def test_format_completion_event_nonzero_exit_returns_none():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_fail",
+        "command": "pytest",
+        "exit_code": 1,
+        "output": "FAILED",
+    }
+    assert format_process_notification(evt) is None
+
+
 def test_format_watch_match_event():
     evt = {
         "type": "watch_match",
@@ -1093,6 +1104,29 @@ def test_drain_notifications_skips_consumed():
         process_registry._completion_consumed.discard("proc_consumed")
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_skips_failed_completions():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_fail",
+        "command": "pytest",
+        "exit_code": 1,
+        "output": "FAILED",
+    })
+
+    try:
+        results = process_registry.drain_notifications()
+        assert results == []
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+        process_registry._completion_consumed.discard("proc_fail")
 
 
 def test_drain_notifications_empty_queue():

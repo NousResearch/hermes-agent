@@ -102,7 +102,7 @@ class TestCompletionQueue:
         assert "build succeeded" in completion["output"]
 
     def test_move_to_finished_nonzero_exit(self, registry):
-        """Nonzero exit codes are captured correctly."""
+        """Nonzero exit codes stay silent for notify_on_complete."""
         s = _make_session(
             notify_on_complete=True,
             output="FAILED",
@@ -114,9 +114,7 @@ class TestCompletionQueue:
         with patch.object(registry, "_write_checkpoint"):
             registry._move_to_finished(s)
 
-        completion = registry.completion_queue.get_nowait()
-        assert completion["exit_code"] == 1
-        assert "FAILED" in completion["output"]
+        assert registry.completion_queue.empty()
 
     def test_move_to_finished_idempotent_no_duplicate(self, registry):
         """Calling _move_to_finished twice must NOT enqueue two notifications.
@@ -125,9 +123,9 @@ class TestCompletionQueue:
         _move_to_finished() for the same session, producing duplicate
         [SYSTEM: Background process ...] messages.
         """
-        s = _make_session(notify_on_complete=True, output="done", exit_code=-15)
+        s = _make_session(notify_on_complete=True, output="done", exit_code=0)
         s.exited = True
-        s.exit_code = -15
+        s.exit_code = 0
         registry._running[s.id] = s
         with patch.object(registry, "_write_checkpoint"):
             registry._move_to_finished(s)  # first call — should enqueue
@@ -136,7 +134,7 @@ class TestCompletionQueue:
 
         assert registry.completion_queue.qsize() == 1
         completion = registry.completion_queue.get_nowait()
-        assert completion["exit_code"] == -15  # from the first (kill) call
+        assert completion["exit_code"] == 0  # from the first successful call
 
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""

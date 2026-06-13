@@ -4565,6 +4565,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
+            # Atomically claim the session before scheduling the task.
+            # Without this, an inbound message arriving between task
+            # creation and the task reaching its own claim point would
+            # also pass the "not in _running_agents" check, spin up a
+            # second AIAgent for the same session, and produce
+            # duplicate responses (issue #45456).
+            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[entry.session_key] = time.time()
             task = asyncio.create_task(adapter.handle_message(event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
@@ -6685,7 +6693,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 self._release_running_agent_state(_quick_key)
 
+        # When _schedule_resume_pending_sessions claims a session for
+        # auto-resume it sets _AGENT_PENDING_SENTINEL *before* the
+        # asyncio task runs.  That blocks normal inbound messages (good),
+        # but the auto-resume task itself must still be able to reach the
+        # claim / agent-creation section.  Detect that case with a flag so
+        # the entire busy-agent fast-path is skipped for this turn.
+        _auto_resume_own_sentinel = False
+
         if _quick_key in self._running_agents:
+            # Auto-resume internal events set the pending sentinel in
+            # _schedule_resume_pending_sessions before the task starts.
+            # When the task runs it finds its own sentinel here — let it
+            # fall through to the claim section so it can create the real
+            # agent instead of queuing itself (issue #45456).
+            if is_internal and self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
+                _auto_resume_own_sentinel = True
+
+        if _quick_key in self._running_agents and not _auto_resume_own_sentinel:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 

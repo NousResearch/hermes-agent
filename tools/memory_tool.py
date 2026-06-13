@@ -704,44 +704,29 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
     )
 
 
-def parse_memory_command(args_str: str) -> dict:
-    """Parse /memory command arguments.
+def parse_memory_show_args(args_str: str) -> dict:
+    """Parse the target for `/memory show [memory|user]`.
 
-    V1 (read-only):
-        ""          -> {"action": "read", "target": "all"}
-        "memory"    -> {"action": "read", "target": "memory"}
-        "user"      -> {"action": "read", "target": "user"}
+    Called with the tokens that follow `show` (the `show` token itself is
+    consumed by the platform handler). Returns the selected target or an
+    error. The write-approval subcommands (pending/approve/reject/approval)
+    are handled separately by handle_pending_subcommand — this parser is
+    read-only and never claims those names.
 
-    V2 (future write):
-        "remove memory 3"  -> {"action": "remove", "target": "memory", "index": 3}
-        "remove user 1"    -> {"action": "remove", "target": "user", "index": 1}
-
-    Returns:
-        {"action": str, "target": str, ...} or {"error": str}
+        ""        -> {"target": "all"}
+        "memory"  -> {"target": "memory"}
+        "user"    -> {"target": "user"}
+        other     -> {"error": str}
     """
     args = (args_str or "").strip().lower().split()
 
     if not args:
-        return {"action": "read", "target": "all"}
+        return {"target": "all"}
 
     if args[0] in ("memory", "user"):
-        return {"action": "read", "target": args[0]}
+        return {"target": args[0]}
 
-    if args[0] == "remove":
-        if len(args) < 3:
-            return {"error": "Usage: /memory remove memory|user <entry-number>"}
-        target = args[1]
-        if target not in ("memory", "user"):
-            return {"error": f"Unknown target '{target}'. Use 'memory' or 'user'."}
-        try:
-            index = int(args[2])
-        except ValueError:
-            return {"error": f"'{args[2]}' is not a valid entry number."}
-        if index < 1:
-            return {"error": "Entry number must be 1 or greater."}
-        return {"action": "remove", "target": target, "index": index}
-
-    return {"error": f"Unknown subcommand '{args[0]}'. Use: /memory [memory|user]"}
+    return {"error": f"Unknown target '{args[0]}'. Use: /memory show [memory|user]"}
 
 
 def memory_tool(

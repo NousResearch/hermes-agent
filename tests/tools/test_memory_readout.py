@@ -1,8 +1,8 @@
-"""Tests for MemoryStore.get_readout and parse_memory_command."""
+"""Tests for MemoryStore.get_readout, parse_memory_show_args, and MemoryStore.from_config."""
 
 import pytest
 
-from tools.memory_tool import MemoryStore, parse_memory_command
+from tools.memory_tool import MemoryStore, parse_memory_show_args
 
 
 @pytest.fixture()
@@ -60,56 +60,28 @@ class TestGetReadout:
         assert "external" in data["memory"]["entries"]
 
 
-class TestParseMemoryCommand:
+class TestParseMemoryShowArgs:
     def test_no_args_reads_all(self):
-        assert parse_memory_command("") == {"action": "read", "target": "all"}
+        assert parse_memory_show_args("") == {"target": "all"}
 
     def test_whitespace_only_reads_all(self):
-        assert parse_memory_command("   ") == {"action": "read", "target": "all"}
+        assert parse_memory_show_args("   ") == {"target": "all"}
 
     def test_target_memory(self):
-        assert parse_memory_command("memory") == {"action": "read", "target": "memory"}
+        assert parse_memory_show_args("memory") == {"target": "memory"}
 
     def test_target_user(self):
-        assert parse_memory_command("user") == {"action": "read", "target": "user"}
+        assert parse_memory_show_args("user") == {"target": "user"}
 
     def test_case_insensitive(self):
-        assert parse_memory_command("MEMORY") == {"action": "read", "target": "memory"}
-        assert parse_memory_command("User") == {"action": "read", "target": "user"}
+        assert parse_memory_show_args("MEMORY") == {"target": "memory"}
+        assert parse_memory_show_args("User") == {"target": "user"}
 
-    def test_remove_valid(self):
-        result = parse_memory_command("remove memory 3")
-        assert result == {"action": "remove", "target": "memory", "index": 3}
-
-    def test_remove_user(self):
-        result = parse_memory_command("remove user 1")
-        assert result == {"action": "remove", "target": "user", "index": 1}
-
-    def test_remove_too_few_args(self):
-        result = parse_memory_command("remove memory")
-        assert "error" in result
-        assert "Usage" in result["error"]
-
-    def test_remove_invalid_target(self):
-        result = parse_memory_command("remove bogus 1")
+    def test_unknown_target_errors(self):
+        result = parse_memory_show_args("bogus")
         assert "error" in result
         assert "bogus" in result["error"]
 
-    def test_remove_non_integer_index(self):
-        result = parse_memory_command("remove memory abc")
-        assert "error" in result
-        assert "abc" in result["error"]
-
-    def test_remove_zero_index_rejected(self):
-        result = parse_memory_command("remove memory 0")
-        assert "error" in result
-        assert "1 or greater" in result["error"]
-
-    def test_remove_negative_index_rejected(self):
-        result = parse_memory_command("remove memory -1")
-        assert "error" in result
-
-    def test_unknown_subcommand(self):
-        result = parse_memory_command("explode")
-        assert "error" in result
-        assert "explode" in result["error"]
+    def test_extra_tokens_ignored_after_target(self):
+        # Only the first token is the target; trailing tokens are ignored.
+        assert parse_memory_show_args("user extra junk") == {"target": "user"}

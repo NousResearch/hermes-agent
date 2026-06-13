@@ -4604,6 +4604,80 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
+    def test_resolve_chat_argv_auto_resumes_most_recent_session(self, monkeypatch):
+        """Bare /chat should reopen the most recently active stored session."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_dashboard_most_recent_session_id",
+            lambda profile=None: "sess-auto-42",
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["HERMES_TUI_RESUME"] == "sess-auto-42"
+
+    def test_resolve_chat_argv_explicit_resume_beats_auto_resume(self, monkeypatch):
+        """An explicit ?resume= must win over the dashboard's auto-resume default."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_dashboard_most_recent_session_id",
+            lambda profile=None: "sess-auto-42",
+        )
+        monkeypatch.setattr(
+            self.ws_module,
+            "_session_latest_descendant",
+            lambda session_id: ("sess-leaf-99", [session_id, "sess-leaf-99"]),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv(resume="sess-root-1")
+
+        assert env["HERMES_TUI_RESUME"] == "sess-leaf-99"
+
+    def test_dashboard_most_recent_session_id_uses_last_active_order(self, monkeypatch):
+        captured: dict = {}
+
+        class _DB:
+            def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
+                captured["source"] = source
+                captured["limit"] = limit
+                captured["order_by_last_active"] = order_by_last_active
+                return [
+                    {"id": "tool-1", "source": "tool"},
+                    {"id": "api-1", "source": "api_server"},
+                ]
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(
+            self.ws_module,
+            "_open_session_db_for_profile",
+            lambda profile=None: _DB(),
+        )
+
+        result = self.ws_module._dashboard_most_recent_session_id()
+
+        assert result == "api-1"
+        assert captured == {
+            "source": None,
+            "limit": 200,
+            "order_by_last_active": True,
+        }
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):

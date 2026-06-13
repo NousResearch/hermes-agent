@@ -10111,6 +10111,10 @@ def _resolve_chat_argv(
         if latest_resume:
             resume = latest_resume
         env["HERMES_TUI_RESUME"] = resume
+    else:
+        auto_resume = _dashboard_most_recent_session_id(profile=profile)
+        if auto_resume:
+            env["HERMES_TUI_RESUME"] = auto_resume
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
@@ -10124,6 +10128,30 @@ def _resolve_chat_argv(
             env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     return list(argv), str(cwd) if cwd else None, env
+
+
+def _dashboard_most_recent_session_id(profile: Optional[str] = None) -> Optional[str]:
+    """Return the most recently active human-facing session id for /chat."""
+    db = _open_session_db_for_profile(profile)
+    try:
+        rows = db.list_sessions_rich(
+            source=None,
+            limit=200,
+            order_by_last_active=True,
+        )
+        for row in rows:
+            src = (row.get("source") or "").strip().lower()
+            if src == "tool":
+                continue
+            session_id = (row.get("id") or "").strip()
+            if session_id:
+                return session_id
+        return None
+    except Exception:
+        _log.debug("Dashboard auto-resume lookup failed", exc_info=True)
+        return None
+    finally:
+        db.close()
 
 
 def _build_gateway_ws_url() -> Optional[str]:

@@ -475,6 +475,38 @@ class TestCallingSidecarClient:
         assert result.success is False
         assert "graph error 100" in result.error
 
+    @pytest.mark.asyncio
+    async def test_close_calling_sidecar_session_posts_close(self):
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_timeout=2.5,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"closed": True})
+        )
+
+        closed = await adapter._close_calling_sidecar_session("wacid.call/with/slash")
+
+        assert closed is True
+        call = adapter._http_client.post.call_args
+        assert call.args[0] == (
+            "http://127.0.0.1:8787/calls/wacid.call%2Fwith%2Fslash/close"
+        )
+        assert call.kwargs["timeout"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_close_calling_sidecar_session_treats_404_as_closed(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "unknown call_id"})
+        )
+
+        closed = await adapter._close_calling_sidecar_session("wacid.missing")
+
+        assert closed is True
+
 
 # ---------------------------------------------------------------------------
 # Inbound webhook verify (GET) handshake
@@ -659,6 +691,39 @@ _SAMPLE_CALL_CONNECT_PAYLOAD = {
                                         "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
                                     ),
                                 },
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    ],
+}
+
+
+_SAMPLE_CALL_TERMINATE_PAYLOAD = {
+    "object": "whatsapp_business_account",
+    "entry": [
+        {
+            "id": "215589313241560883",
+            "changes": [
+                {
+                    "field": "calls",
+                    "value": {
+                        "messaging_product": "whatsapp",
+                        "metadata": {
+                            "display_phone_number": "15551797781",
+                            "phone_number_id": "7794189252778687",
+                        },
+                        "calls": [
+                            {
+                                "id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+                                "from": "13557825698",
+                                "to": "15551797781",
+                                "event": "terminate",
+                                "timestamp": "1762216199",
+                                "direction": "USER_INITIATED",
+                                "status": "COMPLETED",
                             }
                         ],
                     },
@@ -1030,6 +1095,47 @@ class TestWebhookDispatch:
         session = payload["entry"][0]["changes"][0]["value"]["calls"][0]["session"]
         session["sdp_type"] = "answer"
         body = json.dumps(payload).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_call_terminate_closes_sidecar_session(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter.handle_message = AsyncMock()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"closed": True})
+        )
+        body = json.dumps(_SAMPLE_CALL_TERMINATE_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        adapter.handle_message.assert_not_called()
+        adapter._http_client.post.assert_awaited_once()
+        assert adapter._http_client.post.call_args.args[0] == (
+            "http://127.0.0.1:8787/calls/"
+            "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
+        )
+
+    @pytest.mark.asyncio
+    async def test_call_terminate_without_sidecar_skips_http(self):
+        adapter = _make_adapter(app_secret="key")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+        body = json.dumps(_SAMPLE_CALL_TERMINATE_PAYLOAD).encode("utf-8")
         sig = _sign("key", body)
 
         response = await adapter._handle_webhook(

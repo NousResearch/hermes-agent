@@ -56,6 +56,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 try:
     from aiohttp import web
@@ -488,6 +489,51 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error=error_msg)
 
         return SendResult(success=True)
+
+    async def _close_calling_sidecar_session(self, call_id: str) -> bool:
+        """Best-effort close for a local WebRTC sidecar call session."""
+        if not self._calling_sidecar_enabled():
+            return False
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return False
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return False
+
+        encoded_call_id = quote(normalized_call_id, safe="")
+        url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/close"
+        try:
+            resp = await self._http_client.post(
+                url,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar close request failed for %s",
+                normalized_call_id,
+            )
+            return False
+
+        if resp.status_code == 404:
+            logger.debug(
+                "[whatsapp_cloud] sidecar had no session for terminated call %s",
+                normalized_call_id,
+            )
+            return True
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar close rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return False
+        return True
 
     @staticmethod
     def _bounded_put(cache: "OrderedDict[str, str]", key: str, value: str) -> None:
@@ -1753,6 +1799,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if event == "connect":
                 await self._handle_call_connect(raw_call)
             elif event == "terminate":
+                if call_id:
+                    await self._close_calling_sidecar_session(call_id)
                 logger.info(
                     "[whatsapp_cloud] call terminated (call_id=%s, status=%s)",
                     call_id,

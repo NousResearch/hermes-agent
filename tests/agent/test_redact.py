@@ -139,6 +139,18 @@ class TestEnvAssignments:
         assert "SECRET_TOKEN=" in result
         assert "mypassword" not in result
 
+    def test_shell_command_substitution_not_matched(self):
+        # Regression: shell $(command) and `backtick` substitutions must not
+        # be mistaken for secret values in env assignments.
+        text = "TOKEN=$(grep HASS_TOKEN ~/.hermes/.env | cut -d= -f2)"
+        result = redact_sensitive_text(text)
+        assert result == text  # unchanged — $(...) is not a secret
+
+    def test_shell_backtick_substitution_not_matched(self):
+        text = "SECRET=`cat /run/secrets/db_password`"
+        result = redact_sensitive_text(text)
+        assert result == text  # unchanged — `...` is not a secret
+
 
 class TestEnvLookupPreserved:
     """Programmatic env var lookups must not be corrupted (issue #2852)."""

@@ -328,6 +328,25 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
 
 
+def test_system_instruction_includes_role_field_and_stays_out_of_contents():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello"},
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    assert request["systemInstruction"] == {
+        "role": "system",
+        "parts": [{"text": "You are a helpful assistant."}],
+    }
+    assert all(content.get("role") != "system" for content in request["contents"])
+
+
 def test_max_tokens_none_defaults_to_gemini_output_ceiling():
     """max_tokens=None must send the model's full output ceiling, not omit it.
 

@@ -1176,6 +1176,33 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def get_total_spend(self) -> dict:
+        """Aggregate estimated spend across ALL sessions in the state DB.
+
+        Powers the "all-time" figure in the cost display. Sums the per-session
+        ``estimated_cost_usd`` column, which now also includes paid-tool costs
+        (folded in by the tool executor). Best-effort — returns zeros on error
+        so the display never crashes a turn.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0.0) AS total, "
+                "COUNT(*) AS n, "
+                "COALESCE(SUM(input_tokens), 0) AS in_tok, "
+                "COALESCE(SUM(output_tokens), 0) AS out_tok "
+                "FROM sessions"
+            ).fetchone()
+        except Exception:
+            return {"total_usd": 0.0, "sessions": 0, "input_tokens": 0, "output_tokens": 0}
+        if row is None:
+            return {"total_usd": 0.0, "sessions": 0, "input_tokens": 0, "output_tokens": 0}
+        return {
+            "total_usd": float(row["total"] or 0.0),
+            "sessions": int(row["n"] or 0),
+            "input_tokens": int(row["in_tok"] or 0),
+            "output_tokens": int(row["out_tok"] or 0),
+        }
+
     def update_token_counts(
         self,
         session_id: str,

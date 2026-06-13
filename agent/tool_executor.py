@@ -93,6 +93,76 @@ def _emit_terminal_post_tool_call(
         pass
 
 
+def _resolve_paid_tool_billing(function_name: str):
+    """Return ``(backend, CostResult)`` for a paid web-tool call, else None.
+
+    Maps the web tools to the backend that actually served the call (resolved
+    from config the same way the dispatcher does) and prices it from the list
+    tariffs in :mod:`agent.usage_pricing`. Free/unpriced backends yield None.
+    """
+    if function_name not in ("web_search", "web_extract"):
+        return None
+    try:
+        import tools.web_tools as _wt
+        from agent.usage_pricing import estimate_tool_request_cost
+
+        backend = (
+            _wt._get_search_backend()
+            if function_name == "web_search"
+            else _wt._get_extract_backend()
+        )
+        cost = estimate_tool_request_cost(backend)
+        if cost.amount_usd is None:
+            return None
+        return backend, cost
+    except Exception:
+        return None
+
+
+def _accumulate_paid_tool_cost(agent, function_name: str, function_args: dict) -> None:
+    """Add a successful paid-tool call's cost to the session running total.
+
+    Folds the per-request estimate into ``session_estimated_cost_usd`` (so the
+    all-time aggregate picks it up), tracks the tool-only subtotal, records an
+    event for the cost display, and persists the delta to the session DB.
+    Best-effort — never raises into the tool-execution path.
+    """
+    try:
+        billing = _resolve_paid_tool_billing(function_name)
+        if not billing:
+            return
+        backend, cost = billing
+        amount = float(cost.amount_usd)
+
+        agent.session_tool_cost_usd = getattr(agent, "session_tool_cost_usd", 0.0) + amount
+        agent.session_estimated_cost_usd = getattr(agent, "session_estimated_cost_usd", 0.0) + amount
+
+        events = getattr(agent, "_turn_tool_cost_events", None)
+        if events is None:
+            events = []
+            agent._turn_tool_cost_events = events
+        events.append(
+            {
+                "tool": function_name,
+                "backend": backend,
+                "cost_usd": amount,
+                "label": cost.label,
+            }
+        )
+
+        db = getattr(agent, "_session_db", None)
+        sid = getattr(agent, "session_id", "") or ""
+        if db and sid:
+            db.update_token_counts(
+                sid,
+                estimated_cost_usd=amount,
+                cost_status="estimated",
+                cost_source=cost.source,
+            )
+    except Exception:
+        pass
+
+
 def _cancelled_tool_result(reason: str = "user interrupt") -> str:
     return json.dumps(
         {
@@ -1266,6 +1336,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
         _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        # Account paid-tool request cost (Perplexity/Tavily/Exa search, etc.)
+        # here — the single chokepoint reached by BOTH registry-dispatched and
+        # agent-runtime tools, regardless of which path fired the post-hook.
+        if not _is_error_result:
+            _accumulate_paid_tool_cost(agent, function_name, function_args)
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the

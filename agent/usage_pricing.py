@@ -849,6 +849,82 @@ def estimate_usage_cost(
     )
 
 
+def format_usd(amount: Any) -> str:
+    """Format a USD amount with precision that adapts to magnitude.
+
+    Tool/LLM costs span several orders of magnitude (a $0.004 search vs a
+    $2.50 turn), so a fixed 2-decimal format would render every cheap call as
+    ``$0.00``. Show more decimals for sub-cent amounts.
+    """
+    try:
+        a = float(amount)
+    except (TypeError, ValueError):
+        return "n/a"
+    if a <= 0:
+        return "$0.00"
+    if a < 0.01:
+        return f"~${a:.4f}"
+    if a < 1:
+        return f"~${a:.3f}"
+    return f"~${a:.2f}"
+
+
+# ── Paid-tool per-request pricing ────────────────────────────────────────────
+# Flat USD cost per request for paid web tools. Billing for these services is
+# per-request / per-credit (not token-based) and the API responses carry no
+# cost field, so these are list-price estimates. Keyed by web backend name
+# (matches tools.web_tools._get_search_backend() / _get_extract_backend()).
+# Free backends (searxng, brave-free, ddgs) and unmetered/included ones are
+# intentionally absent → estimate_tool_request_cost() returns "unknown".
+TOOL_REQUEST_PRICING: Dict[str, PricingEntry] = {
+    # Perplexity Search API — $5 / 1000 requests.
+    # https://docs.perplexity.ai/guides/pricing
+    "perplexity": PricingEntry(
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://docs.perplexity.ai/guides/pricing",
+        pricing_version="perplexity-search-2026-06",
+    ),
+    # Tavily — basic search = 1 credit, $8 / 1000 credits on the pay-go tier.
+    # https://tavily.com/#pricing
+    "tavily": PricingEntry(
+        request_cost=Decimal("0.008"),
+        source="official_docs_snapshot",
+        source_url="https://tavily.com/#pricing",
+        pricing_version="tavily-2026-06",
+    ),
+    # Exa — $5 / 1000 searches (neural/auto).
+    # https://exa.ai/pricing
+    "exa": PricingEntry(
+        request_cost=Decimal("0.005"),
+        source="official_docs_snapshot",
+        source_url="https://exa.ai/pricing",
+        pricing_version="exa-2026-06",
+    ),
+}
+
+
+def estimate_tool_request_cost(backend: str, requests: int = 1) -> CostResult:
+    """Estimate the cost of a paid web-tool call from list pricing.
+
+    Returns a :class:`CostResult` whose ``amount_usd`` is None (status
+    ``unknown``) for free or unpriced backends, so callers can cheaply skip
+    accounting/annotation when there is nothing to bill.
+    """
+    entry = TOOL_REQUEST_PRICING.get((backend or "").lower().strip())
+    if entry is None or entry.request_cost is None:
+        return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
+    amount = entry.request_cost * Decimal(max(int(requests), 1))
+    return CostResult(
+        amount_usd=amount,
+        status="estimated",
+        source=entry.source,
+        label=format_usd(amount),
+        fetched_at=entry.fetched_at,
+        pricing_version=entry.pricing_version,
+    )
+
+
 def has_known_pricing(
     model_name: str,
     provider: Optional[str] = None,

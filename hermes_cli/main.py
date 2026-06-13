@@ -15283,6 +15283,59 @@ Examples:
     insights_parser.set_defaults(func=cmd_insights)
 
     # =========================================================================
+    # cost command
+    # =========================================================================
+    cost_parser = subparsers.add_parser(
+        "cost",
+        help="Show estimated Hermes spend (all-time + per-session)",
+        description="Estimated spend across all sessions (LLM tokens + paid tools like Perplexity), from list pricing.",
+    )
+    cost_parser.add_argument(
+        "--limit", type=int, default=15, help="Number of recent sessions to list (default: 15)"
+    )
+
+    def cmd_cost(args):
+        try:
+            from hermes_state import SessionDB
+            from agent.usage_pricing import format_usd
+
+            db = SessionDB()
+            totals = db.get_total_spend()
+            print()
+            print("  Hermes spend  (estimated, from list pricing)")
+            print("  " + "─" * 56)
+            print(
+                f"  All-time : {format_usd(totals['total_usd'])}"
+                f"   across {totals['sessions']} sessions"
+            )
+            print(
+                f"  Tokens   : {totals['input_tokens']:,} in / {totals['output_tokens']:,} out"
+            )
+            try:
+                rows = db._conn.execute(
+                    "SELECT id, source, model, estimated_cost_usd, title "
+                    "FROM sessions WHERE estimated_cost_usd > 0 "
+                    "ORDER BY started_at DESC LIMIT ?",
+                    (max(int(args.limit), 1),),
+                ).fetchall()
+            except Exception:
+                rows = []
+            if rows:
+                print()
+                print(f"  Recent sessions (newest {len(rows)}):")
+                for r in rows:
+                    cost = format_usd(r["estimated_cost_usd"] or 0.0)
+                    src = (r["source"] or "?")[:9]
+                    model = (r["model"] or "?")[:22]
+                    label = (r["title"] or r["id"] or "")[:32]
+                    print(f"    {cost:>10}  {src:<9} {model:<22} {label}")
+            db.close()
+        except Exception as e:
+            print(f"Error computing cost: {e}")
+
+    cost_parser.set_defaults(func=cmd_cost)
+
+    # =========================================================================
     # claw command (OpenClaw migration)
     # =========================================================================
     claw_parser = subparsers.add_parser(

@@ -205,6 +205,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
+    CommandDef("cost", "Show estimated Hermes spend (all-time + per-session)", "Info",
+               args_hint="[limit]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
     CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",

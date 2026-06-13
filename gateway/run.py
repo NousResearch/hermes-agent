@@ -285,6 +285,44 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _build_gateway_cost_line(agent_result: dict, session_db: Any) -> str:
+    """Build the cost-summary footer line for a gateway reply.
+
+    Mirrors the CLI cost line but, since the gateway has no per-turn snapshot
+    state, reports the running session total (split into LLM vs paid tools)
+    plus the all-time aggregate across every session. Returns "" when there is
+    nothing meaningful to show. Best-effort — never raises.
+    """
+    try:
+        from agent.usage_pricing import format_usd
+
+        session_total = float((agent_result or {}).get("estimated_cost_usd") or 0.0)
+        session_tool = float((agent_result or {}).get("session_tool_cost_usd") or 0.0)
+        session_llm = max(session_total - session_tool, 0.0)
+        status = (agent_result or {}).get("cost_status") or "unknown"
+
+        all_time = 0.0
+        try:
+            if session_db is not None:
+                all_time = float(session_db.get_total_spend().get("total_usd", 0.0))
+        except Exception:
+            all_time = session_total
+
+        if status == "included" and session_tool <= 0:
+            session_str = "included"
+        elif session_tool > 0:
+            session_str = (
+                f"{format_usd(session_total)} "
+                f"(LLM {format_usd(session_llm)} + tools {format_usd(session_tool)})"
+            )
+        else:
+            session_str = format_usd(session_total)
+
+        return f"💰 session {session_str} · all-time {format_usd(all_time)}"
+    except Exception:
+        return ""
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
@@ -9633,6 +9671,25 @@ class GatewayRunner:
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
+
+            # Cost summary (display.show_cost) — merged into _footer_line so it
+            # rides the same append (non-streamed) and trailing-send (streamed)
+            # paths as the runtime footer, with no extra plumbing.
+            try:
+                from gateway.display_config import resolve_display_setting as _rds_cost
+                _show_cost_effective = _rds_cost(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    "show_cost",
+                    False,
+                )
+            except Exception:
+                _show_cost_effective = False
+            if _show_cost_effective:
+                _cost_line = _build_gateway_cost_line(agent_result, getattr(self, "_session_db", None))
+                if _cost_line:
+                    _footer_line = f"{_footer_line}\n{_cost_line}" if _footer_line else _cost_line
+
             if _footer_line and response and not agent_result.get("already_sent"):
                 response = f"{response}\n\n{_footer_line}"
 

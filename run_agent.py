@@ -631,6 +631,10 @@ class AIAgent:
         self.session_reasoning_tokens = 0
         self.session_api_calls = 0
         self.session_estimated_cost_usd = 0.0
+        # Subset of session_estimated_cost_usd attributable to paid tool calls
+        # (Perplexity/Tavily/Exa web search, etc.) — tracked separately so the
+        # cost display can split "LLM vs tools".
+        self.session_tool_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         

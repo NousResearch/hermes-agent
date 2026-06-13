@@ -3146,6 +3146,12 @@ class HermesCLI:
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
         # show_timestamps: prefix user and assistant labels with [HH:MM]
         self.show_timestamps = CLI_CONFIG["display"].get("timestamps", False)
+        # show_cost: print a per-turn cost line (LLM + paid tools) plus the
+        # all-time total after each response (display.show_cost in config.yaml)
+        self.show_cost = bool(CLI_CONFIG["display"].get("show_cost", False))
+        # Running snapshot of session cost at the previous turn boundary, used
+        # to derive this turn's delta for the cost line.
+        self._last_session_cost = 0.0
         self.final_response_markdown = str(
             CLI_CONFIG["display"].get("final_response_markdown", "strip")
         ).strip().lower() or "strip"
@@ -9066,6 +9072,8 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "cost":
+            self._show_cost(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
@@ -10780,6 +10788,52 @@ class HermesCLI:
         except Exception as e:
             print(f"  Error generating insights: {e}")
 
+    def _show_cost(self, command: str = "/cost"):
+        """Show estimated Hermes spend: all-time total + recent per-session."""
+        parts = command.split()
+        limit = 15
+        for p in parts[1:]:
+            if p.isdigit():
+                limit = int(p)
+                break
+        try:
+            from hermes_state import SessionDB
+            from agent.usage_pricing import format_usd
+
+            db = SessionDB()
+            totals = db.get_total_spend()
+            print()
+            print("  Hermes spend  (estimated, from list pricing)")
+            print("  " + "─" * 56)
+            print(
+                f"  All-time : {format_usd(totals['total_usd'])}"
+                f"   across {totals['sessions']} sessions"
+            )
+            print(
+                f"  Tokens   : {totals['input_tokens']:,} in / {totals['output_tokens']:,} out"
+            )
+            try:
+                rows = db._conn.execute(
+                    "SELECT id, source, model, estimated_cost_usd, title "
+                    "FROM sessions WHERE estimated_cost_usd > 0 "
+                    "ORDER BY started_at DESC LIMIT ?",
+                    (max(int(limit), 1),),
+                ).fetchall()
+            except Exception:
+                rows = []
+            if rows:
+                print()
+                print(f"  Recent sessions (newest {len(rows)}):")
+                for r in rows:
+                    cost = format_usd(r["estimated_cost_usd"] or 0.0)
+                    src = (r["source"] or "?")[:9]
+                    model = (r["model"] or "?")[:22]
+                    label = (r["title"] or r["id"] or "")[:32]
+                    print(f"    {cost:>10}  {src:<9} {model:<22} {label}")
+            db.close()
+        except Exception as e:
+            print(f"  Error computing cost: {e}")
+
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.
 
@@ -11213,6 +11267,86 @@ class HermesCLI:
     # Tool progress callback (audio cues for voice mode)
     # ====================================================================
 
+    def _print_cost_line(self, result: dict) -> None:
+        """Print the per-turn / session / all-time cost summary after a turn.
+
+        Turn cost is derived as the delta of the session running total since
+        the previous turn boundary, split into LLM vs paid-tool spend. The
+        all-time figure aggregates ``estimated_cost_usd`` across every session
+        in the state DB. Best-effort — never raises into the turn loop.
+        """
+        try:
+            from agent.usage_pricing import format_usd
+
+            agent = self.agent
+            session_total = float(
+                (result or {}).get("estimated_cost_usd")
+                if result and result.get("estimated_cost_usd") is not None
+                else getattr(agent, "session_estimated_cost_usd", 0.0)
+            )
+            session_tool = float(getattr(agent, "session_tool_cost_usd", 0.0))
+
+            prev_total = float(getattr(self, "_last_session_cost", 0.0))
+            prev_tool = float(getattr(self, "_last_tool_cost", 0.0))
+            turn_total = max(session_total - prev_total, 0.0)
+            turn_tool = max(session_tool - prev_tool, 0.0)
+            turn_llm = max(turn_total - turn_tool, 0.0)
+            # Advance snapshots for the next turn.
+            self._last_session_cost = session_total
+            self._last_tool_cost = session_tool
+
+            status = (result or {}).get("cost_status") or getattr(
+                agent, "session_cost_status", "unknown"
+            )
+            model = getattr(self, "model", "") or getattr(agent, "model", "") or "?"
+
+            all_time = 0.0
+            try:
+                if self._session_db:
+                    all_time = float(self._session_db.get_total_spend().get("total_usd", 0.0))
+            except Exception:
+                all_time = session_total
+
+            # "included" means a subscription covers the LLM cost — say so
+            # rather than printing ~$0.00 and looking broken.
+            if status == "included" and turn_tool <= 0:
+                turn_str = "included"
+            elif turn_tool > 0:
+                turn_str = (
+                    f"{format_usd(turn_total)} "
+                    f"({_DIM}LLM {model} {format_usd(turn_llm)} + tools {format_usd(turn_tool)}{_RST})"
+                )
+            else:
+                turn_str = f"{format_usd(turn_total)} {_DIM}(LLM {model}){_RST}"
+
+            _cprint(
+                f"  {_DIM}💰 turn{_RST} {turn_str}"
+                f"  {_DIM}·  session{_RST} {format_usd(session_total)}"
+                f"  {_DIM}·  all-time{_RST} {format_usd(all_time)}"
+            )
+        except Exception:
+            pass
+
+    def _tool_cost_suffix(self, function_name: str) -> str:
+        """Return a dim ' · <backend> · ~$x' annotation for a paid tool call.
+
+        Empty string for free tools or when display.show_cost is off, so users
+        who don't opt into cost display see the unchanged tool line. Reuses the
+        tool executor's billing resolver so the annotation and the accounting
+        can never disagree.
+        """
+        if not getattr(self, "show_cost", False):
+            return ""
+        try:
+            from agent.tool_executor import _resolve_paid_tool_billing
+            billing = _resolve_paid_tool_billing(function_name)
+            if not billing:
+                return ""
+            backend, cost = billing
+            return f" {_DIM}· {backend} · {cost.label}{_RST}"
+        except Exception:
+            return ""
+
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Called on tool lifecycle events (tool.started, tool.completed, reasoning.available, etc.).
 
@@ -11247,7 +11381,7 @@ class HermesCLI:
                 try:
                     from agent.display import get_cute_tool_message
                     line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    _cprint(f"  {line}{self._tool_cost_suffix(function_name)}")
                 except Exception:
                     pass
                 # First-touch onboarding: on the first tool in this process
@@ -12772,6 +12906,12 @@ class HermesCLI:
                         width=self._scrollback_box_width(),
                     ))
 
+
+            # Cost line: per-turn spend (LLM + paid tools), session total, and
+            # the all-time aggregate across every session. Gated on
+            # display.show_cost so it's opt-in.
+            if getattr(self, "show_cost", False):
+                self._print_cost_line(result)
 
             # Play terminal bell when agent finishes (if enabled).
             # Works over SSH — the bell propagates to the user's terminal.

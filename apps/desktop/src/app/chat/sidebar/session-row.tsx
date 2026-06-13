@@ -132,7 +132,7 @@ export function SidebarSessionRow({
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
   const titleActive = isSelected || checked || (isWorking && !needsInput)
-  const titleRunning = isWorking && !needsInput
+  const titleEmphasized = titleActive
 
   const toggleSelect = (mode: 'range' | 'single') => {
     triggerHaptic('selection')
@@ -192,8 +192,8 @@ export function SidebarSessionRow({
             className
           )}
           data-actions-visible={actionsVisible ? 'true' : undefined}
-          data-session-drag-source
           data-selected={checked ? 'true' : undefined}
+          data-session-drag-source
           data-session-row-chrome
           data-working={isWorking ? 'true' : undefined}
           draggable
@@ -305,9 +305,9 @@ export function SidebarSessionRow({
             <div className="min-w-0 flex-1">
               <span
                 className={cn(
-                  'block truncate text-[0.8125rem] group-hover/session-row:text-foreground',
-                  titleActive ? 'text-foreground' : 'text-(--ui-text-secondary)',
-                  titleRunning ? 'font-medium' : 'font-normal'
+                  'block truncate text-[0.8125rem] group-hover/session-row:text-(--ui-text-primary)',
+                  titleActive ? 'text-(--ui-text-primary)' : 'text-(--ui-text-secondary)',
+                  titleEmphasized ? 'font-medium' : 'font-normal'
                 )}
                 data-session-row-title
               >
@@ -323,10 +323,13 @@ export function SidebarSessionRow({
             but its width is still reserved (opacity-0, not unmounted) so the
             menu lands in the same spot and the row height never shifts.
             Transform/opacity only — no layout reflow. */}
-          <div className="relative flex h-full min-w-14 items-center justify-end self-stretch pl-1 pr-7">
+          <div
+            className="relative flex h-full min-w-14 items-center justify-end self-stretch pl-1"
+            data-session-row-trailing
+          >
             <span
               className={cn(
-                'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
+                'pointer-events-none min-w-6 pr-1 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
                 // Slide left past the menu's footprint so the age stays fully
                 // legible beside the revealed 3-dot button.
                 'group-hover/session-row:-translate-x-6 group-data-[actions-visible=true]/session-row:-translate-x-6',

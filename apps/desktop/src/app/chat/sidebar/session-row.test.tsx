@@ -248,9 +248,13 @@ describe('SidebarSessionRow gestures', () => {
   it('moves the timestamp for a real actions menu open, not lingering pointer focus', () => {
     const { container } = renderRow()
     const chrome = container.querySelector('[data-session-row-chrome]') as HTMLElement
+    const trailing = container.querySelector('[data-session-row-trailing]') as HTMLElement
     const timestamp = container.querySelector('[data-session-row-age]') as HTMLElement
     const actionsButton = container.querySelector('[data-session-row-actions]') as HTMLButtonElement
 
+    expect(trailing.className).toContain('justify-end')
+    expect(trailing.className).not.toContain('pr-7')
+    expect(timestamp.className).toContain('pr-1')
     expect(timestamp.className).toContain('group-data-[actions-visible=true]/session-row:-translate-x-6')
     expect(timestamp.className).not.toContain('group-hover:-translate-x-6')
     expect(timestamp.className).not.toContain('group-focus-within')
@@ -286,15 +290,15 @@ describe('SidebarSessionRow gestures', () => {
     const selected = renderRow({ isSelected: true })
     let title = selected.container.querySelector('[data-session-row-title]') as HTMLElement
 
-    expect(title.className).toContain('text-foreground')
-    expect(title.className).toContain('font-normal')
+    expect(title.className).toContain('text-(--ui-text-primary)')
+    expect(title.className).toContain('font-medium')
 
     cleanup()
 
     const running = renderRow({ isWorking: true })
     title = running.container.querySelector('[data-session-row-title]') as HTMLElement
 
-    expect(title.className).toContain('text-foreground')
+    expect(title.className).toContain('text-(--ui-text-primary)')
     expect(title.className).toContain('font-medium')
 
     cleanup()

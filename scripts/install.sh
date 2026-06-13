@@ -1531,8 +1531,12 @@ setup_path() {
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
     rm -f "$command_link_dir/hermes"
+    launcher_shebang='#!/usr/bin/env bash'
+    if [ "$DISTRO" = "termux" ] && [ -n "${PREFIX:-}" ]; then
+        launcher_shebang="#!$PREFIX/bin/bash"
+    fi
     cat > "$command_link_dir/hermes" <<EOF
-#!/usr/bin/env bash
+$launcher_shebang
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"

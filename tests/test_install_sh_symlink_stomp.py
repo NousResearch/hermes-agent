@@ -120,3 +120,40 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
     assert f'exec "{pip_entry}"' in shim_text
     shim_mode = shim_path.stat().st_mode
     assert shim_mode & stat.S_IXUSR, "shim must be user-executable"
+
+
+def test_termux_shim_uses_direct_prefix_bash_path(tmp_path: Path) -> None:
+    """Termux launcher must avoid /usr/bin/env in the kernel shebang path."""
+    hermes_bin = tmp_path / "venv" / "bin" / "hermes"
+    hermes_bin.parent.mkdir(parents=True)
+    hermes_bin.write_text("#!/usr/bin/env python\n")
+    hermes_bin.chmod(hermes_bin.stat().st_mode | stat.S_IXUSR)
+
+    command_link_dir = tmp_path / "prefix_bin"
+    command_link_dir.mkdir()
+
+    block = _extract_setup_path_shim_block()
+    prefix = "/data/data/com.termux/files/usr"
+    script = (
+        "set -e\n"
+        f'DISTRO="termux"\n'
+        f'PREFIX="{prefix}"\n'
+        f'HERMES_BIN="{hermes_bin}"\n'
+        f'command_link_dir="{command_link_dir}"\n'
+        f"{block}\n"
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, (
+        f"shim-write block failed:\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+
+    shim_text = (command_link_dir / "hermes").read_text()
+    assert shim_text.startswith(f"#!{prefix}/bin/bash\n"), (
+        "Termux launcher must use the direct PREFIX bash path so the kernel "
+        "can execute the shim shebang."
+    )

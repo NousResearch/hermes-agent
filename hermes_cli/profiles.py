@@ -453,6 +453,51 @@ def remove_wrapper_script(name: str) -> bool:
     return False
 
 
+_ALIAS_SCAN_MAX_BYTES = 64 * 1024
+_ALIAS_PROFILE_MAP: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None
+
+
+def _build_alias_profile_map() -> dict[str, tuple[Optional[str], Optional[str]]]:
+    """Return profile -> (custom_alias, profile_named_alias) for Hermes wrappers.
+
+    ``~/.local/bin`` can also contain large binary executables (for example
+    ``gh`` or ``claude``). Reading every suffixless file once per profile makes
+    dashboard profile listing painfully slow. Hermes-generated wrappers are tiny
+    text files, so scan the directory once and skip anything implausibly large.
+    """
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        return {}
+    is_windows = sys.platform == "win32"
+    result: dict[str, tuple[Optional[str], Optional[str]]] = {}
+    for entry in sorted(wrapper_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        # Only our own wrappers are named with the alias and (on Windows) .bat.
+        if is_windows and entry.suffix != ".bat":
+            continue
+        if not is_windows and entry.suffix:
+            continue
+        try:
+            if entry.stat().st_size > _ALIAS_SCAN_MAX_BYTES:
+                continue
+            content = entry.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        match = re.search(r"\bhermes\s+-p\s+([A-Za-z0-9_.-]+)\b", content)
+        if not match:
+            continue
+        canon = normalize_profile_name(match.group(1))
+        alias = entry.stem if is_windows else entry.name
+        custom, profile_named = result.get(canon, (None, None))
+        if alias == canon:
+            profile_named = alias
+        elif custom is None:
+            custom = alias
+        result[canon] = (custom, profile_named)
+    return result
+
+
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
     """Return the alias name of the wrapper that activates *profile_name*, or None.
 
@@ -466,34 +511,12 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
     so ``profile list``/``show`` surface the command the user actually typed.
     Results are sorted for deterministic output when several aliases match.
     """
-    wrapper_dir = _get_wrapper_dir()
-    if not wrapper_dir.is_dir():
-        return None
-    canon = normalize_profile_name(profile_name)
-    is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
-
-    custom: Optional[str] = None
-    profile_named: Optional[str] = None
-    for entry in sorted(wrapper_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        # Only our own wrappers are named with the alias and (on Windows) .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
-            continue
-        try:
-            content = entry.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if needle not in content:
-            continue
-        alias = entry.stem if is_windows else entry.name
-        if alias == canon:
-            profile_named = alias
-        elif custom is None:
-            custom = alias
+    global _ALIAS_PROFILE_MAP
+    if _ALIAS_PROFILE_MAP is None:
+        _ALIAS_PROFILE_MAP = _build_alias_profile_map()
+    custom, profile_named = _ALIAS_PROFILE_MAP.get(
+        normalize_profile_name(profile_name), (None, None)
+    )
     return custom if custom is not None else profile_named
 
 

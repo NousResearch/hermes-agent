@@ -279,6 +279,14 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    # Check plugin-registered providers (e.g. cascade, custom backends).
+    try:
+        from agent.web_search_registry import get_provider
+        prov = get_provider(backend)
+        if prov is not None:
+            return prov.is_available()
+    except Exception:
+        pass
     return False
 
 

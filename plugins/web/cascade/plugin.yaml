@@ -1,0 +1,7 @@
+name: web-search-cascade
+version: 1.0.0
+description: "Cascade web search with circuit breaker — tries backends in priority order, skips failed ones."
+author: maxiaoguang
+kind: backend
+provides_web_providers:
+  - cascade

@@ -838,7 +838,9 @@ import sys
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands in the active terminal backend. Filesystem, current working directory, and exported environment variables persist between calls.
+
+When TERMINAL_ENV=ssh, this tool already executes commands on the configured SSH target. Do not run `ssh` to that same host from inside terminal(); run the requested remote command directly instead. If the SSH target is Windows, terminal commands run under Windows PowerShell, so use PowerShell syntax such as `hostname; whoami`, `Get-ChildItem`, and `$env:USERPROFILE` instead of POSIX-only shell syntax such as `&&`, `/Users/...`, or `~/.ssh` on the Hermes host.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -860,6 +862,86 @@ PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REP
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
+
+
+_SSH_OPTIONS_WITH_ARGS = {
+    "-b", "-c", "-D", "-E", "-F", "-I", "-i", "-J", "-L", "-l",
+    "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+}
+
+
+def _ssh_target_host(token: str) -> str:
+    """Extract a hostname from an ssh target token like user@host:port."""
+    target = (token or "").strip()
+    if not target or target.startswith("-"):
+        return ""
+    if "://" in target:
+        # ssh://user@host:22 is rare here, but keep the extraction harmless.
+        target = target.rsplit("://", 1)[-1]
+    target = target.rsplit("@", 1)[-1]
+    if target.startswith("[") and "]" in target:
+        return target[1:target.index("]")].lower()
+    return target.split(":", 1)[0].lower()
+
+
+def _find_nested_ssh_target(command: str) -> str:
+    """Return the first explicit ssh target host in *command*, if any."""
+    try:
+        import shlex
+
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        tokens = command.split()
+
+    for index, token in enumerate(tokens):
+        executable = os.path.basename(token).lower()
+        if executable not in {"ssh", "ssh.exe"}:
+            continue
+
+        cursor = index + 1
+        while cursor < len(tokens):
+            part = tokens[cursor]
+            if part == "--":
+                cursor += 1
+                break
+            if part in _SSH_OPTIONS_WITH_ARGS:
+                cursor += 2
+                continue
+            # Short options with attached args, e.g. -p22, -i/path/key,
+            # -oConnectTimeout=10. Boolean flags (-v, -A, -T, ...) are just
+            # skipped below.
+            if len(part) > 2 and part[:2] in _SSH_OPTIONS_WITH_ARGS:
+                cursor += 1
+                continue
+            if part.startswith("-"):
+                cursor += 1
+                continue
+            break
+
+        if cursor < len(tokens):
+            return _ssh_target_host(tokens[cursor])
+
+    return ""
+
+
+def _nested_ssh_to_configured_target_error(command: str, config: Dict[str, Any]) -> str:
+    """Explain when the model tries to SSH into the active SSH backend again."""
+    if config.get("env_type") != "ssh":
+        return ""
+    configured_host = str(config.get("ssh_host") or "").strip().lower()
+    if not configured_host:
+        return ""
+    target_host = _find_nested_ssh_target(command)
+    if not target_host or target_host != configured_host:
+        return ""
+    return (
+        f"This terminal is already connected to the configured SSH target "
+        f"{configured_host}. Do not run `ssh {configured_host}` from inside "
+        "this backend; that attempts a second SSH connection from the remote "
+        "host and often hangs. Run the remote command directly in terminal() "
+        "instead. For a Windows SSH target, use PowerShell syntax, e.g. "
+        "`hostname; whoami` or `Get-Service sshd`."
+    )
 
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
@@ -1895,6 +1977,15 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+
+        nested_ssh_error = _nested_ssh_to_configured_target_error(command, config)
+        if nested_ssh_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": nested_ssh_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and

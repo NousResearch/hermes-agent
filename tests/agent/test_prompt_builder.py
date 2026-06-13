@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -1030,6 +1031,50 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in result
         assert "/workspace" in result
 
+    def test_ssh_windows_probe_reports_powershell_and_target(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import tools.environments.ssh as ssh_env
+        import tools.terminal_tool as terminal_tool
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(
+            terminal_tool,
+            "_get_env_config",
+            lambda: {
+                "env_type": "ssh",
+                "ssh_host": "192.168.2.5",
+                "ssh_user": "alice",
+                "ssh_port": 22,
+                "ssh_key": "",
+            },
+        )
+        monkeypatch.setattr(ssh_env, "detect_windows_ssh_host", lambda *args: True)
+
+        def fake_terminal(command, **kwargs):
+            assert "Windows PowerShell" in command
+            return json.dumps({
+                "exit_code": 0,
+                "output": (
+                    "os=Windows\n"
+                    "kernel=Microsoft Windows NT 10.0.19045.0\n"
+                    "home=C:\\Users\\alice\n"
+                    "cwd=C:\\Users\\alice\n"
+                    "user=DESKTOP\\alice\n"
+                    "shell=Windows PowerShell\n"
+                ),
+            })
+
+        monkeypatch.setattr(terminal_tool, "terminal_tool", fake_terminal)
+        _pb._clear_backend_probe_cache()
+
+        result = _pb.build_environment_hints()
+
+        assert "Terminal backend: ssh" in result
+        assert "Windows PowerShell" in result
+        assert "SSH target: alice@192.168.2.5" in result
+        assert "Do not run `ssh` to this same host" in result
+
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb
@@ -1335,5 +1380,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

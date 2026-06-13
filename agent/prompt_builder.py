@@ -715,7 +715,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "modal": "a Modal sandbox (Linux)",
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
-    "ssh": "a remote host reached over SSH (likely Linux)",
+    "ssh": "a remote host reached over SSH",
 }
 
 
@@ -755,8 +755,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
-        from tools.terminal_tool import _get_env_config  # type: ignore
-        from tools.environments import get_environment  # type: ignore
+        from tools.terminal_tool import _get_env_config, terminal_tool  # type: ignore
+        from tools.environments.ssh import detect_windows_ssh_host  # type: ignore
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
@@ -764,17 +764,38 @@ def _probe_remote_backend(env_type: str) -> str | None:
 
     try:
         config = _get_env_config()
-        env = get_environment(config)
-        # Single-line POSIX probe — works on any Unixy backend. Wrapped in
-        # `2>/dev/null` so a missing binary doesn't pollute the output.
-        probe_cmd = (
-            "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' "
-            "\"$(uname -s 2>/dev/null || echo unknown)\" "
-            "\"$(uname -r 2>/dev/null || echo unknown)\" "
-            "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
-        )
-        result = env.execute(probe_cmd, timeout=4)
-        if result.get("returncode") != 0:
+        is_windows_ssh = False
+        if env_type == "ssh":
+            is_windows_ssh = detect_windows_ssh_host(
+                config.get("ssh_host", ""),
+                config.get("ssh_user", ""),
+                config.get("ssh_port", 22),
+                config.get("ssh_key", ""),
+            )
+        if is_windows_ssh:
+            probe_cmd = r"""
+$kernel = [System.Environment]::OSVersion.VersionString
+$homePath = $HOME
+if (-not $homePath) { $homePath = $env:USERPROFILE }
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+Write-Output "os=Windows"
+Write-Output ("kernel=" + $kernel)
+Write-Output ("home=" + $homePath)
+Write-Output ("cwd=" + (Get-Location).ProviderPath)
+Write-Output ("user=" + $user)
+Write-Output "shell=Windows PowerShell"
+"""
+        else:
+            # Single-line POSIX probe — works on Unixy remote backends.
+            # Wrapped in `2>/dev/null` so missing binaries don't pollute output.
+            probe_cmd = (
+                "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' "
+                "\"$(uname -s 2>/dev/null || echo unknown)\" "
+                "\"$(uname -r 2>/dev/null || echo unknown)\" "
+                "\"$HOME\" \"$(pwd)\" \"$(whoami 2>/dev/null || id -un 2>/dev/null || echo unknown)\""
+            )
+        result = json.loads(terminal_tool(probe_cmd, timeout=15, task_id="default"))
+        if result.get("exit_code") != 0:
             logger.debug("Backend probe returned non-zero: %r", result)
             _BACKEND_PROBE_CACHE[cache_key] = ""
             return None
@@ -804,6 +825,23 @@ def _probe_remote_backend(env_type: str) -> str | None:
         pieces.append(f"Home: {parsed['home']}")
     if parsed.get("cwd"):
         pieces.append(f"Working directory: {parsed['cwd']}")
+    if parsed.get("shell"):
+        pieces.append(f"Shell: {parsed['shell']}")
+    if env_type == "ssh":
+        ssh_host = str(config.get("ssh_host") or "").strip()
+        ssh_user = str(config.get("ssh_user") or "").strip()
+        ssh_port = str(config.get("ssh_port") or "").strip()
+        if ssh_host:
+            target = f"{ssh_user + '@' if ssh_user else ''}{ssh_host}"
+            if ssh_port and ssh_port != "22":
+                target += f":{ssh_port}"
+            pieces.append(f"SSH target: {target}")
+        if is_windows_ssh:
+            pieces.append(
+                "Important: terminal calls are already executing on this SSH "
+                "target. Do not run `ssh` to this same host; run Windows "
+                "PowerShell commands directly instead."
+            )
 
     if not pieces:
         _BACKEND_PROBE_CACHE[cache_key] = ""

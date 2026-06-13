@@ -124,6 +124,78 @@ except ImportError:
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
 
+
+# ---------------------------------------------------------------------------
+# Streaming card phase state machine
+# ---------------------------------------------------------------------------
+
+class _CardPhase(int):
+    """Phase lifecycle for a single streaming card.
+
+    Valid transitions::
+
+        Idle -> Creating -> Streaming -> Completed
+                                  -> Aborted
+                                  -> Terminated
+              Creating -> CreationFailed
+                        -> Terminated
+    """
+    IDLE = 0
+    CREATING = 1
+    STREAMING = 2
+    COMPLETED = 3
+    ABORTED = 4
+    TERMINATED = 5
+    CREATION_FAILED = 6
+
+
+_PHASE_TRANSITIONS: Dict[int, set] = {
+    _CardPhase.IDLE: {_CardPhase.CREATING},
+    _CardPhase.CREATING: {_CardPhase.STREAMING, _CardPhase.CREATION_FAILED, _CardPhase.TERMINATED, _CardPhase.IDLE},
+    _CardPhase.STREAMING: {_CardPhase.COMPLETED, _CardPhase.ABORTED, _CardPhase.TERMINATED},
+    _CardPhase.COMPLETED: {_CardPhase.IDLE},
+    _CardPhase.ABORTED: {_CardPhase.IDLE},
+    _CardPhase.TERMINATED: {_CardPhase.IDLE},
+    _CardPhase.CREATION_FAILED: {_CardPhase.IDLE},
+}
+
+# Feishu server auto-closes streaming after ~10 minutes; rotate at ~8 min.
+_STREAM_CARD_TTL_SECONDS = 500
+
+# Feishu cards have a ~200 element limit; split before hitting it.
+
+# cardkit v1 is optional — older lark_oapi SDKs may lack it.  When
+# unavailable the streaming-card feature gracefully degrades.
+HAS_CARDKIT = False
+try:
+    from lark_oapi.api.cardkit.v1 import (  # type: ignore[attr-defined]
+        Config,
+        CreateCardRequest,
+        CreateCardRequestBody,
+        ContentCardElementRequest,
+        ContentCardElementRequestBody,
+        Settings,
+        SettingsCardRequest,
+        SettingsCardRequestBody,
+        UpdateCardRequest,
+        UpdateCardRequestBody,
+    )
+    from lark_oapi.api.cardkit.v1.model import Card as CardKitCard  # type: ignore[attr-defined]
+
+    HAS_CARDKIT = True
+except (ImportError, AttributeError):
+    Config = None  # type: ignore[assignment,misc]
+    CreateCardRequest = None  # type: ignore[assignment,misc]
+    CreateCardRequestBody = None  # type: ignore[assignment,misc]
+    ContentCardElementRequest = None  # type: ignore[assignment,misc]
+    ContentCardElementRequestBody = None  # type: ignore[assignment,misc]
+    Settings = None  # type: ignore[assignment,misc]
+    SettingsCardRequest = None  # type: ignore[assignment,misc]
+    SettingsCardRequestBody = None  # type: ignore[assignment,misc]
+    UpdateCardRequest = None  # type: ignore[assignment,misc]
+    UpdateCardRequestBody = None  # type: ignore[assignment,misc]
+    CardKitCard = None  # type: ignore[assignment,misc]
+
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
@@ -241,6 +313,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_CLOSED_CARD_CACHE_SIZE = 500       # max tracked closed streaming card IDs (dedup)
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -395,6 +468,9 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # When True, outgoing text messages use Feishu cardkit v1 streaming cards
+    # (schema 2.0) for typewriter-effect streaming instead of post/text + edit.
+    streaming_card_enabled: bool = False
 
 
 @dataclass
@@ -1411,6 +1487,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
 
+    @property
+    def REQUIRES_EDIT_FINALIZE(self) -> bool:
+        """Whether the adapter needs explicit finalize calls for streaming cards."""
+        return self._streaming_card_enabled and HAS_CARDKIT
+
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
@@ -1474,6 +1555,14 @@ class FeishuAdapter(BasePlatformAdapter):
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
+        # Streaming card state: chat_id -> {card_id -> {sequence, message_id, ...}}.
+        # Tracks cardkit v1 cards currently in streaming mode per chat.
+        self._streaming_cards: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        # Card IDs of streaming cards that have been closed, used to distinguish
+        # "card already closed" from "IM message edit failure" in edit_message.
+        self._closed_streaming_card_ids: "OrderedDict[str, None]" = OrderedDict()
+        # Per-chat card phase for lifecycle enforcement.
+        self._card_phases: Dict[str, int] = {}
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -1575,6 +1664,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            streaming_card_enabled=_to_boolean(
+                extra.get("streaming_card_enabled", os.getenv("FEISHU_STREAMING_CARD_ENABLED", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1607,6 +1699,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._streaming_card_enabled = settings.streaming_card_enabled
+        logger.info(
+            "[Feishu] Streaming card config: enabled=%s HAS_CARDKIT=%s REQUIRES_EDIT_FINALIZE=%s bot_name=%r",
+            self._streaming_card_enabled, HAS_CARDKIT, self.REQUIRES_EDIT_FINALIZE, getattr(self, '_bot_name', '?'),
+        )
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1642,6 +1739,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to Feishu/Lark."""
+        # Clear stale streaming card state from a prior connection lifecycle
+        # (e.g. if disconnect raised before reaching the cleanup path).
+        self._streaming_cards.clear()
+        self._closed_streaming_card_ids.clear()
+        self._card_phases.clear()
+
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")
             return False
@@ -1693,6 +1796,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+
+        # Finalize any open streaming cards before tearing down the connection
+        # so they don't get stuck in streaming mode after disconnect.
+        for chat_id in list(self._streaming_cards):
+            await self._close_streaming_siblings(chat_id)
+
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1782,6 +1891,33 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # --- Streaming card path (cardkit v1, schema 2.0) --------------------
+        # Only used when enabled AND the caller explicitly requests it via
+        # metadata["streaming_card"] == True.  This gate prevents auto-sent
+        # messages (runtime footer, commentary, tool progress, etc.) from
+        # creating orphaned streaming cards that never get closed.
+        if self._streaming_card_enabled and HAS_CARDKIT and metadata and metadata.get("streaming_card"):
+            result = await self._send_streaming_card(
+                chat_id=chat_id,
+                content=content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if result is not None:
+                logger.info("[Feishu] send() → streaming card path: success=%s msg_id=%s", result.success, result.message_id)
+                return result
+            # Streaming card failed — fall through to post/text below.
+            logger.warning("[Feishu] Streaming card send failed; falling back to post/text")
+
+        # --- Close any orphaned streaming card before post/text ----------------
+        # If a streaming card is still open for this chat (e.g. fallback path
+        # after edit failures, or CancelledError), close it so it doesn't get
+        # stuck in loading state alongside the new post/text message.
+        if self._streaming_card_enabled and self._streaming_cards.get(chat_id):
+            logger.info("[Feishu] Closing orphaned streaming card for chat=%s before post/text send", chat_id)
+            await self._close_streaming_siblings(chat_id)
+
+        # --- Existing post/text path -----------------------------------------
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
@@ -1835,11 +1971,44 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        is_turn_final: bool = True,
     ) -> SendResult:
-        """Edit a previously sent Feishu text/post message."""
+        """Edit a previously sent Feishu text/post message.
+
+        When streaming cards are active and *message_id* corresponds to a
+        card_id tracked in ``_streaming_cards``, the edit is routed through
+        the cardkit element-content API instead of the IM v1 message update.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # --- Streaming card edit path ----------------------------------------
+        card_state = self._streaming_cards.get(chat_id, {}).get(message_id)
+        if card_state is not None:
+            real_card_id = card_state.get("card_id", message_id)
+            return await self._edit_streaming_card(
+                chat_id=chat_id,
+                card_id=real_card_id,
+                content=content,
+                card_state=card_state,
+                finalize=finalize,
+                is_turn_final=is_turn_final,
+            )
+
+        # When a streaming card_id was already closed by a prior finalize call
+        # (e.g. the stream_consumer's got_done path double-finalizes), return
+        # success to prevent the caller from duplicating the response with a
+        # full send.  We only do this for known card_ids so that real IM v1
+        # edit failures for non-card messages (e.g. progress messages, fallback
+        # post/text) are not silently swallowed.
+        if finalize and message_id in self._closed_streaming_card_ids:
+            logger.info(
+                "[Feishu] Streaming card %s already closed; treating finalize as success",
+                message_id,
+            )
+            return SendResult(success=True, message_id=message_id)
+
+        # --- Existing IM v1 update path --------------------------------------
         content = self.format_message(content)
         try:
             msg_type, payload = self._build_outbound_payload(content)
@@ -1862,6 +2031,519 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    # =========================================================================
+    # Streaming card helpers (cardkit v1, schema 2.0)
+    # =========================================================================
+
+    def _transition_card_phase(self, chat_id: str, to_phase: int) -> bool:
+        """Attempt a phase transition for *chat_id*'s streaming card.
+
+        Returns True on success, False if the transition is invalid.
+        """
+        current = self._card_phases.get(chat_id, _CardPhase.IDLE)
+        allowed = _PHASE_TRANSITIONS.get(current, set())
+        if to_phase not in allowed:
+            logger.warning(
+                "[Feishu] Invalid card phase transition: %s -> %s (chat=%s)",
+                current, to_phase, chat_id,
+            )
+            return False
+        self._card_phases[chat_id] = to_phase
+        return True
+
+    def _card_phase(self, chat_id: str) -> int:
+        return self._card_phases.get(chat_id, _CardPhase.IDLE)
+
+    def _is_card_expired(self, chat_id: str) -> bool:
+        """Check if the active streaming card has exceeded TTL."""
+        cards = self._streaming_cards.get(chat_id)
+        if not cards:
+            return False
+        for card_state in cards.values():
+            created_at = card_state.get("created_at", 0)
+            if created_at and (time.monotonic() - created_at) > _STREAM_CARD_TTL_SECONDS:
+                return True
+        return False
+
+    @staticmethod
+    def _build_streaming_card_json(
+        initial_content: str = "",
+        *,
+        bot_name: str = "Hermes",
+    ) -> str:
+        """Build a cardkit v1 schema-2.0 JSON string with streaming enabled.
+
+        The ``summary.content`` is populated from the first ~60 characters of
+        *initial_content* so that the Feishu conversation list shows a
+        meaningful preview instead of the default ``[生成中...]``.
+        """
+        # Strip markdown formatting for the chat-list preview.
+        preview_text = _strip_markdown_to_plain_text(initial_content).strip()
+        preview_text = preview_text.replace("\n", " ")[:60].strip()
+
+        _display_name = bot_name or "Hermes"
+
+        card: Dict[str, Any] = {
+            "schema": "2.0",
+            "header": {
+                "title": {
+                    "tag": "lark_md",
+                    "content": f"\U0001f916 {_display_name}",
+                },
+                "subtitle": {
+                    "tag": "plain_text",
+                    "content": "正在思考...",
+                },
+                "text_tag_list": [
+                    {
+                        "tag": "text_tag",
+                        "text": {"tag": "plain_text", "content": "AI"},
+                        "color": "wathet",
+                    },
+                    {
+                        "tag": "text_tag",
+                        "text": {"tag": "plain_text", "content": "生成中"},
+                        "color": "wathet",
+                    },
+                ],
+                "template": "wathet",
+                "ud_icon": {
+                    "token": "larkcommunity_colorful",
+                    "style": {"color": "wathet"},
+                },
+            },
+            "config": {
+                "streaming_mode": True,
+                "summary": {"content": preview_text},
+                "streaming_config": {
+                    "print_frequency_ms": {"default": 70},
+                    "print_step": {"default": 1},
+                    "print_strategy": "fast",
+                },
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": initial_content,
+                        "element_id": "markdown_1",
+                    }
+                ]
+            },
+        }
+        return json.dumps(card, ensure_ascii=False)
+
+    async def _send_streaming_card(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SendResult]:
+        """Create a streaming card, send it, and write initial content.
+
+        Returns a SendResult on success, or None to signal the caller should
+        fall back to the post/text path.
+        """
+        if not self._client or not HAS_CARDKIT:
+            return None
+        try:
+            # --- TTL rotation: close expired card and create fresh one ---
+            if self._is_card_expired(chat_id):
+                logger.info("[Feishu] Streaming card TTL expired for chat=%s, rotating", chat_id)
+                old_msg_id = None
+                old_cards = self._streaming_cards.get(chat_id)
+                if old_cards:
+                    for cs in old_cards.values():
+                        old_msg_id = cs.get("message_id")
+                        break
+                await self._close_streaming_siblings(chat_id)
+                # New card replies to old card's message for threading continuity
+                if old_msg_id and not reply_to:
+                    reply_to = old_msg_id
+
+            # --- Card reuse: if this chat already has an active streaming
+            # card, update it in-place instead of closing + recreating.
+            # This handles the tool-boundary case where stream_consumer
+            # resets _message_id to None (got_segment_break), causing
+            # send() to be called again within the same turn.
+            existing = self._streaming_cards.get(chat_id)
+            if existing:
+                _, card_state = next(iter(existing.items()))
+                real_card_id = card_state.get("card_id", next(iter(existing)))
+                result = await self._edit_streaming_card(
+                    chat_id=chat_id,
+                    card_id=real_card_id,
+                    content=content,
+                    card_state=card_state,
+                    finalize=False,
+                )
+                if result.success:
+                    # Reset created_at so elapsed time reflects the current
+                    # segment, not the card's original creation time.
+                    card_state["created_at"] = time.monotonic()
+                    logger.info(
+                        "[Feishu] Reused existing streaming card: card_id=%s seq=%s",
+                        real_card_id, card_state.get("sequence"),
+                    )
+                    return result
+                # Edit failed — close the stale card before creating new one.
+                logger.warning("[Feishu] Streaming card reuse edit failed; creating new card")
+                await self._close_streaming_siblings(chat_id)
+
+            if not self._transition_card_phase(chat_id, _CardPhase.CREATING):
+                logger.warning("[Feishu] Cannot create card: invalid phase %s", self._card_phase(chat_id))
+                return None
+
+            formatted = self.format_message(content)
+            truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
+            card_json = self._build_streaming_card_json(truncated, bot_name=self._bot_name)
+
+            # Step 1: Create card entity via cardkit v1
+            create_body = CreateCardRequestBody.builder() \
+                .type("card_json") \
+                .data(card_json) \
+                .build()
+            create_request = CreateCardRequest.builder() \
+                .request_body(create_body) \
+                .build()
+            create_response = await asyncio.to_thread(
+                self._client.cardkit.v1.card.create, create_request,
+            )
+            if not self._response_succeeded(create_response):
+                logger.warning(
+                    "[Feishu] cardkit create failed: %s",
+                    getattr(create_response, "msg", "unknown"),
+                )
+                self._transition_card_phase(chat_id, _CardPhase.IDLE)
+                return None
+
+            card_id = self._extract_response_field(create_response, "card_id")
+            if not card_id:
+                logger.warning("[Feishu] cardkit create returned no card_id")
+                self._transition_card_phase(chat_id, _CardPhase.IDLE)
+                return None
+
+            # Step 2: Send interactive message referencing the card entity.
+            interactive_content = json.dumps(
+                {"type": "card", "data": {"card_id": card_id}},
+                ensure_ascii=False,
+            )
+            msg_response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=interactive_content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            if not self._response_succeeded(msg_response):
+                logger.warning(
+                    "[Feishu] Interactive card message send failed: %s",
+                    getattr(msg_response, "msg", "unknown"),
+                )
+                self._transition_card_phase(chat_id, _CardPhase.IDLE)
+                return None
+
+            # Track streaming state (sequence starts at 1 — the initial
+            # content was already baked into the card JSON).
+            im_message_id = self._extract_response_field(msg_response, "message_id")
+            card_state = {
+                "card_id": card_id,
+                "sequence": 1,
+                "message_id": im_message_id,
+                "last_content": truncated,
+                "created_at": time.monotonic(),
+            }
+            cards_dict = self._streaming_cards.setdefault(chat_id, {})
+            cards_dict[card_id] = card_state
+            # Also index by IM message_id so edit_message can find the card
+            # when stream_consumer passes the IM message_id back.
+            if im_message_id and im_message_id != card_id:
+                cards_dict[im_message_id] = card_state
+            self._transition_card_phase(chat_id, _CardPhase.STREAMING)
+
+            logger.info("[Feishu] Streaming card created: card_id=%s msg_id=%s", card_id, im_message_id)
+            return SendResult(success=True, message_id=im_message_id or card_id)
+
+        except Exception as exc:
+            self._transition_card_phase(chat_id, _CardPhase.IDLE)
+            logger.warning(
+                "[Feishu] Streaming card send failed: %s", exc, exc_info=True,
+            )
+            return None
+
+    async def _edit_streaming_card(
+        self,
+        *,
+        chat_id: str,
+        card_id: str,
+        content: str,
+        card_state: Dict[str, Any],
+        finalize: bool = False,
+        is_turn_final: bool = True,
+    ) -> SendResult:
+        """Push updated text content to a streaming card element.
+
+        Uses the cardkit v1 element-content API with an incrementing sequence
+        number.  On ``finalize=True AND is_turn_final=True`` the streaming
+        mode is closed.  Segment-break finalizes (tool boundaries) keep the
+        card open for reuse by the next segment.
+        """
+        if not HAS_CARDKIT:
+            return SendResult(success=False, error="cardkit SDK not available")
+        try:
+            formatted = self.format_message(content)
+            truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
+            sequence = card_state.get("sequence", 0) + 1
+
+            body = ContentCardElementRequestBody.builder() \
+                .content(truncated) \
+                .sequence(sequence) \
+                .uuid(str(uuid.uuid4())) \
+                .build()
+            request = ContentCardElementRequest.builder() \
+                .card_id(card_id) \
+                .element_id("markdown_1") \
+                .request_body(body) \
+                .build()
+            response = await asyncio.to_thread(
+                self._client.cardkit.v1.card_element.content, request,
+            )
+            if not self._response_succeeded(response):
+                logger.warning(
+                    "[Feishu] Streaming card content update failed: %s",
+                    getattr(response, "msg", "unknown"),
+                )
+                return SendResult(success=False, error="card content update failed")
+
+            # Update tracked sequence and last content
+            card_state["sequence"] = sequence
+            card_state["last_content"] = truncated
+
+            if finalize and is_turn_final:
+                await self._close_streaming_card(chat_id, card_id, card_state=card_state)
+
+            return SendResult(success=True, message_id=card_id)
+
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] Streaming card edit failed: %s", exc, exc_info=True,
+            )
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_finalized_header_json(
+        *,
+        bot_name: str = "Hermes",
+        status: str = "completed",
+        error_summary: str = "",
+        last_content: str = "",
+    ) -> str:
+        """Build a card JSON with status-appropriate header for post-stream update."""
+        _display_name = bot_name or "Hermes"
+        if status == "error":
+            template = "grey"
+            icon_color = "grey"
+            tags = [
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "AI"}, "color": "grey"},
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "错误"}, "color": "grey"},
+            ]
+            subtitle = {"tag": "plain_text", "content": error_summary[:80]} if error_summary else None
+        elif status == "aborted":
+            template = "grey"
+            icon_color = "grey"
+            tags = [
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "AI"}, "color": "grey"},
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "已中止"}, "color": "grey"},
+            ]
+            subtitle = None
+        else:
+            template = "blue"
+            icon_color = "blue"
+            tags = [
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "AI"}, "color": "blue"},
+            ]
+            subtitle = None
+
+        header: Dict[str, Any] = {
+            "title": {"tag": "lark_md", "content": f"\U0001f916 {_display_name}"},
+            "text_tag_list": tags,
+            "template": template,
+            "ud_icon": {"token": "larkcommunity_colorful", "style": {"color": icon_color}},
+            # Always include subtitle — explicitly clears the "正在思考..."
+            # placeholder from the streaming header.  Omitting the field
+            # causes the Feishu PUT to preserve the old subtitle value.
+            "subtitle": subtitle if subtitle else {"tag": "plain_text", "content": ""},
+        }
+
+        elements: list = [
+            {
+                "tag": "markdown",
+                "content": last_content,
+                "element_id": "markdown_1",
+            }
+        ]
+
+        card: Dict[str, Any] = {
+            "schema": "2.0",
+            "header": header,
+            "config": {"streaming_mode": False},
+            "body": {"elements": elements},
+        }
+        return json.dumps(card, ensure_ascii=False)
+
+    async def _update_card_header(
+        self,
+        card_id: str,
+        card_state: Dict[str, Any],
+        *,
+        bot_name: str = "Hermes",
+        status: str = "completed",
+        error_summary: str = "",
+    ) -> None:
+        """Update the streaming card header to reflect completion/error status."""
+        if not HAS_CARDKIT:
+            return
+        try:
+            seq = card_state.get("sequence", 0) + 1
+            card_json = self._build_finalized_header_json(
+                bot_name=bot_name, status=status, error_summary=error_summary,
+                last_content=card_state.get("last_content", ""),
+            )
+            card_obj = CardKitCard.builder() \
+                .type("card_json") \
+                .data(card_json) \
+                .build()
+            body = UpdateCardRequestBody.builder() \
+                .card(card_obj) \
+                .sequence(seq) \
+                .uuid(str(uuid.uuid4())) \
+                .build()
+            request = UpdateCardRequest.builder() \
+                .card_id(card_id) \
+                .request_body(body) \
+                .build()
+            await asyncio.to_thread(
+                self._client.cardkit.v1.card.update, request,
+            )
+            card_state["sequence"] = seq
+        except Exception as exc:
+            logger.warning("[Feishu] Card header update failed (non-fatal): %s", exc)
+
+    async def _close_streaming_card(
+        self,
+        chat_id: str,
+        card_id: str,
+        *,
+        card_state: Optional[Dict[str, Any]] = None,
+        status: str = "completed",
+        error_summary: str = "",
+    ) -> None:
+        """Close a card's streaming mode and update header, then remove from tracking.
+
+        *card_state* can be passed directly when the caller has already
+        popped the cards dict from ``_streaming_cards`` (e.g.
+        ``_close_streaming_siblings``).  When omitted the state is read
+        from ``self._streaming_cards``.
+        """
+        if HAS_CARDKIT:
+            server_closed = False
+            try:
+                if card_state is None:
+                    card_state = self._streaming_cards.get(chat_id, {}).get(card_id, {})
+
+                # Step 1: Close streaming mode FIRST (settings API).
+                # This freezes the card body so no more element-content
+                # updates can race with the header update below.
+                seq = card_state.get("sequence", 0) + 1
+                config = Config.builder() \
+                    .streaming_mode(False) \
+                    .build()
+                settings = Settings.builder() \
+                    .config(config) \
+                    .build()
+                settings_body = SettingsCardRequestBody.builder() \
+                    .settings(settings) \
+                    .sequence(seq) \
+                    .uuid(str(uuid.uuid4())) \
+                    .build()
+                settings_request = SettingsCardRequest.builder() \
+                    .card_id(card_id) \
+                    .request_body(settings_body) \
+                    .build()
+                await asyncio.to_thread(
+                    self._client.cardkit.v1.card.settings, settings_request,
+                )
+                card_state["sequence"] = seq
+                server_closed = True
+
+                # Step 2: Update header (card.update PUT).
+                last_content = card_state.get("last_content", "")
+                if last_content:
+                    try:
+                        await self._update_card_header(
+                            card_id, card_state,
+                            bot_name=self._bot_name, status=status,
+                            error_summary=error_summary,
+                        )
+                    except Exception as hdr_exc:
+                        logger.warning(
+                            "[Feishu] Card header update failed after close (non-fatal): %s", hdr_exc,
+                        )
+                else:
+                    logger.debug(
+                        "[Feishu] Skipping header update for card %s: no last_content",
+                        card_id,
+                    )
+            except Exception as exc:
+                if not server_closed:
+                    logger.warning(
+                        "[Feishu] Streaming card close failed (server card may stay in streaming mode): %s", exc,
+                    )
+                else:
+                    logger.warning("[Feishu] Streaming card close failed: %s", exc)
+        # Remove from tracking and record as closed
+        im_msg_id = card_state.get("message_id") if card_state else None
+        chat_cards = self._streaming_cards.get(chat_id)
+        if chat_cards:
+            # Remove both the card_id key and the IM message_id alias.
+            chat_cards.pop(card_id, None)
+            if im_msg_id and im_msg_id != card_id:
+                chat_cards.pop(im_msg_id, None)
+            if not chat_cards:
+                self._streaming_cards.pop(chat_id, None)
+        self._closed_streaming_card_ids[card_id] = None
+        if im_msg_id and im_msg_id != card_id:
+            self._closed_streaming_card_ids[im_msg_id] = None
+        while len(self._closed_streaming_card_ids) > _FEISHU_CLOSED_CARD_CACHE_SIZE:
+            self._closed_streaming_card_ids.popitem(last=False)
+        # Reset to IDLE so the next turn can create a new card.
+        prev = self._card_phases.get(chat_id, _CardPhase.IDLE)
+        self._card_phases[chat_id] = _CardPhase.IDLE
+        if prev != _CardPhase.IDLE:
+            logger.debug("[Feishu] Phase %s -> IDLE for card close (chat=%s)", prev, chat_id)
+
+    async def _close_streaming_siblings(self, chat_id: str) -> None:
+        """Finalize all open streaming cards for *chat_id*.
+
+        Called before creating a new card so that tool-progress or commentary
+        cards don't linger in streaming state.
+        """
+        cards = self._streaming_cards.pop(chat_id, None)
+        if not cards:
+            return
+        # Dedup: multiple keys (card_id + IM message_id) may point to the
+        # same card_state object.  Close each unique card_state once.
+        seen_states = set()
+        for key, card_state in cards.items():
+            state_id = id(card_state)
+            if state_id in seen_states:
+                continue
+            seen_states.add(state_id)
+            real_card_id = card_state.get("card_id", key)
+            await self._close_streaming_card(chat_id, real_card_id, card_state=card_state)
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

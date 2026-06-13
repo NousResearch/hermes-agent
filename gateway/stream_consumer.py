@@ -172,6 +172,18 @@ class GatewayStreamConsumer:
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
 
+        # Cache adapter edit_message signature so we don't call
+        # inspect.signature on every edit (~14/sec during streaming).
+        try:
+            sig = inspect.signature(self.adapter.edit_message)
+            self._edit_params = sig.parameters
+            self._edit_has_var_keyword = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in self._edit_params.values()
+            )
+        except (TypeError, ValueError):
+            self._edit_params = {}
+            self._edit_has_var_keyword = False
+
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
@@ -217,6 +229,7 @@ class GatewayStreamConsumer:
         message_id: str,
         content: str,
         finalize: bool = False,
+        is_turn_final: bool = True,
     ):
         """Edit via the adapter, passing routing metadata when supported."""
         kwargs = {
@@ -228,16 +241,11 @@ class GatewayStreamConsumer:
         # must accept finalize= even when it is False (guarded by tests).
         kwargs["finalize"] = finalize
 
-        if self.metadata:
-            try:
-                params = inspect.signature(self.adapter.edit_message).parameters
-                if "metadata" in params or any(
-                    param.kind is inspect.Parameter.VAR_KEYWORD
-                    for param in params.values()
-                ):
-                    kwargs["metadata"] = self.metadata
-            except (TypeError, ValueError):
-                pass
+        # Only pass is_turn_final / metadata to adapters that accept them.
+        if self._edit_has_var_keyword or "is_turn_final" in self._edit_params:
+            kwargs["is_turn_final"] = is_turn_final
+        if self.metadata and (self._edit_has_var_keyword or "metadata" in self._edit_params):
+            kwargs["metadata"] = self.metadata
         return await self.adapter.edit_message(**kwargs)
 
     def on_segment_break(self) -> None:
@@ -728,6 +736,11 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
+            # NOTE: Do NOT set streaming_card=True here.  Overflow split
+            # chunks each go through send() independently; if the Feishu
+            # streaming-card reuse path fires, it replaces (not appends)
+            # the card's markdown element, causing all but the last chunk
+            # to be lost.  Overflow chunks should use plain post/text.
             meta = dict(self.metadata) if self.metadata else {}
             result = await self.adapter.send(
                 chat_id=self.chat_id,
@@ -1280,6 +1293,7 @@ class GatewayStreamConsumer:
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,
+                        is_turn_final=is_turn_final,
                     )
                     if result.success:
                         self._already_sent = True
@@ -1401,11 +1415,14 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
+                meta = dict(self.metadata) if self.metadata else {}
+                if self._adapter_requires_finalize:
+                    meta["streaming_card"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,
-                    metadata=self.metadata,
+                    metadata=meta,
                 )
                 if result.success:
                     if result.message_id:

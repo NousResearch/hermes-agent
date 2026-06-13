@@ -103,7 +103,9 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Test")
 
         call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == metadata
+        assert call_kwargs["metadata"]["thread_id"] == "omt_topic789"
+        # streaming_card is only injected when adapter has REQUIRES_EDIT_FINALIZE
+        assert "streaming_card" not in call_kwargs["metadata"]
 
 
 class TestOverflowFirstMessage:

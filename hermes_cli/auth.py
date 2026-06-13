@@ -3524,6 +3524,22 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         _save_auth_store(auth_store)
 
 
+def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
+    """Adopt a valid Codex CLI token pair into Hermes auth, if available."""
+    imported = _import_codex_cli_tokens()
+    # Require BOTH tokens before adopting: persisting a payload without a
+    # usable refresh_token would only break the next refresh cycle.
+    if not (
+        imported
+        and str(imported.get("access_token", "") or "").strip()
+        and str(imported.get("refresh_token", "") or "").strip()
+    ):
+        return None
+    logger.info("Codex auth recovered from Codex CLI auth.json (%s).", reason)
+    _save_codex_tokens(imported)
+    return dict(imported)
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -3681,21 +3697,12 @@ def _refresh_codex_auth_tokens(
         # we never self-heal those and re-raise unchanged.
         if not getattr(exc, "relogin_required", False):
             raise
-        imported = _import_codex_cli_tokens()
-        # Require BOTH tokens before adopting: persisting a payload without a
-        # usable refresh_token would only break the next refresh cycle.
-        if not (
-            imported
-            and str(imported.get("access_token", "") or "").strip()
-            and str(imported.get("refresh_token", "") or "").strip()
-        ):
-            raise
-        logger.info(
-            "Codex refresh_token rejected (%s); recovered from Codex CLI auth.json.",
-            getattr(exc, "code", None) or "auth_error",
+        imported = _recover_codex_tokens_from_cli(
+            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}"
         )
-        _save_codex_tokens(imported)
-        return dict(imported)
+        if not imported:
+            raise
+        return imported
 
     updated_tokens = dict(tokens)
     updated_tokens["access_token"] = refreshed["access_token"]
@@ -3756,9 +3763,25 @@ def resolve_codex_runtime_credentials(
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()
-    except AuthError:
+    except AuthError as exc:
+        read_error = exc
+        if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
+            "codex_auth_missing_access_token",
+            "codex_auth_missing_refresh_token",
+            "codex_auth_invalid_shape",
+        }:
+            imported = _recover_codex_tokens_from_cli(str(getattr(exc, "code", None) or "auth_error"))
+            if imported:
+                data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
+            else:
+                data = None
+        else:
+            data = None
+
+    if data is None:
         pool_token = _pool_codex_access_token()
         if pool_token:
             base_url = (
@@ -3773,7 +3796,14 @@ def resolve_codex_runtime_credentials(
                 "last_refresh": None,
                 "auth_mode": "chatgpt",
             }
-        raise
+        if read_error is not None:
+            raise read_error
+        raise AuthError(
+            "No Codex credentials stored. Run `hermes auth` to authenticate.",
+            provider="openai-codex",
+            code="codex_auth_missing",
+            relogin_required=True,
+        )
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()

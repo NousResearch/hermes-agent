@@ -58,7 +58,11 @@ export function storedStringArray(key: string): string[] {
 
 export function persistStringArray(key: string, value: string[]) {
   try {
-    window.localStorage.setItem(key, JSON.stringify(value))
+    if (value.length === 0) {
+      window.localStorage.removeItem(key)
+    } else {
+      window.localStorage.setItem(key, JSON.stringify(value))
+    }
   } catch {
     // Pins are a local preference; restricted storage should not break chat.
   }

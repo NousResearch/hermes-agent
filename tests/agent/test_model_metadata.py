@@ -1367,6 +1367,41 @@ class TestContextLengthCache:
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
 
+    def test_write_failure_leaves_existing_cache_intact(self, tmp_path, monkeypatch):
+        """An interrupted write must not corrupt or wipe the existing cache.
+
+        The old non-atomic ``open(path, "w")`` truncated the file before
+        dumping, so a crash/kill mid-write left empty or partial YAML — and
+        the next load swallowed the error and returned ``{}``, silently
+        wiping EVERY persisted context length. The atomic temp-file +
+        ``os.replace`` write leaves the previous file byte-for-byte intact
+        when the swap fails.
+        """
+        import utils
+        import agent.model_metadata as mm
+
+        cache_file = tmp_path / "cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        # Seed a valid, populated cache.
+        save_context_length("model-a", "http://a", 64000)
+        original_bytes = cache_file.read_bytes()
+
+        # Simulate a crash during the atomic swap step.
+        def _boom(*_args, **_kwargs):
+            raise OSError("simulated crash during atomic replace")
+
+        monkeypatch.setattr(utils, "atomic_replace", _boom)
+
+        # save_context_length is best-effort and swallows the error.
+        save_context_length("model-b", "http://b", 128000)
+
+        # Original file survives untouched — not truncated or emptied.
+        assert cache_file.read_bytes() == original_bytes
+        assert get_cached_context_length("model-a", "http://a") == 64000
+        # The failed write must not leave a stray temp file behind.
+        assert list(cache_file.parent.glob(".cache_*.tmp")) == []
+
 
 class TestGrok43StaleCacheGuard:
     """Pre-catalog builds resolved grok-4.3 via the generic 'grok-4' catch-all

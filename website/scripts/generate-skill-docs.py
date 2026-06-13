@@ -224,19 +224,33 @@ def mdx_escape_body(body: str) -> str:
 
 
 def rewrite_relative_links(body: str, meta: dict[str, Any]) -> str:
-    """Rewrite references/foo.md style links in the SKILL.md body.
+    """Rewrite links in the generated SKILL.md body.
 
-    The source SKILL.md lives in `skills/<...>` and references sibling files
-    with paths like `references/foo.md` or `./templates/bar.md`. Those files
-    are NOT copied into docs/, so we rewrite these to absolute GitHub URLs
-    pointing to the file in the repo.
+    Source-relative links like `references/foo.md` point back to GitHub because
+    supporting files are not copied into docs/. Absolute docs links under
+    `/docs/user-guide/skills/...` are rewritten to relative links so localized
+    builds do not resolve them as `/docs/<locale>/docs/...`.
     """
     source_dir = "skills" if meta["source_kind"] == "bundled" else "optional-skills"
     base = f"https://github.com/NousResearch/hermes-agent/blob/main/{source_dir}/{meta['rel_path']}"
 
+    def skill_docs_href(source_kind: str, target_id: str) -> str:
+        if source_kind == meta["source_kind"]:
+            return f"./{target_id}"
+        return f"../{source_kind}/{target_id}"
+
     def sub_link(m: re.Match) -> str:
         text = m.group(1)
         url = m.group(2).strip()
+
+        skill_match = re.match(
+            r"^/docs/user-guide/skills/(bundled|optional)/(?:[^/)]+/)?([^/#)]+)(.*)$",
+            url,
+        )
+        if skill_match:
+            target_source, target_id, suffix = skill_match.groups()
+            return f"[{text}]({skill_docs_href(target_source, target_id)}{suffix})"
+
         # Skip URLs that already start with a scheme or //
         if re.match(r"^[a-z]+://", url) or url.startswith("#") or url.startswith("/"):
             return m.group(0)
@@ -312,17 +326,12 @@ def page_id(meta: dict[str, Any]) -> str:
 
 
 def page_output_path(meta: dict[str, Any]) -> Path:
-    return (
-        SKILLS_PAGES
-        / meta["source_kind"]
-        / meta["category"]
-        / f"{page_id(meta)}.md"
-    )
+    return SKILLS_PAGES / meta["source_kind"] / f"{page_id(meta)}.md"
 
 
 def sidebar_doc_id(meta: dict[str, Any]) -> str:
     """Docusaurus sidebar id, relative to docs/."""
-    return f"user-guide/skills/{meta['source_kind']}/{meta['category']}/{page_id(meta)}"
+    return f"user-guide/skills/{meta['source_kind']}/{page_id(meta)}"
 
 
 def render_skill_page(
@@ -395,10 +404,10 @@ def render_skill_page(
             if skill_index is not None:
                 target_meta = skill_index.get(r)
             if target_meta is not None:
-                href = (
-                    f"/docs/user-guide/skills/{target_meta['source_kind']}"
-                    f"/{target_meta['category']}/{page_id(target_meta)}"
-                )
+                if target_meta["source_kind"] == meta["source_kind"]:
+                    href = f"./{page_id(target_meta)}"
+                else:
+                    href = f"../{target_meta['source_kind']}/{page_id(target_meta)}"
                 link_parts.append(f"[`{r}`]({href})")
             else:
                 link_parts.append(f"`{r}`")
@@ -459,7 +468,11 @@ def discover_skills() -> list[tuple[dict[str, Any], dict[str, Any]]]:
     return results
 
 
-def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+def build_catalog_md_bundled(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]],
+    sidebar_position: int = 5,
+    link_context: str = "reference",
+) -> str:
     by_cat: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
     for meta, parsed in entries:
         if meta["source_kind"] != "bundled":
@@ -470,7 +483,7 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
 
     lines = [
         "---",
-        "sidebar_position: 5",
+        f"sidebar_position: {sidebar_position}",
         'title: "Bundled Skills Catalog"',
         'description: "Catalog of bundled skills that ship with Hermes Agent"',
         "---",
@@ -495,7 +508,11 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
             desc = (fm.get("description") or "").strip()
             if len(desc) > 240:
                 desc = desc[:237].rstrip() + "..."
-            link_target = f"/docs/user-guide/skills/bundled/{meta['category']}/{page_id(meta)}"
+            link_target = (
+                f"./{page_id(meta)}"
+                if link_context == "skill-index"
+                else f"../user-guide/skills/bundled/{page_id(meta)}"
+            )
             path = f"`{meta['rel_path']}`"
             desc_esc = mdx_escape_body(desc).replace("|", "\\|").replace("\n", " ")
             lines.append(
@@ -505,7 +522,11 @@ def build_catalog_md_bundled(entries: list[tuple[dict[str, Any], dict[str, Any]]
     return "\n".join(lines).rstrip() + "\n"
 
 
-def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]]]) -> str:
+def build_catalog_md_optional(
+    entries: list[tuple[dict[str, Any], dict[str, Any]]],
+    sidebar_position: int = 9,
+    link_context: str = "reference",
+) -> str:
     by_cat: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = defaultdict(list)
     for meta, parsed in entries:
         if meta["source_kind"] != "optional":
@@ -516,7 +537,7 @@ def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]
 
     lines = [
         "---",
-        "sidebar_position: 9",
+        f"sidebar_position: {sidebar_position}",
         'title: "Optional Skills Catalog"',
         'description: "Official optional skills shipped with hermes-agent — install via hermes skills install official/<category>/<skill>"',
         "---",
@@ -556,7 +577,11 @@ def build_catalog_md_optional(entries: list[tuple[dict[str, Any], dict[str, Any]
             desc = (fm.get("description") or "").strip()
             if len(desc) > 240:
                 desc = desc[:237].rstrip() + "..."
-            link_target = f"/docs/user-guide/skills/optional/{meta['category']}/{page_id(meta)}"
+            link_target = (
+                f"./{page_id(meta)}"
+                if link_context == "skill-index"
+                else f"../user-guide/skills/optional/{page_id(meta)}"
+            )
             desc_esc = mdx_escape_body(desc).replace("|", "\\|").replace("\n", " ")
             lines.append(f"| [**{name}**]({link_target}) | {desc_esc} |")
         lines.append("")
@@ -669,22 +694,9 @@ def write_sidebar(entries):
     # users land on them directly.
     tree = build_sidebar_items(entries)
 
-    skills_block: list[dict[str, Any]] = [
-        {
-            "label": "Bundled",
-            "collapsed": True,
-            "items": tree["bundled_categories"],
-        },
-        {
-            "label": "Optional",
-            "collapsed": True,
-            "items": tree["optional_categories"],
-        },
-    ]
     skills_items: list[Any] = [
-        "reference/skills-catalog",
-        "reference/optional-skills-catalog",
-        *skills_block,
+        "user-guide/skills/bundled/index",
+        "user-guide/skills/optional/index",
     ]
 
     skills_top = {
@@ -744,7 +756,21 @@ def main():
         if name not in skill_index or meta["source_kind"] == "bundled":
             skill_index[name] = meta
 
-    # Write per-skill pages
+    # Write per-skill pages. Clear previously generated category-subdirectory
+    # layouts so moved/deleted skills do not leave stale docs behind.
+    for source_kind in ("bundled", "optional"):
+        source_out = SKILLS_PAGES / source_kind
+        if source_out.exists():
+            for stale in source_out.rglob("*.md"):
+                stale.unlink()
+            for stale_dir in sorted(
+                [p for p in source_out.rglob("*") if p.is_dir()], reverse=True
+            ):
+                try:
+                    stale_dir.rmdir()
+                except OSError:
+                    pass
+
     written = 0
     for meta, parsed in entries:
         out_path = page_output_path(meta)
@@ -761,9 +787,21 @@ def main():
     (DOCS / "reference" / "skills-catalog.md").write_text(bundled_catalog, encoding="utf-8")
     print("Updated reference/skills-catalog.md")
 
+    bundled_index = build_catalog_md_bundled(
+        entries, sidebar_position=1, link_context="skill-index"
+    )
+    (SKILLS_PAGES / "bundled" / "index.md").write_text(bundled_index, encoding="utf-8")
+    print("Updated user-guide/skills/bundled/index.md")
+
     optional_catalog = build_catalog_md_optional(entries)
     (DOCS / "reference" / "optional-skills-catalog.md").write_text(optional_catalog, encoding="utf-8")
     print("Updated reference/optional-skills-catalog.md")
+
+    optional_index = build_catalog_md_optional(
+        entries, sidebar_position=2, link_context="skill-index"
+    )
+    (SKILLS_PAGES / "optional" / "index.md").write_text(optional_index, encoding="utf-8")
+    print("Updated user-guide/skills/optional/index.md")
 
     # Update sidebar
     write_sidebar(entries)

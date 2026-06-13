@@ -12,7 +12,7 @@ Hermes can receive and reply to emails using standard IMAP and SMTP protocols. S
 This page covers the Email gateway adapter, which uses Python's built-in `imaplib`, `smtplib`, and `email` modules. No additional packages or external services are required for this gateway path.
 :::
 
-This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills/bundled/email/email-himalaya), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
+This is separate from the bundled [Himalaya email skill](/docs/user-guide/skills/bundled/email-himalaya), which lets the agent manage email through terminal commands and requires the external `himalaya` CLI plus a Himalaya config file.
 
 | Use case | What to configure | External dependency |
 |---|---|---|

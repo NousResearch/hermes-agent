@@ -1,8 +1,10 @@
 """Tests for Bug #12905 fixes in agent/anthropic_adapter.py — macOS Keychain support."""
 
 import json
+import platform
 from unittest.mock import patch, MagicMock
 
+import pytest
 
 from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,

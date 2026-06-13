@@ -25,8 +25,6 @@ VALID = {
     "read_file",
     "write_file",
     "terminal",
-    "execute_code",
-    "session_search",
 }
 
 
@@ -117,72 +115,3 @@ class TestEdgeCases:
     def test_very_long_name_does_not_match_by_accident(self, repair):
         # Fuzzy match should not claim a tool for something obviously unrelated.
         assert repair("ThisIsNotRemotelyARealToolName_tool") is None
-
-
-class TestVolcEngineXmlPollution:
-    """Regression coverage for #33007 — VolcEngine ``api/plan`` endpoint
-    leaks raw XML attribute fragments into ``tool_use.name``.
-
-    Observed in production with the ``anthropic_messages`` API mode:
-
-        terminal" parameter="command" string="true
-        execute_code" parameter="code" string="true
-        session_search" parameter="session_id" string="true
-
-    The fix trims at the first ``"``/``'``/``<``/``>`` so the rest of
-    the repair pipeline can resolve the cleaned name to a real tool.
-    """
-
-    def test_terminal_with_xml_attribute_pollution(self, repair):
-        # Exact pattern from the bug report (terminal call).
-        polluted = 'terminal" parameter="command" string="true'
-        assert repair(polluted) == "terminal"
-
-    def test_execute_code_with_xml_attribute_pollution(self, repair):
-        polluted = 'execute_code" parameter="code" string="true'
-        assert repair(polluted) == "execute_code"
-
-    def test_session_search_with_xml_attribute_pollution(self, repair):
-        polluted = 'session_search" parameter="session_id" string="true'
-        assert repair(polluted) == "session_search"
-
-    def test_camel_case_tool_with_xml_pollution(self, repair):
-        # If the polluted prefix is CamelCase / suffixed, the rest of
-        # the pipeline (CamelCase -> snake_case, _tool strip) still runs.
-        polluted = 'BrowserClick_tool" parameter="selector" string="true'
-        assert repair(polluted) == "browser_click"
-
-    def test_tool_name_with_trailing_quote_only(self, repair):
-        # Minimal leak — just a stray trailing quote, no full attribute.
-        assert repair('terminal"') == "terminal"
-
-    def test_tool_name_with_angle_bracket_pollution(self, repair):
-        # Defensive — same root cause, raw '<' bleeding through.
-        assert repair("terminal<parameter=command") == "terminal"
-
-    def test_tool_name_with_single_quote_pollution(self, repair):
-        # Defensive — same root cause, single-quoted attribute style.
-        assert repair("terminal' parameter='command' string='true") == "terminal"
-
-    def test_clean_tool_name_unaffected_by_sanitizer(self, repair):
-        # Pure passthrough — no XML/quote chars, no change.
-        assert repair("execute_code") == "execute_code"
-        assert repair("session_search") == "session_search"
-
-    def test_space_separated_name_still_normalizes(self, repair):
-        # Critical: the XML strip must NOT consume whitespace, or the
-        # legitimate ``"write file" -> write_file`` repair path breaks.
-        assert repair("write file") == "write_file"
-
-    def test_pollution_with_unknown_tool_root_still_fails(self, repair):
-        # Sanitizer must not mask invalid tool names by laundering them
-        # through the cleaner.
-        polluted = 'no_such_tool" parameter="x" string="true'
-        assert repair(polluted) is None
-
-    def test_leading_quote_falls_through_to_fuzzy_match(self, repair):
-        # Sanitizer only trims when the XML char is at idx > 0 — a
-        # name that *starts* with a quote is left untouched so the
-        # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
-        # recover the obvious target.
-        assert repair('"terminal"') == "terminal"

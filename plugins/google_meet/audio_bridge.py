@@ -86,7 +86,6 @@ class AudioBridge:
                         ["pactl", "unload-module", str(mod_id)],
                         check=False,
                         capture_output=True,
-                        stdin=subprocess.DEVNULL,
                     )
                 except Exception:
                     # Best-effort teardown — never raise from here.
@@ -112,7 +111,6 @@ class AudioBridge:
                 check=True,
                 capture_output=True,
                 text=True,
-                stdin=subprocess.DEVNULL,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -137,7 +135,6 @@ class AudioBridge:
                 check=True,
                 capture_output=True,
                 text=True,
-                stdin=subprocess.DEVNULL,
             )
         except subprocess.CalledProcessError as exc:
             # Roll back the null-sink we just created so we don't leak it.
@@ -145,7 +142,6 @@ class AudioBridge:
                 ["pactl", "unload-module", str(sink_mod_id)],
                 check=False,
                 capture_output=True,
-                stdin=subprocess.DEVNULL,
             )
             raise RuntimeError(
                 f"pactl load-module virtual-source failed: {exc.stderr or exc}"

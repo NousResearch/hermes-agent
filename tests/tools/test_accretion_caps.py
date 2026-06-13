@@ -18,6 +18,7 @@ churn accumulated ~20B per session_id until the process exited.
 These tests pin the new caps + prune hooks.
 """
 
+import pytest
 
 
 class TestReadTrackerCaps:

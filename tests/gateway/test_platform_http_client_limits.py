@@ -12,6 +12,7 @@ behaviour is only observable at runtime under load.
 
 from __future__ import annotations
 
+import os
 
 import pytest
 

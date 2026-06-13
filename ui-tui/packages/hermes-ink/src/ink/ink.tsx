@@ -97,10 +97,9 @@ import {
   DBP,
   DFE,
   DISABLE_MOUSE_TRACKING,
-  enableMouseTrackingFor,
+  ENABLE_MOUSE_TRACKING,
   ENTER_ALT_SCREEN,
   EXIT_ALT_SCREEN,
-  type MouseTrackingMode,
   SHOW_CURSOR
 } from './termio/dec.js'
 import {
@@ -268,11 +267,9 @@ export default class Ink {
   // LF-induced scroll when screen.height === terminalRows) and gates
   // alt-screen-aware SIGCONT/resize/unmount handling.
   private altScreenActive = false
-  // Set alongside altScreenActive so SIGCONT resume knows which mouse
-  // tracking preset to re-enable (not all <AlternateScreen> uses want
-  // tracking, and tmux users routinely opt into the hover-free 'wheel'
-  // subset to silence prompt-row clipboard probes).
-  private altScreenMouseTracking: MouseTrackingMode = 'off'
+  // Set alongside altScreenActive so SIGCONT resume knows whether to
+  // re-enable mouse tracking (not all <AlternateScreen> uses want it).
+  private altScreenMouseTracking = false
   // True when the previous frame's screen buffer cannot be trusted for
   // blit — selection overlay mutated it, resetFramesForAltScreen()
   // replaced it with blanks, or forceRedraw() reset it to 0×0. Forces
@@ -573,11 +570,9 @@ export default class Ink {
       this.resizeSettleTimer = null
     }
 
-    // Mouse tracking — DISABLE first so we land in the exact preset state
-    // even if an external app/terminal/tmux left DEC 1003 hover asserted.
-    // DISABLE_MOUSE_TRACKING is idempotent (resets all four modes
-    // unconditionally), safe to send even when current preset is 'off'.
-    this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(this.altScreenMouseTracking))
+    if (this.altScreenMouseTracking) {
+      this.options.stdout.write(ENABLE_MOUSE_TRACKING)
+    }
 
     this.resetFramesForAltScreen()
     this.needsEraseBeforePaint = true
@@ -614,7 +609,7 @@ export default class Ink {
       // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
       DISABLE_KITTY_KEYBOARD +
         DISABLE_MODIFY_OTHER_KEYS +
-        (this.altScreenMouseTracking !== 'off' ? DISABLE_MOUSE_TRACKING : '') +
+        (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') +
         // disable mouse (no-op if off)
         (this.altScreenActive ? '' : '\x1b[?1049h') +
         // enter alt (already in alt if fullscreen)
@@ -650,11 +645,7 @@ export default class Ink {
         // clear screen (now alt if fullscreen)
         '\x1b[H' +
         // cursor home
-        // DISABLE first so external editors/tmux that left DEC 1003 hover
-        // on can't survive the handoff back — same pattern as
-        // setAltScreenMouseTracking / reenterAltScreen.
-        DISABLE_MOUSE_TRACKING +
-        enableMouseTrackingFor(this.altScreenMouseTracking) +
+        (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') +
         (this.altScreenActive ? '' : '\x1b[?1049l') +
         // exit alt (non-fullscreen only)
         '\x1b[?25l' // hide cursor (Ink manages)
@@ -1258,13 +1249,13 @@ export default class Ink {
    * the first alt-screen frame (and first main-screen frame on exit) is
    * a full redraw with no stale diff state.
    */
-  setAltScreenActive(active: boolean, mouseTracking: MouseTrackingMode = 'off'): void {
+  setAltScreenActive(active: boolean, mouseTracking = false): void {
     if (this.altScreenActive === active) {
       return
     }
 
     this.altScreenActive = active
-    this.altScreenMouseTracking = active ? mouseTracking : 'off'
+    this.altScreenMouseTracking = active && mouseTracking
 
     // Hover state is alt-screen-scoped: dispatchHover is gated on
     // altScreenActive, so once we leave the alt screen there's no path to
@@ -1278,29 +1269,25 @@ export default class Ink {
 
     if (active) {
       this.resetFramesForAltScreen()
-      this.scheduleRender()
     } else {
       this.repaint()
     }
   }
 
   /**
-   * Switch mouse tracking preset at runtime while the alt screen is
-   * active. Always issues DISABLE first so switching between subsets (e.g.
-   * 'all' → 'wheel') clears mode 1003 instead of leaving it asserted —
-   * DEC private modes have no "set this exact bitmask" form, only
-   * individual set/reset, and tmux's mouse-mode bookkeeping does honor the
-   * reset so the prompt-row "No image in clipboard" spam stops.
+   * Toggle mouse tracking at runtime while the alt screen is active.
+   * Writes the appropriate DEC reset/set sequences so the terminal
+   * (and ConPTY on Windows WSL2) reflects the change immediately.
    */
-  setAltScreenMouseTracking(mode: MouseTrackingMode): void {
-    if (this.altScreenMouseTracking === mode) {
+  setAltScreenMouseTracking(enabled: boolean): void {
+    if (this.altScreenMouseTracking === enabled) {
       return
     }
 
-    this.altScreenMouseTracking = mode
+    this.altScreenMouseTracking = enabled
 
     if (this.altScreenActive) {
-      this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(mode))
+      this.options.stdout.write(enabled ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING)
     }
   }
   get isAltScreenActive(): boolean {
@@ -1353,10 +1340,9 @@ export default class Ink {
     }
 
     // Mouse tracking — idempotent, safe to re-assert on every stdin gap.
-    // DISABLE first so we land in the exact preset state even if an
-    // external app or tmux left DEC 1003 hover asserted out from under us
-    // since the last assertion.
-    this.options.stdout.write(DISABLE_MOUSE_TRACKING + enableMouseTrackingFor(this.altScreenMouseTracking))
+    if (this.altScreenMouseTracking) {
+      this.options.stdout.write(ENABLE_MOUSE_TRACKING)
+    }
 
     // Alt-screen re-entry — destructive (ERASE_SCREEN). Only for callers that
     // have a strong signal the terminal actually dropped mode 1049.
@@ -1412,28 +1398,10 @@ export default class Ink {
    * stays true. ENTER_ALT_SCREEN is a terminal-side no-op if already in alt.
    */
   private reenterAltScreen(): void {
-    // DISABLE_MOUSE_TRACKING before enableMouseTrackingFor — same as
-    // setAltScreenMouseTracking / AlternateScreen mount / handleResize.
-    // DEC private modes have no atomic "set this bitmask" sequence, only
-    // per-mode set/reset, so for 'wheel'/'buttons' presets we must reset
-    // first to drop any lingering DEC 1003 hover from before re-entry.
     this.options.stdout.write(
-      ENTER_ALT_SCREEN +
-        ERASE_SCREEN +
-        CURSOR_HOME +
-        DISABLE_MOUSE_TRACKING +
-        enableMouseTrackingFor(this.altScreenMouseTracking)
+      ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '')
     )
     this.resetFramesForAltScreen()
-    // ERASE_SCREEN above leaves the physical alt screen blank, and
-    // resetFramesForAltScreen() seeds prev/back as blank rows×cols, so
-    // nothing on the front frame survives the re-entry. Callers
-    // (handleResume on SIGCONT, the resize self-heal, the stdin-gap
-    // re-assertion) all return early after invoking us, so without an
-    // explicit render schedule the alt screen sits blank until some
-    // unrelated state change fires the next commit. queueing one
-    // microtask matches scheduleRender's normal cadence.
-    this.scheduleRender()
   }
 
   /**
@@ -1492,7 +1460,7 @@ export default class Ink {
       return ''
     }
 
-    const text = this.getTextSelectionText()
+    const text = getSelectedText(this.selection, this.frontFrame.screen)
 
     if (text) {
       try {
@@ -1505,17 +1473,20 @@ export default class Ink {
         if (success) {
           return text
         }
-      } catch {
-        // Clipboard failed across every path — caller sees the empty
-        // return below and surfaces a hint via the slash command.
+
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error(
+            '[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
+          )
+        }
+      } catch (err) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] error:', err)
+        }
       }
     }
 
     return ''
-  }
-
-  getTextSelectionText(): string {
-    return hasSelection(this.selection) ? getSelectedText(this.selection, this.frontFrame.screen) : ''
   }
 
   /**
@@ -2336,9 +2307,7 @@ export default class Ink {
         dispatchKeyboardEvent={this.dispatchKeyboardEvent}
         exitOnCtrlC={this.options.exitOnCtrlC}
         getHyperlinkAt={this.getHyperlinkAt}
-        getSelectedText={this.getTextSelectionText}
         onClickAt={this.dispatchClick}
-        onCopySelectionNoClear={this.copySelectionNoClear}
         onCursorAdvance={this.noteExternalCursorAdvance}
         onCursorDeclaration={this.setCursorDeclaration}
         onExit={this.unmount}

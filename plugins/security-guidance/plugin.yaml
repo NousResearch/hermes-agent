@@ -1,7 +1,0 @@
-name: security-guidance
-version: "0.1.0"
-description: "Append security warnings to file-write tool results when the new content contains known-dangerous patterns (pickle.load, yaml.load, eval(, os.system, dangerouslySetInnerHTML, verify=False, ECB, XXE, GitHub Actions injection, ...). 25 regex/substring rules forked from Anthropic's claude-plugins-official under Apache-2.0. Non-blocking — the file is written and the warning rides back to the model in the next turn so it can self-correct."
-author: "Anthropic (patterns, Apache-2.0) / NousResearch (Hermes plugin port)"
-hooks:
-  - transform_tool_result
-  - pre_tool_call

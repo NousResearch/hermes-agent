@@ -216,6 +216,7 @@ def _augment_path_with_known_tools() -> None:
     if not is_windows():
         return
 
+    import shutil as _shutil
 
     local_appdata = os.environ.get("LOCALAPPDATA", "")
     if not local_appdata:

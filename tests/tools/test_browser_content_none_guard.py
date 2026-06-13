@@ -9,8 +9,9 @@ These tests verify both sites are guarded.
 """
 
 import types
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

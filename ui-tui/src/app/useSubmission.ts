@@ -220,28 +220,25 @@ export function useSubmission(opts: UseSubmissionOptions) {
   //   - 'steer'     : inject into the current turn via session.steer; falls
   //                   back to queue when steer is rejected (no agent / no
   //                   tool window).
-  //   - 'interrupt' (default): queue the text + interrupt with `keepBusy`; the
-  //                   busy→false settle edge drains it once (desktop parity).
-  //                   No optimistic send → no duplicate bubble / race note.
+  //   - 'interrupt' (default): cancel the in-flight turn, then send the
+  //                   new text as a fresh prompt so it actually moves.
   //
-  // `opts.fallbackToFront` re-inserts at the queue head (queue-edit picks keep
-  // their position); the mainline submit path appends.
+  // `opts.fallbackToFront` controls whether a steer fallback re-inserts
+  // at the front of the queue (used by the queue-edit path to preserve
+  // a picked item's position); the mainline submit path always appends.
   const handleBusyInput = useCallback(
     (full: string, opts: { fallbackToFront?: boolean } = {}) => {
       const live = getUiState()
       const mode = live.busyInputMode
 
-      const enqueueText = () => {
+      const fallback = (note: string) => {
         if (opts.fallbackToFront) {
           composerRefs.queueRef.current.unshift(full)
           composerActions.syncQueue()
         } else {
           composerActions.enqueue(full)
         }
-      }
 
-      const fallback = (note: string) => {
-        enqueueText()
         sys(note)
       }
 
@@ -263,14 +260,25 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return
       }
 
-      // 'interrupt': queue + interrupt(keepBusy); the settle edge drains it once.
-      enqueueText()
-
+      // 'interrupt' (default): tear down the current turn, then send.
+      // `interruptTurn` fires `session.interrupt` without awaiting; if
+      // the gateway is still mid-response when `prompt.submit` lands,
+      // `send()`'s catch path re-queues with a "queued: ..." sys note
+      // (`isSessionBusyError`) — so a lost race degrades to queue
+      // semantics, not a dropped message.
       if (live.sid) {
-        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: true })
+        turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
       }
+
+      if (hasInterpolation(full)) {
+        patchUiState({ busy: true })
+
+        return interpolate(full, send)
+      }
+
+      send(full)
     },
-    [appendMessage, composerActions, composerRefs, gw, sys]
+    [appendMessage, composerActions, composerRefs, gw, interpolate, send, sys]
   )
 
   const dispatchSubmission = useCallback(
@@ -372,11 +380,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         lastEmptyAt.current = now
 
         if (doubleTap && live.busy && live.sid) {
-          // Force-send: keep busy when a message is queued so the settle edge
-          // drains it once (no race). Empty queue = plain Stop → 'ready'.
-          const hasQueued = composerRefs.queueRef.current.length > 0
-
-          return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys }, { keepBusy: hasQueued })
+          return turnController.interruptTurn({ appendMessage, gw, sid: live.sid, sys })
         }
 
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {

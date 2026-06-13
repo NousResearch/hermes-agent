@@ -13,6 +13,7 @@ from run_agent import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
     _sanitize_structure_surrogates,
+    _SURROGATE_RE,
 )
 
 

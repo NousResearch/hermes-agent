@@ -18,6 +18,7 @@ together at the end. Script exits 0 iff every scenario passed or was
 cleanly SKIPPED (with reason).
 """
 
+import json
 import multiprocessing as mp
 import os
 import shutil

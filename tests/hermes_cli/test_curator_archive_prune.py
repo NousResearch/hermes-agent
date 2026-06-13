@@ -12,8 +12,12 @@ Covers:
 
 from __future__ import annotations
 
+import io
+from contextlib import redirect_stdout, redirect_stderr
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import pytest
 
 
 def _ns(**kwargs):

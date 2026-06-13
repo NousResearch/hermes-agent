@@ -83,37 +83,6 @@ class TestParsePackageFromArgs:
     def test_only_flags(self):
         assert _parse_package_from_args(["-y", "--yes"], "npm") == (None, None)
 
-    def test_package_equals_form(self):
-        # `npx --package=@scope/pkg@1.0 some-bin` -> install target is the
-        # --package value, NOT the executed binary `some-bin`.
-        name, ver = _parse_package_from_args(
-            ["--package=@scope/pkg@1.0", "some-bin"], "npm"
-        )
-        assert name == "@scope/pkg"
-        assert ver == "1.0"
-
-    def test_package_space_form(self):
-        # `npx --package @scope/pkg some-bin` (value in the next token).
-        name, ver = _parse_package_from_args(
-            ["--package", "@scope/pkg@2.0", "some-bin"], "npm"
-        )
-        assert name == "@scope/pkg"
-        assert ver == "2.0"
-
-    def test_short_p_form(self):
-        # `npx -p left-pad@1.3.0 cli-cmd` -> package is left-pad, not cli-cmd.
-        name, ver = _parse_package_from_args(
-            ["-p", "left-pad@1.3.0", "cli-cmd"], "npm"
-        )
-        assert name == "left-pad"
-        assert ver == "1.3.0"
-
-    def test_plain_positional_still_works(self):
-        # Regression guard: bare positional with no --package flag is the pkg.
-        name, ver = _parse_package_from_args(["-y", "react@18.3.1"], "npm")
-        assert name == "react"
-        assert ver == "18.3.1"
-
 
 class TestCheckPackageForMalware:
     def test_clean_package(self):

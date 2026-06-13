@@ -20,16 +20,22 @@ import json
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from agent.usage_pricing import (
     CanonicalUsage,
+    DEFAULT_PRICING,
     estimate_usage_cost,
     format_duration_compact,
     has_known_pricing,
 )
 
+_DEFAULT_PRICING = DEFAULT_PRICING
 
+
+def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
+    """Check if a model has known pricing (vs unknown/custom endpoint)."""
+    return has_known_pricing(model_name, provider=provider, base_url=base_url)
 
 
 def _estimate_cost(
@@ -39,8 +45,8 @@ def _estimate_cost(
     *,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
+    provider: str = None,
+    base_url: str = None,
 ) -> tuple[float, str]:
     """Estimate the USD cost for a session row or a model/token tuple."""
     if isinstance(session_or_model, dict):
@@ -71,6 +77,9 @@ def _estimate_cost(
     return float(result.amount_usd or 0.0), result.status
 
 
+def _format_duration(seconds: float) -> str:
+    """Format seconds into a human-readable duration string."""
+    return format_duration_compact(seconds)
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
@@ -426,7 +435,7 @@ class InsightsEngine:
                 included_cost_sessions += 1
             elif status == "unknown":
                 unknown_cost_sessions += 1
-            if has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
+            if _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url")):
                 models_with_pricing.add(display)
             else:
                 models_without_pricing.add(display)
@@ -499,7 +508,7 @@ class InsightsEngine:
             d["tool_calls"] += s.get("tool_call_count") or 0
             estimate, status = _estimate_cost(s)
             d["cost"] += estimate
-            d["has_pricing"] = has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
             d["cost_status"] = status
 
         result = [
@@ -670,7 +679,7 @@ class InsightsEngine:
             top.append({
                 "label": "Longest session",
                 "session_id": longest["id"][:16],
-                "value": format_duration_compact(dur),
+                "value": _format_duration(dur),
                 "date": datetime.fromtimestamp(longest["started_at"]).strftime("%b %d"),
             })
 
@@ -755,7 +764,7 @@ class InsightsEngine:
         lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
         lines.append(f"  Total tokens:      {o['total_tokens']:,}")
         if o["total_hours"] > 0:
-            lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
+            lines.append(f"  Active time:       ~{_format_duration(o['total_hours'] * 3600):<11}  Avg session:     ~{_format_duration(o['avg_session_duration'])}")
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
@@ -870,7 +879,7 @@ class InsightsEngine:
         lines.append(f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}")
         lines.append(f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})")
         if o["total_hours"] > 0:
-            lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
+            lines.append(f"**Active time:** ~{_format_duration(o['total_hours'] * 3600)} | **Avg session:** ~{_format_duration(o['avg_session_duration'])}")
         lines.append("")
 
         # Models (top 5)

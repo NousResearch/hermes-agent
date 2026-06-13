@@ -1,8 +1,13 @@
 """Nous Portal upstream adapter.
 
 Reads the user's Nous OAuth state from ``~/.hermes/auth.json`` through the
-shared runtime resolver, validates or refreshes the inference JWT, then exposes
-the upstream base URL plus bearer for the proxy server to forward to.
+shared runtime resolver, refreshes the access token and resolves the
+``agent_key`` compatibility credential when needed, then exposes the upstream
+base URL plus bearer for the proxy server to forward to.
+
+The ``agent_key`` field may hold either a NAS invoke JWT or the legacy
+opaque session key. The refresh helper handles both — see
+:func:`hermes_cli.auth.resolve_nous_runtime_credentials`.
 """
 
 from __future__ import annotations
@@ -14,13 +19,14 @@ from typing import Any, Dict, FrozenSet, Optional
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
+    NOUS_INFERENCE_AUTH_MODE_AUTO,
+    NOUS_INFERENCE_AUTH_MODE_LEGACY,
     _load_auth_store,
     _auth_store_lock,
     _is_terminal_nous_refresh_error,
     _quarantine_nous_oauth_state,
     _quarantine_nous_pool_entries,
     _save_auth_store,
-    _validate_nous_inference_url_from_network,
     _write_shared_nous_state,
     resolve_nous_runtime_credentials,
 )
@@ -65,15 +71,17 @@ class NousPortalAdapter(UpstreamAdapter):
         state = self._read_state()
         if state is None:
             return False
-        # We need either a usable inference JWT OR (refresh_token + access_token)
-        # to recover. The refresh helper validates and refreshes as needed.
+        # We need either a usable agent_key OR (refresh_token + access_token)
+        # to recover. The refresh helper will mint/refresh as needed.
         return bool(
             state.get("agent_key")
             or (state.get("refresh_token") and state.get("access_token"))
         )
 
     def get_credential(self) -> UpstreamCredential:
-        return self._get_credential()
+        return self._get_credential(
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_AUTO,
+        )
 
     def get_retry_credential(
         self,
@@ -81,29 +89,26 @@ class NousPortalAdapter(UpstreamAdapter):
         failed_credential: UpstreamCredential,
         status_code: int,
     ) -> Optional[UpstreamCredential]:
-        _ = failed_credential
         if status_code != 401:
             return None
-        logger.info("proxy: Nous upstream rejected bearer; force-refreshing invoke JWT")
+        if failed_credential.bearer.count(".") != 2:
+            return None
+        logger.info("proxy: Nous upstream rejected bearer; retrying with legacy session key")
         return self._get_credential(
-            force_refresh=True,
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
         )
 
-    def _get_credential(
-        self,
-        *,
-        force_refresh: bool = False,
-    ) -> UpstreamCredential:
+    def _get_credential(self, *, inference_auth_mode: str) -> UpstreamCredential:
         with self._lock:
             state = self._read_state()
             if state is None:
                 raise RuntimeError(
-                    "Not logged into Nous Portal. Run `hermes auth add nous` first."
+                    "Not logged into Nous Portal. Run `hermes login nous` first."
                 )
 
             try:
                 refreshed = resolve_nous_runtime_credentials(
-                    force_refresh=force_refresh,
+                    inference_auth_mode=inference_auth_mode,
                 )
             except AuthError as exc:
                 if _is_terminal_nous_refresh_error(exc):
@@ -125,21 +130,18 @@ class NousPortalAdapter(UpstreamAdapter):
                     f"Failed to refresh Nous Portal credentials: {exc}"
                 ) from exc
 
-            runtime_key = refreshed.get("api_key")
-            if not runtime_key:
+            agent_key = refreshed.get("api_key")
+            if not agent_key:
                 raise RuntimeError(
-                    "Nous Portal refresh did not return a usable inference JWT. "
-                    "Try `hermes auth add nous` to re-authenticate."
+                    "Nous Portal refresh did not return a usable agent_key. "
+                    "Try `hermes login nous` to re-authenticate."
                 )
 
-            base_url = (
-                _validate_nous_inference_url_from_network(refreshed.get("base_url"))
-                or DEFAULT_NOUS_INFERENCE_URL
-            )
+            base_url = refreshed.get("base_url") or DEFAULT_NOUS_INFERENCE_URL
             base_url = base_url.rstrip("/")
 
             return UpstreamCredential(
-                bearer=runtime_key,
+                bearer=agent_key,
                 base_url=base_url,
                 expires_at=refreshed.get("expires_at"),
             )

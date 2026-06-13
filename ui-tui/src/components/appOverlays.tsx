@@ -6,13 +6,12 @@ import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
-import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
-import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
+import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
 
 const COMPLETION_WINDOW = 16
@@ -30,7 +29,7 @@ export function PromptZone({
   if (overlay.approval) {
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
-        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
       </Box>
     )
   }
@@ -96,38 +95,16 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
-  onActiveSessionSelect,
-  onActiveSessionClose,
   onModelSelect,
-  onNewLiveSession,
-  onNewPromptSession,
-  onResumeSelect,
+  onPickerSelect,
   pagerPageSize
-}: Pick<
-  AppOverlaysProps,
-  | 'cols'
-  | 'compIdx'
-  | 'completions'
-  | 'onActiveSessionSelect'
-  | 'onActiveSessionClose'
-  | 'onModelSelect'
-  | 'onNewLiveSession'
-  | 'onNewPromptSession'
-  | 'onResumeSelect'
-  | 'pagerPageSize'
->) {
+}: Pick<AppOverlaysProps, 'cols' | 'compIdx' | 'completions' | 'onModelSelect' | 'onPickerSelect' | 'pagerPageSize'>) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
 
-  const hasAny =
-    overlay.modelPicker ||
-    overlay.pager ||
-    overlay.sessions ||
-    overlay.skillsHub ||
-    overlay.pluginsHub ||
-    completions.length
+  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
 
   if (!hasAny) {
     return null
@@ -142,17 +119,12 @@ export function FloatingOverlays({
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      {overlay.sessions && (
+      {overlay.picker && (
         <FloatBox color={theme.color.border}>
-          <ActiveSessionSwitcher
-            currentSessionId={sid}
+          <SessionPicker
             gw={gw}
-            onCancel={() => patchOverlayState({ sessions: false })}
-            onClose={onActiveSessionClose}
-            onNew={onNewLiveSession}
-            onNewPrompt={onNewPromptSession}
-            onResume={onResumeSelect}
-            onSelect={onActiveSessionSelect}
+            onCancel={() => patchOverlayState({ picker: false })}
+            onSelect={onPickerSelect}
             t={theme}
           />
         </FloatBox>
@@ -173,12 +145,6 @@ export function FloatingOverlays({
       {overlay.skillsHub && (
         <FloatBox color={theme.color.border}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={theme} />
-        </FloatBox>
-      )}
-
-      {overlay.pluginsHub && (
-        <FloatBox color={theme.color.border}>
-          <PluginsHub gw={gw} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
         </FloatBox>
       )}
 
@@ -221,15 +187,10 @@ export function FloatingOverlays({
                   key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
-                  {/* flexShrink=0 — when meta overflows the row, Ink/Yoga
-                      otherwise shaves the last char off the display column
-                      (e.g. /goal renders as /goa). */}
-                  <Box flexShrink={0}>
-                    <Text bold color={theme.color.label}>
-                      {' '}
-                      {item.display}
-                    </Text>
-                  </Box>
+                  <Text bold color={theme.color.label}>
+                    {' '}
+                    {item.display}
+                  </Text>
                   {item.meta ? (
                     <Text
                       backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}

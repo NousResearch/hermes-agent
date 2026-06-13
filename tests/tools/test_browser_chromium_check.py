@@ -7,6 +7,7 @@ for the full command timeout before surfacing a useless error.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 

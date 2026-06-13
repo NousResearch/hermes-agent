@@ -5,8 +5,9 @@ messages from non-allowlisted users must be silently dropped — matching the co
 behavior in _handle_message. Previously, the busy path skipped the auth check entirely,
 allowing unauthorized users to inject text into another user's running session.
 """
+import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -26,10 +27,12 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
+    BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SessionSource,
     build_session_key,
+    merge_pending_message_event,
 )
 
 

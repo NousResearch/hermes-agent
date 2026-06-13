@@ -66,23 +66,6 @@ const config: Config = {
     ],
   ],
 
-  plugins: [
-    [
-      '@docusaurus/plugin-client-redirects',
-      {
-        // Static-host redirects for renamed doc pages (GitHub Pages can't
-        // do server-side redirects). Paths are relative to baseUrl (/docs/).
-        redirects: [
-          {
-            // Renamed in #44470 (Automation Blueprints terminology rebrand)
-            from: '/guides/automation-templates',
-            to: '/guides/automation-blueprints',
-          },
-        ],
-      },
-    ],
-  ],
-
   presets: [
     [
       'classic',
@@ -131,11 +114,6 @@ const config: Config = {
           position: 'left',
         },
         {
-          href: 'https://hermes-agent.nousresearch.com/desktop',
-          label: 'Download',
-          position: 'left',
-        },
-        {
           type: 'localeDropdown',
           position: 'right',
         },
@@ -172,14 +150,13 @@ const config: Config = {
           title: 'Community',
           items: [
             { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Issues', href: 'https://github.com/NousResearch/hermes-agent/issues' },
+            { label: 'GitHub Discussions', href: 'https://github.com/NousResearch/hermes-agent/discussions' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
-            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/desktop' },
             { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],

@@ -13,6 +13,7 @@ import argparse
 import io
 import sys
 
+import pytest
 
 
 def _build_parser():

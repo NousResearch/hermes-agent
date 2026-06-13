@@ -2,7 +2,8 @@
 
 import argparse
 import os
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import patch, call
 
 import pytest
 
@@ -123,6 +124,13 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.vercel_runtime", "python3.13")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "vercel_runtime: python3.13" in config
+        assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
 
 # ---------------------------------------------------------------------------

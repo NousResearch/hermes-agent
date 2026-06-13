@@ -117,29 +117,25 @@ def test_assistant_only_history_does_not_advance_user_turn_count():
 
 
 def test_production_code_contains_hydration_block():
-    """Smoke test: confirm the hydration code is actually wired into the
-    turn path. If someone deletes it, tests above still pass against the
-    inline replica — this fails them awake.
+    """Smoke test: confirm the hydration code is actually wired into
+    run_conversation(). If someone deletes it, tests above still pass
+    against the inline replica — this fails them awake.
 
-    The agent-loop prologue now lives in ``agent/turn_context.py``
-    (``build_turn_context``), with the loop body in
-    ``agent/conversation_loop.py``.  Assert the block is present in the
-    turn subsystem — if it disappears entirely, this guard fails loudly.
-    Either module counts so the guard tolerates legitimate relocation
-    within the turn subsystem.
+    After the run_agent.py refactor the agent-loop body lives in
+    ``agent/conversation_loop.py`` and uses ``agent.X`` rather than
+    ``self.X``.  Assert the block is present in the extracted module
+    specifically — if it ever drifts back into run_agent.py or
+    disappears entirely, this guard fails loudly.
     """
     from pathlib import Path
     repo = Path(__file__).resolve().parents[2]
-    turn_src = "".join(
-        (repo / "agent" / name).read_text(encoding="utf-8")
-        for name in ("conversation_loop.py", "turn_context.py")
-    )
+    cl_path = repo / "agent" / "conversation_loop.py"
+    src_cl = cl_path.read_text(encoding="utf-8")
     # Anchor on the unique comment + the modulo line.
-    assert "Hydrate per-session nudge counters from persisted history" in turn_src, (
-        "Hydration comment missing from the turn subsystem "
-        "(conversation_loop.py / turn_context.py)"
+    assert "Hydrate per-session nudge counters from persisted history" in src_cl, (
+        f"Hydration comment missing from {cl_path}"
     )
     assert (
         "agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval"
-        in turn_src
-    ), "Hydration modulo assignment missing from the turn subsystem"
+        in src_cl
+    ), f"Hydration modulo assignment missing from {cl_path}"

@@ -7,6 +7,7 @@ Covers:
 
 from unittest.mock import patch, MagicMock
 
+import pytest
 
 from agent.model_metadata import query_ollama_num_ctx
 

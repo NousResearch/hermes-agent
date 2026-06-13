@@ -14,8 +14,10 @@ Sidebar is updated to nest all per-skill pages under Skills → Bundled / Option
 
 from __future__ import annotations
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
 
 import yaml
@@ -31,7 +33,7 @@ SKILL_SOURCES = [
 
 # Pages the user had previously hand-written in user-guide/skills/.
 # We leave these alone (they get first-class sidebar treatment separately).
-HAND_WRITTEN = {"google-workspace.md"}
+HAND_WRITTEN = {"godmode.md", "google-workspace.md"}
 
 
 _FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<fence>```+|~~~+)", re.MULTILINE)
@@ -583,7 +585,7 @@ def build_sidebar_items(entries: list[tuple[dict[str, Any], dict[str, Any]]]) ->
 
     Structure:
     Skills
-    ├── (hand-written pages first: google-workspace)
+    ├── (hand-written pages first: godmode, google-workspace)
     ├── Bundled
     │   ├── apple
     │   │   ├── apple-apple-notes

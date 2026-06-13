@@ -14,7 +14,7 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -129,6 +129,7 @@ class TestRunAsyncWorkerThread:
     def test_parallel_workers_get_separate_loops(self):
         """Different worker threads must get their own loops to avoid
         contention (the original reason for the worker-thread branch)."""
+        import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from model_tools import _run_async
 
@@ -355,7 +356,7 @@ class TestVisionDispatchLoopSafety:
     def test_vision_dispatch_keeps_loop_alive(self, tmp_path):
         """After dispatching vision_analyze via the registry, the event
         loop must remain open so cached async clients don't crash on GC."""
-        from model_tools import _get_tool_loop
+        from model_tools import _run_async, _get_tool_loop
         from tools.registry import registry
 
         fake_response = _mock_vision_response()
@@ -372,8 +373,7 @@ class TestVisionDispatchLoopSafety:
                 side_effect=lambda url, dest, **kw: _write_fake_image(dest),
             ),
             patch(
-                "tools.vision_tools._validate_image_url_async",
-                new_callable=AsyncMock,
+                "tools.vision_tools._validate_image_url",
                 return_value=True,
             ),
             patch(
@@ -417,8 +417,7 @@ class TestVisionDispatchLoopSafety:
                 side_effect=lambda url, dest, **kw: _write_fake_image(dest),
             ),
             patch(
-                "tools.vision_tools._validate_image_url_async",
-                new_callable=AsyncMock,
+                "tools.vision_tools._validate_image_url",
                 return_value=True,
             ),
             patch(

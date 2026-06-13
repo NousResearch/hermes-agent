@@ -1,7 +1,0 @@
-name: krea
-version: 1.0.0
-description: "Krea image generation backend (Krea 2 Large + Krea 2 Medium foundation models)."
-author: NousResearch
-kind: backend
-requires_env:
-  - KREA_API_KEY

@@ -6,13 +6,15 @@ the main group chat.
 
 Covers: #6969, #9916, #7355
 """
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.stream_consumer import (
     GatewayStreamConsumer,
+    StreamConsumerConfig,
 )
 
 

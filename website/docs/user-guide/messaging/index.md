@@ -6,13 +6,9 @@ description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, 
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
-For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
-
-:::tip
-Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/integrations/nous-portal) subscription bundles all of them.
-:::
+For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
 ## Platform Comparison
 
@@ -31,7 +27,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
+| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
@@ -39,7 +35,6 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | Microsoft Teams | — | ✅ | — | ✅ | — | ✅ | — |
 | LINE | — | ✅ | ✅ | — | — | ✅ | — |
-| ntfy | — | — | — | — | — | — | — |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
@@ -261,7 +256,7 @@ gateway:
 
 #### Inspecting your access
 
-Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
+Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](/docs/user-guide/messaging/telegram#slash-command-access-control) and [Discord](/docs/user-guide/messaging/discord#slash-command-access-control) pages for platform-specific examples.
 
 ## Interrupting the Agent
 
@@ -388,23 +383,6 @@ journalctl -u hermes-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
-:::tip Headless VMs: user service + linger avoids root prompts
-A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
-
-For a headless VM you never log into, a **user** service with lingering enabled gives you the same start-at-boot behavior with zero root involvement:
-
-```bash
-hermes gateway install          # user service
-sudo loginctl enable-linger $USER   # one-time: start at boot, survive logout
-```
-
-After that, `hermes update` can restart the gateway without any privileges. If you prefer to keep the system service, either run updates with `sudo hermes update`, or grant the service account passwordless sudo for systemctl, e.g. in `sudo visudo -f /etc/sudoers.d/hermes-gateway`:
-
-```
-hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed hermes-gateway*, /usr/bin/systemctl --no-ask-password start hermes-gateway*, /usr/bin/systemctl --no-ask-password restart hermes-gateway*
-```
-:::
-
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 :::info Multiple installations
@@ -445,7 +423,6 @@ Each platform has its own toolset:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
-| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
@@ -466,108 +443,6 @@ Each platform has its own toolset:
 | API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
-## Operating a multi-platform gateway
-
-A gateway typically runs several adapters at once (Telegram + Discord + Slack, etc.). The sections below cover day-2 operations that span all platforms.
-
-### `/platform` command
-
-Once the gateway is running, use the `/platform` slash command from any connected CLI session or chat to inspect and steer individual adapters without restarting the whole gateway:
-
-```
-/platform list                  # show all adapters and their state
-/platform pause <name>          # stop dispatching new messages to one adapter
-/platform resume <name>         # re-enable a paused adapter
-```
-
-`/platform list` shows whether each adapter is `running`, `paused` (manually), or `paused-by-breaker` (see below). Pausing keeps the adapter loaded and its background loops alive — incoming messages are dropped on the floor, but the connection itself stays open so resume is instant.
-
-See also the broader status summary command [`/platforms`](../../reference/slash-commands.md#info).
-
-### Automatic circuit breaker
-
-Each adapter is wrapped in a circuit breaker. Repeated retryable failures (network blips, rate-limit replies, 5xx upstream responses, websocket disconnects) cause the breaker to trip — the adapter is auto-paused, an operator notification is sent to the home channel of another live platform when one is configured, and a structured log line is emitted.
-
-The breaker does **not** auto-resume — it stays open until you run `/platform resume <name>` manually. This is intentional: if a platform is in a sustained outage, you don't want the gateway thrashing reconnects.
-
-### Where to look when a platform is paused
-
-When an adapter is paused, check:
-
-1. **Gateway log** (`~/.hermes/logs/gateway.log` or the systemd / launchd unit log). Search for the platform name and `circuit breaker`, `paused`, or `disabled`. The trip event includes the failure count and the last error.
-2. **`/platform list`** output — shows the current state and last reason.
-3. **The provider's status page** (Telegram bot API status, Discord status, etc.). The breaker tripped because the platform was unhealthy; don't try to resume until it's back.
-
-Once upstream is healthy, `/platform resume <name>` clears the breaker and re-arms the adapter.
-
-### Restart notifications
-
-When the gateway restarts (or is shut down with in-flight sessions), it can send a one-shot "the agent is back" / "the agent was interrupted" message to each platform's home channel. This is controlled per-platform by the `gateway_restart_notification` flag in `gateway-config.yaml`, which defaults to `true`:
-
-```yaml
-gateway:
-  platforms:
-    telegram:
-      home_chat_id: "123456789"
-      gateway_restart_notification: false   # opt out for this platform
-    discord:
-      home_chat_id: "987654321"
-      # gateway_restart_notification omitted → defaults to true
-```
-
-Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
-
-### Session resume across gateway restarts
-
-When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.
-
-This behaviour is on by default and is logged at gateway start:
-
-```
-Scheduled auto-resume for N restart-interrupted session(s)
-```
-
-No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
-
-### Mobile-friendly progress defaults
-
-Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
-
-- **`tool_progress`** defaults to **`off`** — no per-tool breadcrumb stream filling up the chat.
-- **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
-- **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
-- **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
-
-Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
-
-```yaml
-display:
-  platforms:
-    telegram:
-      # Re-enable the tool-progress stream
-      tool_progress: new
-      # Show "iteration N/M, running: tool" in heartbeats and busy acks
-      busy_ack_detail: true
-      # Or quiet them entirely
-      interim_assistant_messages: false
-      long_running_notifications: false
-```
-
-### Progress bubble cleanup (opt-in)
-
-Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
-
-```yaml
-display:
-  platforms:
-    telegram:
-      cleanup_progress: true
-    discord:
-      cleanup_progress: true
-```
-
-Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
-
 ## Next Steps
 
 - [Telegram Setup](telegram.md)
@@ -575,7 +450,6 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
-- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)

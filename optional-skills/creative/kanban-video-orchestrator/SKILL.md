@@ -182,7 +182,7 @@ task graphs. See **[references/examples.md](references/examples.md)**.
    right human-review gates.
 
 8. **Verify API keys BEFORE firing.** External APIs (TTS, image-gen,
-   image-to-video) need keys in `${HERMES_HOME:-~/.hermes}/.env` or the user's secret store.
+   image-to-video) need keys in `~/.hermes/.env` or the user's secret store.
    A worker that hits a missing-key error wastes a task slot. The setup
    script's `check_key` helper aborts cleanly if a required key is missing.
 

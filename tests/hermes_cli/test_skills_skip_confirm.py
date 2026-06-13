@@ -10,8 +10,9 @@ Based on PR #1595 by 333Alden333 (salvaged).
 Updated for PR #3586 (cache-aware install/uninstall).
 """
 
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
+import pytest
 
 
 class TestHandleSkillsSlashInstallFlags:

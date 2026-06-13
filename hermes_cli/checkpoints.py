@@ -25,7 +25,7 @@ import argparse
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 
 def _fmt_bytes(n: int) -> str:

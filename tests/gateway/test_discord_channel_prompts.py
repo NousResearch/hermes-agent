@@ -58,7 +58,7 @@ def _install_fake_agent(monkeypatch):
 
 def _make_adapter():
     _ensure_discord_mock()
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from gateway.platforms.discord import DiscordAdapter
 
     adapter = object.__new__(DiscordAdapter)
     adapter.config = MagicMock()

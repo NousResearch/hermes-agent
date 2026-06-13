@@ -4,6 +4,7 @@ Ensures that foreground commands with timeout > FOREGROUND_MAX_TIMEOUT
 are rejected with an error suggesting background=true.
 """
 import json
+import os
 from unittest.mock import patch, MagicMock
 
 
@@ -122,7 +123,7 @@ class TestForegroundTimeoutCap:
         Only the model's explicit timeout parameter triggers rejection,
         not the user's configured default.
         """
-        from tools.terminal_tool import terminal_tool
+        from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
 
         # User configured TERMINAL_TIMEOUT=900 in their env
         with patch("tools.terminal_tool._get_env_config",

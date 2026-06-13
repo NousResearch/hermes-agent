@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+import pytest
 
 
 def _load_module():

@@ -246,14 +246,7 @@ def _expand_file_reference(
     if not path.is_file():
         return f"{ref.raw}: path is not a file", None
     if _is_binary_file(path):
-        # A binary file can't be inlined as text, but it IS on disk (the agent's
-        # tools run where this resolves — the local cwd, or the staged copy in a
-        # remote session workspace). Returning a bare "not supported" warning
-        # with no content was a dead end: the model saw a failure and gave up
-        # (told the user the file type wasn't supported). Instead, hand it an
-        # actionable block — the path, type, size, and a nudge to use its tools —
-        # so it can read/convert/view the file itself.
-        return None, _binary_reference_block(ref, path)
+        return f"{ref.raw}: binary files are not supported", None
 
     text = path.read_text(encoding="utf-8")
     if ref.line_start is not None:
@@ -297,7 +290,6 @@ def _expand_git_reference(
             capture_output=True,
             text=True,
             timeout=30,
-            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return f"{ref.raw}: git command timed out (30s)", None
@@ -490,7 +482,6 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
             capture_output=True,
             text=True,
             timeout=10,
-            stdin=subprocess.DEVNULL,
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
@@ -498,30 +489,6 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
         return None
     files = [Path(line.strip()) for line in result.stdout.splitlines() if line.strip()]
     return files[:limit]
-
-
-def _human_bytes(n: int) -> str:
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
-
-
-def _binary_reference_block(ref: ContextReference, path: Path) -> str:
-    mime, _ = mimetypes.guess_type(path.name)
-    mime = mime or "application/octet-stream"
-    try:
-        size = _human_bytes(path.stat().st_size)
-    except OSError:
-        size = "unknown size"
-    return (
-        f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{path}`. Use your tools to work with it "
-        f"(read or convert it, extract its text, or view/render it as needed); "
-        f"do not tell the user the file type is unsupported."
-    )
 
 
 def _file_metadata(path: Path) -> str:

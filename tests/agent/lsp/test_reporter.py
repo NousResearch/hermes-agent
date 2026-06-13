@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from agent.lsp.reporter import (
+    DEFAULT_SEVERITIES,
     MAX_PER_FILE,
     format_diagnostic,
     report_for_file,

@@ -2604,8 +2604,8 @@ def _collect_journal_codex_operator_support(
                 normalized_issue_id = _normalize_linear_issue_id(issue_id)
                 if normalized_issue_id:
                     focus_run_ids.update(codex_issue_run_ids.get(normalized_issue_id, set()))
-            if not focus_run_ids and len(focus_items) == 1:
-                focus_run_ids = set(entry_context_run_ids)
+            if len(focus_items) == 1:
+                focus_run_ids.update(entry_context_run_ids)
             for segment in _journal_focus_note_segments(title, outcome_note):
                 segment_run_ids = set(_CODEX_RUN_ID_PATTERN.findall(segment))
                 if not segment_run_ids and focus_run_ids:

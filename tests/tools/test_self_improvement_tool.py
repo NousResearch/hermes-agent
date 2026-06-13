@@ -1808,6 +1808,133 @@ def test_operator_value_alignment_surfaces_recent_supported_codex_ids_past_repor
     assert set(target_run_ids).issubset(surfaced_examples)
 
 
+def test_operator_value_alignment_links_top_level_journal_context_run_ids_when_focus_issue_is_broad(tmp_path):
+    now = datetime(2026, 6, 13, 8, 2, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+    target_run_ids = [
+        "codex_c5bc43777a63",
+        "codex_e68593a634d7",
+        "codex_1017425508da",
+        "codex_90d9f3d806bc",
+        "codex_5bff4cc6fcf3",
+    ]
+
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        [
+            {
+                "id": "2026-06-12-had-1168-follow-through-live-shape",
+                "occurredAt": recent,
+                "summary": "Backfilled operator decision-support evidence for five completed Codex runs.",
+                "notes": (
+                    "Source records: "
+                    + ", ".join(target_run_ids)
+                    + ". Operator decision: count these merged PR outcomes as durable "
+                    "follow-through while execution_loop remains the closure blocker."
+                ),
+                "laneLinks": [
+                    {
+                        "lane": "maintenance",
+                        "supportingRefs": [
+                            *target_run_ids,
+                            "operator decision: keep HAD-1168 open",
+                        ],
+                    }
+                ],
+                "selfImprovementFocus": [
+                    {
+                        "title": "Count HAD-1168 follow-through as operator decision support",
+                        "activeLinearIssueIds": ["HAD-1168"],
+                        "outcomeNote": (
+                            "Merged PR evidence is durable for the referenced runs. "
+                            "The operator can keep the individual source issues closed while "
+                            "execution_loop remains the remaining benchmark blocker."
+                        ),
+                        "operatorDecisionSupport": (
+                            "Operator decision: use these run IDs as completed follow-through "
+                            "evidence, but do not close HAD-1168 until a fresh pipeline pass "
+                            "clears execution_loop."
+                        ),
+                    }
+                ],
+            }
+        ],
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_broad_had_1168": {
+                    "run_id": "codex_broad_had_1168",
+                    "status": "completed",
+                    "external_key": "linear:HAD-1168",
+                    "completed_at": recent,
+                    "final_message": (
+                        "CHANGED_FILES\n- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        "COMMIT\n- abcdef1234567890abcdef1234567890abcdef12\n"
+                    ),
+                    "exit_code": 0,
+                },
+                **{
+                    run_id: {
+                        "run_id": run_id,
+                        "status": "completed",
+                        "external_key": f"linear:HAD-{index}",
+                        "completed_at": recent,
+                        "final_message": (
+                            "CHANGED_FILES\n"
+                            "- tools/self_improvement_tool.py\n"
+                            "VERIFICATION\n"
+                            "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                            "COMMIT\n"
+                            "- abcdef1234567890abcdef1234567890abcdef12\n"
+                            "PULL_REQUEST\n"
+                            "- https://github.com/taboularasa/hermes-agent/pull/1168\n"
+                        ),
+                        "exit_code": 0,
+                    }
+                    for index, run_id in enumerate(target_run_ids, start=1300)
+                },
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    operator_value = benchmark["checks"]["operator_value_alignment"]
+    missing_ids = {
+        item["id"]
+        for item in operator_value["metrics"]["missing_operator_decision_support_examples"]
+    }
+    assert missing_ids.isdisjoint(target_run_ids)
+    assert set(target_run_ids).issubset(
+        set(operator_value["metrics"]["journal_operator_support_codex_run_ids"])
+    )
+    support_by_id = {
+        item["run_id"]: item
+        for item in operator_value["metrics"]["journal_operator_support_examples"]
+    }
+    for run_id in target_run_ids:
+        assert support_by_id[run_id]["evidence"][0]["journal_entry_id"] == (
+            "2026-06-12-had-1168-follow-through-live-shape"
+        )
+
+
 def test_operator_value_alignment_links_focus_issue_ids_to_codex_external_keys(tmp_path):
     now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

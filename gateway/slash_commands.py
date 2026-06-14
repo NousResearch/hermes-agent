@@ -1005,6 +1005,25 @@ class GatewaySlashCommandsMixin:
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
 
+        # If a fallback model is actively handling this session, show the
+        # runtime model instead of the config default.  This restores the
+        # behaviour lost in the v0.15.0 refactor (PR #1660 → #45970).
+        _fallback_active = False
+        _configured_model = current_model
+        _configured_provider = current_provider
+        _running = getattr(self, "_running_agents", {}).get(session_key)
+        if _running is not None:
+            from gateway.run import _AGENT_PENDING_SENTINEL
+            if _running is not _AGENT_PENDING_SENTINEL:
+                if getattr(_running, "_fallback_activated", False):
+                    _rt_model = getattr(_running, "model", None)
+                    _rt_provider = getattr(_running, "provider", None)
+                    if _rt_model and _rt_model != current_model:
+                        current_model = _rt_model
+                        _fallback_active = True
+                    if _rt_provider and _rt_provider != current_provider:
+                        current_provider = _rt_provider
+
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
@@ -1162,7 +1181,10 @@ class GatewaySlashCommandsMixin:
 
             # Fallback: text list (for platforms without picker or if picker failed)
             provider_label = get_label(current_provider)
-            lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
+            _display_model = current_model or "unknown"
+            if _fallback_active:
+                _display_model = f"{_display_model} _(fallback from `{_configured_model}`)_"
+            lines = [t("gateway.model.current_label", model=_display_model, provider=provider_label), ""]
 
             try:
                 providers = list_authenticated_providers(

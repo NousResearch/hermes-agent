@@ -6905,8 +6905,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
         try:
+            # Prefer an explicit requested provider over the resolved runtime
+            # provider so /model reflects config/session intent instead of
+            # whichever provider auto-detection happened to pick from env vars.
+            picker_provider = self.provider or ""
+            requested_provider = (self.requested_provider or "").strip()
+            if requested_provider and requested_provider.lower() != "auto":
+                picker_provider = requested_provider
+
             ctx = load_picker_context().with_overrides(
-                current_provider=self.provider or "",
+                current_provider=picker_provider,
                 current_model=self.model or "",
                 current_base_url=self.base_url or "",
             )
@@ -6921,7 +6929,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
             model_display = self.model or "unknown"
-            provider_display = get_label(self.provider) if self.provider else "unknown"
+            provider_display = get_label(picker_provider) if picker_provider else "unknown"
 
             try:
                 if ctx is None:

@@ -72,7 +72,7 @@ def _get_scale_factor() -> float:
     """Return the DPI scaling factor for the primary monitor.
 
     On high-DPI displays (150 %, 200 %, …) pyautogui operates in physical
-    pixels while UIA reports logical coordinates.  We divide UIA coordinates
+    pixels while UIA reports logical coordinates.  We multiply UIA coordinates
     by this scale to convert to physical.
     """
     try:
@@ -217,7 +217,10 @@ class _UIAProvider:
         uia: Any,
         control: Any,
         results: List[Tuple[Dict[str, Any], Any]],
+        depth: int = 0,
     ) -> None:
+        if depth > 20:
+            return
         try:
             # Skip invisible / off-screen / zero-size controls
             if not control.BoundingRectangle:
@@ -268,20 +271,16 @@ class _UIAProvider:
         except Exception:
             return
 
-        # Recurse children — but skip trees deeper than 20 to avoid runaway
+        # Recurse children — capped at 20 levels deep
         try:
             children = control.GetChildren()
         except Exception:
             return
-        depth = 0
         for child in children:
-            if depth > 20:
-                break
             try:
-                self._walk(uia, child, results)
+                self._walk(uia, child, results, depth + 1)
             except Exception:
                 pass
-            depth += 1
 
     # -- app listing ------------------------------------------------------
 
@@ -427,6 +426,11 @@ class _PyAutoGUIProvider:
         pg = self._ensure_pg()
         pg.moveTo(x, y)
         pg.scroll(clicks, x=x, y=y)
+
+    def hscroll(self, clicks: int, x: int, y: int) -> None:
+        pg = self._ensure_pg()
+        pg.moveTo(x, y)
+        pg.hscroll(clicks, x=x, y=y)
 
     # -- keyboard ---------------------------------------------------------
 
@@ -590,7 +594,7 @@ class WinComputerUseBackend(ComputerUseBackend):
     ) -> ActionResult:
         fx, fy = self._resolve_coords(from_element, from_xy[0] if from_xy else None, from_xy[1] if from_xy else None)
         tx, ty = self._resolve_coords(to_element, to_xy[0] if to_xy else None, to_xy[1] if to_xy else None)
-        if fx is None or ty is None:
+        if fx is None or fy is None or tx is None or ty is None:
             return ActionResult(ok=False, action="drag",
                                message="missing drag target")
         if from_xy and fx is not None and fy is not None:
@@ -617,8 +621,11 @@ class WinComputerUseBackend(ComputerUseBackend):
         clicks = amount if direction in ("up", "left") else -amount
         if direction in ("down", "up"):
             self._pg.scroll(clicks, px, py)
+        elif direction in ("left", "right"):
+            self._pg.hscroll(clicks, px, py)
         else:
-            self._pg.scroll(clicks * -1, px, py)
+            return ActionResult(ok=False, action="scroll",
+                               message=f"unknown direction: {direction}")
         return ActionResult(ok=True, action="scroll",
                            message=f"scrolled {direction} {amount} ticks at ({px}, {py})")
 
@@ -674,8 +681,8 @@ class WinComputerUseBackend(ComputerUseBackend):
         if element is not None and element in self._element_cache:
             info, _ctrl = self._element_cache[element]
             lx, ly, lw, lh = info["bounds"]
-            px, py, _, _ = self._pg.logical_to_physical(lx, ly, lw, lh)
-            return px + lw // 2, py + lh // 2
+            px, py, pw, ph = self._pg.logical_to_physical(lx, ly, lw, lh)
+            return px + pw // 2, py + ph // 2
         if x is not None and y is not None:
             return int(x), int(y)
         return None, None

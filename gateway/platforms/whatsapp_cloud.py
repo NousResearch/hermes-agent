@@ -2231,6 +2231,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[whatsapp_cloud] sidecar did not produce an SDP answer for %s",
                 call_id,
             )
+            reject = await self._send_call_action(call_id, "reject")
+            if not reject.success:
+                logger.warning(
+                    "[whatsapp_cloud] reject failed for %s after sidecar answer "
+                    "failure: %s",
+                    call_id,
+                    reject.error,
+                )
             return
         self._calling_sidecar_call_ids.add(call_id)
 

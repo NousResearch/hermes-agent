@@ -1415,14 +1415,17 @@ class TestWebhookDispatch:
         }
 
     @pytest.mark.asyncio
-    async def test_call_connect_sidecar_failure_skips_graph_accept(self):
+    async def test_call_connect_sidecar_failure_rejects_graph_call(self):
         adapter = _make_adapter(
             app_secret="key",
             calling_sidecar_url="http://127.0.0.1:8787",
         )
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
-            return_value=_mock_httpx_response(503, {"error": "down"})
+            side_effect=[
+                _mock_httpx_response(503, {"error": "down"}),
+                _mock_httpx_response(200, {"success": True}),
+            ]
         )
         body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
         sig = _sign("key", body)
@@ -1432,8 +1435,13 @@ class TestWebhookDispatch:
         )
 
         assert response.status == 200
-        assert adapter._http_client.post.call_count == 1
-        assert adapter._http_client.post.call_args.args[0].endswith("/offer")
+        assert adapter._http_client.post.call_count == 2
+        sidecar_call = adapter._http_client.post.call_args_list[0]
+        reject_call = adapter._http_client.post.call_args_list[1]
+        assert sidecar_call.args[0] == "http://127.0.0.1:8787/offer"
+        assert reject_call.args[0].endswith("/calls")
+        assert reject_call.kwargs["json"]["action"] == "reject"
+        assert "session" not in reject_call.kwargs["json"]
 
     @pytest.mark.asyncio
     async def test_call_connect_pre_accept_failure_closes_sidecar(self):

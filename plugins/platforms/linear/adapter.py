@@ -421,10 +421,69 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[linear] Failed to update AgentSession plan: %s", e)
 
+    async def _prepare_issue_for_agent_work(self, agent_session_id: str) -> None:
+        try:
+            context = await self.client.get_agent_session_work_context(
+                agent_session_id=agent_session_id,
+            )
+        except Exception as e:
+            logger.warning("[linear] Failed to load AgentSession issue context: %s", e)
+            return
+
+        agent_session = context.get("agentSession") or {}
+        issue = agent_session.get("issue") or {}
+        if not isinstance(issue, dict) or not issue.get("id"):
+            return
+
+        viewer = context.get("viewer") or {}
+        viewer_id = str(viewer.get("id") or "").strip()
+        issue_id = str(issue.get("id") or "").strip()
+        current_state = issue.get("state") or {}
+        state_type = str(current_state.get("type") or "").strip()
+
+        state_id = None
+        if state_type not in {"started", "completed", "canceled"}:
+            team = issue.get("team") or {}
+            states = ((team.get("states") or {}).get("nodes") or [])
+            started_states = [
+                state for state in states
+                if isinstance(state, dict) and state.get("id")
+            ]
+            if started_states:
+                first_started = min(
+                    started_states,
+                    key=lambda state: float(state.get("position") or 0.0),
+                )
+                state_id = str(first_started.get("id") or "").strip() or None
+
+        delegate_id = None
+        if viewer_id and not issue.get("delegate"):
+            delegate_id = viewer_id
+
+        if not delegate_id and not state_id:
+            return
+
+        try:
+            updated = await self.client.update_issue(
+                issue_id=issue_id,
+                delegate_id=delegate_id,
+                state_id=state_id,
+            )
+            logger.info(
+                "[linear] Prepared issue %s for AgentSession %s delegate_set=%s state_set=%s",
+                updated.get("id") or issue_id,
+                agent_session_id,
+                bool(delegate_id),
+                bool(state_id),
+            )
+        except Exception as e:
+            logger.warning("[linear] Failed to prepare issue for AgentSession work: %s", e)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         agent_session_id = self._agent_session_id_from_chat_id(event.source.chat_id)
         if not agent_session_id:
             return
+        await self._prepare_issue_for_agent_work(agent_session_id)
         summary = self._prompt_summary(event.text)
         try:
             activity = await self.client.create_agent_activity(

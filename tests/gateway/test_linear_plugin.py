@@ -342,6 +342,18 @@ async def test_send_creates_agent_activity_response_payload():
 @pytest.mark.asyncio
 async def test_processing_start_emits_action_and_in_progress_plan():
     adapter = _adapter()
+    adapter.client.get_agent_session_work_context = AsyncMock(return_value={
+        "viewer": {"id": "hio_user", "name": "Hio"},
+        "agentSession": {
+            "issue": {
+                "id": "issue_1",
+                "delegate": {"id": "someone", "name": "Someone"},
+                "state": {"id": "state_started", "type": "started"},
+                "team": {"states": {"nodes": []}},
+            }
+        },
+    })
+    adapter.client.update_issue = AsyncMock()
     adapter.client.create_agent_activity = AsyncMock(return_value={"id": "act_action"})
     adapter.client.update_agent_session = AsyncMock(return_value={"id": "as_123", "status": "active"})
     source = adapter.build_source(
@@ -359,6 +371,8 @@ async def test_processing_start_emits_action_and_in_progress_plan():
 
     await adapter.on_processing_start(event)
 
+    adapter.client.get_agent_session_work_context.assert_awaited_once_with(agent_session_id="as_123")
+    adapter.client.update_issue.assert_not_called()
     adapter.client.create_agent_activity.assert_awaited_once_with(
         agent_session_id="as_123",
         content={
@@ -372,6 +386,73 @@ async def test_processing_start_emits_action_and_in_progress_plan():
         agent_session_id="as_123",
         plan=[{"content": "Investigate BEN-1 and schedule product reviews", "status": "inProgress"}],
     )
+
+
+@pytest.mark.asyncio
+async def test_processing_start_prepares_issue_delegate_and_started_state():
+    adapter = _adapter()
+    adapter.client.get_agent_session_work_context = AsyncMock(return_value={
+        "viewer": {"id": "hio_user", "name": "Hio"},
+        "agentSession": {
+            "issue": {
+                "id": "issue_1",
+                "delegate": None,
+                "state": {"id": "state_triage", "type": "triage"},
+                "team": {
+                    "states": {
+                        "nodes": [
+                            {"id": "state_later", "type": "started", "position": 200},
+                            {"id": "state_first", "type": "started", "position": 10},
+                        ]
+                    }
+                },
+            }
+        },
+    })
+    adapter.client.update_issue = AsyncMock(return_value={
+        "id": "issue_1",
+        "delegate": {"id": "hio_user", "name": "Hio"},
+        "state": {"id": "state_first", "type": "started"},
+    })
+    adapter.client.create_agent_activity = AsyncMock(return_value={"id": "act_action"})
+    adapter.client.update_agent_session = AsyncMock(return_value={"id": "as_123", "status": "active"})
+    source = adapter.build_source(
+        chat_id="agentSession:as_123",
+        chat_name="Linear AgentSession as_123",
+        chat_type="dm",
+        user_id="lin_user_123",
+        user_name="Paul",
+    )
+    event = MessageEvent(text="Start work", message_type=MessageType.TEXT, source=source)
+
+    await adapter.on_processing_start(event)
+
+    adapter.client.update_issue.assert_awaited_once_with(
+        issue_id="issue_1",
+        delegate_id="hio_user",
+        state_id="state_first",
+    )
+
+
+@pytest.mark.asyncio
+async def test_processing_start_does_not_overwrite_existing_delegate():
+    adapter = _adapter()
+    adapter.client.get_agent_session_work_context = AsyncMock(return_value={
+        "viewer": {"id": "hio_user", "name": "Hio"},
+        "agentSession": {
+            "issue": {
+                "id": "issue_1",
+                "delegate": {"id": "other_delegate", "name": "Other"},
+                "state": {"id": "state_started", "type": "started"},
+                "team": {"states": {"nodes": [{"id": "state_started", "position": 1}]}},
+            }
+        },
+    })
+    adapter.client.update_issue = AsyncMock()
+
+    await adapter._prepare_issue_for_agent_work("as_123")
+
+    adapter.client.update_issue.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -526,6 +607,43 @@ async def test_linear_client_create_activity_includes_signal_metadata():
     assert variables["input"]["signalMetadata"] == {
         "options": [{"label": "A", "value": "a"}]
     }
+
+
+@pytest.mark.asyncio
+async def test_linear_client_update_issue_sets_delegate_and_state():
+    client = LinearClient(token="linear-token")
+    client.graphql = AsyncMock(return_value={
+        "data": {
+            "issueUpdate": {
+                "success": True,
+                "issue": {"id": "issue_1"},
+            }
+        }
+    })
+
+    result = await client.update_issue(
+        issue_id="issue_1",
+        delegate_id="hio_user",
+        state_id="state_started",
+    )
+
+    assert result == {"id": "issue_1"}
+    _query, variables = client.graphql.call_args.args
+    assert variables == {
+        "id": "issue_1",
+        "input": {"delegateId": "hio_user", "stateId": "state_started"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_linear_client_update_issue_skips_empty_update():
+    client = LinearClient(token="linear-token")
+    client.graphql = AsyncMock()
+
+    result = await client.update_issue(issue_id="issue_1")
+
+    assert result == {}
+    client.graphql.assert_not_called()
 
 
 @pytest.mark.asyncio

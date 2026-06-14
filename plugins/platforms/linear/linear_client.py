@@ -105,3 +105,56 @@ class LinearClient:
         if not result.get("success"):
             raise RuntimeError("Linear agentSessionUpdate failed")
         return result.get("agentSession") or {}
+
+    async def get_agent_session_work_context(self, *, agent_session_id: str) -> Dict[str, Any]:
+        query = """
+        query HermesAgentSessionWorkContext($id: String!) {
+          viewer { id name }
+          agentSession(id: $id) {
+            issue {
+              id
+              delegate { id name }
+              state { id name type position }
+              team {
+                states(filter: { type: { eq: "started" } }) {
+                  nodes { id name type position }
+                }
+              }
+            }
+          }
+        }
+        """
+        data = await self.graphql(query, {"id": agent_session_id})
+        return data.get("data") or {}
+
+    async def update_issue(
+        self,
+        *,
+        issue_id: str,
+        delegate_id: str | None = None,
+        state_id: str | None = None,
+    ) -> Dict[str, Any]:
+        mutation = """
+        mutation HermesIssueUpdate($id: String!, $input: IssueUpdateInput!) {
+          issueUpdate(id: $id, input: $input) {
+            success
+            issue {
+              id
+              delegate { id name }
+              state { id name type }
+            }
+          }
+        }
+        """
+        input_data: Dict[str, Any] = {}
+        if delegate_id:
+            input_data["delegateId"] = delegate_id
+        if state_id:
+            input_data["stateId"] = state_id
+        if not input_data:
+            return {}
+        data = await self.graphql(mutation, {"id": issue_id, "input": input_data})
+        result = (data.get("data") or {}).get("issueUpdate") or {}
+        if not result.get("success"):
+            raise RuntimeError("Linear issueUpdate failed")
+        return result.get("issue") or {}

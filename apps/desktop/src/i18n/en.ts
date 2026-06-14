@@ -513,6 +513,12 @@ export const en: Translations = {
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
+      removeConfirm: provider => `Remove ${provider}?`,
+      removeExternal: (provider, command) => `${provider} is managed outside Hermes. Remove it with ${command}.`,
+      removeKeyManaged: provider => `${provider} is configured from an API key. Remove it from API Keys.`,
+      removedTitle: 'Account removed',
+      removedMessage: provider => `${provider} was removed.`,
+      failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
       loading: 'Loading providers...'
     },

@@ -5134,6 +5134,15 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
     return {"logged_in": False}
 
 
+def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
+    """Return the manual disconnect path when the API cannot clear this provider."""
+    if provider.get("flow") == "external":
+        return f"Use `{provider['cli_command']}` or that provider's CLI to remove it."
+    if status.get("source") == "env_var":
+        return "Remove the API key from Settings → Keys instead."
+    return None
+
+
 @app.get("/api/providers/oauth")
 async def list_oauth_providers():
     """Enumerate every OAuth-capable LLM provider with current status.
@@ -5155,12 +5164,15 @@ async def list_oauth_providers():
     providers = []
     for p in _OAUTH_PROVIDER_CATALOG:
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
+        disconnect_hint = _oauth_provider_disconnect_hint(p, status)
         providers.append({
             "id": p["id"],
             "name": p["name"],
             "flow": p["flow"],
             "cli_command": p["cli_command"],
             "docs_url": p["docs_url"],
+            "disconnect_hint": disconnect_hint,
+            "disconnectable": disconnect_hint is None,
             "status": status,
         })
     return {"providers": providers}
@@ -5171,37 +5183,56 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
     _require_token(request)
 
-    valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
-    if provider_id not in valid_ids:
+    catalog_by_id = {p["id"]: p for p in _OAUTH_PROVIDER_CATALOG}
+    provider = catalog_by_id.get(provider_id)
+    if provider is None:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown provider: {provider_id}. "
-                   f"Available: {', '.join(sorted(valid_ids))}",
+                   f"Available: {', '.join(sorted(catalog_by_id))}",
         )
 
-    # Anthropic and claude-code clear the same Hermes-managed PKCE file
-    # AND forget the Claude Code import. We don't touch ~/.claude/* directly
-    # — that's owned by the Claude Code CLI; users can re-auth there if they
-    # want to undo a disconnect.
-    if provider_id in {"anthropic", "claude-code"}:
+    disconnect_hint = _oauth_provider_disconnect_hint(provider, {})
+    if disconnect_hint:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
+        )
+
+    status = _resolve_provider_status(provider_id, provider.get("status_fn"))
+    disconnect_hint = _oauth_provider_disconnect_hint(provider, status)
+    if disconnect_hint:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
+        )
+
+    # Anthropic clears only the Hermes-managed PKCE file and auth-store entry.
+    # The separate claude-code catalog row is external/read-only and rejected
+    # above so we never pretend to remove ~/.claude/* credentials owned by the CLI.
+    if provider_id == "anthropic":
+        cleared = False
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
                 _HERMES_OAUTH_FILE.unlink()
+                cleared = True
         except Exception:
             pass
         # Also clear the credential pool entry if present.
         try:
             from hermes_cli.auth import clear_provider_auth
-            clear_provider_auth("anthropic")
+            cleared = clear_provider_auth("anthropic") or cleared
         except Exception:
             pass
         _log.info("oauth/disconnect: %s", provider_id)
-        return {"ok": True, "provider": provider_id}
+        return {"ok": bool(cleared), "provider": provider_id}
 
     try:
-        from hermes_cli.auth import clear_provider_auth
+        from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
         cleared = clear_provider_auth(provider_id)
+        if provider_id == "nous":
+            invalidate_nous_auth_status_cache()
         _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
         return {"ok": bool(cleared), "provider": provider_id}
     except Exception as e:

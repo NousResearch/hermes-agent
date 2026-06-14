@@ -708,6 +708,12 @@ export const zh: Translations = {
       collapse: '收起',
       connectAnother: '连接其他提供方',
       otherProviders: '其他提供方',
+      removeConfirm: provider => `移除 ${provider}？`,
+      removeExternal: (provider, command) => `${provider} 由 Hermes 外部管理。请使用 ${command} 移除。`,
+      removeKeyManaged: provider => `${provider} 由 API 密钥配置。请从 API Keys 中移除。`,
+      removedTitle: '账号已移除',
+      removedMessage: provider => `${provider} 已移除。`,
+      failedRemove: provider => `无法移除 ${provider}`,
       noProviderKeys: '没有可用的提供方 API 密钥。',
       loading: '正在加载提供方...'
     },

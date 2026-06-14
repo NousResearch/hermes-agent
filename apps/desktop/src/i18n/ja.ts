@@ -642,6 +642,12 @@ export const ja = defineLocale({
       collapse: '折りたたむ',
       connectAnother: '別のプロバイダーを接続',
       otherProviders: 'その他のプロバイダー',
+      removeConfirm: provider => `${provider} を削除しますか？`,
+      removeExternal: (provider, command) => `${provider} は Hermes の外部で管理されています。${command} で削除してください。`,
+      removeKeyManaged: provider => `${provider} は API キーで設定されています。API Keys から削除してください。`,
+      removedTitle: 'アカウントを削除しました',
+      removedMessage: provider => `${provider} を削除しました。`,
+      failedRemove: provider => `${provider} を削除できませんでした`,
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
       loading: 'プロバイダーを読み込み中...'
     },

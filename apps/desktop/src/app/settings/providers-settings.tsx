@@ -6,6 +6,7 @@ import {
   FeaturedProviderRow,
   KeyProviderRow,
   ProviderRow,
+  providerTitle,
   sortProviders
 } from '@/components/desktop-onboarding-overlay'
 import { Button } from '@/components/ui/button'
@@ -187,8 +188,13 @@ function ConnectedProviderRow({
   provider: OAuthProvider
 }) {
   const { t } = useI18n()
-  const title = provider.name
+  const title = providerTitle(provider)
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+  const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
+
+  const disconnectHint = provider.flow === 'external'
+    ? t.settings.providers.removeExternal(title, provider.cli_command)
+    : t.settings.providers.removeKeyManaged(title)
 
   return (
     <div className="group grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-[6px] transition-colors hover:bg-(--ui-control-hover-background)">
@@ -201,20 +207,27 @@ function ConnectedProviderRow({
           </span>
         </div>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
+        {!canDisconnect && (
+          <p className="mt-0.5 truncate text-[0.68rem] leading-5 text-muted-foreground/70">
+            {disconnectHint}
+          </p>
+        )}
       </button>
       <div className="flex items-center gap-1 pr-2">
         <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
-        <Button
-          aria-label={`${t.common.remove} ${title}`}
-          disabled={disconnecting}
-          onClick={() => onDisconnect(provider)}
-          size="icon-xs"
-          title={`${t.common.remove} ${title}`}
-          type="button"
-          variant="ghost"
-        >
-          {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-        </Button>
+        {canDisconnect && (
+          <Button
+            aria-label={`${t.common.remove} ${title}`}
+            disabled={disconnecting}
+            onClick={() => onDisconnect(provider)}
+            size="icon-xs"
+            title={`${t.common.remove} ${title}`}
+            type="button"
+            variant="ghost"
+          >
+            {disconnecting ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+          </Button>
+        )}
       </div>
     </div>
   )
@@ -270,9 +283,9 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
   }, [onboardingActive])
 
   async function handleDisconnect(provider: OAuthProvider) {
-    const name = provider.name
+    const name = providerTitle(provider)
 
-    if (!window.confirm(`Remove ${name}?`)) {
+    if (!window.confirm(t.settings.providers.removeConfirm(name))) {
       return
     }
 
@@ -280,10 +293,10 @@ export function ProvidersSettings({ onViewChange, view }: ProvidersSettingsProps
 
     try {
       await disconnectOAuthProvider(provider.id)
-      notify({ durationMs: 3_000, kind: 'success', message: `${name} removed.` })
+      notify({ durationMs: 3_000, kind: 'success', title: t.settings.providers.removedTitle, message: t.settings.providers.removedMessage(name) })
       await refreshOAuthProviders().catch(() => undefined)
     } catch (err) {
-      notifyError(err, `Could not remove ${name}`)
+      notifyError(err, t.settings.providers.failedRemove(name))
     } finally {
       setDisconnecting(null)
     }

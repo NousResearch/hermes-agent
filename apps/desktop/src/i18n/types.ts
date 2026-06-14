@@ -413,6 +413,12 @@ export interface Translations {
       collapse: string
       connectAnother: string
       otherProviders: string
+      removeConfirm: (provider: string) => string
+      removeExternal: (provider: string, command: string) => string
+      removeKeyManaged: (provider: string) => string
+      removedTitle: string
+      removedMessage: (provider: string) => string
+      failedRemove: (provider: string) => string
       noProviderKeys: string
       loading: string
     }

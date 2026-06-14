@@ -21,16 +21,18 @@ vi.mock('@/store/onboarding', () => ({
   startManualProviderOAuth: (providerId: string) => startManualProviderOAuth(providerId)
 }))
 
-function provider(id: string, loggedIn: boolean): OAuthProvider {
+function provider(id: string, loggedIn: boolean, patch: Partial<OAuthProvider> = {}): OAuthProvider {
   return {
     cli_command: `hermes auth add ${id}`,
+    disconnectable: true,
     docs_url: '',
     flow: 'device_code',
     id,
     name: id === 'nous' ? 'Nous Portal' : 'MiniMax',
     status: {
       logged_in: loggedIn
-    }
+    },
+    ...patch
   }
 }
 
@@ -74,5 +76,25 @@ describe('ProvidersSettings', () => {
 
     expect(startManualProviderOAuth).toHaveBeenCalledWith('nous')
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
+  })
+
+  it('does not offer removal for externally managed providers', async () => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [
+        provider('qwen-oauth', true, {
+          cli_command: 'hermes auth add qwen-oauth',
+          disconnect_hint: 'Use `hermes auth add qwen-oauth` or that provider\'s CLI to remove it.',
+          disconnectable: false,
+          flow: 'external',
+          name: 'Qwen (via Qwen CLI)'
+        })
+      ]
+    })
+
+    await renderProvidersSettings()
+
+    expect(await screen.findByText('Qwen Code')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
+    expect(screen.getByText(/managed outside Hermes/)).toBeTruthy()
   })
 })

@@ -1,4 +1,5 @@
 import json
+import importlib
 import os
 import subprocess
 import sys
@@ -1844,6 +1845,48 @@ def test_session_create_does_not_persist_empty_row(monkeypatch):
         assert created == [], "session.create should not persist an empty DB row"
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_tui_session_db_uses_effective_home_after_early_import_race(
+    monkeypatch, tmp_path
+):
+    """Late profile override must win even if hermes_state imported earlier."""
+    repo = Path(__file__).resolve().parents[1]
+    root = tmp_path / "hermes-root"
+    private_home = root / "profiles" / "private"
+    private_home.mkdir(parents=True)
+    (root / "active_profile").write_text("private\n")
+
+    import hermes_state
+
+    original_home = os.environ.get("HERMES_HOME")
+    try:
+        monkeypatch.setenv("HERMES_HOME", str(private_home))
+        hermes_state = importlib.reload(hermes_state)
+
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        server._db = None
+        server._db_error = None
+        server._ensure_session_db_row(
+            {"session_key": "sess-race", "cwd": str(repo), "explicit_cwd": True}
+        )
+
+        default_db = hermes_state.SessionDB(db_path=root / "state.db")
+        private_db = hermes_state.SessionDB(db_path=private_home / "state.db")
+        try:
+            assert default_db.get_session("sess-race") is not None
+            assert private_db.get_session("sess-race") is None
+        finally:
+            default_db.close()
+            private_db.close()
+    finally:
+        server._db = None
+        server._db_error = None
+        if original_home is None:
+            monkeypatch.delenv("HERMES_HOME", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_HOME", original_home)
+        importlib.reload(hermes_state)
 
 
 def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):

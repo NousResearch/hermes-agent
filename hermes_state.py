@@ -29,6 +29,69 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
+
+def _default_db_path() -> Path:
+    """Resolve the default state DB path against the current Hermes home.
+
+    ``HERMES_HOME`` can be corrected after import time by profile-aware
+    launchers. Deferring this lookup avoids pinning ``state.db`` to a stale
+    profile path during an early import race.
+    """
+    return get_hermes_home() / "state.db"
+
+
+class _LazyDefaultDBPath:
+    """Path-like wrapper that resolves the default state DB lazily."""
+
+    def _resolve(self) -> Path:
+        return _default_db_path()
+
+    def __fspath__(self) -> str:
+        return str(self._resolve())
+
+    def __str__(self) -> str:
+        return str(self._resolve())
+
+    def __repr__(self) -> str:
+        return repr(self._resolve())
+
+    def __truediv__(self, other):
+        return self._resolve() / other
+
+    def __rtruediv__(self, other):
+        return Path(other) / self._resolve()
+
+    def __eq__(self, other: object) -> bool:
+        return self._resolve() == other
+
+    def __hash__(self) -> int:
+        return hash(self._resolve())
+
+    @property
+    def parent(self) -> Path:
+        return self._resolve().parent
+
+    def exists(self, *args, **kwargs):
+        return self._resolve().exists(*args, **kwargs)
+
+    def mkdir(self, *args, **kwargs):
+        return self._resolve().mkdir(*args, **kwargs)
+
+    def unlink(self, *args, **kwargs):
+        return self._resolve().unlink(*args, **kwargs)
+
+    def stat(self, *args, **kwargs):
+        return self._resolve().stat(*args, **kwargs)
+
+    def read_text(self, *args, **kwargs):
+        return self._resolve().read_text(*args, **kwargs)
+
+    def write_text(self, *args, **kwargs):
+        return self._resolve().write_text(*args, **kwargs)
+
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -102,10 +165,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         )
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
-
-T = TypeVar("T")
-
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+DEFAULT_DB_PATH = _LazyDefaultDBPath()
 
 SCHEMA_VERSION = 16
 

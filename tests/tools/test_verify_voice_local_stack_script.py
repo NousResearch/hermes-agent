@@ -137,3 +137,58 @@ def test_run_json_step_rejects_unsuccessful_result(monkeypatch):
 
     with pytest.raises(SystemExit, match="reported failure"):
         script.run_json_step("demo", ["demo"], timeout=1.0, env={})
+
+
+def _write_live_root(root: Path, *, include_cloud: bool = True) -> None:
+    tools_dir = root / "tools"
+    gateway_dir = root / "gateway" / "platforms"
+    tools_dir.mkdir(parents=True)
+    gateway_dir.mkdir(parents=True)
+    (tools_dir / "tts_tool.py").write_text(
+        "\n".join(["voice_compatible", "libopus", "-application", "voip"]),
+        encoding="utf-8",
+    )
+    if include_cloud:
+        (gateway_dir / "whatsapp_cloud.py").write_text(
+            "\n".join(
+                [
+                    "calling_sidecar_url",
+                    "voice.webrtc_sidecar",
+                    "_send_calling_sidecar_tts_stream_command",
+                    "-application",
+                    "voip",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+
+def test_audit_live_hermes_root_accepts_voice_native_checkout(tmp_path: Path):
+    script = _load_script_module()
+    _write_live_root(tmp_path)
+
+    result = script.audit_live_hermes_root(tmp_path)
+
+    assert result["success"] is True
+    assert result["failures"] == []
+    assert [check["path"] for check in result["checked"]] == [
+        "tools/tts_tool.py",
+        "gateway/platforms/whatsapp_cloud.py",
+    ]
+
+
+def test_audit_live_hermes_root_reports_stale_checkout(tmp_path: Path):
+    script = _load_script_module()
+    _write_live_root(tmp_path, include_cloud=False)
+
+    result = script.audit_live_hermes_root(tmp_path)
+
+    assert result["success"] is False
+    assert "gateway/platforms/whatsapp_cloud.py is missing" in result["failures"]
+
+
+def test_require_live_hermes_root_fails_on_missing_surfaces(tmp_path: Path):
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="voice-native integration surfaces"):
+        script.require_live_hermes_root(tmp_path / "missing")

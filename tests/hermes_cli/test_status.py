@@ -351,3 +351,32 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+
+
+def test_show_status_discovers_plugin_platforms(monkeypatch, capsys, tmp_path):
+    """show_status must run plugin discovery so plugin-registered platforms
+    appear in the Messaging Platforms section (#44119)."""
+    import hermes_cli.plugins as plugins_mod
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def _fake_discover(force=False):
+        platform_registry.register(
+            PlatformEntry(
+                name="testchat-44119",
+                label="TestChat",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+            )
+        )
+
+    monkeypatch.setattr(plugins_mod, "discover_plugins", _fake_discover)
+    try:
+        show_status(SimpleNamespace(all=False, deep=False))
+    finally:
+        platform_registry.unregister("testchat-44119")
+
+    output = capsys.readouterr().out
+    assert "TestChat" in output
+    assert "configured (plugin)" in output

@@ -460,6 +460,13 @@ def show_status(args):
 
     # Plugin-registered platforms
     try:
+        # Populate the registry so plugin platforms are visible. Idempotent.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+    except Exception:
+        pass
+    try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             configured = entry.check_fn()

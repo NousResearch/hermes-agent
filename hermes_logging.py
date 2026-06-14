@@ -467,7 +467,25 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except OSError:
+            # Windows / multi-process: another Hermes process (gateway,
+            # dashboard, cron worker, CLI) holds the SAME log file open, so
+            # os.rename(base -> base.1) fails with WinError 32 (sharing
+            # violation). We cannot rotate while a peer has the file open.
+            # Recover gracefully instead of letting logging.handleError spam
+            # a traceback on every emit: ensure we still have a live stream on
+            # baseFilename and carry on. Whichever process eventually wins the
+            # rename performs the rotation; the inode-watch in emit() then
+            # reopens every other process onto the fresh file. Worst case the
+            # file grows past maxBytes until a rollover succeeds — acceptable
+            # versus crashing every log line with a "--- Logging error ---".
+            if self.stream is None:
+                try:
+                    self.stream = self._open()
+                except OSError:
+                    pass
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

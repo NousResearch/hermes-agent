@@ -124,6 +124,16 @@ def _build_provider_env_blocklist() -> frozenset:
         pass
 
     blocked.update({
+        # Hermes may be launched through a bootstrapped Python interpreter
+        # (uv-managed Python, an in-repo venv, or a source checkout with
+        # PYTHONPATH pointed at the Hermes tree). Those variables describe the
+        # agent process, not the user's project shell. Leaking them into
+        # terminal subprocesses makes Python-based project tooling mix the
+        # wrong stdlib/site-packages and breaks system hooks such as
+        # pre-commit `language: system` entries.
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "UV_INTERNAL__PYTHONHOME",
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_API_BASE",
@@ -363,6 +373,44 @@ def _path_env_key(run_env: dict) -> str | None:
     return None
 
 
+def _virtualenv_bin_dir(venv: str) -> str:
+    """Return the executable directory for a virtualenv path."""
+    trimmed = venv.rstrip("/\\")
+    return f"{trimmed}\\Scripts" if _IS_WINDOWS else f"{trimmed}/bin"
+
+
+def _prepend_virtualenv_to_path(run_env: dict, path_key: str | None) -> None:
+    """Make PATH agree with VIRTUAL_ENV when one is inherited.
+
+    Python virtualenv activation is defined by two coupled variables:
+    ``VIRTUAL_ENV`` points at the environment and PATH is prepended with its
+    executable directory. Some Hermes launch paths preserve VIRTUAL_ENV while
+    PATH later puts that directory behind unrelated Python installs. In that
+    shape, project tools such as pre-commit ``language: system`` hooks resolve
+    bare ``python`` to a different interpreter but still inherit Python
+    bootstrap env. Move the active virtualenv's executable directory to the
+    front so ``python`` and ``VIRTUAL_ENV`` describe the same environment.
+    """
+    if path_key is None:
+        return
+    venv = run_env.get("VIRTUAL_ENV")
+    if not venv:
+        return
+
+    bin_dir = _virtualenv_bin_dir(venv)
+    existing = run_env.get(path_key, "")
+    sep = ";" if _IS_WINDOWS else ":"
+
+    def _same_path(a: str, b: str) -> bool:
+        if _IS_WINDOWS:
+            return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+        return os.path.normpath(a) == os.path.normpath(b)
+
+    entries = [entry for entry in existing.split(sep) if entry]
+    entries = [entry for entry in entries if not _same_path(entry, bin_dir)]
+    run_env[path_key] = sep.join([bin_dir, *entries]) if entries else bin_dir
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
@@ -381,6 +429,7 @@ def _make_run_env(env: dict) -> dict:
     path_key = _path_env_key(run_env)
     if path_key is not None:
         run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        _prepend_virtualenv_to_path(run_env, path_key)
 
     _inject_context_hermes_home(run_env)
 

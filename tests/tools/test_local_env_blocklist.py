@@ -201,6 +201,77 @@ class TestProviderEnvBlocklist:
         assert "USER" in result_env
         assert "PATH" in result_env
 
+    def test_hermes_python_bootstrap_vars_are_stripped(self):
+        """Hermes' own Python bootstrap vars must not leak into subprocesses.
+
+        Local terminal commands execute user/project tooling. If Hermes was
+        launched through a bootstrapped interpreter (for example uv or a venv),
+        leaking these variables makes child Python commands mix Hermes' stdlib
+        with the wrong source tree. A concrete regression: a Git pre-commit
+        hook with ``language: system`` and ``entry: python ...`` could resolve
+        to a different interpreter while inheriting Hermes' Python bootstrap,
+        failing before importing project packages such as PyYAML.
+        """
+        bootstrap_vars = {
+            "PYTHONHOME": r"C:\Users\Matth\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none",
+            "PYTHONPATH": r"C:\Users\Matth\AppData\Local\hermes\hermes-agent",
+            "UV_INTERNAL__PYTHONHOME": r"C:\Users\Matth\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none",
+        }
+        result_env = _run_with_env(extra_os_env=bootstrap_vars)
+
+        for var in bootstrap_vars:
+            assert var not in result_env, f"{var} leaked into subprocess env"
+
+    def test_virtualenv_path_is_preferred_for_system_python_hooks(self, monkeypatch):
+        """VIRTUAL_ENV's executable directory is moved ahead of other Pythons."""
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        result_env = _run_with_env(extra_os_env={
+            "PATH": r"C:\Python310;C:\Users\Matth\AppData\Local\hermes\hermes-agent\venv\Scripts;C:\Windows",
+            "VIRTUAL_ENV": r"C:\Users\Matth\AppData\Local\hermes\hermes-agent\venv",
+        })
+
+        assert result_env["VIRTUAL_ENV"] == r"C:\Users\Matth\AppData\Local\hermes\hermes-agent\venv"
+        assert result_env["PATH"].split(";")[0] == (
+            r"C:\Users\Matth\AppData\Local\hermes\hermes-agent\venv\Scripts"
+        )
+        assert result_env["PATH"].split(";").count(
+            r"C:\Users\Matth\AppData\Local\hermes\hermes-agent\venv\Scripts"
+        ) == 1
+
+    def test_virtualenv_path_is_preferred_for_posix_system_python_hooks(self, monkeypatch):
+        """POSIX VIRTUAL_ENV/bin is also moved ahead of other Pythons."""
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        posix_env = {
+            "PATH": "/usr/bin:/home/user/.venv/bin:/bin",
+            "HOME": "/home/user",
+            "USER": "testuser",
+            "VIRTUAL_ENV": "/home/user/.venv",
+        }
+        with patch.dict(os.environ, posix_env, clear=True):
+            result_env = _make_run_env({})
+
+        assert result_env["VIRTUAL_ENV"] == "/home/user/.venv"
+        assert result_env["PATH"].split(":")[0] == "/home/user/.venv/bin"
+        assert result_env["PATH"].split(":").count("/home/user/.venv/bin") == 1
+
+    def test_self_env_python_bootstrap_vars_also_stripped(self):
+        """Blocked Python bootstrap vars in self.env are stripped too."""
+        result_env = _run_with_env(self_env={
+            "PYTHONHOME": "/hermes/pythonhome",
+            "PYTHONPATH": "/hermes/src",
+            "UV_INTERNAL__PYTHONHOME": "/hermes/uv-pythonhome",
+            "MY_CUSTOM_VAR": "keep-this",
+        })
+
+        for var in ("PYTHONHOME", "PYTHONPATH", "UV_INTERNAL__PYTHONHOME"):
+            assert var not in result_env, f"{var} leaked into subprocess env"
+        assert result_env["MY_CUSTOM_VAR"] == "keep-this"
+
     def test_self_env_blocked_vars_also_stripped(self):
         """Blocked vars in self.env are stripped; non-blocked vars pass through."""
         result_env = _run_with_env(self_env={
@@ -372,6 +443,15 @@ class TestBlocklistCoverage:
             "MODAL_TOKEN_ID",
             "MODAL_TOKEN_SECRET",
             "DAYTONA_API_KEY",
+        }
+        assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
+
+    def test_python_bootstrap_vars_are_in_blocklist(self):
+        """Hermes bootstrap Python vars must stay blocked from user commands."""
+        extras = {
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "UV_INTERNAL__PYTHONHOME",
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 

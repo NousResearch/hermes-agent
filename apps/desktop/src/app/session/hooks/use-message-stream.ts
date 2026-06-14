@@ -43,6 +43,8 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setAwaitingResponse,
+  setBusy,
   setCurrentUsage,
   setTurnStartedAt,
   setYoloActive
@@ -139,6 +141,12 @@ function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
 // smoothness win on long messages with big trailing paragraphs; see
 // `scripts/profile-typing-lag.md` for the measurement work behind this.
 const STREAM_DELTA_FLUSH_MS = 33
+
+// Some failures deliver message.start (so the normal submit-start watchdog is
+// satisfied) but then never deliver any delta/tool/error/complete event. Keep
+// this bounded so the visible chat never stays locked behind the response timer
+// until the user restarts Desktop.
+const STREAM_START_NO_PAYLOAD_TIMEOUT_MS = 90_000
 
 // Gateway/provider failures sometimes arrive as message.complete text instead
 // of an explicit error event. Treat matches as inline assistant errors so they
@@ -336,6 +344,84 @@ export function useMessageStream({
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
+  const noPayloadWatchdogRef = useRef<Map<string, number>>(new Map())
+
+  const clearNoPayloadWatchdog = useCallback((sessionId?: string | null) => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    if (!sessionId) {
+      for (const id of noPayloadWatchdogRef.current.values()) {
+        window.clearTimeout(id)
+      }
+      noPayloadWatchdogRef.current.clear()
+
+      return
+    }
+
+    const id = noPayloadWatchdogRef.current.get(sessionId)
+
+    if (id !== undefined) {
+      window.clearTimeout(id)
+      noPayloadWatchdogRef.current.delete(sessionId)
+    }
+  }, [])
+
+  const armNoPayloadWatchdog = useCallback(
+    (sessionId: string) => {
+      if (typeof window === 'undefined') {
+        return
+      }
+
+      clearNoPayloadWatchdog(sessionId)
+      const timer = window.setTimeout(() => {
+        noPayloadWatchdogRef.current.delete(sessionId)
+
+        updateSessionState(sessionId, state => {
+          if (!state.busy || !state.awaitingResponse || state.sawAssistantPayload) {
+            return state
+          }
+
+          const error =
+            'Hermes started a response but did not deliver any content or tool event. The chat was unlocked; please retry the message or switch models if this repeats.'
+
+          if (activeSessionIdRef.current === sessionId) {
+            setBusy(false)
+            setAwaitingResponse(false)
+            setTurnStartedAt(null)
+          }
+
+          return {
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `assistant-no-payload-${Date.now()}`,
+                role: 'assistant' as const,
+                parts: [],
+                error,
+                pending: false,
+                branchGroupId: state.pendingBranchGroup ?? undefined
+              }
+            ],
+            awaitingResponse: false,
+            busy: false,
+            needsInput: false,
+            pendingBranchGroup: null,
+            sawAssistantPayload: true,
+            streamId: null,
+            turnStartedAt: null
+          }
+        })
+      }, STREAM_START_NO_PAYLOAD_TIMEOUT_MS)
+
+      noPayloadWatchdogRef.current.set(sessionId, timer)
+    },
+    [activeSessionIdRef, clearNoPayloadWatchdog, updateSessionState]
+  )
+
+  useEffect(() => () => clearNoPayloadWatchdog(), [clearNoPayloadWatchdog])
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -874,6 +960,7 @@ export function useMessageStream({
           interrupted: false,
           turnStartedAt: Date.now()
         }))
+        armNoPayloadWatchdog(sessionId)
 
         if (isActiveEvent) {
           setTurnStartedAt(Date.now())
@@ -906,6 +993,7 @@ export function useMessageStream({
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
         setSessionCompacting(sessionId, false)
+        clearNoPayloadWatchdog(sessionId)
 
         flushQueuedDeltas(sessionId)
 
@@ -1112,6 +1200,7 @@ export function useMessageStream({
         if (sessionId) {
           clearAllPrompts(sessionId)
           setSessionCompacting(sessionId, false)
+          clearNoPayloadWatchdog(sessionId)
           compactedTurnRef.current.delete(sessionId)
         }
 
@@ -1146,6 +1235,8 @@ export function useMessageStream({
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      armNoPayloadWatchdog,
+      clearNoPayloadWatchdog,
       completeAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,

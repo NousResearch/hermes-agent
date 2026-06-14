@@ -349,15 +349,20 @@ involving Meta's Graph API:
 cd /path/to/voice
 python3 -m venv /tmp/voice-webrtc-venv
 /tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
-/tmp/voice-webrtc-venv/bin/python examples/webrtc-sidecar/full_duplex_loopback_smoke.py --voice-bin /path/to/voice
+
+cd /path/to/hermes-agent
+VOICE_REPO=/path/to/voice \
+VOICE_WEBRTC_PYTHON=/tmp/voice-webrtc-venv/bin/python \
+  scripts/verify_voice_full_duplex_sidecar.py --voice-bin /path/to/voice
 ```
 
-The full-duplex smoke keeps everything local: it sends one `voice stream`
-utterance through a local WebRTC peer into the sidecar, drains the decoded PCM
-through `voice stream-transcribe`, and simultaneously queues outbound
-`voice stream` PCM back to the same peer. A passing run proves the sidecar,
-PCM contract, inbound STT bridge, and outbound TTS bridge agree before a real
-WhatsApp call is attempted.
+That wrapper runs `examples/webrtc-sidecar/full_duplex_loopback_smoke.py` from
+the `voice` checkout. The full-duplex smoke keeps everything local: it sends
+one `voice stream` utterance through a local WebRTC peer into the sidecar,
+drains the decoded PCM through `voice stream-transcribe`, and simultaneously
+queues outbound `voice stream` PCM back to the same peer. A passing run proves
+the sidecar, PCM contract, inbound STT bridge, and outbound TTS bridge agree
+before a real WhatsApp call is attempted.
 
 Supported stream-command placeholders:
 

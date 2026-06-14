@@ -403,6 +403,7 @@ def voice_contract_command(
         "--text",
         args.voice_contract_text,
         "--require-daemon",
+        "--run-stt-smoke",
     ]
     return command
 

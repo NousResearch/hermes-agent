@@ -147,6 +147,7 @@ def test_voice_contract_command_requires_daemon_and_passes_text():
         "--text",
         "contract text",
         "--require-daemon",
+        "--run-stt-smoke",
     ]
 
 

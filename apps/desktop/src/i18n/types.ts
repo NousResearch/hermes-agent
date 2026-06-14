@@ -233,6 +233,9 @@ export interface Translations {
       testBody: string
       testSent: string
       testUnsupported: string
+      completionSoundTitle: string
+      completionSoundDesc: string
+      completionSoundPreview: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
@@ -253,9 +256,6 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
-      completionSoundTitle: string
-      completionSoundDesc: string
-      completionSoundPreview: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

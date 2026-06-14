@@ -56,6 +56,14 @@ def extract_terms(text: str) -> list[str]:
 
 # ── Term frequency / velocity ───────────────────────────────────────────────
 
+def _bump_term_frequency(conn, counts: dict[str, int], date: str):
+    for term, count in counts.items():
+        conn.execute("""
+            INSERT INTO term_frequency (date, term, frequency) VALUES (?,?,?)
+            ON CONFLICT(date, term) DO UPDATE SET frequency = frequency + excluded.frequency
+        """, (date, term, count))
+
+
 def update_term_frequency(conn, posts: list[dict], date: str):
     """Extract terms from a batch of posts and accumulate today's frequency counts."""
     counts: dict[str, int] = {}
@@ -64,11 +72,18 @@ def update_term_frequency(conn, posts: list[dict], date: str):
         for term in set(extract_terms(text)):  # one count per post per term
             counts[term] = counts.get(term, 0) + 1
 
-    for term, count in counts.items():
-        conn.execute("""
-            INSERT INTO term_frequency (date, term, frequency) VALUES (?,?,?)
-            ON CONFLICT(date, term) DO UPDATE SET frequency = frequency + excluded.frequency
-        """, (date, term, count))
+    _bump_term_frequency(conn, counts, date)
+
+
+def update_term_frequency_raw(conn, terms: list[str], date: str):
+    """Accumulate frequency counts for already-normalized terms (e.g. trending
+    hashtags), bypassing noun-phrase extraction."""
+    counts: dict[str, int] = {}
+    for term in terms:
+        if term:
+            counts[term] = counts.get(term, 0) + 1
+
+    _bump_term_frequency(conn, counts, date)
 
 
 def compute_term_velocity(conn, date: str, config: dict):

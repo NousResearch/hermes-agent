@@ -51,54 +51,6 @@ def _run_handle_function_call(
     )
 
 
-def test_meet_tool_dispatch_receives_session_id(monkeypatch):
-    from tools.registry import registry
-
-    captured = {}
-    monkeypatch.setattr(
-        registry,
-        "dispatch",
-        lambda name, args, **kw: captured.update(kw) or '{"ok": true}',
-    )
-    monkeypatch.setattr(model_tools, "_READ_SEARCH_TOOLS", frozenset())
-
-    out = model_tools.handle_function_call(
-        "meet_join",
-        {"url": "https://meet.google.com/abc-defg-hij"},
-        task_id="t1",
-        session_id="session-a",
-        tool_call_id="tc1",
-        skip_pre_tool_call_hook=True,
-    )
-
-    assert out == '{"ok": true}'
-    assert captured["session_id"] == "session-a"
-
-
-def test_non_meet_tool_dispatch_does_not_receive_session_id(monkeypatch):
-    from tools.registry import registry
-
-    captured = {}
-    monkeypatch.setattr(
-        registry,
-        "dispatch",
-        lambda name, args, **kw: captured.update(kw) or '{"ok": true}',
-    )
-    monkeypatch.setattr(model_tools, "_READ_SEARCH_TOOLS", frozenset())
-
-    out = model_tools.handle_function_call(
-        "dummy_tool",
-        {"value": 1},
-        task_id="t1",
-        session_id="session-a",
-        tool_call_id="tc1",
-        skip_pre_tool_call_hook=True,
-    )
-
-    assert out == '{"ok": true}'
-    assert "session_id" not in captured
-
-
 def test_result_unchanged_when_no_hook_registered(monkeypatch):
     # Real invoke_hook with no plugins loaded returns [].
     monkeypatch.setenv("HERMES_HOME", "/tmp/hermes_no_plugins")

@@ -2280,6 +2280,17 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    # ``--initial-status blocked`` is an explicit operator
+                    # gate, not a dependency wait. Emit the same sticky
+                    # signal as ``block_task`` so recompute_ready/dispatch
+                    # never auto-promote it before an explicit unblock.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

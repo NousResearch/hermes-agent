@@ -49,6 +49,61 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Initial operator blocks must be sticky
+# ---------------------------------------------------------------------------
+
+
+def test_initial_status_blocked_is_sticky(kanban_home: Path) -> None:
+    """A task created directly in ``blocked`` is an operator/human gate,
+    not a dependency wait. It must not be promoted just because its
+    parents are already complete or because it has no parents.
+
+    This pins the CLI contract for ``hermes kanban create --initial-status
+    blocked``: approval-gated cards should skip worker dispatch until an
+    explicit unblock.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="requires oauth approval",
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+
+        for _ in range(5):
+            promoted = kb.recompute_ready(conn)
+            assert promoted == 0, "initial blocked task must not auto-promote"
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "blocked"
+
+
+def test_initial_status_blocked_child_with_done_parent_is_sticky(kanban_home: Path) -> None:
+    """The parent-completion path must not auto-dispatch approval-gated
+    children created with ``initial_status='blocked'``."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        kb.complete_task(conn, parent, result="parent ok")
+        child = kb.create_task(
+            conn,
+            title="requires ads api approval",
+            parents=[parent],
+            initial_status="blocked",
+        )
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "blocked"
+
+
+# ---------------------------------------------------------------------------
 # Worker-initiated kanban_block must be sticky
 # ---------------------------------------------------------------------------
 

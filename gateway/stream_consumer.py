@@ -808,39 +808,63 @@ class GatewayStreamConsumer:
                         and self._message_id is None
                     ):
                         # No existing message to edit (first message or after a
-                        # segment break).  Use truncate_message — the same
-                        # helper the non-streaming path uses — to split with
-                        # proper word/code-fence boundaries and chunk
-                        # indicators like "(1/2)".
-                        chunks = self.adapter.truncate_message(
-                            self._accumulated, _safe_limit, len_fn=_len_fn,
-                        )
+                        # segment break).  Seal only the overflowing head chunks
+                        # as fixed messages, then keep the trailing chunk in
+                        # _accumulated so the normal send/edit path below makes
+                        # it the active preview.  That lets chunk 2, 3, ... keep
+                        # updating in-place as later streamed deltas arrive
+                        # instead of posting every split as an immutable message.
                         chunks_delivered = False
-                        reply_to = self._message_id or self._initial_reply_to_id
-                        for chunk in chunks:
+                        reply_to = self._initial_reply_to_id
+                        while _len_fn(self._accumulated) > _safe_limit:
+                            _cp_budget = _custom_unit_to_cp(
+                                self._accumulated, _safe_limit, _len_fn,
+                            )
+                            split_at = self._accumulated.rfind("\n", 0, _cp_budget)
+                            if split_at < _cp_budget // 2:
+                                split_at = _cp_budget
+                            chunk = self._accumulated[:split_at]
                             new_id = await self._send_new_chunk(
                                 chunk,
                                 reply_to,
                                 final=got_done,
                             )
-                            if new_id is not None and new_id != reply_to:
-                                chunks_delivered = True
-                        self._accumulated = ""
-                        self._last_sent_text = ""
+                            if new_id is None or new_id == reply_to:
+                                # Failed to deliver the sealed head; keep the
+                                # full accumulated text intact so the gateway's
+                                # fallback path can still deliver it completely.
+                                chunks_delivered = False
+                                break
+                            chunks_delivered = True
+                            reply_to = new_id
+                            self._accumulated = self._accumulated[split_at:].lstrip("\n")
+                            # The head chunk is sealed.  Clear the edit target
+                            # so the remaining tail is sent as a fresh active
+                            # chunk, then edited by subsequent deltas.
+                            self._message_id = None
+                            self._message_created_ts = None
+                            self._last_sent_text = ""
+
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            # Only claim final delivery if THESE chunks actually
-                            # landed.  ``_already_sent`` may be True from prior
-                            # tool-progress edits or fallback-mode promotion (#10748)
-                            # — that doesn't mean the final answer reached the user.
-                            self._final_response_sent = chunks_delivered
-                            if chunks_delivered:
+                            tail_delivered = True
+                            if self._accumulated:
+                                tail_delivered = await self._send_or_edit(
+                                    self._accumulated, finalize=True,
+                                )
+                            # Only claim final delivery if the sealed chunks and
+                            # final tail actually landed.  ``_already_sent`` may
+                            # be True from prior progress/fallback state (#10748).
+                            self._final_response_sent = chunks_delivered and tail_delivered
+                            if self._final_response_sent:
                                 self._final_content_delivered = True
                             return
                         if got_segment_break:
                             self._message_id = None
                             self._fallback_final_send = False
                             self._fallback_prefix = ""
+                            if not self._accumulated:
+                                continue
 
                         # This iteration consumed a _FLUSH barrier and delivered
                         # the buffered prose via the chunk loop above, then takes
@@ -861,8 +885,8 @@ class GatewayStreamConsumer:
                             self._accumulated, _safe_limit, _len_fn,
                         )
                         split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
+                        if split_at < _cp_budget // 2:
+                            split_at = _cp_budget
                         chunk = self._accumulated[:split_at]
                         # finalize=True so the adapter applies platform-specific
                         # rich-text markup (e.g. Telegram MarkdownV2). This
@@ -1151,8 +1175,8 @@ class GatewayStreamConsumer:
         while len_fn(remaining) > limit:
             _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
             split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < limit // 2:
-                split_at = limit
+            if split_at < _cp_budget // 2:
+                split_at = _cp_budget
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:

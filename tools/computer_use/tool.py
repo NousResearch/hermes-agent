@@ -132,14 +132,27 @@ def _get_backend() -> ComputerUseBackend:
     global _backend
     with _backend_lock:
         if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
-                from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
-            elif backend_name == "noop":  # pragma: no cover
+            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "auto").lower()
+            if backend_name in {"cua", "cua-driver", "auto"}:
+                if backend_name in {"cua", "cua-driver"} or sys.platform == "darwin":
+                    from tools.computer_use.cua_backend import CuaDriverBackend
+                    _backend = CuaDriverBackend()
+                    if backend_name == "auto" and not _backend.is_available():
+                        _backend.stop()
+                        _backend = None
+            if _backend is None and backend_name in {"pyautogui", "win", "auto"}:
+                if backend_name in {"pyautogui", "win"} or sys.platform == "win32":
+                    try:
+                        from tools.computer_use.win_backend import WinComputerUseBackend
+                        _backend = WinComputerUseBackend()
+                        if backend_name == "auto" and not _backend.is_available():
+                            _backend = None
+                    except ImportError:
+                        pass
+            if _backend is None and backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
-            else:
-                raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
+            if _backend is None:
+                _backend = _NoopBackend()
             _backend.start()
         return _backend
 
@@ -810,12 +823,16 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    macOS: cua-driver binary installed (or override via env).
+    Windows: pyautogui + uiautomation installed.
     """
-    if sys.platform != "darwin":
-        return False
-    from tools.computer_use.cua_backend import cua_driver_binary_available
-    return cua_driver_binary_available()
+    if sys.platform == "darwin":
+        from tools.computer_use.cua_backend import cua_driver_binary_available
+        return cua_driver_binary_available()
+    if sys.platform == "win32":
+        from tools.computer_use.win_backend import _check_pyautogui
+        return _check_pyautogui()
+    return False
 
 
 def get_computer_use_schema() -> Dict[str, Any]:

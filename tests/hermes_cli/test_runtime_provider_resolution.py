@@ -173,6 +173,54 @@ def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     assert resolved["requested_provider"] == "qwen-oauth"
 
 
+def test_resolve_runtime_provider_bedrock_claude_honors_explicit_converse(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "bedrock",
+            "default": "us.anthropic.claude-opus-4-7",
+            "api_mode": "bedrock_converse",
+        },
+    )
+    monkeypatch.setattr("agent.bedrock_adapter.resolve_bedrock_region", lambda: "us-east-1")
+    monkeypatch.setattr(
+        "agent.bedrock_adapter.resolve_aws_auth_env_var",
+        lambda: "AWS_BEARER_TOKEN_BEDROCK",
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="bedrock")
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "bedrock_converse"
+    assert resolved["base_url"] == "https://bedrock-runtime.us-east-1.amazonaws.com"
+    assert resolved["source"] == "AWS_BEARER_TOKEN_BEDROCK"
+    assert "bedrock_anthropic" not in resolved
+
+
+def test_resolve_runtime_provider_bedrock_claude_defaults_to_anthropic_sdk(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "bedrock",
+            "default": "us.anthropic.claude-opus-4-7",
+        },
+    )
+    monkeypatch.setattr("agent.bedrock_adapter.resolve_bedrock_region", lambda: "us-east-1")
+    monkeypatch.setattr("agent.bedrock_adapter.resolve_aws_auth_env_var", lambda: "aws-sdk-default-chain")
+
+    resolved = rp.resolve_runtime_provider(requested="bedrock")
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["bedrock_anthropic"] is True
+
+
 def test_resolve_runtime_provider_uses_qwen_pool_entry(monkeypatch):
     class _Entry:
         access_token = "pool-qwen-token"

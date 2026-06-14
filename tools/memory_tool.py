@@ -745,10 +745,13 @@ MEMORY_SCHEMA = {
         "that will still matter later.\n\n"
         "WHEN TO SAVE (do this proactively, don't wait to be asked):\n"
         "- User corrects you or says 'remember this' / 'don't do that again'\n"
-        "- User shares a preference, habit, or personal detail (name, role, timezone, coding style)\n"
-        "- You discover something about the environment (OS, installed tools, project structure)\n"
-        "- You learn a convention, API quirk, or workflow specific to this user's setup\n"
-        "- You identify a stable fact that will be useful again in future sessions\n\n"
+        "- You identify a durable fact that would change a cold start after weeks of absence\n"
+        "- You discover an environment detail that affects tool selection or workflow\n\n"
+        "DO NOT SAVE:\n"
+        "- Session context (project specifics, ongoing tasks, temporary preferences)\n"
+        "- Personal details that don't shape how you greet or work with them\n"
+        "- Procedural knowledge — save that as a skill, not a memory entry\n"
+        "- Anything that will be stale in 7 days\n\n"
         "PRIORITY: User preferences and corrections > environment facts > procedural knowledge. "
         "The most valuable memory prevents the user from having to repeat themselves.\n\n"
         "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
@@ -760,7 +763,9 @@ MEMORY_SCHEMA = {
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
         "remove (delete -- old_text identifies it).\n\n"
-        "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
+        "SKIP: trivial/obvious info, things easily re-discovered, session-specific details,\n"
+        "and anything that won't matter after this conversation ends.\n"
+        "When in doubt, don't save — err toward fewer, more durable entries."
     ),
     "parameters": {
         "type": "object",

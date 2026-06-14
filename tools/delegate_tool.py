@@ -2975,6 +2975,7 @@ DELEGATE_TASK_SCHEMA = {
     # redirect HERMES_HOME.
     "description": (
         "Spawn one or more subagents in isolated contexts. "
+        "IMPORTANT: Load the delegation-protocol skill before calling this tool. "
         "Description is rebuilt at every get_definitions() call to reflect "
         "the user's current delegation limits."
     ),

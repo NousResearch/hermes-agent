@@ -15,7 +15,6 @@ import hashlib
 import json
 import time
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +25,6 @@ from hermes_cli.auth import (
     MINIMAX_OAUTH_CLIENT_ID,
     MINIMAX_OAUTH_GLOBAL_BASE,
     MINIMAX_OAUTH_GLOBAL_INFERENCE,
-    MINIMAX_OAUTH_CN_BASE,
-    MINIMAX_OAUTH_CN_INFERENCE,
     MINIMAX_OAUTH_REFRESH_SKEW_SECONDS,
     _minimax_pkce_pair,
     _minimax_request_user_code,
@@ -37,7 +34,6 @@ from hermes_cli.auth import (
     resolve_minimax_oauth_runtime_credentials,
     get_minimax_oauth_auth_status,
     get_auth_status,
-    get_provider_auth_state,
 )
 
 

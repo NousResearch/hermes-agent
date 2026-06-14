@@ -39,6 +39,8 @@ def _clean_env(monkeypatch):
     ("https://api.moonshot.ai/v1", False, "Moonshot legacy"),
     ("https://api.minimax.io/anthropic", True, "MiniMax /anthropic"),
     ("https://litellm.example.com/v1/anthropic", True, "/anthropic suffix"),
+    ("https://litellm.example.com/anthropic/v1", True, "/anthropic/v1 base"),
+    ("https://litellm.example.com/anthropic/v1/models", False, "/anthropic/v1 subpath"),
     ("https://api.anthropic.com", True, "native Anthropic"),
     ("https://api.anthropic.com/v1", True, "native Anthropic /v1"),
     ("https://openrouter.ai/api/v1", False, "OpenRouter"),

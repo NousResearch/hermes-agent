@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/cli.py."""
 
 from types import SimpleNamespace
+import json
 
 
 class TestResolveApiKey:
@@ -100,6 +101,84 @@ class TestResolveApiKey:
                 f"expected local sentinel for legacy schemeless {legacy!r}"
 
 
+class TestCmdSetupLocalJwt:
+    """Local-deployment setup must allow configuring a JWT for AUTH_JWT_SECRET-backed Honcho servers."""
+
+    def _run_setup(self, monkeypatch, tmp_path, initial_cfg, prompt_answers):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        # Avoid touching real config / SDK / filesystem.
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: dict(initial_cfg))
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
+        monkeypatch.setattr(honcho_cli, "_ensure_sdk_installed", lambda: True)
+
+        written = {}
+
+        def _capture_write(cfg, path=None):
+            written["cfg"] = cfg
+            written["path"] = path
+
+        monkeypatch.setattr(honcho_cli, "_write_config", _capture_write)
+
+        # Feed scripted prompt answers in order.
+        answers = list(prompt_answers)
+
+        def _fake_prompt(label, default=None, secret=False):
+            if not answers:
+                # Default-through any remaining prompts to keep the wizard moving.
+                return default or ""
+            return answers.pop(0)
+
+        monkeypatch.setattr(honcho_cli, "_prompt", _fake_prompt)
+
+        honcho_cli.cmd_setup(SimpleNamespace())
+        return written.get("cfg")
+
+    def test_local_setup_stores_jwt_under_host_block(self, monkeypatch, tmp_path):
+        """Self-hosted users supplying a JWT must have it written under hosts.<host>.apiKey,
+        not as the top-level cloud apiKey, so cloud/hybrid switching is preserved and
+        get_honcho_client treats it as an explicit local auth opt-in."""
+        cfg = self._run_setup(
+            monkeypatch,
+            tmp_path,
+            initial_cfg={},
+            prompt_answers=[
+                "local",                       # deployment
+                "http://localhost:8000",       # base URL
+                "my-local-jwt-token",          # local JWT
+            ],
+        )
+        assert cfg is not None
+        assert cfg.get("baseUrl") == "http://localhost:8000"
+        # Top-level apiKey must remain unset (cloud field).
+        assert not cfg.get("apiKey")
+        # The new local JWT belongs under the host block.
+        host_block = (cfg.get("hosts") or {}).get("hermes") or {}
+        assert host_block.get("apiKey") == "my-local-jwt-token"
+
+    def test_local_setup_blank_jwt_keeps_local_no_auth(self, monkeypatch, tmp_path):
+        """Blank JWT prompt response on a fresh local config must not introduce an apiKey
+        anywhere (local no-auth Honcho deployments must still work out of the box)."""
+        cfg = self._run_setup(
+            monkeypatch,
+            tmp_path,
+            initial_cfg={},
+            prompt_answers=[
+                "local",
+                "http://localhost:8000",
+                "",  # blank JWT
+            ],
+        )
+        assert cfg is not None
+        assert cfg.get("baseUrl") == "http://localhost:8000"
+        assert not cfg.get("apiKey")
+        host_block = (cfg.get("hosts") or {}).get("hermes") or {}
+        assert not host_block.get("apiKey")
+
+
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli
@@ -192,7 +271,7 @@ class TestCloneHonchoForProfile:
         honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
         ok = honcho_cli.clone_honcho_for_profile("coder")
         assert ok is True
-        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["userPeerAliases"] == {"86701400": "eri", "discord-491827364": "eri"}
 
     def test_runtime_peer_prefix_carries_into_cloned_profile(self, monkeypatch, tmp_path):
@@ -208,7 +287,7 @@ class TestCloneHonchoForProfile:
         honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
         ok = honcho_cli.clone_honcho_for_profile("coder")
         assert ok is True
-        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["runtimePeerPrefix"] == "telegram_"
 
     def test_pin_peer_name_carries_into_cloned_profile(self, monkeypatch, tmp_path):
@@ -224,7 +303,7 @@ class TestCloneHonchoForProfile:
         honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
         ok = honcho_cli.clone_honcho_for_profile("coder")
         assert ok is True
-        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert new_block["pinPeerName"] is True
 
     def test_unset_identity_keys_do_not_appear_in_cloned_profile(self, monkeypatch, tmp_path):
@@ -235,7 +314,7 @@ class TestCloneHonchoForProfile:
         honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
         ok = honcho_cli.clone_honcho_for_profile("coder")
         assert ok is True
-        new_block = written["cfg"]["hosts"]["hermes.coder"]
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
         assert "userPeerAliases" not in new_block
         assert "runtimePeerPrefix" not in new_block
         assert "pinPeerName" not in new_block
@@ -572,5 +651,5 @@ class TestCloneCarriesPinUserPeer:
 
         ok = honcho_cli.clone_honcho_for_profile("partner")
         assert ok is True
-        new_block = written["cfg"]["hosts"]["hermes.partner"]
+        new_block = written["cfg"]["hosts"]["hermes_partner"]
         assert new_block["pinUserPeer"] is True

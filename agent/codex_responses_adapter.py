@@ -127,14 +127,21 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     return converted
 
 
-def _summarize_user_message_for_log(content: Any) -> str:
-    """Return a short text summary of a user message for logging/trajectory.
+def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
+    """Flatten message content to a plain-text summary.
 
     Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
-    parts from the API server.  Logging, spinner previews, and trajectory
-    files all want a plain string — this helper extracts the first chunk of
-    text and notes any attached images.  Returns an empty string for empty
-    lists and ``str(content)`` for unexpected scalar types.
+    parts from the API server.  Several consumers want a plain string:
+
+    - Logging, spinner previews, and trajectory files (the default ``sep=" "``).
+    - External memory providers, which feed the text to regexes
+      (``sanitize_context``) and text APIs — a raw list crashes the sync with
+      ``expected string or bytes-like object, got 'list'`` (use ``sep="\\n"``).
+
+    Text parts are joined with ``sep``; images become a ``[N image(s)]`` marker
+    so the turn isn't recorded as if the attachment never existed.  Returns an
+    empty string for empty lists and ``str(content)`` for unexpected scalar
+    types.
     """
     if content is None:
         return ""
@@ -157,7 +164,7 @@ def _summarize_user_message_for_log(content: Any) -> str:
                     text_bits.append(text)
             elif ptype in {"image_url", "input_image"}:
                 image_count += 1
-        summary = " ".join(text_bits).strip()
+        summary = sep.join(text_bits).strip()
         if image_count:
             note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
             summary = f"{note} {summary}" if summary else note
@@ -980,6 +987,48 @@ def _extract_responses_reasoning_text(item: Any) -> str:
     return ""
 
 
+def _format_responses_error(error_obj: Any, response_status: str) -> str:
+    """Build a human-readable error string from a Responses ``response.error`` payload.
+
+    The OpenAI Responses API carries failure details under ``response.error``
+    on terminal ``response.failed`` events, in the shape
+    ``{"code": "rate_limit_exceeded", "message": "Slow down", "param": ...}``.
+    Earlier code only surfaced ``message``, which left users staring at bare
+    strings like ``"Slow down"`` while the failure mode (rate limit vs
+    context-length vs internal_error vs model-overloaded) was hidden in
+    ``code``. We now prefix ``code`` when both are present so consumers can
+    distinguish failure modes without parsing the bare message.
+
+    Falls back to ``code`` alone when ``message`` is empty, and to a stable
+    default referencing the response status when no error payload is
+    available at all. Adapted from anomalyco/opencode#28757.
+    """
+    # Pull code and message from either dict or attribute-style payloads.
+    code: Any = None
+    message: Any = None
+    if isinstance(error_obj, dict):
+        code = error_obj.get("code")
+        message = error_obj.get("message")
+    elif error_obj is not None:
+        code = getattr(error_obj, "code", None)
+        message = getattr(error_obj, "message", None)
+
+    code_str = str(code).strip() if isinstance(code, str) else (str(code).strip() if code else "")
+    message_str = str(message).strip() if isinstance(message, str) else (str(message).strip() if message else "")
+
+    if code_str and message_str:
+        return f"{code_str}: {message_str}"
+    if message_str:
+        return message_str
+    if code_str:
+        return code_str
+    if error_obj:
+        # Last-resort: stringify whatever the provider sent so it's at least
+        # visible in logs/UI rather than silently swallowed.
+        return str(error_obj)
+    return f"Responses API returned status '{response_status}'"
+
+
 # ---------------------------------------------------------------------------
 # Full response normalization
 # ---------------------------------------------------------------------------
@@ -1023,10 +1072,7 @@ def _normalize_codex_response(
 
     if response_status in {"failed", "cancelled"}:
         error_obj = getattr(response, "error", None)
-        if isinstance(error_obj, dict):
-            error_msg = error_obj.get("message") or str(error_obj)
-        else:
-            error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
+        error_msg = _format_responses_error(error_obj, response_status)
         raise RuntimeError(error_msg)
 
     content_parts: List[str] = []
@@ -1035,6 +1081,7 @@ def _normalize_codex_response(
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+    saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
     saw_reasoning_item = False
@@ -1049,6 +1096,7 @@ def _normalize_codex_response(
 
         if item_status in {"queued", "in_progress", "incomplete"}:
             has_incomplete_items = True
+            saw_streaming_or_item_incomplete = True
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
@@ -1206,7 +1254,9 @@ def _normalize_codex_response(
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+    elif saw_streaming_or_item_incomplete:
+        finish_reason = "incomplete"
+    elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or

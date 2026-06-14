@@ -4,14 +4,13 @@ This uses a real AIAgent with mocked HTTP responses to test the complete
 interrupt flow through _run_single_child → child.run_conversation().
 """
 
-import json
 import os
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-from tools.interrupt import set_interrupt, is_interrupted
+from tools.interrupt import set_interrupt
 
 
 def _make_slow_api_response(delay=5.0):

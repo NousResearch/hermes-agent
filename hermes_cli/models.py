@@ -282,6 +282,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
@@ -2369,6 +2370,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
+                    if normalized in {"kimi-coding", "kimi-coding-cn"}:
+                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        merged = list(curated)
+                        merged_lower = {m.lower() for m in curated}
+                        for m in live:
+                            if m.lower() not in merged_lower:
+                                merged.append(m)
+                                merged_lower.add(m.lower())
+                        return merged
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:

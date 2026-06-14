@@ -33,6 +33,7 @@ from gateway.platforms.yuanbao import (
     ChatRoutingMiddleware,
     AccessPolicy,
     AccessGuardMiddleware,
+    AutoSetHomeMiddleware,
     ExtractContentMiddleware,
     PlaceholderFilterMiddleware,
     OwnerCommandMiddleware,
@@ -483,8 +484,9 @@ class TestChatRoutingMiddleware:
 
 class TestAccessGuardMiddleware:
     @pytest.mark.asyncio
-    async def test_open_policy_passes(self):
-        """AccessGuardMiddleware passes with open policy."""
+    async def test_open_policy_passes_with_opt_in(self, monkeypatch):
+        """AccessGuardMiddleware passes open policy only with explicit opt-in."""
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
         adapter = make_adapter()
         adapter._access_policy = AccessPolicy(dm_policy="open", dm_allow_from=[], group_policy="open", group_allow_from=[])
         ctx = make_ctx(adapter=adapter, chat_type="dm", from_account="alice")
@@ -492,6 +494,19 @@ class TestAccessGuardMiddleware:
 
         await AccessGuardMiddleware()(ctx, next_fn)
         next_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_open_policy_blocked_without_opt_in(self, monkeypatch):
+        """AccessGuardMiddleware blocks open policy without explicit opt-in."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(dm_policy="open", dm_allow_from=[], group_policy="open", group_allow_from=[])
+        ctx = make_ctx(adapter=adapter, chat_type="dm", from_account="alice")
+        next_fn = AsyncMock()
+
+        await AccessGuardMiddleware()(ctx, next_fn)
+        next_fn.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_disabled_dm_stops(self):
@@ -547,6 +562,159 @@ class TestAccessGuardMiddleware:
 
         await AccessGuardMiddleware()(ctx, next_fn)
         next_fn.assert_awaited_once()
+
+
+class TestAutoSetHomeMiddleware:
+    @pytest.mark.asyncio
+    async def test_pairing_unapproved_dm_does_not_set_home(self, monkeypatch, tmp_path):
+        """Intake-only pairing DMs must not claim YUANBAO_HOME_CHANNEL."""
+        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        adapter = make_adapter()
+        adapter._auto_sethome_done = False
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            chat_id="direct:unapproved-sender",
+            from_account="unapproved-sender",
+        )
+        next_fn = AsyncMock()
+
+        with patch("gateway.pairing.PairingStore") as mock_store_cls:
+            mock_store_cls.return_value.is_approved.return_value = False
+            await AutoSetHomeMiddleware()(ctx, next_fn)
+
+        assert "YUANBAO_HOME_CHANNEL" not in os.environ
+        assert not (tmp_path / "config.yaml").exists()
+        next_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_pairing_approved_dm_sets_home(self, monkeypatch, tmp_path):
+        """Pairing-approved senders may auto-designate the home channel."""
+        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        adapter = make_adapter()
+        adapter._auto_sethome_done = False
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            chat_id="direct:approved-sender",
+            from_account="approved-sender",
+            chat_name="Approved",
+        )
+        next_fn = AsyncMock()
+
+        with patch("gateway.pairing.PairingStore") as mock_store_cls:
+            mock_store_cls.return_value.is_approved.return_value = True
+            await AutoSetHomeMiddleware()(ctx, next_fn)
+
+        assert os.environ.get("YUANBAO_HOME_CHANNEL") == "direct:approved-sender"
+        next_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_allowlist_dm_sets_home(self, monkeypatch, tmp_path):
+        """Allowlisted senders may auto-designate the home channel."""
+        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        adapter = make_adapter()
+        adapter._auto_sethome_done = False
+        adapter._access_policy = AccessPolicy(
+            dm_policy="allowlist",
+            dm_allow_from=["alice"],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            chat_id="direct:alice",
+            from_account="alice",
+            chat_name="Alice",
+        )
+        next_fn = AsyncMock()
+
+        await AutoSetHomeMiddleware()(ctx, next_fn)
+
+        assert os.environ.get("YUANBAO_HOME_CHANNEL") == "direct:alice"
+        next_fn.assert_awaited_once()
+
+
+class TestSenderMayDesignateHome:
+    def test_pairing_unapproved_sender_denied(self, monkeypatch):
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            from_account="unapproved-sender",
+        )
+
+        with patch("gateway.pairing.PairingStore") as mock_store_cls:
+            mock_store_cls.return_value.is_approved.return_value = False
+            assert adapter._sender_may_designate_home(ctx) is False
+
+    def test_pairing_approved_sender_allowed(self):
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            from_account="approved-sender",
+        )
+
+        with patch("gateway.pairing.PairingStore") as mock_store_cls:
+            mock_store_cls.return_value.is_approved.return_value = True
+            assert adapter._sender_may_designate_home(ctx) is True
+
+    def test_allowlist_sender_allowed(self):
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="allowlist",
+            dm_allow_from=["alice"],
+            group_policy="pairing",
+            group_allow_from=[],
+        )
+        ctx = make_ctx(
+            adapter=adapter,
+            chat_type="dm",
+            from_account="alice",
+        )
+        assert adapter._sender_may_designate_home(ctx) is True
 
 
 class TestExtractContentMiddleware:
@@ -695,11 +863,11 @@ class TestCreateInboundPipeline:
             "skip-self",
             "chat-routing",
             "access-guard",
-            "auto-sethome",
             "extract-content",
             "placeholder-filter",
             "owner-command",
             "build-source",
+            "auto-sethome",
             "group-at-guard",
             "group-attribution",
             "classify-msg-type",
@@ -718,8 +886,9 @@ class TestCreateInboundPipeline:
 
 class TestPipelineIntegration:
     @pytest.mark.asyncio
-    async def test_full_dm_message_flow(self):
+    async def test_full_dm_message_flow(self, monkeypatch):
         """Full pipeline processes a DM message end-to-end."""
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
         adapter = make_adapter()
         adapter._bot_id = "bot_123"
         adapter._access_policy = AccessPolicy(dm_policy="open", dm_allow_from=[], group_policy="open", group_allow_from=[])

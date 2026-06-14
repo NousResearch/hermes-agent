@@ -1620,13 +1620,17 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     Triggers when no home channel is configured, or when an existing group-chat
     home is superseded by the first DM (direct > group upgrade).
     Silent: writes config.yaml and env, no user-facing message.
+
+    Runs after :class:`BuildSourceMiddleware` and only for senders that pass
+    strict authorization (allowlist / explicit open opt-in / pairing-store
+    approval). Intake-only pairing forwards must not claim ``YUANBAO_HOME_CHANNEL``.
     """
 
     name = "auto-sethome"
 
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
-        if not adapter._auto_sethome_done:
+        if not adapter._auto_sethome_done and adapter._sender_may_designate_home(ctx):
             _cur_home = os.getenv("YUANBAO_HOME_CHANNEL", "")
             _should_set = (
                 not _cur_home
@@ -3199,11 +3203,11 @@ class InboundPipelineBuilder:
         SkipSelfMiddleware,
         ChatRoutingMiddleware,
         AccessGuardMiddleware,
-        AutoSetHomeMiddleware,
         ExtractContentMiddleware,
         PlaceholderFilterMiddleware,
         OwnerCommandMiddleware,
         BuildSourceMiddleware,
+        AutoSetHomeMiddleware,
         GroupAtGuardMiddleware,
         GroupAttributionMiddleware,
         ClassifyMessageTypeMiddleware,
@@ -5132,6 +5136,36 @@ class YuanbaoAdapter(BasePlatformAdapter):
     def enforces_own_access_policy(self) -> bool:
         """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
         return True
+
+    def _sender_may_designate_home(self, ctx: InboundContext) -> bool:
+        """True when the sender may persist ``YUANBAO_HOME_CHANNEL``.
+
+        Intake-only pairing forwards are excluded until the sender is on the
+        strict allowlist, has explicit open-world opt-in, or is approved in the
+        pairing store.
+        """
+        policy: AccessPolicy = self._access_policy
+        sender = str(ctx.from_account or "").strip()
+        if not sender:
+            return False
+        if ctx.chat_type == "dm":
+            if policy.is_dm_allowed(sender):
+                return True
+            if policy.dm_policy == "pairing":
+                from gateway.pairing import PairingStore
+
+                return PairingStore().is_approved(Platform.YUANBAO.value, sender)
+            return False
+        if ctx.chat_type == "group":
+            group_code = str(ctx.group_code or "").strip()
+            if not group_code:
+                return False
+            if policy.group_policy == "allowlist":
+                return policy.is_group_allowed(group_code)
+            if policy.group_policy == "open":
+                return policy._open_dm_opted_in()
+            return False
+        return False
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Yuanbao WS gateway and authenticate.

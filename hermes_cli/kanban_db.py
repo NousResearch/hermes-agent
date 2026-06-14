@@ -5916,14 +5916,39 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+    # 4. GitHub PR URL in a recent comment — a PRIOR worker of THIS card
+    #    already opened a PR; re-spawning risks a duplicate PR.
+    #
+    #    Deadlock fix (2026-06-12): this guard must only fire when THIS card's
+    #    own worker actually ran and opened a PR — i.e. there is a prior
+    #    `spawned` event AND the PR-URL comment was posted at/after that first
+    #    spawn. Without the spawn anchor, a reviewer / merge-gate card got
+    #    permanently guarded by the impl worker's handoff comment ("PR:
+    #    https://github.com/.../pull/N"), which is posted to the *child* card
+    #    BEFORE the child ever spawns. That comment is exactly the PR the
+    #    reviewer is supposed to look at, so guarding on it deadlocked the
+    #    child: it sat `ready`, emitting `respawn_guarded {reason: active_pr}`
+    #    every tick, never claimed/spawned. Anchoring on the card's own first
+    #    spawn keeps the anti-duplicate-PR protection for a real impl respawn
+    #    (spawned → opened PR → crashed → would respawn) while letting a
+    #    fresh child (0 spawns) start even when its comments reference an
+    #    upstream PR.
+    first_spawn = conn.execute(
+        "SELECT MIN(created_at) AS ts FROM task_events "
+        "WHERE task_id = ? AND kind = 'spawned'",
+        (task_id,),
+    ).fetchone()
+    first_spawn_at = first_spawn["ts"] if first_spawn is not None else None
+    if first_spawn_at is not None:
+        pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+        comment_floor = max(pr_cutoff, int(first_spawn_at))
+        for c in conn.execute(
+            "SELECT body FROM task_comments "
+            "WHERE task_id = ? AND created_at >= ?",
+            (task_id, comment_floor),
+        ).fetchall():
+            if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+                return "active_pr"
 
     return None
 

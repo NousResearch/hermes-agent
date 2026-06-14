@@ -212,6 +212,8 @@ function friendlyRemoteAttachError(err: unknown, label: string): Error {
 
 type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
+const SUBMIT_STREAM_START_WATCHDOG_MS = 30_000
+
 /**
  * Stage one file/image attachment into the session workspace and return the
  * attachment rewritten with the gateway-side ref. Images upload their bytes in
@@ -757,6 +759,58 @@ export function usePromptActions({
         if (submitErr !== null) {
           throw submitErr
         }
+
+        const submittedSessionId = sessionId
+        window.setTimeout(() => {
+          updateSessionState(
+            submittedSessionId,
+            state => {
+              // Only unlock the "nothing happened" failure mode: prompt.submit
+              // returned OK, but no message.start/message.delta/tool event ever
+              // moved the session out of the optimistic awaiting state. Legitimate
+              // long-running turns have turnStartedAt (set by message.start), a
+              // streamId, or already saw assistant/tool payload.
+              if (
+                !state.busy ||
+                !state.awaitingResponse ||
+                state.sawAssistantPayload ||
+                state.streamId ||
+                state.turnStartedAt
+              ) {
+                return state
+              }
+
+              if (activeSessionIdRef.current === submittedSessionId) {
+                setMutableRef(busyRef, false)
+                setBusy(false)
+                setAwaitingResponse(false)
+              }
+
+              return {
+                ...state,
+                messages: [
+                  ...state.messages,
+                  {
+                    id: `assistant-no-stream-start-${Date.now()}`,
+                    role: 'assistant' as const,
+                    parts: [],
+                    error:
+                      'Hermes accepted the prompt but did not start a response stream. The chat was unlocked; please retry the message.',
+                    pending: false,
+                    branchGroupId: state.pendingBranchGroup ?? undefined
+                  }
+                ],
+                awaitingResponse: false,
+                busy: false,
+                pendingBranchGroup: null,
+                sawAssistantPayload: true,
+                streamId: null,
+                turnStartedAt: null
+              }
+            },
+            selectedStoredSessionIdRef.current
+          )
+        }, SUBMIT_STREAM_START_WATCHDOG_MS)
 
         if (usingComposerAttachments) {
           clearComposerAttachments()
@@ -1410,6 +1464,8 @@ export function usePromptActions({
     }
 
     setAwaitingResponse(false)
+    setMutableRef(busyRef, false)
+    setBusy(false)
 
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages

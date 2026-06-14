@@ -1282,6 +1282,8 @@ export const ja = defineLocale({
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',
+    refresh: 'セッションを更新',
+    refreshing: 'セッションを更新中…',
     clearSearch: '検索をクリア',
     noMatch: query => `"${query}" に一致するセッションがありません。`,
     results: '結果',

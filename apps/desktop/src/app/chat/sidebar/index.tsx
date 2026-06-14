@@ -38,6 +38,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useWorktreeInfo } from '@/hooks/use-worktree-info'
 import { useI18n } from '@/i18n'
+import { RefreshCw } from '@/lib/icons'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
@@ -303,6 +304,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
+  onRefreshSessions: () => Promise<void> | void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -317,6 +319,7 @@ export function ChatSidebar({
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
   onLoadMoreMessaging,
+  onRefreshSessions,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -874,14 +877,28 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {contentVisible && showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          <div className="flex shrink-0 items-center gap-1 px-2 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
+              containerClassName="min-w-0 flex-1"
               inputRef={searchInputRef}
               onChange={setSearchQuery}
               placeholder={s.searchPlaceholder}
               value={searchQuery}
             />
+            <Tip label={sessionsLoading ? s.refreshing : s.refresh}>
+              <Button
+                aria-label={sessionsLoading ? s.refreshing : s.refresh}
+                className="size-7 shrink-0 rounded-md text-(--ui-text-secondary) hover:text-foreground"
+                disabled={sessionsLoading}
+                onClick={() => void onRefreshSessions()}
+                size="icon"
+                type="button"
+                variant="ghost"
+              >
+                <RefreshCw className={cn('size-3.5', sessionsLoading && 'animate-spin')} />
+              </Button>
+            </Tip>
           </div>
         )}
 

@@ -193,6 +193,7 @@ export function DesktopController() {
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
   const refreshSessionsRequestRef = useRef(0)
+  const lastFocusRefreshAtRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -792,6 +793,40 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
 
+  // Gateway sessions can change while Desktop is sitting idle (for example, a
+  // Telegram/Discord conversation receives new messages). Refresh the sidebar
+  // when the user returns to the window so messaging sessions appear without a
+  // full app restart. Keep this focus-driven instead of polling: session lists
+  // can span profiles/remotes, and a short throttle absorbs duplicate
+  // focus+visibility events from Chromium/Electron.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    const refreshOnFocus = () => {
+      if (document.visibilityState !== 'visible') {
+        return
+      }
+
+      const now = Date.now()
+      if (now - lastFocusRefreshAtRef.current < 10_000) {
+        return
+      }
+
+      lastFocusRefreshAtRef.current = now
+      void refreshSessions().catch(() => undefined)
+    }
+
+    window.addEventListener('focus', refreshOnFocus)
+    document.addEventListener('visibilitychange', refreshOnFocus)
+
+    return () => {
+      window.removeEventListener('focus', refreshOnFocus)
+      document.removeEventListener('visibilitychange', refreshOnFocus)
+    }
+  }, [gatewayState, refreshSessions])
+
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the
   // job list on an interval (and on tab re-focus) while connected.
@@ -870,6 +905,7 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onRefreshSessions={refreshSessions}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)

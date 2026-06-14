@@ -1330,6 +1330,8 @@ export const zh: Translations = {
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',
+    refresh: '刷新会话',
+    refreshing: '正在刷新会话…',
     clearSearch: '清除搜索',
     noMatch: query => `没有会话匹配"${query}"。`,
     results: '结果',

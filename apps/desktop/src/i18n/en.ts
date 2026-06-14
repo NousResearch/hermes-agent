@@ -1142,6 +1142,8 @@ export const en: Translations = {
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
+    refresh: 'Refresh sessions',
+    refreshing: 'Refreshing sessions…',
     clearSearch: 'Clear search',
     noMatch: query => `No sessions match “${query}”.`,
     results: 'Results',

@@ -1236,6 +1236,8 @@ export const zhHant = defineLocale({
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',
+    refresh: '重新整理工作階段',
+    refreshing: '正在重新整理工作階段…',
     clearSearch: '清除搜尋',
     noMatch: query => `沒有工作階段符合「${query}」。`,
     results: '結果',

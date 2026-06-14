@@ -55,6 +55,15 @@ def test_scores_pass_metrics_cost_latency_and_vera_precision_recall():
     assert summary["overall"]["pass@1"] == pytest.approx(2 / 3)
     assert summary["overall"]["pass^2"] == 1.0
     assert summary["overall"]["cost_usd"] == 0.53
+    assert summary["overall"]["cost"] == {
+        "usd": 0.53,
+        "known_usd": 0.53,
+        "known_attempts": 5,
+        "unknown_attempts": 0,
+        "actual_attempts": 5,
+        "estimated_attempts": 0,
+        "included_attempts": 0,
+    }
     assert summary["overall"]["latency_ms"]["mean"] == 1120
     assert summary["agents"]["bob"]["pass@1"] == 1.0
     assert summary["agents"]["steve"]["pass@1"] == 0.0
@@ -150,6 +159,8 @@ def test_explicit_fixture_cost_wins_over_estimated_cost(tmp_path, monkeypatch):
     tasks = load_fixture(fixture)
 
     assert tasks[0].attempts[0].cost_usd == 0.99
+    assert tasks[0].attempts[0].cost_status == "actual"
+    assert tasks[0].attempts[0].cost_source == "fixture"
 
 
 def test_load_fixture_estimates_cost_from_known_static_provider_when_cost_missing(tmp_path, monkeypatch):
@@ -160,7 +171,11 @@ def test_load_fixture_estimates_cost_from_known_static_provider_when_cost_missin
         seen["provider"] = provider
         seen["base_url"] = base_url
         seen["usage"] = usage
-        return SimpleNamespace(amount_usd=Decimal("1.2345674"))
+        return SimpleNamespace(
+            amount_usd=Decimal("1.2345674"),
+            status="estimated",
+            source="official_docs_snapshot",
+        )
 
     monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _fake_estimator)
     fixture = tmp_path / "fixture.json"
@@ -186,14 +201,18 @@ def test_load_fixture_estimates_cost_from_known_static_provider_when_cost_missin
     summary = score_eval_suite(tasks)
 
     assert tasks[0].attempts[0].cost_usd == 1.234567
+    assert tasks[0].attempts[0].cost_status == "estimated"
+    assert tasks[0].attempts[0].cost_source == "official_docs_snapshot"
     assert summary["overall"]["cost_usd"] == 1.234567
+    assert summary["overall"]["cost"]["estimated_attempts"] == 1
+    assert summary["overall"]["cost"]["unknown_attempts"] == 0
     assert seen["model_name"] == "claude-sonnet-4-6"
     assert seen["provider"] == "anthropic"
     assert seen["usage"].input_tokens == 1000
     assert seen["usage"].output_tokens == 200
 
 
-def test_remote_pricing_routes_do_not_fetch_metadata_and_return_zero(tmp_path, monkeypatch):
+def test_remote_pricing_routes_do_not_fetch_metadata_and_stay_unknown(tmp_path, monkeypatch):
     def _forbid_remote_fetch(*args, **kwargs):
         raise AssertionError("offline B3 fixtures must not fetch remote pricing metadata")
 
@@ -249,8 +268,18 @@ def test_remote_pricing_routes_do_not_fetch_metadata_and_return_zero(tmp_path, m
     tasks = load_fixture(fixture)
     summary = score_eval_suite(tasks)
 
-    assert [task.attempts[0].cost_usd for task in tasks] == [0.0, 0.0, 0.0]
+    assert [task.attempts[0].cost_usd for task in tasks] == [None, None, None]
+    assert [task.attempts[0].cost_status for task in tasks] == ["unknown", "unknown", "unknown"]
     assert summary["overall"]["cost_usd"] == 0.0
+    assert summary["overall"]["cost"] == {
+        "usd": 0.0,
+        "known_usd": 0.0,
+        "known_attempts": 0,
+        "unknown_attempts": 3,
+        "actual_attempts": 0,
+        "estimated_attempts": 0,
+        "included_attempts": 0,
+    }
 
 
 def test_metadata_model_and_provider_are_accepted(tmp_path, monkeypatch):
@@ -259,7 +288,11 @@ def test_metadata_model_and_provider_are_accepted(tmp_path, monkeypatch):
     def _fake_estimator(model_name, usage, *, provider=None, base_url=None):
         seen["model_name"] = model_name
         seen["provider"] = provider
-        return SimpleNamespace(amount_usd=Decimal("0.42"))
+        return SimpleNamespace(
+            amount_usd=Decimal("0.42"),
+            status="estimated",
+            source="official_docs_snapshot",
+        )
 
     monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _fake_estimator)
     fixture = tmp_path / "fixture.json"
@@ -283,7 +316,94 @@ def test_metadata_model_and_provider_are_accepted(tmp_path, monkeypatch):
     tasks = load_fixture(fixture)
 
     assert tasks[0].attempts[0].cost_usd == 0.42
+    assert tasks[0].attempts[0].cost_status == "estimated"
     assert seen == {"model_name": "claude-sonnet-4-6", "provider": "anthropic"}
+
+
+def test_vendor_prefixed_model_without_explicit_provider_stays_unknown(tmp_path, monkeypatch):
+    def _unexpected_estimator(*args, **kwargs):
+        raise AssertionError("vendor-prefixed model alone is not a trusted provider route")
+
+    monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _unexpected_estimator)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "vendor-prefixed-only",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "metadata": {"model": "anthropic/claude-sonnet-4-20250514"},
+                        "usage": {"input_tokens": 1000, "output_tokens": 200},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd is None
+    assert tasks[0].attempts[0].cost_status == "unknown"
+    assert tasks[0].attempts[0].cost_source == "none"
+    assert summary["overall"]["cost_usd"] == 0.0
+    assert summary["overall"]["cost"]["unknown_attempts"] == 1
+
+
+def test_subscription_included_route_counts_as_known_included(tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "codex-included",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "provider": "openai-codex",
+                        "model": "gpt-5.1-codex",
+                        "usage": {"input_tokens": 1000, "output_tokens": 200},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd == 0.0
+    assert tasks[0].attempts[0].cost_status == "included"
+    assert summary["overall"]["cost"]["known_attempts"] == 1
+    assert summary["overall"]["cost"]["included_attempts"] == 1
+    assert summary["overall"]["cost"]["unknown_attempts"] == 0
+
+
+@pytest.mark.parametrize(
+    "attempt, expected_status",
+    [
+        ({"passed": True, "usage": {"input_tokens": 1000, "output_tokens": 200}}, "unknown"),
+        ({"passed": True, "provider": "anthropic", "model": "claude-sonnet-4-6"}, "no_usage"),
+    ],
+)
+def test_missing_model_or_zero_usage_is_not_reported_as_exact_free(tmp_path, attempt, expected_status):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps({"task_id": "missing-cost-input", "agent": "steve", "attempts": [attempt]}),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd is None
+    assert tasks[0].attempts[0].cost_status == expected_status
+    assert summary["overall"]["cost_usd"] == 0.0
+    assert summary["overall"]["cost"]["unknown_attempts"] == 1
 
 
 def test_cache_read_and_write_token_fields_are_passed_to_static_estimator(tmp_path, monkeypatch):

@@ -17,7 +17,9 @@ class EvalAttempt:
     """One offline candidate/run for a fixture-backed eval task."""
 
     passed: bool
-    cost_usd: float = 0.0
+    cost_usd: float | None = 0.0
+    cost_status: str = "actual"
+    cost_source: str = "fixture"
     latency_ms: int = 0
     api_calls: int = 0
     model: str = ""
@@ -46,6 +48,13 @@ class EvalTask:
     expected_findings: Sequence[VeraFinding] = field(default_factory=tuple)
     reported_findings: Sequence[VeraFinding] = field(default_factory=tuple)
     source: str = "fixture"
+
+
+@dataclass(frozen=True)
+class CostTelemetry:
+    amount_usd: float | None
+    status: str
+    source: str = "none"
 
 
 # UNKNOWN(MAT-524): MiniSWERunner currently emits `completed`, `api_calls`, and
@@ -82,6 +91,20 @@ def _cost_sum(attempts: Iterable[EvalAttempt]) -> float:
     return _round_float(sum(float(a.cost_usd or 0.0) for a in attempts), 6)
 
 
+def _cost_summary(attempts: Sequence[EvalAttempt], known_total: float | None = None) -> dict[str, float | int]:
+    known_statuses = {"actual", "estimated", "included"}
+    known_total_usd = _cost_sum(attempts) if known_total is None else known_total
+    return {
+        "usd": known_total_usd,
+        "known_usd": known_total_usd,
+        "known_attempts": sum(1 for attempt in attempts if attempt.cost_status in known_statuses),
+        "unknown_attempts": sum(1 for attempt in attempts if attempt.cost_status not in known_statuses),
+        "actual_attempts": sum(1 for attempt in attempts if attempt.cost_status == "actual"),
+        "estimated_attempts": sum(1 for attempt in attempts if attempt.cost_status == "estimated"),
+        "included_attempts": sum(1 for attempt in attempts if attempt.cost_status == "included"),
+    }
+
+
 def _usage_block(record: Mapping[str, Any]) -> Mapping[str, Any]:
     for key in _USAGE_KEYS:
         block = record.get(key)
@@ -108,8 +131,6 @@ def _extract_text_field(record: Mapping[str, Any], *keys: str) -> str:
 
 def _extract_provider(record: Mapping[str, Any], model: str = "") -> str:
     provider = _extract_text_field(record, "provider", "provider_name")
-    if not provider and "/" in model:
-        provider = model.split("/", 1)[0]
     return provider.strip().lower()
 
 
@@ -117,12 +138,16 @@ def _extract_base_url(record: Mapping[str, Any]) -> str:
     return _extract_text_field(record, "base_url", "api_base", "endpoint", "endpoint_url")
 
 
-def _extract_cost(record: Mapping[str, Any]) -> float:
+def _extract_cost(record: Mapping[str, Any]) -> CostTelemetry:
     usage = _usage_block(record)
     for source in (usage, record):
         for key in ("cost_usd", "actual_cost_usd", "estimated_cost_usd"):
             if key in source:
-                return _as_float(source.get(key))
+                return CostTelemetry(
+                    amount_usd=_as_float(source.get(key)),
+                    status="actual",
+                    source="fixture",
+                )
 
     model = _extract_model(record)
     provider = _extract_provider(record, model)
@@ -133,8 +158,12 @@ def _extract_cost(record: Mapping[str, Any]) -> float:
         cache_write_tokens=_extract_token_count(record, "cache_write_tokens", "cache_creation_input_tokens"),
         request_count=max(0, _extract_token_count(record, "api_calls", "request_count")),
     )
-    if not model or canonical_usage.total_tokens <= 0:
-        return 0.0
+    if not model:
+        return CostTelemetry(amount_usd=None, status="unknown", source="none")
+    if canonical_usage.total_tokens <= 0:
+        return CostTelemetry(amount_usd=None, status="no_usage", source="none")
+    if not provider and not _extract_base_url(record):
+        return CostTelemetry(amount_usd=None, status="unknown", source="none")
 
     result = estimate_usage_cost_from_static_pricing(
         model,
@@ -143,8 +172,16 @@ def _extract_cost(record: Mapping[str, Any]) -> float:
         base_url=_extract_base_url(record) or None,
     )
     if result.amount_usd is None:
-        return 0.0
-    return _round_float(float(result.amount_usd), 6)
+        return CostTelemetry(
+            amount_usd=None,
+            status=getattr(result, "status", "unknown"),
+            source=getattr(result, "source", "none"),
+        )
+    return CostTelemetry(
+        amount_usd=_round_float(float(result.amount_usd), 6),
+        status=getattr(result, "status", "estimated"),
+        source=getattr(result, "source", "static_pricing"),
+    )
 
 
 def _extract_latency_ms(record: Mapping[str, Any]) -> int:
@@ -211,9 +248,12 @@ def _normalize_findings(raw: Any) -> tuple[VeraFinding, ...]:
 
 def _attempt_from_record(record: Mapping[str, Any]) -> EvalAttempt:
     passed = bool(record.get("passed", record.get("completed", record.get("success", False))))
+    cost = _extract_cost(record)
     return EvalAttempt(
         passed=passed,
-        cost_usd=_extract_cost(record),
+        cost_usd=cost.amount_usd,
+        cost_status=cost.status,
+        cost_source=cost.source,
         latency_ms=_extract_latency_ms(record),
         api_calls=_as_int(record.get("api_calls", record.get("request_count", 0))),
         model=_extract_model(record),
@@ -335,12 +375,14 @@ def _vera_counts(tasks: Sequence[EvalTask]) -> dict[str, float | int]:
 
 def _score_group(tasks: Sequence[EvalTask], *, k: int) -> dict[str, Any]:
     attempts = [attempt for task in tasks for attempt in task.attempts]
+    known_cost_usd = _cost_sum(attempts)
     result: dict[str, Any] = {
         "task_count": len(tasks),
         "attempt_count": len(attempts),
         "pass@1": _round_float(_pass_at_1(tasks), 6),
         f"pass^{k}": _round_float(_pass_power_k(tasks, k), 6),
-        "cost_usd": _cost_sum(attempts),
+        "cost_usd": known_cost_usd,
+        "cost": _cost_summary(attempts, known_cost_usd),
         "latency_ms": _latency_summary(attempts),
         "api_calls": sum(attempt.api_calls for attempt in attempts),
         "input_tokens": sum(attempt.input_tokens for attempt in attempts),

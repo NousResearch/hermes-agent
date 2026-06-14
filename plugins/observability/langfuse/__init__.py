@@ -701,6 +701,20 @@ def _end_observation(observation: Any, *, output: Any = None, metadata: Optional
         _debug(f"end observation failed: {exc}")
 
 
+def _exit_root_context(state: TraceState) -> None:
+    """Detach the manually-entered Langfuse/OpenTelemetry root context."""
+    root_ctx = getattr(state, "root_ctx", None)
+    if root_ctx is None:
+        return
+    exit_fn = getattr(root_ctx, "__exit__", None)
+    if exit_fn is None:
+        return
+    try:
+        exit_fn(None, None, None)
+    except Exception as exc:  # pragma: no cover - fail-open
+        _debug(f"exit root context failed: {exc}")
+
+
 def _merge_trace_output(output: Any, state: TraceState) -> Any:
     if not state.turn_tool_calls:
         return output
@@ -760,6 +774,7 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
     except Exception as exc:  # pragma: no cover - fail-open
         _debug(f"finish trace failed: {exc}")
     finally:
+        _exit_root_context(state)
         try:
             client.flush()
         except Exception:

@@ -713,6 +713,44 @@ class TestRequestMessageCoercion:
 
 
 class TestToolCallOutputBackfill:
+    def test_finish_trace_exits_root_context_before_flush(self, monkeypatch):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        mod = importlib.import_module("plugins.observability.langfuse")
+
+        events = []
+
+        class _RootCtx:
+            def __exit__(self, exc_type, exc, tb):
+                events.append("exit")
+
+        class _RootSpan:
+            def set_trace_io(self, **kwargs):
+                events.append(("set_trace_io", kwargs))
+
+            def update(self, **kwargs):
+                events.append(("update", kwargs))
+
+            def end(self):
+                events.append("end")
+
+        class _Client:
+            def flush(self):
+                events.append("flush")
+
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: _Client())
+        task_key = mod._trace_key("task-1", "session-1")
+        state = mod.TraceState(trace_id="trace-1", root_ctx=_RootCtx(), root_span=_RootSpan())
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+
+        mod._finish_trace(task_key, output={"content": "done"})
+
+        assert events[-3:] == [
+            "end",
+            "exit",
+            "flush",
+        ]
+        assert task_key not in mod._TRACE_STATE
+
     def test_post_tool_call_backfills_matching_turn_tool_call_output(self, monkeypatch):
         sys.modules.pop("plugins.observability.langfuse", None)
         mod = importlib.import_module("plugins.observability.langfuse")

@@ -4973,7 +4973,13 @@ class DiscordAdapter(BasePlatformAdapter):
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
 
-        all_attachments = list(message.attachments) + snapshot_attachments
+        referenced_attachments = []
+        reference = getattr(message, "reference", None)
+        resolved_reference = getattr(reference, "resolved", None) if reference else None
+        if resolved_reference is not None:
+            referenced_attachments = list(getattr(resolved_reference, "attachments", []) or [])
+
+        all_attachments = list(message.attachments) + snapshot_attachments + referenced_attachments
 
         # Determine message type
         msg_type = MessageType.TEXT

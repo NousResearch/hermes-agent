@@ -24,13 +24,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/Hermes-Agent.git"
+    "url": "git+https://github.com/NousResearch/hermes-agent.git"
   },
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/NousResearch/Hermes-Agent/issues"
+    "url": "https://github.com/NousResearch/hermes-agent/issues"
   },
-  "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
+  "homepage": "https://github.com/NousResearch/hermes-agent#readme",
   "dependencies": {
     "@streamdown/math": "^1.0.2",
     "agent-browser": "^0.26.0"

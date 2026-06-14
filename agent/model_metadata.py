@@ -5,6 +5,7 @@ and run_agent.py for pre-flight context checks.
 """
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -16,7 +17,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from utils import base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -110,6 +111,57 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+
+
+def _get_model_metadata_cache_path() -> Path:
+    """Return path to the OpenRouter model metadata disk cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "openrouter_model_metadata.json"
+
+
+def _model_metadata_disk_cache_age_seconds() -> Optional[float]:
+    """Return disk-cache age in seconds, or None if freshness is unknown."""
+    try:
+        cache_path = _get_model_metadata_cache_path()
+        if not cache_path.exists():
+            return None
+        age = time.time() - cache_path.stat().st_mtime
+        if age < 0:
+            return None
+        return age
+    except Exception:
+        return None
+
+
+def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
+    """Load processed OpenRouter metadata cache from disk."""
+    try:
+        cache_path = _get_model_metadata_cache_path()
+        with cache_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in data.items()
+            if isinstance(value, dict)
+        }
+    except Exception as e:
+        logger.debug("Failed to load OpenRouter model metadata disk cache: %s", e)
+        return {}
+
+
+def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
+    """Save processed OpenRouter metadata cache to disk atomically."""
+    try:
+        atomic_json_write(
+            _get_model_metadata_cache_path(),
+            data,
+            indent=0,
+            separators=(",", ":"),
+        )
+    except Exception as e:
+        logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
 
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
@@ -627,6 +679,15 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
         return _model_metadata_cache
 
+    if not force_refresh:
+        disk_age = _model_metadata_disk_cache_age_seconds()
+        if disk_age is not None and disk_age < _MODEL_CACHE_TTL:
+            disk_cache = _load_model_metadata_disk_cache()
+            if disk_cache:
+                _model_metadata_cache = disk_cache
+                _model_metadata_cache_time = time.time() - disk_age
+                return _model_metadata_cache
+
     try:
         response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
         response.raise_for_status()
@@ -648,12 +709,24 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
         _model_metadata_cache = cache
         _model_metadata_cache_time = time.time()
+        _save_model_metadata_disk_cache(cache)
         logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         return cache
 
     except Exception as e:
         logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        return _model_metadata_cache or {}
+        if _model_metadata_cache:
+            return _model_metadata_cache
+        disk_cache = _load_model_metadata_disk_cache()
+        if disk_cache:
+            _model_metadata_cache = disk_cache
+            disk_age = _model_metadata_disk_cache_age_seconds()
+            if disk_age is not None:
+                _model_metadata_cache_time = time.time() - min(disk_age, _MODEL_CACHE_TTL)
+            else:
+                _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
+            return _model_metadata_cache
+        return {}
 
 
 def fetch_endpoint_model_metadata(

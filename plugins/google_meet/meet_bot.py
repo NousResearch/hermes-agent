@@ -132,6 +132,7 @@ class _BotState:
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
+        self._seen_transcript_segments: set = set()
         self._transcript_entries: list[tuple[str, str, str]] = []
         self._last_caption_text_by_speaker: dict[str, str] = {}
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +231,10 @@ class _BotState:
                 )
             return
 
+        segment_key = f"{speaker}|{text}"
+        if segment_key in self._seen_transcript_segments:
+            return
+
         if self._transcript_entries:
             _, previous_speaker, previous_text = self._transcript_entries[-1]
             if previous_speaker == speaker:
@@ -239,15 +244,18 @@ class _BotState:
                     and len(text) <= MAX_TRANSCRIPT_TEXT_LEN
                 ):
                     self._transcript_entries[-1] = (ts, speaker, text)
+                    self._seen_transcript_segments.add(f"{speaker}|{text}")
                     self._rewrite_transcript()
                     return
                 if combine_with_previous:
                     combined = f"{previous_text} {text}".strip()
                     if len(combined) <= MAX_TRANSCRIPT_TEXT_LEN:
                         self._transcript_entries[-1] = (ts, speaker, combined)
+                        self._seen_transcript_segments.add(f"{speaker}|{combined}")
                         self._rewrite_transcript()
                         return
 
+        self._seen_transcript_segments.add(segment_key)
         self._transcript_entries.append((ts, speaker, text))
         self.transcript_lines = len(self._transcript_entries)
         line = f"[{ts}] {speaker}: {text}\n"

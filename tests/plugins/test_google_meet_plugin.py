@@ -187,6 +187,23 @@ def test_bot_state_splits_single_long_caption_segment(tmp_path):
     assert status["transcriptLines"] == len(stripped)
 
 
+def test_bot_state_dedupes_overlapping_split_caption_segments(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    prefix = " ".join(["alpha"] * 95)
+    state.record_caption("Alex Rivera", f"{prefix} first ending.")
+    state.record_caption("Alex Rivera", f"{prefix} second ending.")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    texts = [line.split(": ", 1)[1] for line in transcript]
+    assert len(texts) == len(set(texts))
+    assert all(len(text) <= 500 for text in texts)
+
+
 def test_bot_state_flushes_local_media_state(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 

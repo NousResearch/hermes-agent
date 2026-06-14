@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _resolve_single_provider,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -1736,6 +1737,29 @@ class TestAuxiliaryFallbackLayering:
         assert any(
             "all fallbacks exhausted" in r.message for r in caplog.records
         ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
+
+    def test_resolve_single_provider_forwards_explicit_endpoint_overrides(self):
+        """fallback_chain entries with base_url/api_key must reach provider resolution."""
+        fake_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_client, "fallback-model"),
+        ) as resolve:
+            client = _resolve_single_provider(
+                "ollama-cloud",
+                model="gemma4:31b",
+                base_url="https://ollama.com/v1",
+                api_key="ollama-key",
+            )
+
+        assert client is fake_client
+        resolve.assert_called_once_with(
+            provider="ollama-cloud",
+            model="gemma4:31b",
+            explicit_base_url="https://ollama.com/v1",
+            explicit_api_key="ollama-key",
+        )
 
 
 class TestTryMainAgentModelFallback:

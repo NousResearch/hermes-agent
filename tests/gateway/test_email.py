@@ -18,7 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, ANY
 
 from gateway.platforms.base import SendResult
 
@@ -1312,57 +1312,75 @@ class TestConnectSmtp(unittest.TestCase):
             self.assertIs(result, mock_server)
 
     def test_ipv6_timeout_falls_back_to_ipv4(self):
-        """When default connection times out, retry with AF_INET socket."""
+        """When default connection times out, retry with an IPv4-only SMTP path."""
         import socket as _socket
+        from gateway.platforms import email as email_mod
+
         adapter = self._make_adapter("587")
 
-        call_count = 0
+        with patch("smtplib.SMTP", side_effect=_socket.timeout("timed out")), \
+             patch.object(email_mod, "_IPv4SMTP") as mock_ipv4_smtp:
+            mock_server = MagicMock()
+            mock_ipv4_smtp.return_value = mock_server
 
-        def fake_smtp(host, port, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if "sock" not in kwargs:
-                raise _socket.timeout("timed out")
-            server = MagicMock()
-            return server
+            result = adapter._connect_smtp()
 
-        with patch("smtplib.SMTP", side_effect=fake_smtp), \
-             patch("socket.create_connection") as mock_create_conn:
-            mock_sock = MagicMock()
-            mock_create_conn.return_value = mock_sock
-
-            adapter._connect_smtp()
-
-            # First attempt without sock, then fallback with sock
-            self.assertEqual(call_count, 2)
-            mock_create_conn.assert_called_once_with(
-                ("smtp.test.com", 587), timeout=30, family=_socket.AF_INET,
-            )
+            self.assertIs(result, mock_server)
+            mock_ipv4_smtp.assert_called_once_with("smtp.test.com", 587, timeout=30)
+            mock_server.starttls.assert_called_once()
 
     def test_port_465_ipv6_fallback(self):
         """Port 465 IPv6 timeout falls back to IPv4 with SMTP_SSL."""
         import socket as _socket
+        from gateway.platforms import email as email_mod
+
         adapter = self._make_adapter("465")
 
-        call_count = 0
+        with patch("smtplib.SMTP_SSL", side_effect=_socket.timeout("timed out")), \
+             patch.object(email_mod, "_IPv4SMTP_SSL") as mock_ipv4_smtp_ssl:
+            mock_server = MagicMock()
+            mock_ipv4_smtp_ssl.return_value = mock_server
 
-        def fake_smtp_ssl(host, port, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if "sock" not in kwargs:
-                raise _socket.timeout("timed out")
-            return MagicMock()
+            result = adapter._connect_smtp()
 
-        with patch("smtplib.SMTP_SSL", side_effect=fake_smtp_ssl), \
-             patch("socket.create_connection") as mock_create_conn:
-            mock_create_conn.return_value = MagicMock()
-
-            adapter._connect_smtp()
-
-            self.assertEqual(call_count, 2)
-            mock_create_conn.assert_called_once_with(
-                ("smtp.test.com", 465), timeout=30, family=_socket.AF_INET,
+            self.assertIs(result, mock_server)
+            mock_ipv4_smtp_ssl.assert_called_once_with(
+                "smtp.test.com", 465, timeout=30, context=ANY,
             )
+
+    def test_tls_verification_error_does_not_retry_ipv4(self):
+        """Certificate failures are security errors, not IPv6 reachability failures."""
+        import ssl as _ssl
+        from gateway.platforms import email as email_mod
+
+        adapter = self._make_adapter("465")
+
+        with patch("smtplib.SMTP_SSL", side_effect=_ssl.SSLError("cert verify failed")), \
+             patch.object(email_mod, "_IPv4SMTP_SSL") as mock_ipv4_smtp_ssl:
+            with self.assertRaises(_ssl.SSLError):
+                adapter._connect_smtp()
+
+            mock_ipv4_smtp_ssl.assert_not_called()
+
+    def test_ipv4_connection_does_not_mutate_global_resolver(self):
+        """IPv4 fallback must not monkeypatch process-global socket state."""
+        import socket as _socket
+        from gateway.platforms.email import _create_ipv4_connection
+
+        original_getaddrinfo = _socket.getaddrinfo
+        fake_sock = MagicMock()
+
+        with patch(
+            "socket.getaddrinfo",
+            return_value=[(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("192.0.2.1", 587))],
+        ) as mock_getaddrinfo, patch("socket.socket", return_value=fake_sock):
+            result = _create_ipv4_connection("smtp.test.com", 587, 30)
+
+        self.assertIs(result, fake_sock)
+        mock_getaddrinfo.assert_called_once_with(
+            "smtp.test.com", 587, _socket.AF_INET, _socket.SOCK_STREAM,
+        )
+        self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
 
 
 if __name__ == "__main__":

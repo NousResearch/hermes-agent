@@ -63,6 +63,63 @@ _AUTOMATED_HEADERS = {
 # Gmail-safe max length per email body
 MAX_MESSAGE_LENGTH = 50_000
 
+SMTP_CONNECT_TIMEOUT = 30
+
+
+def _create_ipv4_connection(
+    host: str,
+    port: int,
+    timeout: float,
+    source_address: Any = None,
+) -> socket.socket:
+    """Create a TCP connection using only IPv4 addresses.
+
+    This mirrors ``socket.create_connection`` but constrains DNS resolution to
+    ``AF_INET``.  It avoids mutating process-global socket functions, which
+    matters because email sends run in executor threads.
+    """
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in socket.getaddrinfo(
+        host, port, socket.AF_INET, socket.SOCK_STREAM
+    ):
+        sock = socket.socket(family, socktype, proto)
+        sock.settimeout(timeout)
+        try:
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"No IPv4 address found for {host}:{port}")
+
+
+class _IPv4SMTP(smtplib.SMTP):
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        return _create_ipv4_connection(
+            host,
+            port,
+            timeout,
+            source_address=self.source_address,
+        )
+
+
+class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
+    def _get_socket(self, host, port, timeout):  # type: ignore[override]
+        raw_sock = _create_ipv4_connection(
+            host,
+            port,
+            timeout,
+            source_address=self.source_address,
+        )
+        return self.context.wrap_socket(
+            raw_sock,
+            server_hostname=getattr(self, "_host", host),
+        )
+
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
@@ -301,9 +358,10 @@ class EmailAdapter(BasePlatformAdapter):
         ``SMTP`` + ``STARTTLS``.
 
         When the host resolves to an IPv6 address that is unreachable
-        (common on networks without IPv6 routing), the connection hangs
-        until the socket timeout expires.  To avoid this, we try the
-        default resolution first and fall back to IPv4-only on failure.
+        (common on networks without IPv6 routing), the default connection can
+        hang until the socket timeout expires.  We retry connection-level
+        failures through an IPv4-only socket path, without mutating global
+        resolver state.  TLS verification errors are not retried.
 
         Returns a connected SMTP object with TLS established — callers
         can proceed directly to ``login()``.
@@ -311,35 +369,29 @@ class EmailAdapter(BasePlatformAdapter):
         ctx = ssl.create_default_context()
         host = self._smtp_host
         port = self._smtp_port
-        timeout = 30
 
-        def _connect() -> smtplib.SMTP:
-            """Attempt one SMTP connection (default address family)."""
+        def _connect(*, ipv4_only: bool = False) -> smtplib.SMTP:
+            """Attempt one SMTP connection."""
+            smtp_cls = _IPv4SMTP if ipv4_only else smtplib.SMTP
+            smtp_ssl_cls = _IPv4SMTP_SSL if ipv4_only else smtplib.SMTP_SSL
             if port == 465:
-                return smtplib.SMTP_SSL(host, port, timeout=timeout, context=ctx)
-            s = smtplib.SMTP(host, port, timeout=timeout)
-            s.starttls(context=ctx)
-            return s
-
-        def _connect_ipv4() -> smtplib.SMTP:
-            """Fallback: force IPv4 via an AF_INET socket."""
-            sock = socket.create_connection(
-                (host, port), timeout=timeout, family=socket.AF_INET,
-            )
-            if port == 465:
-                return smtplib.SMTP_SSL(
-                    host, port, timeout=timeout, context=ctx, sock=sock,
-                )
-            s = smtplib.SMTP(host, port, timeout=timeout, sock=sock)
-            s.starttls(context=ctx)
-            return s
+                return smtp_ssl_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT, context=ctx)
+            smtp = smtp_cls(host, port, timeout=SMTP_CONNECT_TIMEOUT)
+            try:
+                smtp.starttls(context=ctx)
+            except Exception:
+                smtp.close()
+                raise
+            return smtp
 
         try:
             return _connect()
-        except (socket.timeout, OSError):
+        except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+            if isinstance(exc, ssl.SSLError):
+                raise
             # Connection-level failure (may be unreachable IPv6).
             # Retry with IPv4 only.
-            return _connect_ipv4()
+            return _connect(ipv4_only=True)
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""

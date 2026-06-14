@@ -3061,13 +3061,26 @@ def _try_configured_fallback_chain(
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
     """
+    for _, fb_client, fb_model, label in _iter_configured_fallback_chain(
+        task, failed_provider, reason=reason
+    ):
+        return fb_client, fb_model, label
+    return None, None, ""
+
+
+def _iter_configured_fallback_chain(
+    task: str,
+    failed_provider: str,
+    reason: str = "error",
+):
+    """Yield resolved user-configured fallback_chain entries for an auxiliary task."""
     if not task:
-        return None, None, ""
+        return
 
     task_config = _get_auxiliary_task_config(task)
     chain = task_config.get("fallback_chain")
     if not chain or not isinstance(chain, list):
-        return None, None, ""
+        return
 
     skip = failed_provider.lower().strip()
     tried = []
@@ -3095,7 +3108,8 @@ def _try_configured_fallback_chain(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
                 task, reason, failed_provider, label, fb_model or "default",
             )
-            return fb_client, fb_model, label
+            yield fb_provider, fb_client, fb_model, label
+            continue
         tried.append(label)
 
     if tried:
@@ -3103,7 +3117,6 @@ def _try_configured_fallback_chain(
             "Auxiliary %s: configured fallback_chain exhausted (tried: %s)",
             task, ", ".join(tried),
         )
-    return None, None, ""
 
 
 def _resolve_single_provider(
@@ -5475,8 +5488,31 @@ def call_llm(
                 fb_client, fb_model, fb_label = _try_payment_fallback(
                     resolved_provider, task, reason=reason)
             else:
-                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                for fb_provider, fb_client, fb_model, fb_label in _iter_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason=reason
+                ):
+                    fb_kwargs = _build_call_kwargs(
+                        fb_provider, fb_model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    try:
+                        return _validate_llm_response(
+                            fb_client.chat.completions.create(**fb_kwargs), task)
+                    except Exception as fb_err:
+                        if (
+                            _is_payment_error(fb_err)
+                            or _is_connection_error(fb_err)
+                            or _is_rate_limit_error(fb_err)
+                        ):
+                            logger.info(
+                                "Auxiliary %s: configured fallback %s failed with %s (%s), trying next fallback",
+                                task or "call", fb_label, type(fb_err).__name__, fb_err,
+                            )
+                            continue
+                        raise
+                fb_client, fb_model, fb_label = (None, None, "")
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
@@ -5912,8 +5948,36 @@ async def async_call_llm(
                 fb_client, fb_model, fb_label = _try_payment_fallback(
                     resolved_provider, task, reason=reason)
             else:
-                fb_client, fb_model, fb_label = _try_configured_fallback_chain(
-                    task, resolved_provider or "auto", reason=reason)
+                for fb_provider, fb_client, fb_model, fb_label in _iter_configured_fallback_chain(
+                    task, resolved_provider or "auto", reason=reason
+                ):
+                    fb_kwargs = _build_call_kwargs(
+                        fb_provider, fb_model, messages,
+                        temperature=temperature, max_tokens=max_tokens,
+                        tools=tools, timeout=effective_timeout,
+                        extra_body=effective_extra_body,
+                        base_url=str(getattr(fb_client, "base_url", "") or ""))
+                    async_fb, async_fb_model = _to_async_client(
+                        fb_client, fb_model or "", is_vision=(task == "vision")
+                    )
+                    if async_fb_model and async_fb_model != fb_kwargs.get("model"):
+                        fb_kwargs["model"] = async_fb_model
+                    try:
+                        return _validate_llm_response(
+                            await async_fb.chat.completions.create(**fb_kwargs), task)
+                    except Exception as fb_err:
+                        if (
+                            _is_payment_error(fb_err)
+                            or _is_connection_error(fb_err)
+                            or _is_rate_limit_error(fb_err)
+                        ):
+                            logger.info(
+                                "Auxiliary %s (async): configured fallback %s failed with %s (%s), trying next fallback",
+                                task or "call", fb_label, type(fb_err).__name__, fb_err,
+                            )
+                            continue
+                        raise
+                fb_client, fb_model, fb_label = (None, None, "")
                 if fb_client is None:
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)

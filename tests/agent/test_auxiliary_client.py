@@ -1672,8 +1672,10 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(primary_client, "glm-4v-flash")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("glm", "glm-4v-flash", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(chain_client, "gpt-4o-mini", "fallback_chain[0](openai)")), \
+             patch("agent.auxiliary_client._iter_configured_fallback_chain",
+                   return_value=[
+                       ("openai", chain_client, "gpt-4o-mini", "fallback_chain[0](openai)")
+                   ]), \
              patch("agent.auxiliary_client._try_main_agent_model_fallback",
                    side_effect=main_called):
             result = call_llm(
@@ -1701,8 +1703,8 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(primary_client, "glm-4v-flash")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("glm", "glm-4v-flash", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._iter_configured_fallback_chain",
+                   return_value=[]), \
              patch("agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(main_client, "claude-sonnet-4", "main-agent(openrouter)")):
             result = call_llm(
@@ -1711,6 +1713,53 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert main_client.chat.completions.create.called
+
+    def test_explicit_provider_continues_configured_chain_after_rate_limit(self, monkeypatch):
+        """If one configured fallback is rate-limited, the next chain entry is tried."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        first_fallback = MagicMock()
+        first_fallback.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        rate_err = Exception("Gemini HTTP 429 (RESOURCE_EXHAUSTED)")
+        rate_err.status_code = 429
+        first_fallback.chat.completions.create.side_effect = rate_err
+
+        second_fallback = MagicMock()
+        second_fallback.base_url = "https://ollama.com/v1"
+        second_response = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from ollama cloud"))
+        ])
+        second_fallback.chat.completions.create.return_value = second_response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._get_auxiliary_task_config",
+                   return_value={"fallback_chain": [
+                       {"provider": "gemini", "model": "gemini-3.5-flash"},
+                       {
+                           "provider": "ollama-cloud",
+                           "model": "gemma4:31b",
+                           "base_url": "https://ollama.com/v1",
+                           "api_key": "ollama-key",
+                       },
+                   ]}), \
+             patch("agent.auxiliary_client._resolve_single_provider",
+                   side_effect=[first_fallback, second_fallback]), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as main_fallback:
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is second_response
+        assert first_fallback.chat.completions.create.called
+        assert second_fallback.chat.completions.create.called
+        main_fallback.assert_not_called()
 
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
@@ -1723,8 +1772,8 @@ class TestAuxiliaryFallbackLayering:
                    return_value=(primary_client, "glm-4v-flash")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
                    return_value=("glm", "glm-4v-flash", None, None, None)), \
-             patch("agent.auxiliary_client._try_configured_fallback_chain",
-                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._iter_configured_fallback_chain",
+                   return_value=[]), \
              patch("agent.auxiliary_client._try_main_agent_model_fallback",
                    return_value=(None, None, "")), \
              caplog.at_level("WARNING", logger="agent.auxiliary_client"):
@@ -1946,8 +1995,8 @@ class TestTransientTransportRetry:
         with (
             p1, p2, p3,
             patch(
-                "agent.auxiliary_client._try_configured_fallback_chain",
-                return_value=(None, None, ""),
+                "agent.auxiliary_client._iter_configured_fallback_chain",
+                return_value=[],
             ),
             patch(
                 "agent.auxiliary_client._try_main_agent_model_fallback",

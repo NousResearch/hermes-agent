@@ -298,6 +298,33 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_env_for_child_process_preserves_explicit_hermes_home(monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", "/tmp/hermes-explicit")
+
+    assert server._env_for_child_process()["HERMES_HOME"] == "/tmp/hermes-explicit"
+
+
+def test_env_for_child_process_pins_active_non_default_profile(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "bob"
+    profile_home.mkdir(parents=True)
+    (root / "active_profile").write_text("bob", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    assert server._env_for_child_process()["HERMES_HOME"] == str(profile_home)
+
+
+def test_env_for_child_process_defaults_to_root_when_profile_missing(tmp_path, monkeypatch):
+    root = tmp_path / ".hermes"
+    root.mkdir(parents=True)
+    (root / "active_profile").write_text("missing", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+
+    assert server._env_for_child_process()["HERMES_HOME"] == str(root)
+
+
 def test_write_json_drops_detached_ws_frames(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
@@ -940,7 +967,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
-        server, "_init_session", lambda sid, key, agent, history, cols=80: None
+        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
 
     resp = server.handle_request(
@@ -983,7 +1010,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
 
-    def fake_init_session(sid, key, agent, history, cols=80):
+    def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
         server._sessions[sid] = {"agent": agent, "session_key": key}
 
     monkeypatch.setattr(server, "_init_session", fake_init_session)
@@ -1004,6 +1031,131 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert captured["service_tier_override"] == "priority"
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
+
+
+def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
+    target = "stored-profile-session"
+    launch_cwd = tmp_path / "launch"
+    profile_cwd = tmp_path / "worker"
+    profile_home = tmp_path / "profiles" / "worker"
+    launch_cwd.mkdir()
+    profile_cwd.mkdir()
+    profile_home.mkdir(parents=True)
+    captured = {}
+
+    class ProfileDB:
+        def get_session(self, _target):
+            return {"id": target, "cwd": str(profile_cwd)}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def reopen_session(self, _target):
+            captured["reopened"] = _target
+
+        def get_messages_as_conversation(self, _target, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+        def update_session_cwd(self, *_args):
+            raise AssertionError("profile row already has cwd")
+
+    class LaunchDB:
+        def get_session(self, _target):
+            return {"id": target, "cwd": str(launch_cwd)}
+
+        def update_session_cwd(self, *_args):
+            captured["launch_update"] = True
+
+    profile_db = ProfileDB()
+    launch_db = LaunchDB()
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured["agent_db"] = session_db
+        return types.SimpleNamespace(model="test/model")
+
+    monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
+    monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr(server, "_get_db", lambda: launch_db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, session=None: {"cwd": session.get("cwd") if session else ""},
+    )
+
+    import tools.approval as approval
+
+    monkeypatch.setattr(approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.resume",
+                "params": {"session_id": target, "profile": "worker"},
+            }
+        )
+
+        assert "error" not in resp
+        sid = resp["result"]["session_id"]
+        assert captured["agent_db"] is profile_db
+        assert server._sessions[sid]["cwd"] == str(profile_cwd)
+        assert resp["result"]["info"]["cwd"] == str(profile_cwd)
+        assert "launch_update" not in captured
+    finally:
+        server._sessions.clear()
+
+
+def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_path):
+    target = "stored-profile-session"
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    new_cwd = tmp_path / "new-workspace"
+    new_cwd.mkdir()
+    captured = {}
+
+    class ProfileDB:
+        def update_session_cwd(self, session_id, cwd):
+            captured["profile_update"] = (session_id, cwd)
+
+        def close(self):
+            captured["profile_closed"] = True
+
+    class LaunchDB:
+        def update_session_cwd(self, *_args):
+            captured["launch_update"] = True
+
+    profile_db = ProfileDB()
+
+    import tools.terminal_tool as terminal_tool
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+
+    session = {"session_key": target, "profile_home": str(profile_home)}
+    assert server._set_session_cwd(session, str(new_cwd)) == str(new_cwd)
+    assert session["cwd"] == str(new_cwd)
+    assert session["explicit_cwd"] is True
+    assert captured["profile_update"] == (target, str(new_cwd))
+    assert captured["profile_closed"] is True
+    assert "launch_update" not in captured
 
 
 def test_stored_session_runtime_overrides_skips_bare_billing_provider():
@@ -5745,6 +5897,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     )
     assert any(
         "No supported Chromium-family browser executable was found" in line
+        or "Start a Chromium-family browser with remote debugging" in line
         for line in resp["result"]["messages"]
     )
     assert any(

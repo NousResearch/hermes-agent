@@ -38,7 +38,7 @@ const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
-const { buildDesktopBackendEnv } = require('./backend-env.cjs')
+const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
@@ -240,7 +240,7 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
+  if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
@@ -5609,11 +5609,30 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) return false
-  new Notification({
+  // Action buttons render only on signed macOS builds; elsewhere they're dropped
+  // and the body click still works.
+  const actions = Array.isArray(payload?.actions) ? payload.actions : []
+  const notification = new Notification({
     title: payload?.title || 'Hermes',
     body: payload?.body || '',
-    silent: Boolean(payload?.silent)
-  }).show()
+    silent: Boolean(payload?.silent),
+    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
+  })
+  notification.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    focusWindow(mainWindow)
+    if (payload?.sessionId) {
+      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
+    }
+  })
+  notification.on('action', (_actionEvent, index) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const action = actions[index]
+    if (action?.id) {
+      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })
+    }
+  })
+  notification.show()
   return true
 })
 

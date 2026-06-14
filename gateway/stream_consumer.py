@@ -635,6 +635,15 @@ class GatewayStreamConsumer:
                             )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                            elif self._fallback_final_send:
+                                # The final edit attempt itself may be the one
+                                # that exhausts flood-control strikes and
+                                # promotes the consumer into fallback mode.  Do
+                                # not return to the gateway with a full-response
+                                # fallback still pending; send only the unsent
+                                # tail here so the normal gateway send path does
+                                # not duplicate the visible prefix.
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                             if self._final_response_sent:

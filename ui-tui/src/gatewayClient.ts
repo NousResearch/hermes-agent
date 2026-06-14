@@ -1,7 +1,8 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { existsSync } from 'node:fs'
-import { delimiter, resolve } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { delimiter, join, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import { WebSocket as UndiciWebSocket } from 'undici'
@@ -66,6 +67,32 @@ const resolvePython = (root: string) => {
   ].find(p => p && existsSync(p))
 
   return hit || (process.platform === 'win32' ? 'python' : 'python3')
+}
+
+export const resolveHermesHomeForSpawn = (env: NodeJS.ProcessEnv = process.env, homeDir = homedir()) => {
+  const existing = env.HERMES_HOME?.trim()
+
+  if (existing) {
+    return existing
+  }
+
+  const root = join(homeDir, '.hermes')
+
+  try {
+    const active = readFileSync(join(root, 'active_profile'), 'utf8').trim()
+
+    if (active && active !== 'default' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(active)) {
+      const profileHome = join(root, 'profiles', active)
+
+      if (existsSync(profileHome)) {
+        return profileHome
+      }
+    }
+  } catch {
+    // Missing/corrupt active_profile means classic/default profile.
+  }
+
+  return root
 }
 
 const asGatewayEvent = (value: unknown): GatewayEvent | null =>
@@ -336,6 +363,7 @@ export class GatewayClient extends EventEmitter {
     const env = { ...process.env }
     const pyPath = env.PYTHONPATH?.trim()
 
+    env.HERMES_HOME = resolveHermesHomeForSpawn(env)
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     this.startReadyTimer(python, cwd)
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })

@@ -877,7 +877,7 @@ gateway:
 
 ## 渲染：富消息、表格和链接预览
 
-**富消息（Bot API 10.1）。** 最终回复通过 Telegram 原生的 [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) 发送，使用 Agent 的**原始 markdown**，因此表格、任务列表、标题、嵌套引用块、可折叠的 `<details>`、脚注/引用、数学公式、下划线、上下标、高亮文本和锚点都能原生渲染——无需客户端展平。在私聊中，实时流式预览也使用 `sendRichMessageDraft`，因此动画草稿与最终的富消息保持一致。
+**富消息（Bot API 10.1）。** 选择启用后，最终回复通过 Telegram 原生的 [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) 发送，使用 Agent 的**原始 markdown**，因此表格、任务列表、标题、嵌套引用块、可折叠的 `<details>`、脚注/引用、数学公式、下划线、上下标、高亮文本和锚点都能原生渲染——无需客户端展平。在私聊中，实时流式预览也使用 `sendRichMessageDraft`，因此动画草稿与最终的富消息保持一致。
 
 当内容超过 32,768 字节的富文本上限时，富消息路径会自动跳过；Telegram 的任何拒绝（较旧 `python-telegram-bot` 不支持该端点、解析错误、块/列过多）都会**透明回退**到 MarkdownV2 路径——消息绝不会丢失。瞬时/网络错误**不会**被静默重发（不会产生重复的最终消息）。
 
@@ -886,7 +886,17 @@ gateway:
 - **小表格**被展平为**行组项目符号**——每行在列标题下变为可读的项目符号列表。适合 2-4 列和短单元格。
 - **较大或较宽的表格**回退为带对齐列的**围栏代码块**，以防内容折叠。
 
-回退无需配置——适配器会为每条消息选择正确的渲染方式。如果你想要旧版"始终使用代码块"行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+富消息默认关闭，因为一些 Telegram 客户端能接收 Bot API 载荷但渲染效果很差。若你的客户端能良好处理富消息，可以选择启用：
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_messages: true
+```
+
+这个设置用于客户端渲染兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

@@ -3856,9 +3856,9 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
     },
     "weixin": {
-        "name": "WeChat (Official Account)",
-        "description": "Connect a WeChat Official Account.",
-        "docs_url": "https://developers.weixin.qq.com/doc/offiaccount/Getting_Started/Overview.html",
+        "name": "Weixin / WeChat (Personal)",
+        "description": "Connect a personal WeChat account through Tencent's iLink Bot API.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
         "env_vars": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
         "required_env": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"),
     },
@@ -4029,17 +4029,17 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         "password": True,
     },
     "WEIXIN_ACCOUNT_ID": {
-        "description": "WeChat Official Account ID",
-        "prompt": "Account ID",
+        "description": "iLink Bot account ID obtained through QR login in hermes gateway setup",
+        "prompt": "iLink Bot account ID",
     },
     "WEIXIN_TOKEN": {
-        "description": "WeChat callback token",
-        "prompt": "Token",
+        "description": "iLink Bot token obtained through QR login in hermes gateway setup",
+        "prompt": "iLink Bot token",
         "password": True,
     },
     "WEIXIN_BASE_URL": {
-        "description": "WeChat platform base URL",
-        "prompt": "Base URL",
+        "description": "iLink API base URL saved by QR login (default: https://ilinkai.weixin.qq.com)",
+        "prompt": "iLink API base URL",
     },
     "FEISHU_APP_ID": {"description": "Feishu / Lark app ID", "prompt": "App ID"},
     "FEISHU_APP_SECRET": {
@@ -5134,6 +5134,15 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
     return {"logged_in": False}
 
 
+def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
+    """Return the manual disconnect path when the API cannot clear this provider."""
+    if provider.get("flow") == "external":
+        return f"Use `{provider['cli_command']}` or that provider's CLI to remove it."
+    if status.get("source") == "env_var":
+        return "Remove the API key from Settings → Keys instead."
+    return None
+
+
 @app.get("/api/providers/oauth")
 async def list_oauth_providers():
     """Enumerate every OAuth-capable LLM provider with current status.
@@ -5155,12 +5164,15 @@ async def list_oauth_providers():
     providers = []
     for p in _OAUTH_PROVIDER_CATALOG:
         status = _resolve_provider_status(p["id"], p.get("status_fn"))
+        disconnect_hint = _oauth_provider_disconnect_hint(p, status)
         providers.append({
             "id": p["id"],
             "name": p["name"],
             "flow": p["flow"],
             "cli_command": p["cli_command"],
             "docs_url": p["docs_url"],
+            "disconnect_hint": disconnect_hint,
+            "disconnectable": disconnect_hint is None,
             "status": status,
         })
     return {"providers": providers}
@@ -5171,37 +5183,56 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
     _require_token(request)
 
-    valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
-    if provider_id not in valid_ids:
+    catalog_by_id = {p["id"]: p for p in _OAUTH_PROVIDER_CATALOG}
+    provider = catalog_by_id.get(provider_id)
+    if provider is None:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown provider: {provider_id}. "
-                   f"Available: {', '.join(sorted(valid_ids))}",
+                   f"Available: {', '.join(sorted(catalog_by_id))}",
         )
 
-    # Anthropic and claude-code clear the same Hermes-managed PKCE file
-    # AND forget the Claude Code import. We don't touch ~/.claude/* directly
-    # — that's owned by the Claude Code CLI; users can re-auth there if they
-    # want to undo a disconnect.
-    if provider_id in {"anthropic", "claude-code"}:
+    disconnect_hint = _oauth_provider_disconnect_hint(provider, {})
+    if disconnect_hint:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
+        )
+
+    status = _resolve_provider_status(provider_id, provider.get("status_fn"))
+    disconnect_hint = _oauth_provider_disconnect_hint(provider, status)
+    if disconnect_hint:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
+        )
+
+    # Anthropic clears only the Hermes-managed PKCE file and auth-store entry.
+    # The separate claude-code catalog row is external/read-only and rejected
+    # above so we never pretend to remove ~/.claude/* credentials owned by the CLI.
+    if provider_id == "anthropic":
+        cleared = False
         try:
             from agent.anthropic_adapter import _HERMES_OAUTH_FILE
             if _HERMES_OAUTH_FILE.exists():
                 _HERMES_OAUTH_FILE.unlink()
+                cleared = True
         except Exception:
             pass
         # Also clear the credential pool entry if present.
         try:
             from hermes_cli.auth import clear_provider_auth
-            clear_provider_auth("anthropic")
+            cleared = clear_provider_auth("anthropic") or cleared
         except Exception:
             pass
         _log.info("oauth/disconnect: %s", provider_id)
-        return {"ok": True, "provider": provider_id}
+        return {"ok": bool(cleared), "provider": provider_id}
 
     try:
-        from hermes_cli.auth import clear_provider_auth
+        from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
         cleared = clear_provider_auth(provider_id)
+        if provider_id == "nous":
+            invalidate_nous_auth_status_cache()
         _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
         return {"ok": bool(cleared), "provider": provider_id}
     except Exception as e:
@@ -7103,7 +7134,11 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
 
     try:
         with _profile_scope(body.profile or profile):
-            _save_mcp_server(name, server_config)
+            if not _save_mcp_server(name, server_config):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Server '{name}' rejected: suspicious command/args configuration",
+                )
     except HTTPException:
         raise
     except Exception as exc:
@@ -8701,6 +8736,7 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
     Returns the number of servers written.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.mcp_security import validate_mcp_server_entry
 
     written = 0
     token = set_hermes_home_override(str(profile_dir))
@@ -8725,6 +8761,10 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
             if not entry:
                 # Nothing usable to write (neither url nor command) — skip
                 # rather than persist an empty, unusable server stanza.
+                continue
+            issues = validate_mcp_server_entry(name, entry)
+            if issues:
+                _log.warning("Profile-create: skipping MCP server '%s': %s", name, "; ".join(issues))
                 continue
             mcp[name] = entry
             written += 1
@@ -10625,7 +10665,7 @@ def mount_spa(application: FastAPI):
         ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
         auth scheme for /api/pty and /api/ws (ticket vs token).
         """
-        html = _index_path.read_text()
+        html = _index_path.read_text(encoding="utf-8")
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
@@ -10675,7 +10715,7 @@ def mount_spa(application: FastAPI):
         ):
             return JSONResponse({"error": "not found"}, status_code=404)
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
-        css = css_path.read_text()
+        css = css_path.read_text(encoding="utf-8")
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
                 css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")

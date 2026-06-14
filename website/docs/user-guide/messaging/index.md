@@ -106,6 +106,29 @@ flowchart TB
 
 Each platform adapter receives messages, routes them through a per-chat session store, and dispatches them to the AIAgent for processing. The gateway also runs the cron scheduler, ticking every 60 seconds to execute any due jobs.
 
+## Intentional Silence Tokens
+
+For group chats, hooks, and automation flows, Hermes supports explicit silence tokens. If the agent's final response is exactly one supported token, the gateway suppresses outbound delivery and sends nothing to the chat.
+
+Supported tokens:
+
+- `[SILENT]`
+- `SILENT`
+- `NO_REPLY`
+- `NO REPLY`
+
+Whitespace and case are normalized, but the whole final response must be the token. A sentence like "Use `[SILENT]` when nothing changed" is delivered normally.
+
+Silence is a delivery decision only. Hermes keeps the assistant silence turn in the session transcript, so the conversation still alternates normally:
+
+```text
+user: side-channel chatter
+assistant: [SILENT]   # stored, not delivered
+user: next message
+```
+
+Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
+
 ## Quick Setup
 
 The easiest way to configure messaging platforms is the interactive wizard:

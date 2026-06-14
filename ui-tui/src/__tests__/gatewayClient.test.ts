@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 interface ListenerEntry {
@@ -97,7 +101,7 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
 vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
-import { GatewayClient } from '../gatewayClient.js'
+import { GatewayClient, resolveHermesHomeForSpawn } from '../gatewayClient.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -294,6 +298,7 @@ describe('GatewayClient websocket attach mode', () => {
     process.env.HERMES_TUI_GATEWAY_URL = secretUrl
     ;(globalThis as { WebSocket?: unknown }).WebSocket = class ThrowingWebSocket extends FakeWebSocket {
       constructor(url: string) {
+        super(url)
         throw new TypeError(`Invalid URL: ${url}`)
       }
     } as unknown as typeof WebSocket
@@ -371,5 +376,40 @@ describe('GatewayClient websocket attach mode', () => {
     expect(tail).not.toContain('token=secret')
 
     gw.kill()
+  })
+})
+
+describe('resolveHermesHomeForSpawn', () => {
+  let tempHome: string
+
+  beforeEach(() => {
+    tempHome = mkdtempSync(join(tmpdir(), 'hermes-home-spawn-'))
+  })
+
+  afterEach(() => {
+    rmSync(tempHome, { force: true, recursive: true })
+  })
+
+  it('preserves an explicit HERMES_HOME', () => {
+    expect(resolveHermesHomeForSpawn({ HERMES_HOME: '/explicit/profile' }, tempHome)).toBe('/explicit/profile')
+  })
+
+  it('pins child env to the sticky active non-default profile', () => {
+    const root = join(tempHome, '.hermes')
+    const profileHome = join(root, 'profiles', 'bob')
+
+    mkdirSync(profileHome, { recursive: true })
+    writeFileSync(join(root, 'active_profile'), 'bob')
+
+    expect(resolveHermesHomeForSpawn({}, tempHome)).toBe(profileHome)
+  })
+
+  it('falls back to default home when the sticky profile is missing or default', () => {
+    const root = join(tempHome, '.hermes')
+
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'active_profile'), 'default')
+
+    expect(resolveHermesHomeForSpawn({}, tempHome)).toBe(root)
   })
 })

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from urllib.parse import urlparse
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.openai.com":
         return "codex_responses"
-    if normalized.endswith("/anthropic"):
+    path = urlparse(normalized).path.rstrip("/")
+    if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"

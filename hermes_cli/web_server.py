@@ -115,16 +115,30 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     Cross-process safe: ``cron.scheduler.tick`` takes the ``cron/.tick.lock``
     file lock, so this never double-fires alongside a real gateway on the same
     HERMES_HOME — whichever process grabs the lock first wins the tick.
+
+    Deference: when this profile's gateway is alive we skip the tick entirely
+    rather than race it for the lock. A dashboard claim delivers through the
+    standalone send path (no live adapters), losing threaded delivery — the
+    gateway should own the run whenever it can. Re-checked every iteration so
+    the ticker takes over if the gateway dies, and fails open (ticks) if the
+    health check itself errors.
     """
     from cron.scheduler import tick as cron_tick
+    from gateway.status import is_gateway_running
 
     _log.info("Desktop cron ticker started (interval=%ds)", interval)
     # Tick once up front (catches jobs due at launch), then on the interval.
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, sync=False)
+            gateway_alive = is_gateway_running()
         except Exception as e:
-            _log.debug("Desktop cron tick error: %s", e)
+            _log.debug("Desktop cron ticker gateway check error: %s", e)
+            gateway_alive = False
+        if not gateway_alive:
+            try:
+                cron_tick(verbose=False, sync=False)
+            except Exception as e:
+                _log.debug("Desktop cron tick error: %s", e)
         stop_event.wait(interval)
 
 

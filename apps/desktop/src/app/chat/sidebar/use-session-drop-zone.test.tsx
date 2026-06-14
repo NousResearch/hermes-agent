@@ -297,7 +297,7 @@ describe('useSessionDropZone', () => {
     expect(zone.dataset.active).toBe('false')
   })
 
-  it('drops with the last stable anchor when the animated dragged row is under the pointer', () => {
+  it('drops by the physical gap midpoint when the animated dragged row is under the pointer', () => {
     const onDropSession = vi.fn()
     const movingRow = { ...UNPINNED_ROW, id: 'moving' }
     const transfer = sessionTransfer(movingRow)
@@ -324,8 +324,8 @@ describe('useSessionDropZone', () => {
     fireEvent(moving, dragEvent('drop', transfer, 140))
 
     expect(onDropSession).toHaveBeenCalledWith(movingRow, expect.objectContaining({ type: 'drop' }), {
-      before: false,
-      sessionId: 'a'
+      before: true,
+      sessionId: 'b'
     })
   })
 
@@ -395,14 +395,14 @@ describe('sessionDropAnchor', () => {
     expect(sessionDropAnchor(dropEventAt(header, 10))).toBeNull()
   })
 
-  it('keeps the previous anchor through a row middle band and switches only near the edge', () => {
+  it('switches at the physical row midpoint even when there was a previous anchor', () => {
     const root = document.createElement('div')
     const previous = { before: false, sessionId: 'a' }
     document.body.appendChild(root)
     rowWithRect('a', 100, 26, root)
     const rowB = rowWithRect('b', 127, 26, root)
 
-    expect(sessionDropAnchor(dropEventAt(rowB, 140, root), { previous })).toEqual(previous)
+    expect(sessionDropAnchor(dropEventAt(rowB, 139, root), { previous })).toEqual({ before: true, sessionId: 'b' })
     expect(sessionDropAnchor(dropEventAt(rowB, 150, root), { previous })).toEqual({ before: false, sessionId: 'b' })
   })
 
@@ -415,7 +415,7 @@ describe('sessionDropAnchor', () => {
     expect(sessionDropAnchor(dropEventAt(rowB, 141, root), { previous })).toEqual({ before: false, sessionId: 'b' })
   })
 
-  it('ignores the dragged row as a hover target so animated previews do not snap back', () => {
+  it('ignores the dragged row as a hover target and resolves its gap by pointer position', () => {
     const root = document.createElement('div')
     const previous = { before: false, sessionId: 'a' }
     document.body.appendChild(root)
@@ -423,7 +423,10 @@ describe('sessionDropAnchor', () => {
     const moving = rowWithRect('moving', 127, 26, root)
     rowWithRect('b', 154, 26, root)
 
-    expect(sessionDropAnchor(dropEventAt(moving, 140, root), { movingSessionId: 'moving', previous })).toEqual(previous)
+    expect(sessionDropAnchor(dropEventAt(moving, 140, root), { movingSessionId: 'moving', previous })).toEqual({
+      before: true,
+      sessionId: 'b'
+    })
   })
 })
 
@@ -498,8 +501,22 @@ describe('previewItemsForSessionDrop', () => {
   const moving = { id: 'moving' }
   const anchor = { before: true, sessionId: 'b' }
 
-  it('keeps pointer drags on the real section order instead of cloning the active row', () => {
-    expect(previewItemsForSessionDrop(items, moving, anchor, { active: true, mode: 'pointer' })).toBe(items)
+  it('previews pointer drags by placing the active row in its destination slot', () => {
+    expect(previewItemsForSessionDrop(items, moving, anchor, { active: true, mode: 'pointer' })).toEqual([
+      { id: 'a' },
+      moving,
+      { id: 'b' },
+      { id: 'c' }
+    ])
+  })
+
+  it('previews section-level pointer drops at the end when the item is entering the section', () => {
+    expect(previewItemsForSessionDrop(items, moving, null, { active: true, mode: 'pointer' })).toEqual([
+      { id: 'a' },
+      { id: 'b' },
+      { id: 'c' },
+      moving
+    ])
   })
 
   it('still previews native HTML drags where no sortable overlay owns the row motion', () => {

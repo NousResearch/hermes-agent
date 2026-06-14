@@ -67,6 +67,24 @@ describe('resolveSidebarSessionReleaseDrop', () => {
     })
   })
 
+  it('unpins a Pinned row at the Sessions section end when there is no row anchor', () => {
+    expect(
+      resolveSidebarSessionReleaseDrop({
+        anchor: null,
+        anchorPinIdForSessionId,
+        payload: PINNED_ROW,
+        pinnedSessionIds: ['pinned-root'],
+        sectionKey: 'sessions',
+        sessionOrderIds: ['first-live', 'second-live'],
+        showAllProfiles: false
+      })
+    ).toEqual({
+      nextOrder: ['first-live', 'second-live', 'pinned-live'],
+      type: 'sessions',
+      unpinPinId: 'pinned-root'
+    })
+  })
+
   it('reorders within Sessions on release using the same stable anchor math', () => {
     expect(
       resolveSidebarSessionReleaseDrop({

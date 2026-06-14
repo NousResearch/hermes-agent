@@ -39,19 +39,11 @@ export interface SessionDropAnchor {
 
 interface SessionDropAnchorOptions {
   /** Row currently being dragged. It should never become its own preview
-   * target; when the preview animates under the pointer, keep the old anchor. */
+   * target. */
   movingSessionId?: null | string
-  /** Previous stable anchor for hysteresis. Used while the pointer is in a
-   * row's middle band or over the animated dragged row. */
+  /** Previous stable anchor. Used only when the pointer is over the animated
+   * dragged row and there is no better physical row/gap target. */
   previous?: null | SessionDropAnchor
-}
-
-const SESSION_DROP_EDGE_BAND_RATIO = 0.38
-const SESSION_DROP_MIN_EDGE_BAND_PX = 6
-const SESSION_DROP_MAX_EDGE_BAND_PX = 12
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value))
 }
 
 export function placeSessionIdAtAnchor(
@@ -81,6 +73,10 @@ export function previewItemsAtAnchor<T extends { id: string }>(
   anchor: null | SessionDropAnchor
 ): T[] {
   if (!movingItem || !anchor) {
+    if (movingItem && !anchor && !items.some(item => item.id === movingItem.id)) {
+      return [...items, movingItem]
+    }
+
     return items
   }
 
@@ -108,7 +104,7 @@ export function previewItemsForSessionDrop<T extends { id: string }>(
   anchor: null | SessionDropAnchor,
   options: { active: boolean; mode: SessionDropPreviewMode }
 ): T[] {
-  if (!options.active || options.mode !== 'native') {
+  if (!options.active || (options.mode !== 'native' && options.mode !== 'pointer')) {
     return items
   }
 
@@ -132,34 +128,8 @@ export function sessionDropMarkerIndex(ids: readonly string[], anchor: null | Se
 function rowAnchorFromRect(
   sessionId: string,
   rect: DOMRect,
-  clientY: number,
-  previous?: null | SessionDropAnchor
+  clientY: number
 ): SessionDropAnchor {
-  const edgeBand = clamp(
-    rect.height * SESSION_DROP_EDGE_BAND_RATIO,
-    SESSION_DROP_MIN_EDGE_BAND_PX,
-    SESSION_DROP_MAX_EDGE_BAND_PX
-  )
-
-  const topIntent = rect.top + edgeBand
-  const bottomIntent = rect.bottom - edgeBand
-
-  if (clientY <= topIntent) {
-    return { before: true, sessionId }
-  }
-
-  if (clientY >= bottomIntent) {
-    return { before: false, sessionId }
-  }
-
-  if (previous) {
-    if (previous.sessionId === sessionId) {
-      return { before: clientY < rect.top + rect.height / 2, sessionId }
-    }
-
-    return previous
-  }
-
   return { before: clientY < rect.top + rect.height / 2, sessionId }
 }
 
@@ -177,9 +147,8 @@ function rowsInScope(event: ReactDragEvent): HTMLElement[] {
 }
 
 /**
- * Resolve a stable insertion anchor from a section-level drag point. The middle
- * of each row is a dead zone that preserves the previous anchor, so animated
- * preview shuffles do not snap back and forth when the pointer pauses.
+ * Resolve the insertion anchor from the user's physical pointer position.
+ * Rows split at their midpoint; gaps split at their midpoint.
  */
 export function sessionDropAnchor(
   event: ReactDragEvent,
@@ -194,12 +163,12 @@ export function sessionDropAnchor(
     .sort((a, b) => a.rect.top - b.rect.top)
 
   if (rows.length === 0) {
-    return options.previous ?? null
+    return null
   }
 
   for (const { rect, sessionId } of rows) {
     if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
-      return rowAnchorFromRect(sessionId, rect, event.clientY, options.previous)
+      return rowAnchorFromRect(sessionId, rect, event.clientY)
     }
   }
 
@@ -208,10 +177,6 @@ export function sessionDropAnchor(
     const next = rows[index + 1]
 
     if (event.clientY > current.rect.bottom && event.clientY < next.rect.top) {
-      if (options.previous) {
-        return options.previous
-      }
-
       const gapMidpoint = current.rect.bottom + (next.rect.top - current.rect.bottom) / 2
 
       return event.clientY < gapMidpoint
@@ -224,11 +189,11 @@ export function sessionDropAnchor(
   const last = rows[rows.length - 1]
 
   if (event.clientY < first.rect.top) {
-    return options.previous ?? { before: true, sessionId: first.sessionId }
+    return { before: true, sessionId: first.sessionId }
   }
 
   if (event.clientY > last.rect.bottom) {
-    return options.previous ?? { before: false, sessionId: last.sessionId }
+    return { before: false, sessionId: last.sessionId }
   }
 
   return options.previous ?? null

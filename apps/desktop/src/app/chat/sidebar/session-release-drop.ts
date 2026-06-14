@@ -21,6 +21,10 @@ interface ResolveSidebarSessionReleaseDropOptions {
   showAllProfiles: boolean
 }
 
+function placeSessionIdAtEnd(ids: readonly string[], movingId: string): string[] {
+  return [...ids.filter(id => id !== movingId), movingId]
+}
+
 export function resolveSidebarSessionReleaseDrop({
   anchor,
   anchorPinIdForSessionId,
@@ -66,7 +70,11 @@ export function resolveSidebarSessionReleaseDrop({
     }
 
     if (!showAllProfiles) {
-      const nextOrder = placeSessionIdAtAnchor(sessionOrderIds, payload.id, anchor)
+      const nextOrder = anchor
+        ? placeSessionIdAtAnchor(sessionOrderIds, payload.id, anchor)
+        : sessionOrderIds.includes(payload.id)
+          ? null
+          : placeSessionIdAtEnd(sessionOrderIds, payload.id)
 
       if (nextOrder) {
         decision.nextOrder = nextOrder

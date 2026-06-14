@@ -3825,6 +3825,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # the next submitted input, whether it's the selection or anything
         # else). See #34584.
         self._pending_resume_sessions = None
+        # Armed when a bare `/prompts` prints recent user prompts so the next
+        # bare number can load that prompt into the editable composer. One-shot
+        # like `_pending_resume_sessions`: any next input either consumes or
+        # clears it.
+        self._pending_prompt_messages = None
         # One-shot agent seed set by a slash handler (e.g. /blueprint <name>)
         # that wants its output run as the next agent turn. Consumed and cleared
         # by the interactive loop immediately after process_command() returns.
@@ -6534,6 +6539,118 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
         return True
 
+    def _list_recent_prompts(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return recent user prompts for the current session, newest first."""
+        if not self._session_db or not self.session_id:
+            return []
+        try:
+            return self._session_db.list_recent_user_messages(
+                self.session_id,
+                limit=limit,
+            )
+        except Exception:
+            return []
+
+    def _show_recent_prompts(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        """Render recent prompts from the current session and return them."""
+        prompts = self._list_recent_prompts(limit=limit)
+        if not prompts:
+            return []
+
+        from hermes_cli.main import _relative_time
+
+        print()
+        print("  Recent prompts in this session:")
+        print()
+        print(f"  {'#':<3} {'Prompt':<80} {'When':<13} {'ID'}")
+        print(f"  {'─' * 3} {'─' * 80} {'─' * 13} {'─' * 8}")
+        for idx, prompt in enumerate(prompts, start=1):
+            preview = (prompt.get("preview") or "")[:78]
+            when = _relative_time(prompt.get("timestamp"))
+            print(f"  {idx:<3} {preview:<80} {when:<13} {prompt.get('id')}")
+        print()
+        print("  Use /prompts <number> or type a bare number next to load a prompt for editing.")
+        print("  Example: /prompts 2")
+        print()
+        return prompts
+
+    def _prompt_text_for_message_id(self, message_id: int) -> str:
+        """Return the full text for a user message in the current session."""
+        if not self._session_db or not self.session_id:
+            return ""
+        try:
+            msg = self._session_db.get_user_message(self.session_id, message_id)
+        except Exception:
+            return ""
+        if msg is None:
+            return ""
+        return self._undo_content_to_text(msg.get("content"))
+
+    def _load_prompt_for_editing(
+        self,
+        index: int,
+        prompts: list[dict[str, Any]],
+    ) -> bool:
+        """Load the indexed prompt into the composer for editing."""
+        if index < 1 or index > len(prompts):
+            _cprint(f"  Prompt index {index} is out of range.")
+            _cprint("  Use /prompts with no arguments to see recent prompts.")
+            return True
+
+        selected = prompts[index - 1]
+        message_id = selected.get("id")
+        if message_id is None:
+            _cprint("  Could not load that prompt: missing message id.")
+            return True
+
+        text = self._prompt_text_for_message_id(message_id)
+        if not text:
+            _cprint("  Could not load that prompt: message text is unavailable.")
+            return True
+
+        if self._prefill_input_buffer(text):
+            preview = " ".join(text.split())
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            _cprint(f"  ↺ Loaded prompt #{index} into the composer for editing: {preview}")
+        else:
+            _cprint(f"  Prompt #{index}:")
+            print(text)
+        return True
+
+    def _handle_prompts_command(self, cmd_original: str) -> None:
+        """Handle /prompts [number] — browse current-session prompts."""
+        parts = cmd_original.split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        sub = arg.lower()
+
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            _cprint(f"  {format_session_db_unavailable()}")
+            self._pending_prompt_messages = None
+            return
+
+        if not arg or sub in {"list", "ls", "browse"}:
+            prompts = self._show_recent_prompts(limit=10)
+            if prompts:
+                self._pending_prompt_messages = prompts
+            else:
+                self._pending_prompt_messages = None
+                _cprint("  (._.) No previous prompts in this session yet.")
+            return
+
+        self._pending_prompt_messages = None
+        if not arg.isdigit():
+            _cprint("  Usage: /prompts [number]")
+            _cprint("  Run /prompts with no arguments to browse recent prompts.")
+            return
+
+        prompts = self._list_recent_prompts(limit=10)
+        if not prompts:
+            _cprint("  (._.) No previous prompts in this session yet.")
+            return
+        self._load_prompt_for_editing(int(arg), prompts)
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -6820,6 +6937,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._handle_resume_command(f"/resume {index}")
         return True
 
+    def _consume_pending_prompt_selection(self, text: str) -> bool:
+        """Resolve a bare numeric reply that follows a bare ``/prompts`` list."""
+        pending = self._pending_prompt_messages
+        if not pending:
+            return False
+        # One-shot: disarm on the first submitted input whether it matches or
+        # falls through to chat, so stale prompt lists never hijack later digits.
+        self._pending_prompt_messages = None
+
+        if not isinstance(text, str):
+            return False
+        stripped = text.strip()
+        if not stripped.isdigit():
+            return False
+
+        return self._load_prompt_for_editing(int(stripped), pending)
+
 
 
     def save_conversation(self):
@@ -7023,19 +7157,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "\n".join(t for t in parts if t)
         return ""
 
-    def _prefill_input_buffer(self, text: str) -> None:
+    def _prefill_input_buffer(self, text: str) -> bool:
         """Place ``text`` in the active prompt_toolkit buffer, editable."""
         app = getattr(self, "_app", None)
         if app is None:
-            return
+            return False
         try:
             buf = app.current_buffer
             buf.text = text
             if hasattr(buf, "cursor_position"):
                 buf.cursor_position = len(text)
             app.invalidate()
+            return True
         except Exception as e:
             logger.debug("undo: prefill buffer failed: %s", e)
+            return False
     
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
@@ -8076,6 +8212,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # See #34584.
         if canonical not in {"resume", "sessions"}:
             self._pending_resume_sessions = None
+        if canonical != "prompts":
+            self._pending_prompt_messages = None
 
         if canonical in {"quit", "exit"}:
             # Parse --delete flag: /exit --delete also removes the current
@@ -8181,6 +8319,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     pass
         elif canonical == "history":
             self.show_history()
+        elif canonical == "prompts":
+            self._handle_prompts_command(cmd_original)
         elif canonical == "title":
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
@@ -14640,6 +14780,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         and self._pending_resume_sessions
                         and isinstance(user_input, str)
                         and self._consume_pending_resume_selection(user_input)
+                    ):
+                        continue
+
+                    # A bare number right after `/prompts` loads that prompt
+                    # into the composer for editing. Checked before chat routing
+                    # so the digit is not sent to the agent as a message.
+                    if (
+                        not _file_drop
+                        and self._pending_prompt_messages
+                        and isinstance(user_input, str)
+                        and self._consume_pending_prompt_selection(user_input)
                     ):
                         continue
 

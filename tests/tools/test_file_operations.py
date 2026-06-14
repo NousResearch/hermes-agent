@@ -38,6 +38,11 @@ class TestIsWriteDenied:
         path = os.path.join(str(Path.home()), ".netrc")
         assert _is_write_denied(path) is True
 
+    @pytest.mark.parametrize("name", [".pgpass", ".npmrc", ".pypirc"])
+    def test_credential_config_files_denied(self, name):
+        path = os.path.join(str(Path.home()), name)
+        assert _is_write_denied(path) is True
+
     def test_aws_prefix_denied(self):
         path = os.path.join(str(Path.home()), ".aws", "credentials")
         assert _is_write_denied(path) is True
@@ -59,9 +64,6 @@ class TestIsWriteDenied:
     @pytest.mark.parametrize(
         "path",
         [
-            "auth.json",
-            "config.yaml",
-            "webhook_subscriptions.json",
             ".anthropic_oauth.json",
             "mcp-tokens/token1.json",
             "mcp-tokens/subdir/token2.json",
@@ -71,8 +73,8 @@ class TestIsWriteDenied:
             "pairing",
         ],
     )
-    def test_hermes_control_files_oauth_and_mcp_tokens_denied(self, path):
-        """Hermes control files, PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
+    def test_oauth_mcp_tokens_and_pairing_denied(self, path):
+        """PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -80,15 +82,21 @@ class TestIsWriteDenied:
 
     @pytest.mark.parametrize(
         "path",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
+    )
+    def test_hermes_control_files_requested_writable(self, path):
+        from hermes_constants import get_hermes_home
+
+        assert _is_write_denied(str(get_hermes_home() / path)) is False
+
+    @pytest.mark.parametrize(
+        "path",
         [
-            "dummy/../config.yaml",
-            "./auth.json",
             "./.anthropic_oauth.json",
-            "mcp-tokens/../config.yaml",
         ],
     )
-    def test_hermes_control_files_and_oauth_traversal_denied(self, path):
-        """Path traversal attempts to protected Hermes files must be blocked."""
+    def test_oauth_traversal_denied(self, path):
+        """Path traversal attempts to protected OAuth files must be blocked."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -106,30 +114,29 @@ class TestIsWriteDenied:
         """Unrelated paths must still be allowed."""
         assert _is_write_denied(path) is False
 
-    @pytest.mark.parametrize(
-        "name",
-        ["auth.json", "config.yaml", "webhook_subscriptions.json", ".anthropic_oauth.json"],
-    )
-    def test_control_files_and_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
-        """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
-
-        Without the root-level pass, a profile-mode session leaves the
-        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json,
-        .anthropic_oauth.json} writable — the same gap PR #15981 fixed
-        for .env.
-        """
-        # Simulate a profile-mode HERMES_HOME layout:
-        #   <root>/profiles/coder/{auth.json,config.yaml,...}
-        #   <root>/{auth.json,config.yaml,...}        ← must also be denied
+    @pytest.mark.parametrize("name", [".anthropic_oauth.json"])
+    def test_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
+        """Under a profile, BOTH <profile>/X and <root>/X must be denied."""
         root = tmp_path / "hermes"
         profile = root / "profiles" / "coder"
         profile.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(profile))
 
-        # Profile copy
         assert _is_write_denied(str(profile / name)) is True
-        # Root copy — the gap this widening closes
         assert _is_write_denied(str(root / name)) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
+    )
+    def test_control_files_requested_writable_in_profile_mode(self, tmp_path, monkeypatch, name):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / name)) is False
+        assert _is_write_denied(str(root / name)) is False
 
     def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
         """mcp-tokens/ under profile AND under root must both be denied."""

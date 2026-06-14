@@ -1265,5 +1265,105 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         mock_imap.xatom.assert_called_once()
 
 
+class TestConnectSmtp(unittest.TestCase):
+    """Test _connect_smtp() helper: protocol selection and IPv6 fallback."""
+
+    def _make_adapter(self, port="587"):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_SMTP_PORT": port,
+        }):
+            from gateway.platforms.email import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_port_587_uses_smtp_with_starttls(self):
+        """Port 587 should use smtplib.SMTP + STARTTLS."""
+        adapter = self._make_adapter("587")
+
+        with patch("smtplib.SMTP") as mock_smtp, \
+             patch("smtplib.SMTP_SSL") as mock_smtp_ssl:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = adapter._connect_smtp()
+
+            mock_smtp.assert_called_once()
+            mock_smtp_ssl.assert_not_called()
+            mock_server.starttls.assert_called_once()
+            self.assertIs(result, mock_server)
+
+    def test_port_465_uses_smtp_ssl(self):
+        """Port 465 should use smtplib.SMTP_SSL (implicit TLS)."""
+        adapter = self._make_adapter("465")
+
+        with patch("smtplib.SMTP") as mock_smtp, \
+             patch("smtplib.SMTP_SSL") as mock_smtp_ssl:
+            mock_server = MagicMock()
+            mock_smtp_ssl.return_value = mock_server
+
+            result = adapter._connect_smtp()
+
+            mock_smtp_ssl.assert_called_once()
+            mock_smtp.assert_not_called()
+            self.assertIs(result, mock_server)
+
+    def test_ipv6_timeout_falls_back_to_ipv4(self):
+        """When default connection times out, retry with AF_INET socket."""
+        import socket as _socket
+        adapter = self._make_adapter("587")
+
+        call_count = 0
+
+        def fake_smtp(host, port, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "sock" not in kwargs:
+                raise _socket.timeout("timed out")
+            server = MagicMock()
+            return server
+
+        with patch("smtplib.SMTP", side_effect=fake_smtp), \
+             patch("socket.create_connection") as mock_create_conn:
+            mock_sock = MagicMock()
+            mock_create_conn.return_value = mock_sock
+
+            adapter._connect_smtp()
+
+            # First attempt without sock, then fallback with sock
+            self.assertEqual(call_count, 2)
+            mock_create_conn.assert_called_once_with(
+                ("smtp.test.com", 587), timeout=30, family=_socket.AF_INET,
+            )
+
+    def test_port_465_ipv6_fallback(self):
+        """Port 465 IPv6 timeout falls back to IPv4 with SMTP_SSL."""
+        import socket as _socket
+        adapter = self._make_adapter("465")
+
+        call_count = 0
+
+        def fake_smtp_ssl(host, port, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if "sock" not in kwargs:
+                raise _socket.timeout("timed out")
+            return MagicMock()
+
+        with patch("smtplib.SMTP_SSL", side_effect=fake_smtp_ssl), \
+             patch("socket.create_connection") as mock_create_conn:
+            mock_create_conn.return_value = MagicMock()
+
+            adapter._connect_smtp()
+
+            self.assertEqual(call_count, 2)
+            mock_create_conn.assert_called_once_with(
+                ("smtp.test.com", 465), timeout=30, family=_socket.AF_INET,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

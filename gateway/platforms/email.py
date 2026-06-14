@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import smtplib
+import socket
 import ssl
 import uuid
 from email.header import decode_header
@@ -293,6 +294,53 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    def _connect_smtp(self) -> smtplib.SMTP:
+        """Create an SMTP connection, selecting the correct protocol for the port.
+
+        Port 465 uses implicit TLS (``SMTP_SSL``).  All other ports use
+        ``SMTP`` + ``STARTTLS``.
+
+        When the host resolves to an IPv6 address that is unreachable
+        (common on networks without IPv6 routing), the connection hangs
+        until the socket timeout expires.  To avoid this, we try the
+        default resolution first and fall back to IPv4-only on failure.
+
+        Returns a connected SMTP object with TLS established — callers
+        can proceed directly to ``login()``.
+        """
+        ctx = ssl.create_default_context()
+        host = self._smtp_host
+        port = self._smtp_port
+        timeout = 30
+
+        def _connect() -> smtplib.SMTP:
+            """Attempt one SMTP connection (default address family)."""
+            if port == 465:
+                return smtplib.SMTP_SSL(host, port, timeout=timeout, context=ctx)
+            s = smtplib.SMTP(host, port, timeout=timeout)
+            s.starttls(context=ctx)
+            return s
+
+        def _connect_ipv4() -> smtplib.SMTP:
+            """Fallback: force IPv4 via an AF_INET socket."""
+            sock = socket.create_connection(
+                (host, port), timeout=timeout, family=socket.AF_INET,
+            )
+            if port == 465:
+                return smtplib.SMTP_SSL(
+                    host, port, timeout=timeout, context=ctx, sock=sock,
+                )
+            s = smtplib.SMTP(host, port, timeout=timeout, sock=sock)
+            s.starttls(context=ctx)
+            return s
+
+        try:
+            return _connect()
+        except (socket.timeout, OSError):
+            # Connection-level failure (may be unreachable IPv6).
+            # Retry with IPv4 only.
+            return _connect_ipv4()
+
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         try:
@@ -316,10 +364,11 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test SMTP connection
-            smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-            smtp.starttls(context=ssl.create_default_context())
-            smtp.login(self._address, self._password)
-            smtp.quit()
+            smtp = self._connect_smtp()
+            try:
+                smtp.login(self._address, self._password)
+            finally:
+                smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
@@ -555,9 +604,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._connect_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -677,9 +725,8 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Email] Failed to attach %s: %s", file_path, e)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._connect_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:
@@ -756,9 +803,8 @@ class EmailAdapter(BasePlatformAdapter):
             part.add_header("Content-Disposition", f"attachment; filename={fname}")
             msg.attach(part)
 
-        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        smtp = self._connect_smtp()
         try:
-            smtp.starttls(context=ssl.create_default_context())
             smtp.login(self._address, self._password)
             smtp.send_message(msg)
         finally:

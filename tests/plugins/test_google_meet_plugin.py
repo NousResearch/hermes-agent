@@ -167,6 +167,26 @@ def test_bot_state_splits_growing_same_speaker_caption_before_it_gets_too_long(t
     assert status["transcriptLines"] == 2
 
 
+def test_bot_state_splits_single_long_caption_segment(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    text = " ".join(["alpha"] * 130)
+    state.record_caption("Alex Rivera", text)
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    stripped = [line.split("] ", 1)[1] for line in transcript]
+    assert len(stripped) > 1
+    assert " ".join(line.split(": ", 1)[1] for line in stripped) == text
+    assert all(len(line.split(": ", 1)[1]) <= 500 for line in stripped)
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == len(stripped)
+
+
 def test_bot_state_flushes_local_media_state(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 

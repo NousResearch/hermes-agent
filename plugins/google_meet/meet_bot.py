@@ -189,6 +189,23 @@ class _BotState:
             return ""
         return current[len(previous):].lstrip(" \t\r\n,.;:!?-")
 
+    @staticmethod
+    def _split_caption_text(text: str) -> list[str]:
+        text = (text or "").strip()
+        if not text:
+            return []
+        chunks: list[str] = []
+        remaining = text
+        while len(remaining) > MAX_TRANSCRIPT_TEXT_LEN:
+            split_at = remaining.rfind(" ", 0, MAX_TRANSCRIPT_TEXT_LEN + 1)
+            if split_at <= 0:
+                split_at = MAX_TRANSCRIPT_TEXT_LEN
+            chunks.append(remaining[:split_at].strip())
+            remaining = remaining[split_at:].strip()
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
     def _record_caption_segment(
         self,
         speaker: str,
@@ -196,15 +213,31 @@ class _BotState:
         ts: str,
         *,
         combine_with_previous: bool = False,
+        allow_revision: bool = True,
     ) -> None:
         text = (text or "").strip()
         if not text:
+            return
+        chunks = self._split_caption_text(text)
+        if len(chunks) > 1:
+            for idx, chunk in enumerate(chunks):
+                self._record_caption_segment(
+                    speaker,
+                    chunk,
+                    ts,
+                    combine_with_previous=combine_with_previous and idx == 0,
+                    allow_revision=idx == 0,
+                )
             return
 
         if self._transcript_entries:
             _, previous_speaker, previous_text = self._transcript_entries[-1]
             if previous_speaker == speaker:
-                if self._is_caption_revision(previous_text, text) and len(text) <= MAX_TRANSCRIPT_TEXT_LEN:
+                if (
+                    allow_revision
+                    and self._is_caption_revision(previous_text, text)
+                    and len(text) <= MAX_TRANSCRIPT_TEXT_LEN
+                ):
                     self._transcript_entries[-1] = (ts, speaker, text)
                     self._rewrite_transcript()
                     return

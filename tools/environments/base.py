@@ -20,6 +20,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import get_hermes_home
 from tools.interrupt import is_interrupted
 
@@ -140,7 +141,12 @@ def _popen_bash(
     If *stdin_data* is provided, writes it asynchronously via :func:`_pipe_stdin`.
     Backends with special Popen needs (e.g. local's ``preexec_fn``) can bypass
     this and call :func:`_pipe_stdin` directly.
+
+    On Windows the child gets ``CREATE_NO_WINDOW`` so console helpers
+    (``docker exec``, ``ssh``) don't flash a console window when Hermes
+    runs under a GUI host (issue #43848).
     """
+    kwargs.setdefault("creationflags", windows_hide_flags())
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

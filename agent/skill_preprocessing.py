@@ -5,6 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
@@ -75,6 +77,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"

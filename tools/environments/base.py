@@ -872,7 +872,17 @@ class BaseEnvironment(ABC):
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
+        try:
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+        except (KeyboardInterrupt, SystemExit):
+            # _wait_for_process has its own cleanup guard once its poll loop is
+            # active. Keep a caller-level guard too so interrupts that land
+            # during wait setup still stop the already-spawned subprocess.
+            try:
+                self._kill_process(proc)
+            except Exception:
+                pass
+            raise
         self._update_cwd(result)
 
         return result

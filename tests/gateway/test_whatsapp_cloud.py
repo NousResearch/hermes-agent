@@ -2709,6 +2709,14 @@ class TestSendVoice:
             args = spawn.await_args.args
             assert args[0] == "ffmpeg"
             assert args[3] == source_path
+            assert "-ac" in args
+            assert args[args.index("-ac") + 1] == "1"
+            assert "-ar" in args
+            assert args[args.index("-ar") + 1] == "48000"
+            assert "-c:a" in args
+            assert args[args.index("-c:a") + 1] == "libopus"
+            assert "-application" in args
+            assert args[args.index("-application") + 1] == "voip"
             assert args[-1] == opus_path
         finally:
             _os.unlink(source_path)

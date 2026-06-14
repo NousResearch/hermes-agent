@@ -2459,6 +2459,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             proc = await asyncio.create_subprocess_exec(
                 _FFMPEG_PATH, "-y", "-i", audio_path,
+                "-ac", "1", "-ar", "48000",
                 "-c:a", "libopus", "-b:a", "32k", "-vbr", "on",
                 "-application", "voip", out_path,
                 stdout=asyncio.subprocess.DEVNULL,

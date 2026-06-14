@@ -2544,6 +2544,31 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
+def _normalize_systemd_unit_for_comparison(text: str) -> str:
+    """Normalize systemd unit text for staleness checks.
+
+    ``generate_systemd_unit()`` uses ``shutil.which("node")`` to locate the
+    node binary, which depends on the ambient ``PATH`` of the calling
+    process.  When called from different CLI contexts (e.g. ``gateway
+    restart`` vs ``gateway status``), the resolved node directory can differ —
+    the restart context may include ``~/.hermes/node/bin`` while the status
+    context does not — causing the PATH line to differ even though the
+    service definition is functionally identical.
+
+    Mirror the launchd approach: replace the ``Environment="PATH=…"``
+    payload with a stable placeholder so PATH differences that are purely
+    environmental don't trigger perpetual "outdated" warnings.
+    """
+    import re
+
+    normalized = _normalize_service_definition(text)
+    return re.sub(
+        r'(Environment="PATH=)(.*?)(")',
+        r"\1__HERMES_PATH__\3",
+        normalized,
+    )
+
+
 def systemd_unit_is_current(system: bool = False) -> bool:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -2555,11 +2580,18 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     # Normalize out directives that older systemd versions silently drop
     # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
     # those directives is not perpetually flagged as outdated.
+    # Also normalize the PATH payload — generate_systemd_unit() uses
+    # shutil.which("node") which depends on the ambient environment, so
+    # the PATH line can differ between CLI contexts (restart vs status).
     norm_installed = _normalize_service_definition(
-        _strip_optional_systemd_directives(installed)
+        _strip_optional_systemd_directives(
+            _normalize_systemd_unit_for_comparison(installed)
+        )
     )
     norm_expected = _normalize_service_definition(
-        _strip_optional_systemd_directives(expected)
+        _strip_optional_systemd_directives(
+            _normalize_systemd_unit_for_comparison(expected)
+        )
     )
     return norm_installed == norm_expected
 

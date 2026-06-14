@@ -139,6 +139,93 @@ WantedBy=default.target
 
 
 class TestSystemdUnitIsCurrent:
+    def test_unit_with_different_path_is_current(self, tmp_path, monkeypatch):
+        """Units differing only in the Environment="PATH=…" line should be
+        considered current, since the PATH payload depends on the ambient
+        environment of the generating process (issue #46276)."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python gateway run
+Environment="PATH=/home/user/.hermes/node/bin:/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        expected = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python gateway run
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is True
+
+    def test_unit_with_different_exec_is_not_current(self, tmp_path, monkeypatch):
+        """Units differing in non-PATH fields should still be outdated
+        even after PATH normalization."""
+        from hermes_cli import gateway as gw
+
+        installed = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python gateway run
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
+        expected = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python -m hermes_cli.main gateway run
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        unit_file = tmp_path / "hermes-gateway.service"
+        unit_file.write_text(installed)
+
+        monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
+        monkeypatch.setattr(
+            gw,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: expected,
+        )
+
+        assert gw.systemd_unit_is_current(system=False) is False
+
     def test_unit_without_optional_directives_is_current(self, tmp_path, monkeypatch):
         """Installed unit missing RestartMaxDelaySec/RestartSteps should be
         considered current when the generated unit includes them."""
@@ -245,3 +332,74 @@ WantedBy=default.target
         unit_file = tmp_path / "nonexistent.service"
         monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
         assert gw.systemd_unit_is_current(system=False) is False
+
+
+# ---------------------------------------------------------------------------
+# _normalize_systemd_unit_for_comparison
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeSystemdUnitForComparison:
+    def test_replaces_path_payload(self):
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        text = 'Environment="PATH=/home/user/.hermes/node/bin:/usr/bin:/bin"'
+        result = _normalize_systemd_unit_for_comparison(text)
+        assert "__HERMES_PATH__" in result
+        assert ".hermes/node/bin" not in result
+        assert "/usr/bin" not in result
+
+    def test_preserves_non_path_environment(self):
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        text = 'Environment="HERMES_HOME=/home/user/.hermes"\nEnvironment="PATH=/usr/bin"'
+        result = _normalize_systemd_unit_for_comparison(text)
+        assert "HERMES_HOME=/home/user/.hermes" in result
+        assert "__HERMES_PATH__" in result
+
+    def test_no_path_line_unchanged(self):
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        text = "[Service]\nType=simple\nRestart=always\n"
+        result = _normalize_systemd_unit_for_comparison(text)
+        # _normalize_service_definition strips trailing whitespace, so
+        # compare content semantically rather than byte-for-byte.
+        assert "Type=simple" in result
+        assert "Restart=always" in result
+        assert "PATH" not in result
+
+    def test_full_unit_path_normalization(self):
+        """Full systemd unit with different PATH lines should normalize
+        to the same text for comparison."""
+        from hermes_cli.gateway import _normalize_systemd_unit_for_comparison
+        installed = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python gateway run
+Environment="PATH=/home/user/.hermes/node/bin:/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        expected = """[Unit]
+Description=Hermes Gateway
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python gateway run
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+"""
+        norm_installed = _normalize_systemd_unit_for_comparison(installed)
+        norm_expected = _normalize_systemd_unit_for_comparison(expected)
+        assert norm_installed == norm_expected
+
+
+# ---------------------------------------------------------------------------
+# systemd_unit_is_current integration
+# ---------------------------------------------------------------------------

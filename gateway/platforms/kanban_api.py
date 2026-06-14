@@ -527,3 +527,113 @@ def _apply_status(conn, task_id: str, status: str) -> Optional["web.Response"]:
             status=409, code="invalid_status_transition", param="status",
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher visibility
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_config() -> Dict[str, Optional[int]]:
+    """Read the dispatch knobs the way the CLI/gateway dispatcher does.
+
+    Mirrors ``hermes_cli.kanban._cmd_dispatch``: ``max_in_progress_per_profile``
+    is the per-profile concurrency cap and ``failure_limit`` is the
+    circuit-breaker trip count. Both fall back the same way the dispatcher
+    falls back, so this view never disagrees with the live dispatcher.
+    """
+    max_per_profile: Optional[int] = None
+    failure_limit = kb.DEFAULT_FAILURE_LIMIT
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+
+        def _positive_int(value):
+            if value is None:
+                return None
+            try:
+                ival = int(value)
+            except (TypeError, ValueError):
+                return None
+            return ival if ival >= 1 else None
+
+        max_per_profile = _positive_int(kcfg.get("max_in_progress_per_profile"))
+        cfg_limit = _positive_int(kcfg.get("failure_limit"))
+        if cfg_limit is not None:
+            failure_limit = cfg_limit
+    except Exception:
+        logger.debug("dispatch config load failed; using defaults", exc_info=True)
+    return {"max_in_progress_per_profile": max_per_profile, "failure_limit": failure_limit}
+
+
+def _effective_failure_limit(task: "kb.Task", default_limit: int) -> int:
+    """Resolve a task's circuit-breaker trip count.
+
+    Same precedence as ``_record_task_failure`` / ``recompute_ready``:
+    per-task ``max_retries`` first, then the dispatcher-level
+    ``kanban.failure_limit``, then ``DEFAULT_FAILURE_LIMIT``.
+    """
+    if task.max_retries is not None:
+        return int(task.max_retries)
+    return int(default_limit)
+
+
+async def handle_dispatch_state(adapter, request: "web.Request") -> "web.Response":
+    """GET /api/kanban/dispatch/state — dispatcher concurrency + benched tasks.
+
+    Derived read-only from the engine; it does not touch the dispatcher.
+
+    - ``per_profile``: one entry per assignee that currently has a task in
+      ``running`` status — ``in_progress`` is that count, ``max_in_progress``
+      is ``kanban.max_in_progress_per_profile`` (null when unconfigured).
+    - ``blocked``: tasks the circuit breaker has benched, i.e. ``blocked``
+      tasks whose ``consecutive_failures`` reached their effective failure
+      limit (per-task ``max_retries`` or ``kanban.failure_limit``).
+    """
+    auth_err = adapter._check_auth(request)
+    if auth_err:
+        return auth_err
+
+    cfg = _dispatch_config()
+    max_per_profile = cfg["max_in_progress_per_profile"]
+    default_limit = cfg["failure_limit"]
+
+    try:
+        with kb.connect_closing() as conn:
+            running = kb.list_tasks(conn, status="running")
+            blocked_tasks = kb.list_tasks(conn, status="blocked")
+    except Exception:
+        logger.exception("GET /api/kanban/dispatch/state failed")
+        return _err("Failed to load dispatch state", status=500, code="server_error")
+
+    in_progress: Dict[str, int] = {}
+    for t in running:
+        key = t.assignee or "(unassigned)"
+        in_progress[key] = in_progress.get(key, 0) + 1
+    per_profile = [
+        {
+            "assignee": assignee,
+            "in_progress": count,
+            "max_in_progress": max_per_profile,
+        }
+        for assignee, count in sorted(in_progress.items())
+    ]
+
+    blocked = []
+    for t in blocked_tasks:
+        limit = _effective_failure_limit(t, default_limit)
+        if t.consecutive_failures >= limit:
+            blocked.append(
+                {
+                    "task_id": t.id,
+                    "assignee": t.assignee,
+                    "title": t.title,
+                    "consecutive_failures": t.consecutive_failures,
+                    "failure_limit": limit,
+                    "last_failure_error": t.last_failure_error,
+                }
+            )
+
+    return web.json_response({"per_profile": per_profile, "blocked": blocked})

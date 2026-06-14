@@ -1210,6 +1210,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "kanban_task_assign": {"method": "POST", "path": "/api/kanban/tasks/{task_id}/assign"},
                 "kanban_task_comment": {"method": "POST", "path": "/api/kanban/tasks/{task_id}/comment"},
                 "kanban_assignees": {"method": "GET", "path": "/api/kanban/assignees"},
+                "kanban_dispatch_state": {"method": "GET", "path": "/api/kanban/dispatch/state"},
             },
         })
 
@@ -4214,6 +4215,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/kanban/tasks", partial(kanban_api.handle_list_tasks, self))
             self._app.router.add_post("/api/kanban/tasks", partial(kanban_api.handle_create_task, self))
             self._app.router.add_get("/api/kanban/assignees", partial(kanban_api.handle_assignees, self))
+            self._app.router.add_get("/api/kanban/dispatch/state", partial(kanban_api.handle_dispatch_state, self))
             self._app.router.add_get("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_get_task, self))
             self._app.router.add_patch("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_patch_task, self))
             self._app.router.add_post("/api/kanban/tasks/{task_id}/assign", partial(kanban_api.handle_assign_task, self))

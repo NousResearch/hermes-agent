@@ -51,6 +51,7 @@ def _app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/api/kanban/tasks", partial(kanban_api.handle_list_tasks, adapter))
     app.router.add_post("/api/kanban/tasks", partial(kanban_api.handle_create_task, adapter))
     app.router.add_get("/api/kanban/assignees", partial(kanban_api.handle_assignees, adapter))
+    app.router.add_get("/api/kanban/dispatch/state", partial(kanban_api.handle_dispatch_state, adapter))
     app.router.add_get("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_get_task, adapter))
     app.router.add_patch("/api/kanban/tasks/{task_id}", partial(kanban_api.handle_patch_task, adapter))
     app.router.add_post("/api/kanban/tasks/{task_id}/assign", partial(kanban_api.handle_assign_task, adapter))
@@ -266,6 +267,81 @@ class TestPatch:
         async with TestClient(TestServer(_app(adapter))) as cli:
             resp = await cli.patch(f"/api/kanban/tasks/{tid}", json={"assignee": "ops"})
             assert resp.status == 400
+
+
+class TestDispatchState:
+    @pytest.mark.asyncio
+    async def test_per_profile_running_counts(self, board):
+        # Two running for ops, one for ezra; a ready task must not count.
+        for title in ("r1", "r2"):
+            tid = _seed(board, title=title, assignee="ops")
+            with kb.connect_closing(board) as conn:
+                with kb.write_txn(conn):
+                    conn.execute("UPDATE tasks SET status='running' WHERE id=?", (tid,))
+        tid = _seed(board, title="r3", assignee="ezra")
+        with kb.connect_closing(board) as conn:
+            with kb.write_txn(conn):
+                conn.execute("UPDATE tasks SET status='running' WHERE id=?", (tid,))
+        _seed(board, title="idle", assignee="ops")  # ready, ignored
+
+        adapter = _make_adapter()
+        async with TestClient(TestServer(_app(adapter))) as cli:
+            resp = await cli.get("/api/kanban/dispatch/state")
+            assert resp.status == 200
+            data = await resp.json()
+            by_assignee = {e["assignee"]: e for e in data["per_profile"]}
+            assert by_assignee["ops"]["in_progress"] == 2
+            assert by_assignee["ezra"]["in_progress"] == 1
+            # No config in tests -> per-profile cap is null.
+            assert by_assignee["ops"]["max_in_progress"] is None
+
+    @pytest.mark.asyncio
+    async def test_blocked_circuit_breaker(self, board):
+        # Benched: blocked at the default failure limit (2).
+        benched = _seed(board, title="benched")
+        with kb.connect_closing(board) as conn:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='blocked', consecutive_failures=2, "
+                    "last_failure_error='boom' WHERE id=?",
+                    (benched,),
+                )
+        # Blocked but below the limit (e.g. dependency/manual block) -> excluded.
+        soft = _seed(board, title="soft-block")
+        with kb.connect_closing(board) as conn:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='blocked', consecutive_failures=0 WHERE id=?",
+                    (soft,),
+                )
+
+        adapter = _make_adapter()
+        async with TestClient(TestServer(_app(adapter))) as cli:
+            resp = await cli.get("/api/kanban/dispatch/state")
+            data = await resp.json()
+            ids = {b["task_id"] for b in data["blocked"]}
+            assert benched in ids and soft not in ids
+            entry = next(b for b in data["blocked"] if b["task_id"] == benched)
+            assert entry["consecutive_failures"] == 2
+            assert entry["failure_limit"] == 2
+            assert entry["last_failure_error"] == "boom"
+
+    @pytest.mark.asyncio
+    async def test_blocked_respects_per_task_max_retries(self, board):
+        # max_retries=5 raises the bar: 2 failures is below it -> not benched.
+        tid = _seed(board, title="patient")
+        with kb.connect_closing(board) as conn:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status='blocked', consecutive_failures=2, "
+                    "max_retries=5 WHERE id=?",
+                    (tid,),
+                )
+        adapter = _make_adapter()
+        async with TestClient(TestServer(_app(adapter))) as cli:
+            resp = await cli.get("/api/kanban/dispatch/state")
+            data = await resp.json()
+            assert tid not in {b["task_id"] for b in data["blocked"]}
 
 
 # ---------------------------------------------------------------------------

@@ -54,6 +54,8 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.ingress import (
+    extract_request_audit_context,
+    extract_request_audit_log_suffix,
     _coerce_request_bool,
     _content_has_visible_payload,
     _multimodal_validation_error,
@@ -617,13 +619,13 @@ class APIServerAdapter(BasePlatformAdapter):
         }
 
     def _request_audit_log_suffix(self, request: "web.Request") -> str:
-        ctx = self._request_audit_context(request)
+        ctx = extract_request_audit_context(request)
         fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
         return " ".join(fields) if fields else "source='unknown'"
 
     def _cron_origin_from_request(self, request: "web.Request") -> Dict[str, str]:
         """Persist safe API source metadata on cron jobs created over HTTP."""
-        ctx = self._request_audit_context(request)
+        ctx = extract_request_audit_context(request)
         origin = {
             "platform": "api_server",
             "chat_id": "api",
@@ -663,7 +665,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         logger.warning(
             "API server rejected invalid API key: %s",
-            self._request_audit_log_suffix(request),
+            extract_request_audit_log_suffix(request),
         )
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
@@ -2808,7 +2810,7 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning(
                 "Cron jobs API rejected invalid job_id %r: %s",
                 job_id,
-                self._request_audit_log_suffix(request),
+                extract_request_audit_log_suffix(request),
             )
             return job_id, web.json_response(
                 {"error": "Invalid job ID format"}, status=400,

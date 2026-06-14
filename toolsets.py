@@ -162,6 +162,12 @@ TOOLSETS = {
         "tools": ["terminal", "process"],
         "includes": []
     },
+
+    "ssh": {
+        "description": "SSH remote execution — run commands on remote hosts via SSH with structured output",
+        "tools": ["remote_run"],
+        "includes": []
+    },
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",

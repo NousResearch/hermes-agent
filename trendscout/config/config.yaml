@@ -13,14 +13,19 @@ firecrawl:
   enabled: true
   api_url: http://localhost:3002
 
-# X/Twitter trending topics via trends24.in (no X account/auth involved)
+# Social media trending topics (no platform accounts/auth involved)
 social_trends:
   enabled: true
-  regions:
-    - australia
-    - worldwide
-    - united-states
   top_n: 10
+  # X/Twitter trending topics via trends24.in
+  x:
+    regions:
+      - australia
+      - worldwide
+      - united-states
+  # TikTok Creative Center popular hashtags (geo defaults to Firecrawl's egress IP)
+  tiktok:
+    enabled: true
 
 # Term-frequency emergence detection
 terms:

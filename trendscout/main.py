@@ -51,12 +51,13 @@ def main():
             new_count += 1
     conn.commit()
 
-    # Social trending topics (e.g. X/Twitter via trends24.in) — informational
-    # digest section + raw term-frequency signal, not stored as posts.
+    # Social trending topics (X/Twitter via trends24.in, TikTok Creative
+    # Center, etc.) — informational digest section + raw term-frequency
+    # signal, not stored as posts.
     trending = {}
     st_config = config.get('social_trends', {})
     if st_config.get('enabled'):
-        trending = social_trends.fetch_trends(st_config['regions'], st_config.get('top_n', 10))
+        trending = social_trends.fetch_all(st_config)
         if trending:
             sources_used.append('social_trends')
             raw_terms = [

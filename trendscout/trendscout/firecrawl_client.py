@@ -12,10 +12,17 @@ FIRECRAWL_URL = os.getenv('FIRECRAWL_API_URL', 'http://localhost:3002')
 FIRECRAWL_KEY = os.getenv('FIRECRAWL_API_KEY', 'local_secret_key')
 
 
-def scrape(url: str) -> str:
-    """Scrape a URL with Firecrawl, return markdown or empty string."""
+def scrape(url: str, wait_for: int = None) -> str:
+    """Scrape a URL with Firecrawl, return markdown or empty string.
+
+    `wait_for` (milliseconds) lets JS-rendered SPAs finish loading before
+    the page is captured.
+    """
     try:
-        payload = json.dumps({'url': url, 'formats': ['markdown']}).encode()
+        body = {'url': url, 'formats': ['markdown']}
+        if wait_for:
+            body['waitFor'] = wait_for
+        payload = json.dumps(body).encode()
         req = urllib.request.Request(
             f'{FIRECRAWL_URL}/v1/scrape',
             data=payload,

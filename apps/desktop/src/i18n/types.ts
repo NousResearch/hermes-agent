@@ -222,6 +222,9 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
+      completionSoundTitle: string
+      completionSoundDesc: string
+      completionSoundPreview: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

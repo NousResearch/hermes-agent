@@ -2,11 +2,15 @@ import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
+import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useI18n } from '@/i18n'
+import { COMPLETION_SOUND_VARIANTS, previewCompletionSound } from '@/lib/completion-sound'
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
+import { Check, Download, Loader2, Palette, Play, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
@@ -14,7 +18,7 @@ import { useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
 
-import { MODE_OPTIONS } from './constants'
+import { CONTROL_TEXT, MODE_OPTIONS } from './constants'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 
 function ThemePreview({ name }: { name: string }) {
@@ -135,6 +139,7 @@ function VscodeThemeInstaller() {
 export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
+  const completionSoundVariantId = useStore($completionSoundVariantId)
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
   const profiles = useStore($profiles)
@@ -298,6 +303,52 @@ export function AppearanceSettings() {
             }
             description={a.toolViewDesc}
             title={a.toolViewTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Select
+                  onValueChange={value => {
+                    const variantId = Number.parseInt(value, 10)
+
+                    setCompletionSoundVariantId(variantId)
+                    previewCompletionSound(variantId)
+                    triggerHaptic('selection')
+                  }}
+                  value={String(completionSoundVariantId)}
+                >
+                  <SelectTrigger className={cn('min-w-56', CONTROL_TEXT)}>
+                    <SelectValue />
+                  </SelectTrigger>
+
+                  <SelectContent>
+                    {COMPLETION_SOUND_VARIANTS.map(variant => (
+                      <SelectItem key={variant.id} value={String(variant.id)}>
+                        {variant.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <Button
+                  className="gap-1.5"
+                  onClick={() => {
+                    previewCompletionSound()
+                    triggerHaptic('crisp')
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Play className="size-3.5" />
+
+                  {a.completionSoundPreview}
+                </Button>
+              </div>
+            }
+            description={a.completionSoundDesc}
+            title={a.completionSoundTitle}
           />
         </div>
       </div>

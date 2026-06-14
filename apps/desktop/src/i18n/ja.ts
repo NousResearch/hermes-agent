@@ -220,6 +220,9 @@ export const ja = defineLocale({
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
       themeProfileNote: profile =>
         `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      completionSoundTitle: '完了サウンド',
+      completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
+      completionSoundPreview: '試聴',
       installTitle: 'VS Code から導入',
       installDesc:
         'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',

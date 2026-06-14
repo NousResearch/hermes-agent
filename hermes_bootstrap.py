@@ -25,6 +25,9 @@ What this module does on Windows:
   - Sets ``os.environ["PYTHONIOENCODING"] = "utf-8"`` for belt-and-
     suspenders — some tools read this instead of / in addition to
     ``PYTHONUTF8``.
+  - Sets the console code page to CP_UTF8 (65001) via
+    ``SetConsoleCP`` / ``SetConsoleOutputCP`` so the console host and
+    PowerShell subprocesses inherit UTF-8 by default.
   - Reconfigures ``sys.stdout`` / ``sys.stderr`` to UTF-8 in the current
     process, using the ``reconfigure()`` API (Python 3.7+).  This fixes
     ``print("café")`` in the parent without a re-exec.
@@ -35,6 +38,9 @@ What this module does NOT do:
     the *current* process still default to locale encoding.  Those need
     an explicit ``encoding="utf-8"`` at the call site (lint rule
     ``PLW1514`` / ``PYI058``).  Ruff is the right tool for that sweep.
+
+  - All Windows behaviour can be disabled by setting the environment
+    variable ``HERMES_DISABLE_WINDOWS_UTF8=1`` before import.
 
 What this module does on POSIX:
 
@@ -73,12 +79,33 @@ def apply_windows_utf8_bootstrap() -> bool:
     if _bootstrap_applied:
         return False
 
+    # Honour the documented escape hatch.
+    if os.environ.get("HERMES_DISABLE_WINDOWS_UTF8") in ("1", "true", "True"):
+        return False
+
     # 1. Child processes inherit these and run in UTF-8 mode.
     #    We use setdefault() rather than overwriting so the user can
     #    explicitly opt out by setting PYTHONUTF8=0 in their environment
     #    (or PYTHONIOENCODING=something-else) if they really want to.
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+    # 1a. Switch the Windows console code page to UTF-8 (CP 65001).
+    #     This ensures that child processes reading from the console
+    #     (including PowerShell's own [Console]::OutputEncoding when
+    #     not overridden) see UTF-8 rather than cp1252.  The
+    #     per-subprocess [Console]::OutputEncoding preamble is a
+    #     belt-and-suspenders complement; this system-level setting
+    #     catches everything else.
+    try:
+        import ctypes
+        _CP_UTF8 = 65001
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleCP(_CP_UTF8)
+        kernel32.SetConsoleOutputCP(_CP_UTF8)
+    except Exception:
+        # Non-fatal — the per-subprocess preamble still works.
+        pass
 
     # 2. Reconfigure the current process's stdio to UTF-8.  Needed
     #    because os.environ changes don't retroactively rebind sys.stdout

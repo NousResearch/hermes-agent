@@ -291,7 +291,7 @@ def _cmd_test(args):
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
+            body = resp.read().decode("utf-8")
             print(f"  Response ({resp.status}): {body}")
     except Exception as e:
         print(f"  Error: {e}")

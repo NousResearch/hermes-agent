@@ -199,9 +199,10 @@ _POWERSHELL_EXTRACT_IMAGE_SCRIPTS = (
 
 
 def _run_powershell(exe: str, script: str, timeout: int) -> subprocess.CompletedProcess:
+    from tools.environments.windows_env import ps_with_utf8
     return subprocess.run(
-        [exe, "-NoProfile", "-NonInteractive", "-Command", script],
-        capture_output=True, text=True, timeout=timeout,
+        [exe, "-NoProfile", "-NonInteractive", "-Command", ps_with_utf8(script)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
     )
 
 
@@ -260,7 +261,7 @@ def _find_powershell() -> str | None:
         try:
             r = subprocess.run(
                 [name, "-NoProfile", "-NonInteractive", "-Command", "echo ok"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if r.returncode == 0 and "ok" in r.stdout:
                 return name

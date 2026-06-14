@@ -95,9 +95,10 @@ def _detect_openclaw_processes() -> list[str]:
                 'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
                 'Select-Object -First 1 ProcessId'
             )
+            from tools.environments.windows_env import ps_with_utf8
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=5,
+                ["powershell", "-NoProfile", "-Command", ps_with_utf8(ps_cmd)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if result.stdout.strip():
                 found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")

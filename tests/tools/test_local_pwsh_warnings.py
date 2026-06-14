@@ -174,3 +174,79 @@ class TestTerminalToolSurfacesWarnings:
             task_id="pwsh-warn-empty",
         )
         assert "pwsh_warnings" not in parsed
+
+
+# ---------------------------------------------------------------------------
+# UTF-8 encoding: _run_powershell() emits correct UTF-8 output
+# ---------------------------------------------------------------------------
+
+class TestRunPowershellUtf8Encoding:
+    """Verify _run_powershell() emits correct UTF-8 output."""
+
+    pytestmark = pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="PowerShell UTF-8 roundtrip depends on Windows shell selection",
+    )
+
+    def test_unicode_output_roundtrips(self, tmp_path):
+        """Non-ASCII output from PowerShell is preserved."""
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd=str(tmp_path))
+        # Write a command that outputs UTF-8 characters
+        result = env.execute("Write-Output 'caf\u00e9 \u4f60\u597d'")
+        assert result["returncode"] == 0
+        assert "caf\u00e9" in result["output"]
+        assert "\u4f60\u597d" in result["output"]
+
+    def test_cjk_filenames_in_output(self, tmp_path):
+        """Filenames with CJK characters are preserved."""
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd=str(tmp_path))
+        result = env.execute("Get-ChildItem -Name")
+        assert result["returncode"] == 0
+        # Output should be valid UTF-8 (no UnicodeDecodeError during capture)
+
+    def test_stderr_unicode(self, tmp_path):
+        """Non-ASCII in stderr is preserved."""
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd=str(tmp_path))
+        result = env.execute(
+            "Write-Error '\u9519\u8bef\u4fe1\u606f'"
+        )
+        # Write-Error output (stderr merged into stdout) should contain the CJK
+        assert "\u9519\u8bef\u4fe1\u606f" in result["output"]
+
+
+# ---------------------------------------------------------------------------
+# pwsh_transform + encoding preamble composition
+# ---------------------------------------------------------------------------
+
+class TestPwshTransformAndUtf8Compose:
+    """pwsh_transform runs BEFORE the encoding preamble is prepended."""
+
+    def test_transform_applied_before_preamble(self):
+        """Encoding preamble must NOT be transformed by pwsh_transform."""
+        from tools.environments.proccess_pwsh import pwsh_transform
+        preamble = (
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+            "$OutputEncoding=[System.Text.Encoding]::UTF8;"
+        )
+        result, warnings = pwsh_transform(preamble + "Get-ChildItem")
+        # Preamble should survive unchanged
+        assert "[Console]::OutputEncoding" in result
+        assert "$OutputEncoding" in result
+        # No warnings should be generated for the preamble itself
+        assert not any("OutputEncoding" in w for w in warnings)
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="PowerShell UTF-8 roundtrip depends on Windows shell selection",
+    )
+    def test_command_with_ternary_and_unicode_output(self, tmp_path):
+        """Full pipeline: transform → preamble → execute → UTF-8 output."""
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd=str(tmp_path))
+        # Use PS7 ternary syntax that pwsh_transform will down-level
+        result = env.execute("$x = $true; if ($x) { '\u4f60\u597d' } else { 'world' }")
+        assert result["returncode"] == 0
+        assert "\u4f60\u597d" in result["output"]

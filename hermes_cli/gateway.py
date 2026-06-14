@@ -413,8 +413,9 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     "}"
                 )
                 try:
+                    from tools.environments.windows_env import ps_with_utf8
                     result = subprocess.run(
-                        [powershell, "-NoProfile", "-Command", ps_cmd],
+                        [powershell, "-NoProfile", "-Command", ps_with_utf8(ps_cmd)],
                         capture_output=True,
                         text=True,
                         encoding="utf-8",

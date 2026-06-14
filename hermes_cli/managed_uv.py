@@ -242,7 +242,8 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 def _install_uv_windows(env: dict[str, str]) -> None:
     """Invoke the PowerShell installer."""
     refresh_env_from_registry()
-    cmd = (
+    from tools.environments.windows_env import ps_with_utf8
+    cmd = ps_with_utf8(
         'irm https://astral.sh/uv/install.ps1 | iex'
     )
     subprocess.run(
@@ -250,6 +251,9 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         env=env,
         check=True,
         capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:

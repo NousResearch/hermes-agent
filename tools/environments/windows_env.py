@@ -11,9 +11,37 @@ from __future__ import annotations
 
 import os
 import sys
+
 if sys.platform == "win32":
     import ctypes
     import winreg
+
+
+def ps_with_utf8(command: str) -> str:
+    """Wrap a PowerShell command with UTF-8 encoding directives.
+
+    Prepends ``[Console]::OutputEncoding`` and ``$OutputEncoding`` settings
+    so PowerShell emits UTF-8 to stdout regardless of the system code page.
+    No-op on non-Windows.
+
+    Usage::
+
+        cmd = ps_with_utf8("Get-ChildItem")
+        subprocess.run(["powershell", "-NoProfile", "-Command", cmd], ...)
+
+    The helper is **idempotent** — if a preamble is already present it won't
+    double-prepend.  This is safe to call even on strings that may have been
+    wrapped by an earlier code path.
+    """
+    if sys.platform != "win32":
+        return command
+    preamble = (
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+        "$OutputEncoding=[System.Text.Encoding]::UTF8;"
+    )
+    if command.startswith(preamble):
+        return command
+    return preamble + command
 
 
 def _expand_registry_string(value: str) -> str:

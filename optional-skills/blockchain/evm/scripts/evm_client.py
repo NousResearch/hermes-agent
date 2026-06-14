@@ -342,7 +342,7 @@ def _http_post(url: str, payload: Any, retries: int = 5, timeout: int = 20) -> A
                 continue
             body_text = ""
             try:
-                body_text = e.read().decode()
+                body_text = e.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
             raise RuntimeError(f"HTTP {e.code}: {body_text}") from e
@@ -370,7 +370,7 @@ def _http_get(url: str, retries: int = 5, timeout: int = 20) -> Any:
                 continue
             body_text = ""
             try:
-                body_text = e.read().decode()
+                body_text = e.read().decode("utf-8", errors="replace")
             except Exception:
                 pass
             raise RuntimeError(f"HTTP {e.code}: {body_text}") from e

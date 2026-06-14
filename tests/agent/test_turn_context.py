@@ -64,6 +64,7 @@ class _FakeAgent:
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
         self._stream_think_scrubber = None
+        self._stream_harmony_scrubber = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
         self._vision_supported = None
@@ -185,3 +186,12 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+def test_harmony_scrubber_reset():
+    from unittest.mock import MagicMock
+    agent = _FakeAgent()
+    scrubber = MagicMock()
+    agent._stream_harmony_scrubber = scrubber
+    _build(agent)
+    scrubber.reset.assert_called_once()

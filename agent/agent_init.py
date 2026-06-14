@@ -41,6 +41,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
+from agent.harmony_scrubber import StreamingHarmonyScrubber
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
@@ -578,6 +579,8 @@ def init_agent(
     # deltas (#5719).  sanitize_context() alone can't survive chunk
     # boundaries because the block regex needs both tags in one string.
     agent._stream_context_scrubber = StreamingContextScrubber()
+    # Stateful scrubber for Harmony tags in streamed deltas.
+    agent._stream_harmony_scrubber = StreamingHarmonyScrubber()
     # Stateful scrubber for reasoning/thinking tags in streamed deltas
     # (#17924).  Replaces the per-delta _strip_think_blocks regex that
     # destroyed downstream state (e.g. MiniMax-M2.7 streaming

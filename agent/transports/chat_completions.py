@@ -10,6 +10,9 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import hashlib
+import json
+import re
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -113,6 +116,144 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
+
+
+def _extract_json_object(s: str, start_idx: int) -> tuple[str, int] | None:
+    """Finds the matching closing brace for a JSON object starting at start_idx.
+    Returns (json_substring, end_idx) or None if no valid match is found.
+    """
+    brace_count = 0
+    in_string = False
+    escape = False
+    
+    idx = s.find('{', start_idx)
+    if idx == -1:
+        return None
+        
+    start_pos = idx
+    for i in range(idx, len(s)):
+        char = s[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == '\\':
+                escape = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return s[start_pos:i+1], i + 1
+    return None
+
+
+def _clean_harmony_control_tags(text: str) -> str:
+    """Strip any remaining control tags (e.g. <|channel|>final<|message|>, <|end|>, etc.)
+    to avoid showing raw Harmony tags to the user.
+    """
+    if not isinstance(text, str):
+        return text
+    text = re.sub(r"<\|channel\|>(?:commentary|analysis|final)(?:\s*<\|message\|>)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\|.*?\|>", "", text)
+    return text
+
+
+def _parse_harmony_tool_calls(content: str) -> tuple[str, list[ToolCall]]:
+    """Parse Harmony format tool calls from content string.
+    
+    Returns (cleaned_content, tool_calls_list).
+    """
+    if not isinstance(content, str) or not content.strip():
+        return content, []
+
+    # Tag style. e.g., <|channel|>commentary to=skill_view <|constrain|>json<|message|>{"name":"hermes-agent"}
+    pattern_tag = re.compile(
+        r"<\|channel\|>(?:commentary|analysis|final)\s+to=(?:functions\.)?([A-Za-z0-9_.-]+)(?:\s+<\|constrain\|>[a-z]+)?\s*<\|message\|>\s*",
+        re.IGNORECASE
+    )
+    
+    # Text style. e.g., to=functions.exec_command or to=exec_command
+    pattern_text = re.compile(
+        r"(?:^|[\s>|])to=(?:functions\.)?([A-Za-z_][\w.-]*)\s*",
+        re.IGNORECASE
+    )
+
+    tool_calls: list[ToolCall] = []
+    current_idx = 0
+    new_content_parts = []
+    
+    while current_idx < len(content):
+        match_tag = pattern_tag.search(content, current_idx)
+        match_text = pattern_text.search(content, current_idx)
+        
+        match = None
+        if match_tag and match_text:
+            if match_tag.start() <= match_text.start():
+                match = match_tag
+            else:
+                match = match_text
+        elif match_tag:
+            match = match_tag
+        elif match_text:
+            match = match_text
+            
+        if not match:
+            new_content_parts.append(content[current_idx:])
+            break
+            
+        # Append text before the matched tool call header
+        new_content_parts.append(content[current_idx:match.start()])
+        
+        # Look for the JSON args object starting after the matched header
+        search_start = match.end()
+        json_res = _extract_json_object(content, search_start)
+        
+        if json_res:
+            json_str, json_end_idx = json_res
+            try:
+                args = json.loads(json_str)
+                if not isinstance(args, dict):
+                    raise ValueError("JSON must be an object")
+                
+                tool_name = match.group(1)
+                
+                # Check for an optional <|end|> immediately following the JSON object
+                after_json = content[json_end_idx:]
+                end_tag_match = re.match(r"^\s*<\|end\|>", after_json, re.IGNORECASE)
+                if end_tag_match:
+                    json_end_idx += end_tag_match.end()
+                
+                # Generate deterministic call_id
+                seed = f"{tool_name}:{json_str}:{len(tool_calls)}"
+                digest = hashlib.sha256(seed.encode("utf-8", errors="replace")).hexdigest()[:12]
+                call_id = f"call_{digest}"
+                
+                tool_calls.append(
+                    ToolCall(
+                        id=call_id,
+                        name=tool_name,
+                        arguments=json_str,
+                        provider_data={"call_id": call_id}
+                    )
+                )
+                current_idx = json_end_idx
+                continue
+            except Exception:
+                pass
+                
+        # If parsing failed, keep the header match text as normal content
+        new_content_parts.append(content[match.start():match.end()])
+        current_idx = match.end()
+        
+    parsed_content = "".join(new_content_parts)
+    parsed_content = _clean_harmony_control_tags(parsed_content)
+    
+    return parsed_content, tool_calls
 
 
 class ChatCompletionsTransport(ProviderTransport):
@@ -676,6 +817,17 @@ class ChatCompletionsTransport(ProviderTransport):
         # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
         # ``None`` for normal responses, so this is a no-op in the common case.
         content = msg.content
+        if not tool_calls and isinstance(content, str) and content.strip():
+            parsed_content, parsed_tool_calls = _parse_harmony_tool_calls(content)
+            if parsed_tool_calls:
+                tool_calls = parsed_tool_calls
+                content = parsed_content
+                finish_reason = "tool_calls"
+            else:
+                cleaned_content = _clean_harmony_control_tags(content).strip()
+                if cleaned_content != content.strip():
+                    content = cleaned_content
+
         refusal = getattr(msg, "refusal", None)
         if refusal is None and hasattr(msg, "model_extra"):
             _msg_extra = getattr(msg, "model_extra", None) or {}

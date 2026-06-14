@@ -1033,3 +1033,56 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+    def test_normalize_harmony_tag_style_tool_call(self, transport):
+        content = (
+            "Let me search the files first.\n"
+            "<|channel|>commentary to=skill_view <|constrain|>json<|message|>{\"name\":\"hermes-agent\"}\n"
+            "Here is the rest of the text."
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=None),
+                finish_reason="stop",
+            )],
+        )
+        nr = transport.normalize_response(r)
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "skill_view"
+        assert nr.tool_calls[0].arguments == '{"name":"hermes-agent"}'
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content == "Let me search the files first.\n\nHere is the rest of the text."
+
+    def test_normalize_harmony_text_style_tool_call(self, transport):
+        content = (
+            "I will execute the command.\n"
+            "to=functions.exec_command {\"cmd\": \"ls\"}\n"
+            "Done."
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=None),
+                finish_reason="stop",
+            )],
+        )
+        nr = transport.normalize_response(r)
+        assert len(nr.tool_calls) == 1
+        assert nr.tool_calls[0].name == "exec_command"
+        assert nr.tool_calls[0].arguments == '{"cmd": "ls"}'
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content == "I will execute the command.\nDone."
+
+    def test_normalize_harmony_clean_tags_without_tool_call(self, transport):
+        content = "<|channel|>final<|message|>Hello there!<|end|>"
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=None),
+                finish_reason="stop",
+            )],
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls is None
+        assert nr.finish_reason == "stop"
+        assert nr.content == "Hello there!"
+
+

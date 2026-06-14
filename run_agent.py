@@ -4066,6 +4066,26 @@ class AIAgent:
 
     def _reset_stream_delivery_tracking(self) -> None:
         """Reset tracking for text delivered during the current model response."""
+        harmony_scrubber = getattr(self, "_stream_harmony_scrubber", None)
+        if harmony_scrubber is not None:
+            harmony_tail = harmony_scrubber.flush()
+            if harmony_tail:
+                think_scrubber = getattr(self, "_stream_think_scrubber", None)
+                if think_scrubber is not None:
+                    harmony_tail = think_scrubber.feed(harmony_tail)
+                if harmony_tail:
+                    ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
+                    if ctx_scrubber is not None:
+                        harmony_tail = ctx_scrubber.feed(harmony_tail)
+                    if harmony_tail:
+                        callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+                        for cb in callbacks:
+                            try:
+                                cb(harmony_tail)
+                            except Exception:
+                                pass
+                        self._record_streamed_assistant_text(harmony_tail)
+
         # Flush any benign partial-tag tail held by the think scrubber
         # first (#17924): an innocent '<' at the end of the stream that
         # turned out not to be a tag prefix should reach the UI.  Then
@@ -4157,6 +4177,11 @@ class AIAgent:
         else:
             prepended_break = False
         if isinstance(text, str):
+            # Suppress Harmony tags (e.g. <|channel|>commentary to=...) statefully.
+            harmony_scrubber = getattr(self, "_stream_harmony_scrubber", None)
+            if harmony_scrubber is not None:
+                text = harmony_scrubber.feed(text or "")
+
             # Suppress reasoning/thinking blocks via the stateful
             # scrubber (#17924).  Earlier versions ran _strip_think_blocks
             # per-delta here, which destroyed downstream state machines

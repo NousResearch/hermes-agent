@@ -1110,15 +1110,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     # Chrome env: if realtime is live on Linux, point PULSE_SOURCE at the
     # virtual source so Chrome's fake mic reads the audio we generate.
     chrome_env = os.environ.copy()
-    chrome_args = [
-        "--use-fake-ui-for-media-stream",
-        "--disable-blink-features=AutomationControlled",
-    ]
-    if not rt["enabled"]:
-        # v1-style fake device (silence) — we don't care about mic content
-        # when we're not speaking.
-        chrome_args.insert(1, "--use-fake-device-for-media-stream")
-    elif rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
+    chrome_args, permissions = _build_browser_launch_config(realtime_enabled=rt["enabled"])
+    if rt["enabled"] and rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
         chrome_env["PULSE_SOURCE"] = rt["bridge_info"].get("device_name", "")
 
     try:
@@ -1137,10 +1130,11 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
                 ),
-                "permissions": ["microphone", "camera"],
             }
             if auth_state and Path(auth_state).is_file():
                 context_args["storage_state"] = auth_state
+            if permissions:
+                context_args["permissions"] = permissions
             context = browser.new_context(**context_args)
             page = context.new_page()
 
@@ -1152,15 +1146,13 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
+            _disable_local_media(page)
+            state.set(**_probe_local_media_state(page))
             _try_guest_name(page, guest_name)
-            _click_join(page, state)
+            join_clicked = _click_join(page, state)
 
             # Install caption observer and attempt to enable captions.
-            try:
-                page.evaluate(_enable_captions_js())
-                state.set(captions_enabled_attempted=True)
-            except Exception:
-                pass
+            _retry_caption_enable(page, state)
             try:
                 page.evaluate(_CAPTION_OBSERVER_JS)
             except Exception as e:
@@ -1169,7 +1161,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # Note: in_call=False until admission is confirmed (we detect
             # either the Leave button or the caption region, signalling we
             # made it past the lobby).
-            state.set(captioning=True, join_attempted_at=time.time())
+            if join_clicked:
+                state.set(join_attempted_at=time.time())
 
             # v2 realtime: start the speaker thread reading from the
             # plugin-side say queue. The thread reads JSONL lines written by
@@ -1203,38 +1196,47 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             lobby_deadline = time.time() + float(
                 os.environ.get("HERMES_MEET_LOBBY_TIMEOUT", "300")
             )
+            stall_after = float(os.environ.get("HERMES_MEET_STALL_AFTER", "90"))
+            call_error_strike_limit = CALL_ERROR_STRIKE_LIMIT
             last_admission_check = 0.0
+            last_caption_enable_check = 0.0
+            last_media_disable_check = 0.0
+            last_heartbeat_check = 0.0
             while not stop_flag["stop"]:
                 now = time.time()
+                ui_probe: dict = {}
                 if deadline and now > deadline:
-                    state.set(leave_reason="duration_expired")
+                    state.set(leave_reason="duration_expired", phase="exited")
                     break
 
-                # Admission detection every ~3s until admitted.
-                if not state.in_call and (now - last_admission_check) > 3.0:
+                # Admission detection every ~3s until captions prove capture.
+                if _should_probe_admission(
+                    state,
+                    now=now,
+                    last_admission_check=last_admission_check,
+                ):
                     last_admission_check = now
-                    admitted = _detect_admission(page)
-                    if admitted:
-                        state.set(
-                            in_call=True,
-                            lobby_waiting=False,
-                            joined_at=now,
-                        )
-                    elif now > lobby_deadline:
-                        state.set(
-                            error=(
-                                "lobby timeout — host never admitted the bot "
-                                f"within {int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0}s"
-                            ),
-                            leave_reason="lobby_timeout",
-                        )
+                    if not state.join_attempted_at and _click_join(page, state):
+                        state.set(join_attempted_at=now)
+                    ui_probe = _probe_meet_ui(page)
+                    _, terminal = _apply_admission_probe(
+                        state,
+                        ui_probe,
+                        now=now,
+                        lobby_deadline=lobby_deadline,
+                        call_error_strike_limit=call_error_strike_limit,
+                    )
+                    if terminal:
                         break
-                    elif _detect_denied(page):
-                        state.set(
-                            error="host denied admission",
-                            leave_reason="denied",
-                        )
-                        break
+
+                if state.in_call and (now - last_media_disable_check) > 3.0:
+                    last_media_disable_check = now
+                    _disable_local_media(page)
+                    state.set(**_probe_local_media_state(page))
+
+                if _should_retry_caption_enable(state, now=now, last_caption_enable_check=last_caption_enable_check):
+                    last_caption_enable_check = now
+                    _retry_caption_enable(page, state)
 
                 try:
                     queued = page.evaluate("window.__hermesMeetDrain && window.__hermesMeetDrain()")
@@ -1278,6 +1280,24 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                         last_audio_out_at=getattr(rt["session"], "last_audio_out_at", None),
                     )
 
+                if (now - last_heartbeat_check) > 5.0:
+                    last_heartbeat_check = now
+                    phase, stalled_reason = _compute_meet_phase(
+                        state,
+                        now=now,
+                        stall_after=stall_after,
+                    )
+                    try:
+                        current_url = page.url
+                    except Exception:
+                        current_url = None
+                    state.heartbeat(
+                        phase=phase,
+                        stalled_reason=stalled_reason,
+                        last_ui_text=ui_probe.get("text") if ui_probe else None,
+                        last_url=ui_probe.get("url") if ui_probe else current_url,
+                    )
+
                 time.sleep(1.0)
 
             # Try to leave cleanly — click "Leave call" button if present.
@@ -1318,11 +1338,11 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     rt["bridge"].teardown()
                 except Exception:
                     pass
-            state.set(in_call=False, captioning=False, exited=True)
+            state.set(in_call=False, captioning=False, exited=True, phase="exited")
             return 0
 
     except Exception as e:
-        state.set(error=f"unhandled: {e}", exited=True)
+        state.set(error=f"unhandled: {e}", exited=True, phase="exited")
         return 1
 
 

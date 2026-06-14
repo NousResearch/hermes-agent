@@ -34,6 +34,7 @@ def _args(**overrides):
         "stt_timeout": 300.0,
         "stream_timeout": 180.0,
         "calling_control_plane_timeout": 10.0,
+        "calling_live_sidecar_timeout": 12.0,
         "full_duplex_timeout": 90.0,
         "full_duplex_max_queued_tx_ms": 1000,
         "command_text": "command smoke",
@@ -50,6 +51,7 @@ def _args(**overrides):
         "skip_whatsapp_cloud_voice": False,
         "skip_command_stt": False,
         "skip_calling_control_plane": False,
+        "skip_calling_live_sidecar": False,
         "skip_full_duplex": False,
         "voice_repo": Path("/voice"),
         "webrtc_python_bin": None,
@@ -237,6 +239,27 @@ def test_calling_control_plane_command_uses_synthetic_verifier():
         str(script.script_path("verify_voice_whatsapp_calling_control_plane.py")),
     ]
     assert command[-2:] == ["--timeout", "12.5"]
+
+
+def test_calling_live_sidecar_command_uses_webrtc_python_and_voice_repo():
+    script = _load_script_module()
+
+    command = script.calling_live_sidecar_command(
+        _args(
+            webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+            calling_live_sidecar_timeout=9.5,
+        ),
+        voice_repo=Path("/voice"),
+    )
+
+    assert command == [
+        "/tmp/voice-webrtc-venv/bin/python",
+        str(script.script_path("verify_voice_whatsapp_calling_live_sidecar.py")),
+        "--voice-repo",
+        "/voice",
+        "--timeout",
+        "9.5",
+    ]
 
 
 def test_resolve_voice_repo_requires_full_duplex_checkout(tmp_path: Path):

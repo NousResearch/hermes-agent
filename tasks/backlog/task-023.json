@@ -1,0 +1,14 @@
+{
+  "id": "task-023",
+  "title": "Create global Hermes constitution",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Constitution",
+  "summary": "Create the architecture-first constitution that every Hermes-controlled project and agent session must load before work.",
+  "acceptanceCriteria": [
+    ".hermes/constitution.md content is specified",
+    "Constitution includes business-before-code and dashboard-before-automation rules",
+    "Constitution defines Hermes OS as source of truth",
+    "Constitution states agents are workers, not owners"
+  ]
+}

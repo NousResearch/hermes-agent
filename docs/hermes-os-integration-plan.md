@@ -4,6 +4,8 @@
 
 Hermes OS remains the control plane and source of truth. Official Hermes Agent is integrated as an optional execution/runtime layer underneath Hermes OS.
 
+Hermes OS also becomes architecture-first by default. It must challenge project ideas, generate specifications, require domain/workflow/dashboard design, and only then allow implementation tasks to reach an agent runtime.
+
 ## Guardrails
 
 - Do not replace Hermes OS.
@@ -11,6 +13,8 @@ Hermes OS remains the control plane and source of truth. Official Hermes Agent i
 - Do not overwrite the `hermes` command.
 - Use `hermes-agent` or equivalent for the official runtime.
 - Do not treat runtime memory as authoritative project/task/report storage.
+- Do not begin coding until business system, control plane, domain model, workflows, dashboards, metrics, approvals, and agent boundaries have been reviewed.
+- Do not allow agents to own projects, workflows, dashboards, approvals, business logic, or source-of-truth state.
 
 ## Command Ownership
 
@@ -182,3 +186,168 @@ Rollout:
 3. Enable one agent kind at a time.
 4. Monitor runtime health and validation failures.
 5. Roll back by disabling runtime delegation.
+
+## Architecture-First Framework
+
+Architecture-first work follows this order:
+
+```text
+Idea
+  -> Business System
+  -> Control Plane
+  -> Domain Models
+  -> Workflows
+  -> Dashboards
+  -> Metrics
+  -> Approval Gates
+  -> Agents
+  -> Implementation
+  -> Optimization
+```
+
+The framework rejects the old path of idea-to-code. Project creation, reviews, and agent delegation must all enforce architecture readiness.
+
+### Constitution
+
+Every Hermes-controlled project loads `.hermes/constitution.md` before work. The constitution defines:
+
+- Business logic before implementation.
+- Dashboards before automation.
+- Workflows before agents.
+- Agents are workers, not owners.
+- Persistent state belongs to Hermes OS.
+- Agent memory is not source of truth.
+- Every project requires a domain model.
+- Every project requires measurable outcomes.
+- High-risk actions require human approval.
+- Coding begins only after architecture review.
+- Specifications generate tasks.
+- Tasks generate execution.
+- Execution generates artifacts.
+- Artifacts generate dashboards.
+- Dashboards generate feedback loops.
+
+### Architect Command
+
+`hermes architect review <project>` evaluates a project against:
+
+- Business model.
+- Control plane.
+- Domain model.
+- Workflows.
+- Dashboards.
+- Metrics.
+- Approvals.
+- Agents.
+- Data quality.
+- Automation opportunities.
+- Scalability.
+- Technical debt.
+
+Outputs include missing entities, workflows, metrics, dashboards, approvals, schemas, automation opportunities, architecture score, critical gaps, recommendations, and priority roadmap.
+
+### Grill-Me Skill
+
+`/grill-me` challenges assumptions before work begins. It must cover business, domain, workflow, metrics, dashboard, approvals, automation, agents, scalability, monetization, risk, and data.
+
+### Project Bootstrap
+
+New project creation becomes an architecture pipeline:
+
+1. Architecture interview.
+2. Grill-me.
+3. Domain modeling.
+4. Workflow design.
+5. Dashboard design.
+6. Specification generation.
+7. Task generation.
+8. Execution.
+
+Every project receives:
+
+- `PROJECT.md`
+- `DOMAIN.md`
+- `WORKFLOWS.md`
+- `DASHBOARD.md`
+- `METRICS.md`
+- `APPROVALS.md`
+- `AGENTS.md`
+- `TASKS.md`
+- `DECISIONS.md`
+- `ROADMAP.md`
+- `ARCHITECTURE.md`
+
+### Domain And Workflow Engines
+
+The domain engine generates entity definitions, relationships, lifecycle definitions, schemas, storage models, and documentation.
+
+The workflow engine defines triggers, inputs, steps, outputs, approvals, metrics, failure states, and escalation rules.
+
+All major entities use validated schemas before AI output can enter source-of-truth state.
+
+### Dashboard-First Development
+
+Before automation is implemented, the project must define daily visibility, success metrics, failure indicators, opportunity indicators, and required reports.
+
+Examples:
+
+- Kalshi: experiment success rate, promotion rate, bucket performance, portfolio performance, research throughput, evidence coverage.
+- Media Engine: stories published, coverage mix, brand growth, cross-brand comparison, platform coverage, approval time.
+- Investment System: watchlist size, thesis status, portfolio exposure, valuation opportunities, risk metrics.
+
+### Architecture Task Batches
+
+### Phase 11 - Constitution
+
+- `task-023`: Create global Hermes constitution.
+- `task-024`: Add constitution loader contract.
+- `task-025`: Add architecture order violation warnings.
+
+### Phase 12 - Architect Review
+
+- `task-026`: Design architect review scoring model.
+- `task-027`: Build architect review contract.
+- `task-028`: Add architect review CLI specification.
+- `task-029`: Add architect review report template.
+
+### Phase 13 - Grill-Me
+
+- `task-030`: Define grill-me question bank.
+- `task-031`: Build grill-me session schema.
+- `task-032`: Add assumption challenge output contract.
+
+### Phase 14 - Project Bootstrap
+
+- `task-033`: Design architecture-first project bootstrap flow.
+- `task-034`: Add required project document templates.
+- `task-035`: Add specification-to-task generation contract.
+
+### Phase 15 - Domain Modeling
+
+- `task-036`: Design domain modeling engine.
+- `task-037`: Add Zod-first entity schema catalog.
+- `task-038`: Add domain lifecycle documentation generator contract.
+
+### Phase 16 - Workflow Design
+
+- `task-039`: Design workflow engine contract.
+- `task-040`: Add workflow approval and escalation model.
+- `task-041`: Add workflow metrics contract.
+
+### Phase 17 - Dashboard-First Gates
+
+- `task-042`: Design dashboard requirements generator.
+- `task-043`: Add dashboard readiness gate.
+- `task-044`: Add dashboard feedback loop contract.
+
+### Phase 18 - Agent Boundaries
+
+- `task-045`: Add agent ownership prohibition policy.
+- `task-046`: Add artifact ingestion validation contract.
+- `task-047`: Add runtime delegation readiness gate.
+
+### Phase 19 - Existing Project Reviews
+
+- `task-048`: Review Kalshi VC architecture readiness.
+- `task-049`: Review Investment System architecture readiness.
+- `task-050`: Review Media Engine and Rinseables architecture readiness.

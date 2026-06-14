@@ -1,0 +1,14 @@
+{
+  "id": "task-025",
+  "title": "Add architecture order violation warnings",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Constitution",
+  "summary": "Define warnings for attempts to code before business, domain, workflow, dashboard, metric, approval, and agent-boundary readiness.",
+  "acceptanceCriteria": [
+    "Architecture order is represented as a checkable sequence",
+    "Violation warnings include missing prerequisite categories",
+    "High-risk violations can block execution",
+    "Warnings are designed for CLI and dashboard display"
+  ]
+}

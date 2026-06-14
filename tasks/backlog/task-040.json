@@ -1,0 +1,14 @@
+{
+  "id": "task-040",
+  "title": "Add workflow approval and escalation model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Workflow Design",
+  "summary": "Define approval gates and escalation rules for workflow steps.",
+  "acceptanceCriteria": [
+    "High-risk steps require human approval",
+    "Escalation paths are explicit",
+    "Approval decisions are source-of-truth Hermes OS records",
+    "Agent runtime cannot bypass approval gates"
+  ]
+}

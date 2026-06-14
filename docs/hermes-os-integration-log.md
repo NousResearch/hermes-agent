@@ -15,3 +15,7 @@
 - Created a local Python 3.11 `.venv`, installed the official Hermes Agent runtime into it, and verified `./hermes-agent --help` starts without conflicting with Hermes OS ownership.
 - Added `hermes_os_integration` contracts, error taxonomy, runtime wrapper, agent registry, delegation prototype, memory guardrails, MCP permission bridge, runtime health contract, checkpointed workflow prototype, and Kalshi architecture definition.
 - Added integration tests for schemas, delegation, memory/MCP guardrails, health, workflow checkpoints, command boundary, and smoke behavior.
+- Reviewed Hermes OS Architecture-First Development Framework handoff.
+- Updated integration plan so Hermes OS enforces architecture before implementation and treats Official Hermes Agent as execution infrastructure only.
+- Added architecture-first framework documentation.
+- Generated architecture-first backlog tasks `task-023` through `task-050`.

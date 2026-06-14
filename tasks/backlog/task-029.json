@@ -1,0 +1,14 @@
+{
+  "id": "task-029",
+  "title": "Add architect review report template",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Architect Review",
+  "summary": "Create the standard report template emitted by architecture reviews.",
+  "acceptanceCriteria": [
+    "Template includes score, critical gaps, missing documents, and roadmap",
+    "Template includes missing entities, workflows, metrics, dashboards, approvals, and schemas",
+    "Template can be stored as a Hermes OS artifact",
+    "Template supports existing project migration reviews"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-031",
+  "title": "Build grill-me session schema",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Grill-Me",
+  "summary": "Define validated session state for a grill-me interview.",
+  "acceptanceCriteria": [
+    "Session schema captures questions, answers, risks, and unresolved assumptions",
+    "Session schema supports resume and completion states",
+    "Session output can feed architecture review",
+    "Schema includes tests"
+  ]
+}

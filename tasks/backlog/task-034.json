@@ -1,0 +1,14 @@
+{
+  "id": "task-034",
+  "title": "Add required project document templates",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Project Bootstrap",
+  "summary": "Create templates for the required source-of-truth project documents.",
+  "acceptanceCriteria": [
+    "Templates exist for PROJECT, DOMAIN, WORKFLOWS, DASHBOARD, METRICS, APPROVALS, AGENTS, TASKS, DECISIONS, ROADMAP, and ARCHITECTURE",
+    "Templates include architecture-first prompts",
+    "Templates identify required fields",
+    "Templates support project review scoring"
+  ]
+}

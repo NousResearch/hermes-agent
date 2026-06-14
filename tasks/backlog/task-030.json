@@ -1,0 +1,14 @@
+{
+  "id": "task-030",
+  "title": "Define grill-me question bank",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Grill-Me",
+  "summary": "Create the assumption-challenge question bank for `/grill-me` across business, domain, workflow, metrics, dashboard, approvals, automation, agents, scalability, monetization, risk, and data.",
+  "acceptanceCriteria": [
+    "All required categories are represented",
+    "Questions are project-agnostic but adaptable",
+    "Questions identify missing assumptions and weak claims",
+    "Question bank supports future project bootstrap"
+  ]
+}

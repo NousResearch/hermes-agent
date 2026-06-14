@@ -1,0 +1,14 @@
+{
+  "id": "task-044",
+  "title": "Add dashboard feedback loop contract",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Dashboard-First Gates",
+  "summary": "Define how dashboard observations generate feedback loops, improvements, and new tasks.",
+  "acceptanceCriteria": [
+    "Dashboard artifacts can produce feedback items",
+    "Feedback items can generate improvement tasks",
+    "Feedback loops preserve traceability to metrics",
+    "Continuous improvement path is documented"
+  ]
+}

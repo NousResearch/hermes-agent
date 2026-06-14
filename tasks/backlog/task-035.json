@@ -1,0 +1,14 @@
+{
+  "id": "task-035",
+  "title": "Add specification-to-task generation contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Project Bootstrap",
+  "summary": "Define how approved specifications become executable tasks.",
+  "acceptanceCriteria": [
+    "Contract requires approved architecture inputs",
+    "Generated tasks include acceptance criteria and risk level",
+    "Task generation preserves traceability to specifications",
+    "Contract blocks generation when required docs are missing"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-048",
+  "title": "Review Kalshi VC architecture readiness",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Existing Project Reviews",
+  "summary": "Run the architecture-first review model against Kalshi VC and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmap.",
+  "acceptanceCriteria": [
+    "Review covers business, domain, workflows, dashboards, metrics, approvals, agents, and data",
+    "Missing project documents are listed",
+    "Priority roadmap is generated",
+    "Review is stored as a Hermes OS artifact"
+  ]
+}

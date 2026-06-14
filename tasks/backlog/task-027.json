@@ -1,0 +1,14 @@
+{
+  "id": "task-027",
+  "title": "Build architect review contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Architect Review",
+  "summary": "Define validated request and response payloads for `hermes architect review`.",
+  "acceptanceCriteria": [
+    "Review request schema includes project path and review scope",
+    "Review response schema includes score, gaps, recommendations, and roadmap",
+    "Validation errors use existing integration error taxonomy",
+    "Contracts are covered by focused tests"
+  ]
+}

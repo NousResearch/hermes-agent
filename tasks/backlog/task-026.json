@@ -1,0 +1,14 @@
+{
+  "id": "task-026",
+  "title": "Design architect review scoring model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Architect Review",
+  "summary": "Create a scoring rubric for Hermes architecture reviews across business, control plane, domain, workflows, dashboards, metrics, approvals, agents, data, scalability, and debt.",
+  "acceptanceCriteria": [
+    "Scoring categories and weights are documented",
+    "Critical gap thresholds are defined",
+    "Architecture score maps to recommendations",
+    "Score output is suitable for dashboard display"
+  ]
+}

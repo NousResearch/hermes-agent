@@ -1,0 +1,14 @@
+{
+  "id": "task-045",
+  "title": "Add agent ownership prohibition policy",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Agent Boundaries",
+  "summary": "Define and enforce that agents may produce artifacts but may not own projects, workflows, dashboards, approvals, business logic, or source-of-truth state.",
+  "acceptanceCriteria": [
+    "Allowed and prohibited agent responsibilities are documented",
+    "Delegation requests include ownership boundary context",
+    "Violations are detectable by policy checks",
+    "Policy aligns with Hermes OS source-of-truth model"
+  ]
+}

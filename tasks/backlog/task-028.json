@@ -1,0 +1,14 @@
+{
+  "id": "task-028",
+  "title": "Add architect review CLI specification",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Architect Review",
+  "summary": "Specify the `hermes architect review <project>` command behavior, options, outputs, and exit codes.",
+  "acceptanceCriteria": [
+    "CLI syntax is documented",
+    "JSON and human-readable output modes are specified",
+    "Exit codes distinguish pass, warning, and blocked review",
+    "Command does not conflict with official Hermes Agent runtime"
+  ]
+}

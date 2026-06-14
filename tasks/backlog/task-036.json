@@ -1,0 +1,14 @@
+{
+  "id": "task-036",
+  "title": "Design domain modeling engine",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Domain Modeling",
+  "summary": "Design the engine responsible for entities, relationships, lifecycle definitions, schemas, storage models, and documentation.",
+  "acceptanceCriteria": [
+    "Engine responsibilities are documented",
+    "Domain model inputs and outputs are defined",
+    "Entity relationship and lifecycle outputs are required",
+    "Generated domain artifacts feed review and task generation"
+  ]
+}

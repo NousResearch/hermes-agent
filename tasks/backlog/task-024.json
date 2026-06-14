@@ -1,0 +1,14 @@
+{
+  "id": "task-024",
+  "title": "Add constitution loader contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Constitution",
+  "summary": "Define how Hermes OS loads and injects the constitution into project review, task generation, and agent delegation.",
+  "acceptanceCriteria": [
+    "Loader defines project, global, and fallback constitution sources",
+    "Loader defines merge and precedence behavior",
+    "Missing constitution behavior is explicit",
+    "Agent delegation includes constitution context"
+  ]
+}

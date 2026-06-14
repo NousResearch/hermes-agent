@@ -1,0 +1,14 @@
+{
+  "id": "task-046",
+  "title": "Add artifact ingestion validation contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Agent Boundaries",
+  "summary": "Define how artifacts produced by agents are validated before Hermes OS stores or displays them.",
+  "acceptanceCriteria": [
+    "Artifact schemas are defined",
+    "Invalid artifacts are rejected or quarantined",
+    "Validated artifacts can update dashboards and reports",
+    "Ingestion preserves agent provenance"
+  ]
+}

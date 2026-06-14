@@ -1,0 +1,14 @@
+{
+  "id": "task-038",
+  "title": "Add domain lifecycle documentation generator contract",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Domain Modeling",
+  "summary": "Define how domain lifecycle documentation is generated and updated.",
+  "acceptanceCriteria": [
+    "Lifecycle states and transitions are required",
+    "Persistence and derived-data boundaries are documented",
+    "Generator output updates DOMAIN.md or equivalent artifacts",
+    "Lifecycle gaps are surfaced in architecture review"
+  ]
+}

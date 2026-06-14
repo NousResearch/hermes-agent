@@ -1,0 +1,14 @@
+{
+  "id": "task-037",
+  "title": "Add Zod-first entity schema catalog",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Domain Modeling",
+  "summary": "Define the required validated schemas for core Hermes OS and project entities.",
+  "acceptanceCriteria": [
+    "Schema catalog includes Project, Task, Workflow, Approval, DashboardMetric, Decision, and AgentResult",
+    "Schema catalog includes finance and research entities where relevant",
+    "No unvalidated AI output can enter source-of-truth state",
+    "Schema ownership is documented"
+  ]
+}

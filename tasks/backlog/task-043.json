@@ -1,0 +1,14 @@
+{
+  "id": "task-043",
+  "title": "Add dashboard readiness gate",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Dashboard-First Gates",
+  "summary": "Block automation when dashboard requirements are missing or incomplete.",
+  "acceptanceCriteria": [
+    "Readiness gate checks dashboard requirements before automation",
+    "Gate reports missing metrics and reports",
+    "Gate can warn or block based on risk level",
+    "Gate integrates with architecture review"
+  ]
+}

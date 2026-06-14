@@ -1,0 +1,14 @@
+{
+  "id": "task-039",
+  "title": "Design workflow engine contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Workflow Design",
+  "summary": "Define workflow representation for triggers, inputs, steps, outputs, approvals, metrics, failure states, and escalation rules.",
+  "acceptanceCriteria": [
+    "Workflow schema includes all required fields",
+    "Workflows can be reviewed before automation",
+    "Workflow outputs can generate dashboard requirements",
+    "Workflow contracts include tests"
+  ]
+}

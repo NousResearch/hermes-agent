@@ -1,0 +1,14 @@
+{
+  "id": "task-033",
+  "title": "Design architecture-first project bootstrap flow",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Project Bootstrap",
+  "summary": "Replace simple project creation with architecture interview, grill-me, domain modeling, workflow design, dashboard design, specification generation, task generation, and execution.",
+  "acceptanceCriteria": [
+    "Bootstrap phases are documented",
+    "Each phase defines inputs and outputs",
+    "Execution cannot start until required phases pass",
+    "Flow supports new and existing projects"
+  ]
+}

@@ -537,6 +537,32 @@ class TestWebSearchSchema:
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
 
+    def test_explicit_backend_missing_provider_does_not_fallback(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._load_web_config", return_value={"search_backend": "anysearch"}), \
+             patch("tools.web_tools._get_search_backend", return_value="anysearch"), \
+             patch("agent.web_search_registry.get_provider", return_value=None), \
+             patch("agent.web_search_registry.get_active_search_provider") as mock_active_provider, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools, "_ensure_web_plugins_loaded"), \
+             patch.object(tools.web_tools._debug, "log_call") as mock_log_call, \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("test query", limit=3))
+
+        assert result == {
+            "success": False,
+            "error": (
+                "Configured web search backend 'anysearch' is not registered. "
+                "Check plugin loading or configuration."
+            ),
+        }
+        mock_active_provider.assert_not_called()
+
+        debug_payload = mock_log_call.call_args.args[1]
+        assert debug_payload["results_count"] == 0
+        assert debug_payload["final_response_size"] > 0
+
     def test_search_error_response_does_not_expose_diagnostics(self):
         import tools.web_tools
 

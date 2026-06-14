@@ -981,12 +981,46 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             get_provider as _wsp_get_provider,
         )
 
+        cfg = _load_web_config()
+        explicit_backend = (
+            (cfg.get("search_backend") or cfg.get("backend") or "")
+            .lower()
+            .strip()
+        )
         backend = _get_search_backend()
         provider = _wsp_get_provider(backend) if backend else None
-        if provider is None or not provider.supports_search():
-            # Fall back to availability-walked active provider when the
-            # configured backend isn't a registered search provider (typo,
-            # uninstalled plugin, or capability mismatch).
+        if provider is None:
+            if explicit_backend:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"Configured web search backend '{backend}' is not "
+                        "registered. Check plugin loading or configuration."
+                    ),
+                }
+                debug_call_data["results_count"] = 0
+                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                debug_call_data["final_response_size"] = len(result_json)
+                _debug.log_call("web_search_tool", debug_call_data)
+                _debug.save()
+                return result_json
+            # No explicit config: pick the best available provider.
+            provider = get_active_search_provider()
+        elif not provider.supports_search():
+            if explicit_backend:
+                response_data = {
+                    "success": False,
+                    "error": (
+                        f"Configured web search backend '{backend}' does not "
+                        "support search."
+                    ),
+                }
+                debug_call_data["results_count"] = 0
+                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                debug_call_data["final_response_size"] = len(result_json)
+                _debug.log_call("web_search_tool", debug_call_data)
+                _debug.save()
+                return result_json
             provider = get_active_search_provider()
 
         if provider is None:

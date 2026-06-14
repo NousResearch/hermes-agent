@@ -482,3 +482,127 @@ def test_payload_shape_compatible_with_modelpickerdialog_frontend():
     for row in payload["providers"]:
         missing = required_keys - row.keys()
         assert not missing, f"row {row['slug']} missing keys: {missing}"
+
+
+# ─── Aggregator dedup (issue #45954) ───────────────────────────────────
+
+
+def _user_provider_row(slug: str, models: list[str]) -> dict:
+    return {
+        "slug": slug,
+        "name": slug.title(),
+        "models": models,
+        "total_models": len(models),
+        "is_current": False,
+        "is_user_defined": True,
+        "source": "user-config",
+    }
+
+
+def _aggregator_row(slug: str, models: list[str]) -> dict:
+    return {
+        "slug": slug,
+        "name": slug.title(),
+        "models": models,
+        "total_models": len(models),
+        "is_current": False,
+        "is_user_defined": False,
+        "source": "built-in",
+    }
+
+
+def test_aggregator_dedup_removes_overlapping_models():
+    """Models served by a user-defined provider are removed from
+    aggregator rows so the picker doesn't show them under the wrong
+    provider.  (#45954)"""
+    rows = [
+        _user_provider_row("litellm-proxy", [
+            "nvidia/nim/minimax-m3",
+            "nvidia/nim/kimi-k2.6",
+        ]),
+        _aggregator_row("openrouter", [
+            "minimax/minimax-m3",
+            "nvidia/nim/minimax-m3",  # overlaps with litellm-proxy
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    proxy_row = next(r for r in payload["providers"] if r["slug"] == "litellm-proxy")
+
+    # User-defined provider keeps all its models
+    assert proxy_row["models"] == ["nvidia/nim/minimax-m3", "nvidia/nim/kimi-k2.6"]
+
+    # Aggregator lost the overlapping model but kept the rest
+    assert "nvidia/nim/minimax-m3" not in or_row["models"]
+    assert "minimax/minimax-m3" in or_row["models"]
+    assert "anthropic/claude-sonnet-4.6" in or_row["models"]
+    assert or_row["total_models"] == 2
+
+
+def test_aggregator_dedup_case_insensitive():
+    """Dedup uses case-insensitive matching.  (#45954)"""
+    rows = [
+        _user_provider_row("my-proxy", ["NVIDIA/NIM/MiniMax-M3"]),
+        _aggregator_row("openrouter", ["nvidia/nim/minimax-m3", "other/model"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert "nvidia/nim/minimax-m3" not in or_row["models"]
+    assert or_row["total_models"] == 1
+
+
+def test_aggregator_dedup_no_overlap_unchanged():
+    """When there's no overlap, aggregator models are untouched.  (#45954)"""
+    rows = [
+        _user_provider_row("litellm-proxy", ["custom/model-a"]),
+        _aggregator_row("openrouter", ["anthropic/claude-sonnet-4.6"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert or_row["models"] == ["anthropic/claude-sonnet-4.6"]
+    assert or_row["total_models"] == 1
+
+
+def test_aggregator_dedup_no_user_providers_unchanged():
+    """When there are no user-defined providers, nothing is filtered.
+    (#45954)"""
+    rows = [
+        _aggregator_row("openrouter", [
+            "nvidia/nim/minimax-m3",
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = payload["providers"][0]
+    assert len(or_row["models"]) == 2
+
+
+def test_aggregator_dedup_multiple_user_providers():
+    """Models from all user-defined providers are excluded from aggregators.
+    (#45954)"""
+    rows = [
+        _user_provider_row("proxy-a", ["model-x"]),
+        _user_provider_row("proxy-b", ["model-y"]),
+        _aggregator_row("openrouter", ["model-x", "model-y", "model-z"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert or_row["models"] == ["model-z"]
+    assert or_row["total_models"] == 1
+

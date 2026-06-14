@@ -350,8 +350,18 @@ def build_verify_commands(
             *local_stack_live_gateway_command,
             "--skip-live-gateway-bridge-health",
         ],
+        "local_stack_live_gateway_cloud_ready": [
+            *local_stack_live_gateway_command,
+            "--skip-live-gateway-bridge-health",
+            "--require-live-gateway-whatsapp-cloud-readiness",
+        ],
         "live_gateway": live_gateway_command,
         "live_gateway_cloud_only": [*live_gateway_command, "--skip-bridge-health"],
+        "live_gateway_cloud_ready": [
+            *live_gateway_command,
+            "--skip-bridge-health",
+            "--require-whatsapp-cloud-readiness",
+        ],
     }
 
 

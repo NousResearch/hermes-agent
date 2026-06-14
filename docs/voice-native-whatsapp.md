@@ -99,15 +99,17 @@ stt:
 
 ## Verification
 
-The installer prints five verifier commands under `verify_commands`:
+The installer prints seven verifier commands under `verify_commands`:
 
 | Key | Use |
 | --- | --- |
 | `local_stack` | Isolated local checks without touching the running gateway. |
 | `live_gateway` | Running-gateway checks only. |
 | `live_gateway_cloud_only` | Running-gateway checks only, skipping local Baileys bridge health. |
+| `live_gateway_cloud_ready` | Same as `live_gateway_cloud_only`, plus non-contacting WhatsApp Cloud credential and recipient-authorization readiness. |
 | `local_stack_live_gateway` | Full local stack plus running-gateway checks. |
 | `local_stack_live_gateway_cloud_only` | Same as `local_stack_live_gateway`, but skips local Baileys bridge health. |
+| `local_stack_live_gateway_cloud_ready` | Same as `local_stack_live_gateway_cloud_only`, plus the WhatsApp Cloud readiness gate. |
 
 For a local Cloud-API-focused deployment, run the generated
 `local_stack_live_gateway_cloud_only` command. It should include:
@@ -128,6 +130,14 @@ python3 scripts/verify_voice_local_stack.py \
   --live-gateway-voice-daemon-service voiced.service \
   --skip-live-gateway-bridge-health
 ```
+
+Before pointing Meta webhooks at the host, run the generated
+`local_stack_live_gateway_cloud_ready` command. It adds
+`--require-live-gateway-whatsapp-cloud-readiness`, which verifies
+`WHATSAPP_CLOUD_PHONE_NUMBER_ID`, `WHATSAPP_CLOUD_ACCESS_TOKEN`,
+`WHATSAPP_CLOUD_APP_SECRET`, `WHATSAPP_CLOUD_VERIFY_TOKEN`, and either
+`WHATSAPP_CLOUD_ALLOWED_USERS` or `WHATSAPP_CLOUD_ALLOW_ALL_USERS` without
+printing secret values.
 
 That aggregate verifier proves:
 

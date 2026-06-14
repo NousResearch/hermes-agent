@@ -446,10 +446,13 @@ That writes `~/.config/systemd/user/voice-webrtc-sidecar.service`, writes
 live-call WAV segments.
 
 The JSON plan also includes `verify_commands.local_stack`,
-`verify_commands.live_gateway`, and `verify_commands.live_gateway_cloud_only`.
-Run the emitted `local_stack` command before changing the live service, then
-run `live_gateway` after restart. Use the `cloud_only` variant when this host
-does not run the local Baileys bridge.
+`verify_commands.live_gateway`, `verify_commands.live_gateway_cloud_only`, and
+`verify_commands.live_gateway_cloud_ready`. Run the emitted `local_stack`
+command before changing the live service, then run `live_gateway` after
+restart. Use the `cloud_only` variant when this host does not run the local
+Baileys bridge. Use the `cloud_ready` variant before routing real Meta
+webhooks to the host; it checks WhatsApp Cloud credential shape and recipient
+authorization without printing secret values.
 
 The generated service files should look like this:
 

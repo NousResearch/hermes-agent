@@ -198,6 +198,91 @@ def test_parse_proc_environ_reads_nul_separated_environment():
     assert parsed == {"PYTHONPATH": "/live", "PATH": "/bin"}
 
 
+def test_parse_dotenv_text_handles_quotes_exports_and_comments():
+    script = _load_script_module()
+
+    parsed = script.parse_dotenv_text(
+        "\n".join(
+            [
+                "# ignored",
+                "export WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                'WHATSAPP_CLOUD_VERIFY_TOKEN="verify-token-value"',
+                "WHATSAPP_CLOUD_ALLOWED_USERS=15551234567 # operator note",
+            ]
+        )
+    )
+
+    assert parsed == {
+        "WHATSAPP_CLOUD_PHONE_NUMBER_ID": "7794189252778687",
+        "WHATSAPP_CLOUD_VERIFY_TOKEN": "verify-token-value",
+        "WHATSAPP_CLOUD_ALLOWED_USERS": "15551234567",
+    }
+
+
+def test_validate_whatsapp_cloud_readiness_reports_sources_without_secrets(
+    tmp_path: Path,
+):
+    script = _load_script_module()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    access_token = "EAA" + ("x" * 120)
+    app_secret = "0123456789abcdef0123456789abcdef"
+    verify_token = "verify-token-value-long-enough"
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                f"WHATSAPP_CLOUD_ACCESS_TOKEN={access_token}",
+                f"WHATSAPP_CLOUD_APP_SECRET={app_secret}",
+                f"WHATSAPP_CLOUD_VERIFY_TOKEN={verify_token}",
+                "WHATSAPP_CLOUD_ALLOWED_USERS=15551234567,15557654321",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = script.validate_whatsapp_cloud_readiness(
+        hermes_home=hermes_home,
+        process_env={},
+    )
+
+    assert result["required_fields"]["WHATSAPP_CLOUD_ACCESS_TOKEN"] == {
+        "present": True,
+        "source_shape": "meta_access_token",
+        "source": "env_file",
+    }
+    assert result["authorization"]["allowed_users_count"] == 2
+    serialized = json.dumps(result)
+    assert access_token not in serialized
+    assert app_secret not in serialized
+    assert verify_token not in serialized
+
+
+def test_validate_whatsapp_cloud_readiness_rejects_missing_authorization(
+    tmp_path: Path,
+):
+    script = _load_script_module()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                "WHATSAPP_CLOUD_ACCESS_TOKEN=EAA" + ("x" * 120),
+                "WHATSAPP_CLOUD_APP_SECRET=0123456789abcdef0123456789abcdef",
+                "WHATSAPP_CLOUD_VERIFY_TOKEN=verify-token-value-long-enough",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="recipient authorization"):
+        script.validate_whatsapp_cloud_readiness(
+            hermes_home=hermes_home,
+            process_env={},
+        )
+
+
 def test_path_is_under_accepts_children_and_rejects_siblings(tmp_path: Path):
     script = _load_script_module()
     root = tmp_path / "root"
@@ -1122,6 +1207,92 @@ def test_main_can_skip_bridge_health_for_cloud_only_gateway(
         "skipped": True,
         "reason": "--skip-bridge-health was provided",
     }
+
+
+def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    script = _load_script_module()
+    live_root = tmp_path / "hermes"
+    hermes_home = tmp_path / ".hermes"
+    _write_voice_native_root(live_root)
+    hermes_home.mkdir()
+    bridge_bin = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
+    access_token = "EAA" + ("x" * 120)
+    app_secret = "0123456789abcdef0123456789abcdef"
+    verify_token = "verify-token-value-long-enough"
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                f"WHATSAPP_CLOUD_ACCESS_TOKEN={access_token}",
+                f"WHATSAPP_CLOUD_APP_SECRET={app_secret}",
+                f"WHATSAPP_CLOUD_VERIFY_TOKEN={verify_token}",
+                "WHATSAPP_CLOUD_ALLOWED_USERS=15551234567",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(script, "resolve_executable", lambda value, *, label: value)
+    monkeypatch.setattr(
+        script,
+        "get_service_state",
+        lambda *_args, **_kwargs: {
+            "ActiveState": "active",
+            "MainPID": "123",
+            "Environment": (
+                f"PYTHONPATH={live_root} PATH=/usr/bin:{bridge_bin}"
+            ),
+            "DropInPaths": "/drop-in.conf",
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "read_process_env",
+        lambda _pid: {"PYTHONPATH": str(live_root), "PATH": f"/usr/bin:{bridge_bin}"},
+    )
+    monkeypatch.setattr(
+        script,
+        "import_smoke",
+        lambda **_kwargs: {"tools.tts_tool": str(live_root / "tools" / "tts_tool.py")},
+    )
+    monkeypatch.setattr(
+        script,
+        "get_bridge_health",
+        lambda *_args, **_kwargs: {"status": "connected"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_live_gateway.py",
+            "--live-hermes-root",
+            str(live_root),
+            "--hermes-home",
+            str(hermes_home),
+            "--python-bin",
+            "/python",
+            "--require-whatsapp-cloud-readiness",
+        ],
+    )
+
+    assert script.main() == 0
+
+    output_text = capsys.readouterr().out
+    output = json.loads(output_text)
+    readiness = output["checks"]["whatsapp_cloud_readiness"]
+    assert readiness["required_fields"]["WHATSAPP_CLOUD_ACCESS_TOKEN"] == {
+        "present": True,
+        "source_shape": "meta_access_token",
+        "source": "env_file",
+    }
+    assert readiness["authorization"]["allowed_users_count"] == 1
+    assert access_token not in output_text
+    assert app_secret not in output_text
+    assert verify_token not in output_text
 
 
 def test_main_validates_calling_sidecar_when_requested(

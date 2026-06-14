@@ -163,6 +163,10 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert plan["verify_commands"]["local_stack_live_gateway_cloud_only"][-1] == (
         "--skip-live-gateway-bridge-health"
     )
+    assert plan["verify_commands"]["local_stack_live_gateway_cloud_ready"][-2:] == [
+        "--skip-live-gateway-bridge-health",
+        "--require-live-gateway-whatsapp-cloud-readiness",
+    ]
     live_gateway = plan["verify_commands"]["live_gateway"]
     assert live_gateway[:2] == [
         sys.executable,
@@ -190,6 +194,10 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert plan["verify_commands"]["live_gateway_cloud_only"][-1] == (
         "--skip-bridge-health"
     )
+    assert plan["verify_commands"]["live_gateway_cloud_ready"][-2:] == [
+        "--skip-bridge-health",
+        "--require-whatsapp-cloud-readiness",
+    ]
 
 
 def test_build_plan_adds_live_stt_smoke_when_configuring_stt(tmp_path: Path):

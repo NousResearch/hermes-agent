@@ -62,6 +62,7 @@ def _args(**overrides):
         "live_gateway_sidecar_service": "voice-webrtc-sidecar.service",
         "live_gateway_voice_daemon_service": "voiced.service",
         "skip_live_gateway_bridge_health": False,
+        "require_live_gateway_whatsapp_cloud_readiness": False,
         "run_live_gateway_stt_smoke": False,
         "run_live_gateway_calling_live_sidecar_smoke": False,
         "live_gateway_timeout": 360.0,
@@ -286,6 +287,7 @@ def test_live_gateway_command_runs_offer_readiness_smoke():
             run_live_gateway_stt_smoke=True,
             run_live_gateway_calling_live_sidecar_smoke=True,
             skip_live_gateway_bridge_health=True,
+            require_live_gateway_whatsapp_cloud_readiness=True,
         ),
         voice_bin="/home/user/.local/bin/voice",
         voice_repo=Path("/voice"),
@@ -322,6 +324,7 @@ def test_live_gateway_command_runs_offer_readiness_smoke():
     assert command[command.index("--voice-daemon-service") + 1] == "voiced.service"
     assert command[command.index("--voice-repo") + 1] == "/voice"
     assert "--skip-bridge-health" in command
+    assert "--require-whatsapp-cloud-readiness" in command
 
 
 def test_live_gateway_command_passes_custom_voice_daemon_service():

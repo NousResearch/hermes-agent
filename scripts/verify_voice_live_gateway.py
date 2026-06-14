@@ -44,6 +44,12 @@ DEFAULT_TTS_TEXT = "Hermes live voice gateway smoke."
 DEFAULT_STT_TEXT = "hello world"
 DEFAULT_STT_EXPECT_WORDS = ("hello", "world")
 CALLING_TTS_STREAM_ENV = "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND"
+WHATSAPP_CLOUD_REQUIRED_ENV = (
+    "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+    "WHATSAPP_CLOUD_ACCESS_TOKEN",
+    "WHATSAPP_CLOUD_APP_SECRET",
+    "WHATSAPP_CLOUD_VERIFY_TOKEN",
+)
 CONTRACT_COMPARE_KEYS = (
     "contract",
     "version",
@@ -253,6 +259,171 @@ def parse_proc_environ(data: bytes) -> dict[str, str]:
             "utf-8", errors="replace"
         )
     return env
+
+
+def parse_dotenv_text(text: str) -> dict[str, str]:
+    env: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        value = raw_value.strip()
+        if (
+            len(value) >= 2
+            and value[0] == value[-1]
+            and value[0] in {"'", '"'}
+        ):
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].rstrip()
+        env[key] = value
+    return env
+
+
+def load_hermes_env_file(hermes_home: Path) -> dict[str, str]:
+    env_path = hermes_home / ".env"
+    if not env_path.is_file():
+        raise SystemExit(f"Hermes env file not found: {env_path}")
+    return parse_dotenv_text(env_path.read_text(encoding="utf-8", errors="replace"))
+
+
+def configured_value(
+    key: str,
+    *,
+    file_env: dict[str, str],
+    process_env: dict[str, str],
+) -> tuple[str, str]:
+    process_value = str(process_env.get(key) or "").strip()
+    if process_value:
+        return process_value, "process"
+    file_value = str(file_env.get(key) or "").strip()
+    if file_value:
+        return file_value, "env_file"
+    return "", "missing"
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    lowered = value.strip().lower()
+    if lowered in {
+        "changeme",
+        "change-me",
+        "placeholder",
+        "example",
+        "your-token",
+        "your_token",
+        "your_verify_token",
+        "verify_token",
+        "token",
+    }:
+        return True
+    return any(token in lowered for token in ("<", ">", "paste_", "replace_"))
+
+
+def validate_whatsapp_cloud_field(key: str, value: str) -> dict[str, Any]:
+    if not value:
+        raise SystemExit(f"{key} is not configured")
+    if _looks_like_placeholder(value):
+        raise SystemExit(f"{key} still looks like a placeholder")
+
+    if key == "WHATSAPP_CLOUD_PHONE_NUMBER_ID":
+        if not value.isdigit():
+            raise SystemExit(f"{key} must be numeric")
+        if 10 <= len(value) <= 12:
+            raise SystemExit(
+                f"{key} looks like a phone number; use Meta's Phone Number ID"
+            )
+        if len(value) < 13 or len(value) > 20:
+            raise SystemExit(f"{key} should be 13-20 digits")
+        return {"present": True, "source_shape": "meta_phone_number_id"}
+
+    if key == "WHATSAPP_CLOUD_ACCESS_TOKEN":
+        if not value.startswith("EAA"):
+            raise SystemExit(f"{key} should start with EAA")
+        if len(value) < 100:
+            raise SystemExit(f"{key} looks too short for a Meta access token")
+        return {"present": True, "source_shape": "meta_access_token"}
+
+    if key == "WHATSAPP_CLOUD_APP_SECRET":
+        if not re.fullmatch(r"[0-9a-fA-F]{32}", value):
+            raise SystemExit(f"{key} should be exactly 32 hex characters")
+        return {"present": True, "source_shape": "meta_app_secret"}
+
+    if key == "WHATSAPP_CLOUD_VERIFY_TOKEN":
+        if len(value) < 16:
+            raise SystemExit(f"{key} should be at least 16 characters")
+        return {"present": True, "source_shape": "webhook_verify_token"}
+
+    raise SystemExit(f"unsupported WhatsApp Cloud readiness field: {key}")
+
+
+def truthy_env(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def validate_whatsapp_cloud_authorization(
+    *,
+    file_env: dict[str, str],
+    process_env: dict[str, str],
+) -> dict[str, Any]:
+    allowed_users, allowed_source = configured_value(
+        "WHATSAPP_CLOUD_ALLOWED_USERS",
+        file_env=file_env,
+        process_env=process_env,
+    )
+    allow_all, allow_all_source = configured_value(
+        "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+        file_env=file_env,
+        process_env=process_env,
+    )
+    allow_all_enabled = truthy_env(allow_all)
+    allowed_count = len([part for part in allowed_users.split(",") if part.strip()])
+    if allowed_count == 0 and not allow_all_enabled:
+        raise SystemExit(
+            "WhatsApp Cloud recipient authorization is not configured; set "
+            "WHATSAPP_CLOUD_ALLOWED_USERS or WHATSAPP_CLOUD_ALLOW_ALL_USERS"
+        )
+    return {
+        "allowed_users_configured": allowed_count > 0,
+        "allowed_users_count": allowed_count,
+        "allowed_users_source": allowed_source if allowed_count > 0 else "missing",
+        "allow_all_users": allow_all_enabled,
+        "allow_all_users_source": allow_all_source if allow_all else "missing",
+    }
+
+
+def validate_whatsapp_cloud_readiness(
+    *,
+    hermes_home: Path,
+    process_env: dict[str, str],
+) -> dict[str, Any]:
+    file_env = load_hermes_env_file(hermes_home)
+    fields: dict[str, Any] = {}
+    for key in WHATSAPP_CLOUD_REQUIRED_ENV:
+        value, source = configured_value(
+            key,
+            file_env=file_env,
+            process_env=process_env,
+        )
+        field = validate_whatsapp_cloud_field(key, value)
+        field["source"] = source
+        fields[key] = field
+
+    return {
+        "env_file": str((hermes_home / ".env").resolve()),
+        "required_fields": fields,
+        "authorization": validate_whatsapp_cloud_authorization(
+            file_env=file_env,
+            process_env=process_env,
+        ),
+    }
 
 
 def read_process_env(pid: int) -> dict[str, str]:
@@ -1148,6 +1319,15 @@ def parse_args() -> argparse.Namespace:
             "WhatsApp bridge."
         ),
     )
+    parser.add_argument(
+        "--require-whatsapp-cloud-readiness",
+        action="store_true",
+        help=(
+            "Require non-placeholder WhatsApp Cloud credentials and recipient "
+            "authorization in HERMES_HOME/.env or the running process "
+            "environment. Secret values are never printed."
+        ),
+    )
     parser.add_argument("--run-tts-smoke", action="store_true")
     parser.add_argument("--tts-platform", default="whatsapp")
     parser.add_argument("--tts-text", default=DEFAULT_TTS_TEXT)
@@ -1269,6 +1449,11 @@ def main() -> int:
             bridge_bin_dir=bridge_bin_dir,
         ),
     }
+    if args.require_whatsapp_cloud_readiness:
+        checks["whatsapp_cloud_readiness"] = validate_whatsapp_cloud_readiness(
+            hermes_home=hermes_home,
+            process_env=process_env,
+        )
 
     if args.calling_sidecar_url:
         checks["calling_sidecar"] = {

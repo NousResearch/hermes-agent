@@ -551,6 +551,8 @@ def live_gateway_command(
         command.append("--run-calling-live-sidecar-smoke")
     if args.skip_live_gateway_bridge_health:
         command.append("--skip-bridge-health")
+    if args.require_live_gateway_whatsapp_cloud_readiness:
+        command.append("--require-whatsapp-cloud-readiness")
     return command
 
 
@@ -648,6 +650,14 @@ def parse_args() -> argparse.Namespace:
         "--skip-live-gateway-bridge-health",
         action="store_true",
         help="Pass --skip-bridge-health to the live gateway verifier.",
+    )
+    parser.add_argument(
+        "--require-live-gateway-whatsapp-cloud-readiness",
+        action="store_true",
+        help=(
+            "Pass --require-whatsapp-cloud-readiness to the live gateway "
+            "verifier."
+        ),
     )
     parser.add_argument(
         "--run-live-gateway-stt-smoke",

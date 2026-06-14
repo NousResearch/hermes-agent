@@ -502,6 +502,10 @@ def live_gateway_command(
         raise SystemExit("--run-live-gateway requires --calling-sidecar-url")
     if not args.webrtc_python_bin:
         raise SystemExit("--run-live-gateway requires --webrtc-python-bin")
+    if args.run_live_gateway_calling_live_sidecar_smoke and voice_repo is None:
+        raise SystemExit(
+            "--run-live-gateway-calling-live-sidecar-smoke requires --voice-repo"
+        )
 
     command = [
         sys.executable,
@@ -542,6 +546,8 @@ def live_gateway_command(
                 args.live_gateway_voice_daemon_service,
             ]
         )
+    if args.run_live_gateway_calling_live_sidecar_smoke:
+        command.append("--run-calling-live-sidecar-smoke")
     if args.skip_live_gateway_bridge_health:
         command.append("--skip-bridge-health")
     return command
@@ -646,6 +652,14 @@ def parse_args() -> argparse.Namespace:
         "--run-live-gateway-stt-smoke",
         action="store_true",
         help="Also run the live gateway command-STT smoke.",
+    )
+    parser.add_argument(
+        "--run-live-gateway-calling-live-sidecar-smoke",
+        action="store_true",
+        help=(
+            "Also run the live gateway Hermes connect-path sidecar smoke "
+            "against imports from --live-hermes-root."
+        ),
     )
     parser.add_argument("--live-gateway-timeout", type=float, default=360.0)
     parser.add_argument("--skip-voice-contract", action="store_true")

@@ -867,6 +867,70 @@ asyncio.run(main())
     }
 
 
+def run_calling_live_sidecar_smoke(
+    *,
+    python_bin: str,
+    live_root: Path,
+    hermes_home: Path,
+    voice_repo: Path,
+    timeout: float,
+) -> dict[str, Any]:
+    """Run the Hermes connect-path smoke against imports from live_root."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(live_root)
+    env["HERMES_HOME"] = str(hermes_home)
+    completed = subprocess.run(
+        [
+            python_bin,
+            str(
+                Path(__file__).resolve().parent
+                / "verify_voice_whatsapp_calling_live_sidecar.py"
+            ),
+            "--voice-repo",
+            str(voice_repo),
+            "--timeout",
+            f"{timeout:g}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=timeout + 15,
+        check=False,
+        env=env,
+        cwd=str(live_root),
+        stdin=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise SystemExit(f"calling live-sidecar smoke failed: {detail}")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"calling live-sidecar smoke returned invalid JSON: {completed.stdout!r}"
+        ) from exc
+    if not isinstance(result, dict):
+        raise SystemExit("calling live-sidecar smoke JSON root must be an object")
+    if result.get("success") is not True:
+        raise SystemExit(f"calling live-sidecar smoke reported failure: {result}")
+    actions = result.get("graph_actions")
+    if not isinstance(actions, list) or actions[:2] != ["pre_accept", "accept"]:
+        raise SystemExit(
+            f"calling live-sidecar smoke did not pre_accept then accept: {result}"
+        )
+    if result.get("sidecar_ready_for_accept") is not True:
+        raise SystemExit(f"calling live-sidecar smoke sidecar was not ready: {result}")
+    try:
+        outbound_bytes = int(result.get("outbound_webrtc_bytes") or 0)
+        inbound_bytes = int(result.get("inbound_drain_bytes") or 0)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"calling live-sidecar smoke returned invalid byte counts: {result}"
+        ) from exc
+    if outbound_bytes <= 0 or inbound_bytes <= 0:
+        raise SystemExit(f"calling live-sidecar smoke did not move audio: {result}")
+    return result
+
+
 def validate_bridge_health(health: dict[str, Any], *, require_connected: bool) -> None:
     if require_connected and health.get("status") != "connected":
         raise SystemExit(f"bridge is not connected: {health}")
@@ -1090,8 +1154,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--run-calling-live-sidecar-smoke",
+        action="store_true",
+        help=(
+            "Run the Hermes WhatsApp Calling connect-path smoke against imports "
+            "from --live-hermes-root, using a real in-process voice sidecar and "
+            "a fake Graph /calls endpoint."
+        ),
+    )
+    parser.add_argument(
         "--webrtc-python-bin",
-        help="Python with aiortc/aiohttp installed for --run-sidecar-offer-smoke",
+        help=(
+            "Python with aiortc/aiohttp installed for sidecar/WebRTC smokes."
+        ),
     )
     parser.add_argument(
         "--sidecar-offer-call-id",
@@ -1138,6 +1213,15 @@ def main() -> int:
             raise SystemExit("--run-sidecar-offer-smoke requires --calling-sidecar-url")
         if not webrtc_python_bin:
             raise SystemExit("--run-sidecar-offer-smoke requires --webrtc-python-bin")
+    if args.run_calling_live_sidecar_smoke:
+        if not voice_repo:
+            raise SystemExit(
+                "--run-calling-live-sidecar-smoke requires --voice-repo"
+            )
+        if not webrtc_python_bin:
+            raise SystemExit(
+                "--run-calling-live-sidecar-smoke requires --webrtc-python-bin"
+            )
     bridge_bin_dir = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
 
     checks: dict[str, Any] = {}
@@ -1206,6 +1290,15 @@ def main() -> int:
             )
     elif voice_bin and not args.sidecar_service:
         raise SystemExit("--voice-bin requires --calling-sidecar-url or --sidecar-service")
+
+    if args.run_calling_live_sidecar_smoke:
+        checks["calling_live_sidecar_smoke"] = run_calling_live_sidecar_smoke(
+            python_bin=str(webrtc_python_bin),
+            live_root=live_root,
+            hermes_home=hermes_home,
+            voice_repo=voice_repo,
+            timeout=args.timeout,
+        )
 
     if args.sidecar_service:
         if args.voice_daemon_service:

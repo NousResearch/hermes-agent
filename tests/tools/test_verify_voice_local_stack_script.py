@@ -63,6 +63,7 @@ def _args(**overrides):
         "live_gateway_voice_daemon_service": "voiced.service",
         "skip_live_gateway_bridge_health": False,
         "run_live_gateway_stt_smoke": False,
+        "run_live_gateway_calling_live_sidecar_smoke": False,
         "live_gateway_timeout": 360.0,
         "full_duplex_inbound_text": "hello world",
         "full_duplex_outbound_text": "hello back",
@@ -282,6 +283,7 @@ def test_live_gateway_command_runs_offer_readiness_smoke():
             calling_sidecar_url="http://127.0.0.1:8787",
             webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
             run_live_gateway_stt_smoke=True,
+            run_live_gateway_calling_live_sidecar_smoke=True,
             skip_live_gateway_bridge_health=True,
         ),
         voice_bin="/home/user/.local/bin/voice",
@@ -312,6 +314,7 @@ def test_live_gateway_command_runs_offer_readiness_smoke():
     )
     assert "--run-stt-smoke" in command
     assert command[command.index("--stt-provider") + 1] == "voice"
+    assert "--run-calling-live-sidecar-smoke" in command
     assert command[command.index("--sidecar-service") + 1] == (
         "voice-webrtc-sidecar.service"
     )
@@ -337,6 +340,22 @@ def test_live_gateway_command_passes_custom_voice_daemon_service():
     assert command[command.index("--voice-daemon-service") + 1] == (
         "custom-voiced.service"
     )
+
+
+def test_live_gateway_command_requires_voice_repo_for_calling_sidecar_smoke():
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="requires --voice-repo"):
+        script.live_gateway_command(
+            _args(
+                live_hermes_root=Path("/checkout/hermes-agent"),
+                calling_sidecar_url="http://127.0.0.1:8787",
+                webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+                run_live_gateway_calling_live_sidecar_smoke=True,
+            ),
+            voice_bin="/home/user/.local/bin/voice",
+            voice_repo=None,
+        )
 
 
 def test_live_gateway_command_skips_daemon_service_without_sidecar_service():

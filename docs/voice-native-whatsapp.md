@@ -123,6 +123,7 @@ python3 scripts/verify_voice_local_stack.py \
   --live-gateway-python-bin ~/.hermes/hermes-agent/venv/bin/python \
   --live-gateway-hermes-home ~/.hermes \
   --run-live-gateway-stt-smoke \
+  --run-live-gateway-calling-live-sidecar-smoke \
   --live-gateway-sidecar-service voice-webrtc-sidecar.service \
   --live-gateway-voice-daemon-service voiced.service \
   --skip-live-gateway-bridge-health
@@ -143,6 +144,10 @@ That aggregate verifier proves:
   readiness.
 - A real local sidecar can answer an `aiortc` SDP offer and report
   `ready_for_accept: true`.
+- The deployed Hermes checkout can handle a synthetic WhatsApp Calling
+  `connect` webhook, POST the offer to a real in-process sidecar, send
+  `pre_accept` and `accept`, move PCM in both directions, and close the
+  sidecar session on `terminate`.
 - The installed `hermes-gateway.service` process imports from the expected
   checkout and points at the expected sidecar URL.
 - The installed `voiced.service` daemon is active and runs the expected

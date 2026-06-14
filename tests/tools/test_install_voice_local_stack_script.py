@@ -152,6 +152,7 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert local_stack_live[
         local_stack_live.index("--live-gateway-hermes-home") + 1
     ] == str(hermes_home.resolve())
+    assert "--run-live-gateway-calling-live-sidecar-smoke" in local_stack_live
     assert local_stack_live[
         local_stack_live.index("--live-gateway-sidecar-service") + 1
     ] == "voice-webrtc-sidecar.service"
@@ -172,6 +173,7 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert "--voice-bin" in live_gateway
     assert "--run-tts-smoke" in live_gateway
     assert "--run-sidecar-offer-smoke" in live_gateway
+    assert "--run-calling-live-sidecar-smoke" in live_gateway
     assert (
         live_gateway[live_gateway.index("--webrtc-python-bin") + 1]
         == sys.executable

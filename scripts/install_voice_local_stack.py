@@ -279,6 +279,7 @@ def build_verify_commands(
         hermes_python_bin,
         "--live-gateway-hermes-home",
         str(hermes_home),
+        "--run-live-gateway-calling-live-sidecar-smoke",
     ]
     if run_stt_smoke:
         local_stack_live_gateway_command.append("--run-live-gateway-stt-smoke")
@@ -312,6 +313,7 @@ def build_verify_commands(
         voice_bin,
         "--run-tts-smoke",
         "--run-sidecar-offer-smoke",
+        "--run-calling-live-sidecar-smoke",
         "--webrtc-python-bin",
         webrtc_python_bin,
     ]

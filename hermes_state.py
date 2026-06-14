@@ -597,6 +597,27 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+
+-- Persistent in-flight tracking for shadow clone (async background delegations).
+-- Survives gateway restarts so the gateway startup sweep can:
+--   (a) mark stale rows (older than TTL) as 'failed', and
+--   (b) re-enqueue fresh rows that were interrupted mid-flight.
+-- GC runs on each gateway tick and deletes completed/failed rows older than 24 h.
+CREATE TABLE IF NOT EXISTS shadow_clone_tasks (
+    delegation_id   TEXT PRIMARY KEY,
+    session_key     TEXT NOT NULL,
+    kanban_ticket_id TEXT,          -- NULL when not using shadow-clone Kanban mode
+    goal            TEXT,
+    status          TEXT NOT NULL DEFAULT 'running',
+                                    -- 'running' | 'completed' | 'failed' | 'timeout'
+    dispatched_at   REAL NOT NULL,  -- unix timestamp (time.time())
+    completed_at    REAL,
+    result_json     TEXT,           -- JSON-encoded result (truncated to 8 KB)
+    routing_meta    TEXT            -- JSON-encoded routing metadata
+);
+
+CREATE INDEX IF NOT EXISTS idx_sct_status        ON shadow_clone_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_sct_dispatched_at ON shadow_clone_tasks(dispatched_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -5101,3 +5122,179 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+    # ── Shadow clone persistent tracking ──────────────────────────────────────
+
+    def insert_shadow_clone_task(
+        self,
+        delegation_id: str,
+        session_key: str,
+        goal: Optional[str] = None,
+        kanban_ticket_id: Optional[str] = None,
+        routing_meta: Optional[dict] = None,
+        dispatched_at: Optional[float] = None,
+    ) -> None:
+        """Record a new in-flight shadow clone delegation.
+
+        Called at dispatch time (before the background thread starts) so the
+        row is durable even if the gateway crashes before the child completes.
+        Idempotent via INSERT OR IGNORE — safe to call again on re-dispatch.
+        """
+        import json as _json
+        ts = dispatched_at or __import__("time").time()
+        routing_json = _json.dumps(routing_meta, ensure_ascii=False) if routing_meta else None
+
+        def _do(conn):
+            conn.execute(
+                "INSERT OR IGNORE INTO shadow_clone_tasks "
+                "(delegation_id, session_key, kanban_ticket_id, goal, "
+                " status, dispatched_at, routing_meta) "
+                "VALUES (?, ?, ?, ?, 'running', ?, ?)",
+                (delegation_id, session_key, kanban_ticket_id,
+                 (goal or "")[:500], ts, routing_json),
+            )
+        self._execute_write(_do)
+
+    def update_shadow_clone_task(
+        self,
+        delegation_id: str,
+        status: str,  # 'completed' | 'failed' | 'timeout'
+        result: Optional[Any] = None,
+        completed_at: Optional[float] = None,
+    ) -> None:
+        """Persist the final status and result for a shadow clone delegation.
+
+        Called from the background runner thread after the subagent finishes.
+        Swallows DB errors gracefully — the in-memory completion event is
+        always enqueued regardless of this write's outcome.
+        """
+        import json as _json
+        ts = completed_at or __import__("time").time()
+        result_json: Optional[str] = None
+        if result is not None:
+            try:
+                result_json = _json.dumps(result, ensure_ascii=False, default=str)[:8000]
+            except Exception:
+                pass
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE shadow_clone_tasks "
+                "SET status = ?, completed_at = ?, result_json = ? "
+                "WHERE delegation_id = ?",
+                (status, ts, result_json, delegation_id),
+            )
+        try:
+            self._execute_write(_do)
+        except Exception as _e:
+            logger.warning("shadow_clone update_task failed for %s: %s", delegation_id, _e)
+
+    def gc_shadow_clone_tasks(self, retain_hours: float = 24.0) -> int:
+        """Delete completed/failed rows older than *retain_hours*.
+
+        Should be called periodically (e.g. each gateway tick) to prevent
+        unbounded DB growth.  Running rows are never deleted.
+        Returns the number of rows deleted.
+        """
+        cutoff = __import__("time").time() - retain_hours * 3600
+        deleted = 0
+
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM shadow_clone_tasks "
+                "WHERE status IN ('completed', 'failed', 'timeout') "
+                "AND completed_at IS NOT NULL AND completed_at < ?",
+                (cutoff,),
+            )
+            return cur.rowcount
+
+        try:
+            deleted = self._execute_write(_do)
+        except Exception as _e:
+            logger.warning("gc_shadow_clone_tasks failed: %s", _e)
+        return deleted or 0
+
+    def recover_inflight_shadow_clone_tasks(
+        self, ttl_seconds: float = 7200.0
+    ) -> Tuple[List[dict], List[str]]:
+        """Scan *running* rows on gateway startup and classify them.
+
+        Returns ``(fresh, stale)`` where:
+
+        * ``fresh`` — list of task dicts for delegations that started within
+          *ttl_seconds* and may be re-dispatched / notified.
+        * ``stale`` — list of delegation_ids that exceeded the TTL and have
+          been marked 'timeout' in-place.
+
+        Called once at gateway startup (before adapters connect) so that
+        callers can decide whether to re-enqueue or surface a user notice.
+        """
+        now = __import__("time").time()
+        cutoff = now - ttl_seconds
+        fresh: List[dict] = []
+        stale_ids: List[str] = []
+
+        try:
+            if self._conn is None:
+                return [], []
+            rows = self._conn.execute(
+                "SELECT delegation_id, session_key, kanban_ticket_id, goal, "
+                "dispatched_at, routing_meta FROM shadow_clone_tasks "
+                "WHERE status = 'running'"
+            ).fetchall()
+        except Exception as _e:
+            logger.warning("recover_inflight_shadow_clone_tasks: read failed: %s", _e)
+            return [], []
+
+        import json as _json
+
+        for row in rows:
+            did = row[0] if isinstance(row, (tuple, list)) else row["delegation_id"]
+            dispatched_at = row[4] if isinstance(row, (tuple, list)) else row["dispatched_at"]
+            if dispatched_at < cutoff:
+                stale_ids.append(did)
+            else:
+                routing_raw = row[5] if isinstance(row, (tuple, list)) else row["routing_meta"]
+                routing = {}
+                if routing_raw:
+                    try:
+                        routing = _json.loads(routing_raw)
+                    except Exception:
+                        pass
+                fresh.append({
+                    "delegation_id": did,
+                    "session_key": row[1] if isinstance(row, (tuple, list)) else row["session_key"],
+                    "kanban_ticket_id": row[2] if isinstance(row, (tuple, list)) else row["kanban_ticket_id"],
+                    "goal": row[3] if isinstance(row, (tuple, list)) else row["goal"],
+                    "dispatched_at": dispatched_at,
+                    "routing_meta": routing,
+                })
+
+        # Mark stale rows as 'timeout' in one pass
+        if stale_ids:
+            ts = now
+            for did in stale_ids:
+                try:
+                    def _mark_timeout(conn, _did=did, _ts=ts):
+                        conn.execute(
+                            "UPDATE shadow_clone_tasks "
+                            "SET status = 'timeout', completed_at = ? "
+                            "WHERE delegation_id = ?",
+                            (_ts, _did),
+                        )
+                    self._execute_write(_mark_timeout)
+                except Exception as _e:
+                    logger.warning(
+                        "recover_inflight: timeout mark failed for %s: %s", did, _e
+                    )
+            logger.info(
+                "Shadow clone startup recovery: %d stale (>%.0fs) → marked timeout, "
+                "%d fresh → available for re-dispatch",
+                len(stale_ids), ttl_seconds, len(fresh),
+            )
+        elif fresh:
+            logger.info(
+                "Shadow clone startup recovery: %d fresh in-flight rows found", len(fresh)
+            )
+
+        return fresh, stale_ids

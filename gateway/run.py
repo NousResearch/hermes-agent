@@ -5060,6 +5060,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.debug("Stuck-loop detection failed: %s", e)
 
+        # ── P1: Shadow clone in-flight recovery ───────────────────────────────
+        # Scan state.db for delegations that were running when the gateway last
+        # exited.  Stale rows (>2 h) are marked 'timeout'; fresh rows are logged
+        # so the operator can see which sessions had incomplete work.
+        try:
+            from hermes_state import SessionDB as _SessionDB
+            _sdb_recover = _SessionDB()
+            _sc_fresh, _sc_stale = _sdb_recover.recover_inflight_shadow_clone_tasks(
+                ttl_seconds=7200.0
+            )
+            if _sc_stale:
+                logger.warning(
+                    "Shadow clone recovery: %d delegation(s) exceeded TTL and were "
+                    "marked 'timeout' — their parent sessions will not receive results.",
+                    len(_sc_stale),
+                )
+            if _sc_fresh:
+                logger.info(
+                    "Shadow clone recovery: %d fresh delegation(s) found from previous "
+                    "run (parent sessions may receive results once agents reconnect): %s",
+                    len(_sc_fresh),
+                    [r["delegation_id"] for r in _sc_fresh],
+                )
+        except Exception as _sc_err:
+            logger.warning("Shadow clone startup recovery failed: %s", _sc_err)
+        # ─────────────────────────────────────────────────────────────────────
+
         # Serialize startup restore against inbound dispatch.  Platform
         # adapters can begin receiving messages as soon as they connect, but
         # restart-interrupted sessions are not auto-resumed until all startup
@@ -5665,6 +5692,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Watcher idle-inbox drain error for %s: %s",
                             _idle_sk, _idle_exc,
                         )
+                # ──────────────────────────────────────────────────────────────────
+
+                # ── P1: Shadow clone GC ────────────────────────────────────────────
+                # Delete completed/failed rows older than 24 h to prevent unbounded
+                # DB growth.  Best-effort — never blocks the watcher tick.
+                try:
+                    from hermes_state import SessionDB as _SDBGC
+                    _sdb_gc = _SDBGC()
+                    _gc_deleted = _sdb_gc.gc_shadow_clone_tasks(retain_hours=24.0)
+                    if _gc_deleted:
+                        logger.debug(
+                            "Shadow clone GC: deleted %d completed/failed row(s)", _gc_deleted
+                        )
+                except Exception as _gc_exc:
+                    logger.debug("Shadow clone GC error: %s", _gc_exc)
                 # ──────────────────────────────────────────────────────────────────
             except asyncio.CancelledError:
                 raise

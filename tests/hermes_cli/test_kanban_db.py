@@ -4765,4 +4765,590 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
         pass
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
+
+
+# ---------------------------------------------------------------------------
+# AUTO-HEAL-01 — Hermes↔worker desync auto-healing
+#
+# Covers:
+#   * `detect_missing_pid`: reclaim tasks stuck in `running` with no
+#     worker_pid past the heal window, with audit event + comment.
+#   * `escalate_long_running`: emit escalation event + comment for
+#     live workers past the escalation window, with optional kill.
+#   * Env resolvers: `_resolve_heal_missing_pid_seconds` and
+#     `_resolve_heal_escalate_after_seconds` honor the call-site
+#     value, the env override, and the documented sentinel (`-1`
+#     disables; `0` resolves to env/default).
+#   * DispatchResult surface: `healed_missing_pid` and `escalations`
+#     populated correctly.
+#   * Dispatch integration: `dispatch_once` runs both passes by
+#     default and the env knob (`HERMES_KANBAN_HEAL_*_SECONDS=-1`)
+#     disables them globally.
+# ---------------------------------------------------------------------------
+
+
+def _make_running_task(
+    conn,
+    *,
+    title: str = "heal target",
+    assignee: str = "auto-heal-tester",
+    started_at: int | None = None,
+    worker_pid: int | None = None,
+    claim_lock: str | None = "oh-III:w0",
+    last_heartbeat_at: int | None = None,
+) -> str:
+    """Create a task and move it directly into ``running``.
+
+    Mirrors the shape the rest of the suite uses for crash / stale
+    tests: bypass the claim-and-spawn flow so the row is in the
+    exact state the heal passes inspect (no worker subprocess, no
+    heartbeat traffic).
+    """
+    tid = kb.create_task(conn, title=title, assignee=assignee)
+    host_prefix = kb._claimer_id().split(":", 1)[0]
+    conn.execute(
+        "UPDATE tasks SET status='running', worker_pid=?, "
+        "claim_lock=?, started_at=?, last_heartbeat_at=? WHERE id=?",
+        (
+            worker_pid,
+            f"{host_prefix}:{claim_lock}" if claim_lock else None,
+            started_at,
+            last_heartbeat_at,
+            tid,
+        ),
+    )
+    return tid
+
+
+# --- env resolvers ---------------------------------------------------------
+
+
+def test_resolve_heal_missing_pid_default(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.delenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", raising=False)
+    assert _kb._resolve_heal_missing_pid_seconds(0) == 5 * 60
+
+
+def test_resolve_heal_missing_pid_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", "42")
+    assert _kb._resolve_heal_missing_pid_seconds(0) == 42
+
+
+def test_resolve_heal_missing_pid_env_disable(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", "-1")
+    assert _kb._resolve_heal_missing_pid_seconds(0) == _kb.DISABLED
+
+
+def test_resolve_heal_missing_pid_env_garbage_falls_back(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", "notanumber")
+    assert _kb._resolve_heal_missing_pid_seconds(0) == 5 * 60
+
+
+def test_resolve_heal_missing_pid_explicit_call_site_wins(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", "999")
+    # Positive call-site value overrides env.
+    assert _kb._resolve_heal_missing_pid_seconds(120) == 120
+    # Negative call-site value disables regardless of env.
+    assert _kb._resolve_heal_missing_pid_seconds(-1) == _kb.DISABLED
+
+
+def test_resolve_heal_escalate_default(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.delenv("HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS", raising=False)
+    assert _kb._resolve_heal_escalate_after_seconds(0) == 2 * 60 * 60
+
+
+def test_resolve_heal_escalate_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS", "1800")
+    assert _kb._resolve_heal_escalate_after_seconds(0) == 1800
+
+
+def test_resolve_heal_escalate_env_disable(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS", "-1")
+    assert _kb._resolve_heal_escalate_after_seconds(0) == _kb.DISABLED
+
+
+# --- detect_missing_pid ---------------------------------------------------
+
+
+def test_detect_missing_pid_noop_when_disabled(kanban_home, monkeypatch):
+    """A negative threshold skips the pass entirely."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=0, worker_pid=None,
+        )
+        reclaimed = _kb.detect_missing_pid(
+            conn, heal_missing_pid_seconds=-1,
+        )
+        assert reclaimed == []
+        # Task untouched.
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_detect_missing_pid_skips_recently_claimed_tasks(kanban_home, monkeypatch):
+    """Tasks within the heal window are not reclaimed."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        # Started 60s ago, threshold 5 min → NOT old enough.
+        tid = _make_running_task(
+            conn,
+            started_at=now - 60,
+            worker_pid=None,
+        )
+        reclaimed = _kb.detect_missing_pid(
+            conn, heal_missing_pid_seconds=300,
+        )
+        assert reclaimed == []
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_detect_missing_pid_reclaims_after_window(kanban_home, monkeypatch):
+    """A running task with no PID past the window is reclaimed."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn,
+            started_at=now - 600,  # 10 min ago
+            worker_pid=None,
+            last_heartbeat_at=now - 60,
+        )
+        reclaimed = _kb.detect_missing_pid(
+            conn, heal_missing_pid_seconds=300,
+        )
+        assert reclaimed == [tid]
+        task = kb.get_task(conn, tid)
+        # Reset to ready, claim cleared, heartbeat cleared.
+        assert task.status == "ready"
+        assert task.worker_pid is None
+        assert task.claim_lock is None
+        assert task.last_heartbeat_at is None
+
+
+def test_detect_missing_pid_emits_event_with_payload(kanban_home, monkeypatch):
+    """The event payload captures the desync context for the timeline."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn,
+            started_at=now - 700,
+            worker_pid=None,
+            last_heartbeat_at=now - 90,
+        )
+        _kb.detect_missing_pid(conn, heal_missing_pid_seconds=300)
+        events = kb.list_events(conn, tid)
+        heal_events = [e for e in events if e.kind == "missing_pid_healed"]
+        assert len(heal_events) == 1
+        payload = heal_events[0].payload
+        assert payload["elapsed_seconds"] == 700
+        assert payload["threshold_seconds"] == 300
+        assert payload["last_heartbeat_at"] == now - 90
+        assert "wrapper likely crashed" in payload["reason"]
+
+
+def test_detect_missing_pid_posts_audit_comment(kanban_home, monkeypatch):
+    """A ``auto-heal`` comment is left so the desync is greppable."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 600, worker_pid=None,
+        )
+        _kb.detect_missing_pid(conn, heal_missing_pid_seconds=300)
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert comments[0].author == "auto-heal"
+        assert "without recording a worker_pid" in comments[0].body
+
+
+def test_detect_missing_pid_skips_tasks_with_pid(kanban_home, monkeypatch):
+    """Tasks that DO have a worker_pid are skipped (even past the window)."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        # Has a worker_pid → out of scope (this is the crash detector's job).
+        tid = _make_running_task(
+            conn, started_at=now - 600, worker_pid=99999,
+        )
+        reclaimed = _kb.detect_missing_pid(
+            conn, heal_missing_pid_seconds=300,
+        )
+        assert reclaimed == []
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_detect_missing_pid_does_not_count_failure(kanban_home, monkeypatch):
+    """AUTO-HEAL-01 never trips the circuit breaker (desync, not worker fault)."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 600, worker_pid=None,
+        )
+        # Heal 3 times in a row: each time, the task is back in
+        # 'ready' (worker is fresh) and the consecutive_failures
+        # counter must stay at 0.
+        for tick in range(3):
+            _kb.detect_missing_pid(conn, heal_missing_pid_seconds=300)
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"tick {tick}: task should be re-queued, got {task.status}"
+            )
+            assert task.consecutive_failures == 0, (
+                f"tick {tick}: heal must NOT count a failure, got "
+                f"consecutive_failures={task.consecutive_failures}"
+            )
+            # Re-arm the task as running so the next tick finds it
+            # desynced again. Use a fresh started_at far enough in
+            # the past that the heal threshold is always exceeded.
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=NULL, "
+                "claim_lock=?, started_at=?, last_heartbeat_at=NULL "
+                "WHERE id=?",
+                (f"{kb._claimer_id().split(':', 1)[0]}:w",
+                 now - 600,
+                 tid),
+            )
+
+
+def test_detect_missing_pid_runs_through_dispatch_once(kanban_home, monkeypatch):
+    """`dispatch_once` runs the heal pass and surfaces it on the result."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 600, worker_pid=None,
+        )
+        # Empty spawn_fn so dispatch_once doesn't try to launch a
+        # real worker after the heal.
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace, board=None: None,
+            heal_missing_pid_seconds=300,
+        )
+        assert tid in res.healed_missing_pid
+        # Re-dispatchable on the next tick — the respawn guard
+        # won't defer a desync heal (no failure was counted).
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+# --- escalate_long_running ------------------------------------------------
+
+
+def test_escalate_long_running_noop_when_disabled(kanban_home, monkeypatch):
+    """A negative threshold skips the pass entirely."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=0, worker_pid=99999,
+        )
+        result = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=-1,
+        )
+        assert result == []
+        # No escalation event.
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "escalation"]
+        assert events == []
+
+
+def test_escalate_long_running_skips_within_window(kanban_home, monkeypatch):
+    """Workers still well within the escalation window are left alone."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        # 30 min into a 2 h window → no escalation.
+        tid = _make_running_task(
+            conn, started_at=now - 1800, worker_pid=99999,
+        )
+        result = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert result == []
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_escalate_long_running_emits_event_and_comment(kanban_home, monkeypatch):
+    """Past the window: event payload + comment with the kill command."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    # Pretend the worker's pid is alive so the live-PID filter
+    # doesn't skip it. We don't actually have a subprocess to
+    # keep alive — just patch _pid_alive to say yes.
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+            last_heartbeat_at=now - 30,
+        )
+        result = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert result == [tid]
+        # Task itself is NOT touched (no auto-kill).
+        assert kb.get_task(conn, tid).status == "running"
+        # Event payload carries context.
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "escalation"]
+        assert len(events) == 1
+        payload = events[0].payload
+        assert payload["elapsed_seconds"] == 7300
+        assert payload["threshold_seconds"] == 7200
+        assert payload["worker_pid"] == 99999
+        assert payload["auto_kill"] is False
+        # Comment carries the kill command for the operator.
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert comments[0].author == "auto-heal"
+        assert "kill -TERM 99999" in comments[0].body
+        assert "No auto-kill by default" in comments[0].body
+
+
+def test_escalate_long_running_skips_dead_pids(kanban_home, monkeypatch):
+    """Dead-PID tasks are the crash detector's job; escalation only handles live ones."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+        )
+        result = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert result == []
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "escalation"]
+        assert events == []
+
+
+def test_escalate_long_running_cooldown(kanban_home, monkeypatch):
+    """Per-task cooldown: second tick within the window is a no-op."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+        )
+        # First tick: escalates.
+        first = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert first == [tid]
+        # Second tick 60s later: cooldown gate suppresses.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 60)
+        second = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert second == []
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "escalation"]
+        assert len(events) == 1  # still just the one
+        # Third tick past the cooldown: escalates again.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 7200 + 1)
+        third = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert third == [tid]
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "escalation"]
+        assert len(events) == 2
+
+
+def test_escalate_long_running_auto_kill_releases_task(kanban_home, monkeypatch):
+    """When ``auto_kill=True`` is passed, the task is reclaimed to ready."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    # Stub the actual termination so the test doesn't try to
+    # SIGTERM anything (or sleep the 5 s grace window).
+    monkeypatch.setattr(
+        _kb, "_terminate_reclaimed_worker",
+        lambda pid, lock, **kw: {
+            "prev_pid": int(pid) if pid else None,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": True,
+            "sigkill": False,
+        },
+    )
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+        )
+        result = _kb.escalate_long_running(
+            conn,
+            heal_escalate_after_seconds=7200,
+            auto_kill=True,
+        )
+        assert result == [tid]
+        # Task reclaimed to ready.
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.worker_pid is None
+        assert task.claim_lock is None
+        # Event + comment reflect the auto-kill.
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "escalation"]
+        assert len(events) == 1
+        assert events[0].payload["auto_kill"] is True
+        assert events[0].payload["termination"]["terminated"] is True
+        comments = kb.list_comments(conn, tid)
+        assert len(comments) == 1
+        assert "AUTO-KILL executed" in comments[0].body
+
+
+def test_escalate_long_running_default_no_kill(kanban_home, monkeypatch):
+    """The dispatcher never sets auto_kill=True; verify the default path stays non-lethal."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    # Spy: must NOT be called.
+    term_calls: list = []
+    def _spy(*a, **kw):
+        term_calls.append((a, kw))
+        return {"prev_pid": None, "host_local": False}
+    monkeypatch.setattr(_kb, "_terminate_reclaimed_worker", _spy)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+        )
+        # Default invocation (auto_kill not passed).
+        result = _kb.escalate_long_running(
+            conn, heal_escalate_after_seconds=7200,
+        )
+        assert result == [tid]
+        # No termination attempted.
+        assert term_calls == []
+        # Task untouched.
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.get_task(conn, tid).worker_pid == 99999
+
+
+def test_escalate_long_running_runs_through_dispatch_once(kanban_home, monkeypatch):
+    """`dispatch_once` runs the escalation pass and surfaces it on the result."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+        )
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace, board=None: None,
+            heal_escalate_after_seconds=7200,
+        )
+        assert tid in res.escalations
+        # And the task is untouched (default no-kill).
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_dispatch_once_env_disable_both_heal_passes(kanban_home, monkeypatch):
+    """Setting both env knobs to -1 disables both heal passes globally."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", "-1")
+    monkeypatch.setenv("HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS", "-1")
+
+    with kb.connect() as conn:
+        missing_tid = _make_running_task(
+            conn, started_at=now - 600, worker_pid=None,
+        )
+        live_tid = _make_running_task(
+            conn, started_at=now - 7300, worker_pid=99999,
+        )
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace, board=None: None,
+        )
+        # No heals, no escalations.
+        assert res.healed_missing_pid == []
+        assert res.escalations == []
+        # Tasks untouched.
+        assert kb.get_task(conn, missing_tid).status == "running"
+        assert kb.get_task(conn, live_tid).status == "running"
+
+
+def test_dispatch_once_default_heal_thresholds_active(kanban_home, monkeypatch):
+    """With the env at its default and a long-running live worker,
+    dispatch_once escalates without any explicit overrides."""
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+    monkeypatch.delenv("HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS", raising=False)
+
+    with kb.connect() as conn:
+        # 3 hours into a 2h default → escalates.
+        tid = _make_running_task(
+            conn, started_at=now - 10800, worker_pid=99999,
+        )
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, workspace, board=None: None,
+        )
+        assert tid in res.escalations
     conn.close()  # explicit close to avoid leaking THIS test

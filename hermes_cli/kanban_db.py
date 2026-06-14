@@ -275,6 +275,99 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+# AUTO-HEAL-01 — Hermes↔worker-desync auto-healing thresholds.
+#
+# Two reconcile cases the existing dispatcher only WARNs about:
+#
+# 1. **Missing PID** — a task is ``running`` but ``worker_pid IS NULL``.
+#    Most often caused by a wrapper crash between ``claim_task`` and
+#    ``_set_worker_pid`` (e.g. a profile venv missing a dep that crashes
+#    the wrapper script before the child subprocess is launched). The
+#    claim TTL eventually reclaims it, but the task sits in 'running'
+#    limbo for the full TTL window (15 min default) and then silently
+#    re-enters 'ready' with no operator-visible event explaining the
+#    desync. AUTO-HEAL-01 auto-reclaims these within
+#    ``DEFAULT_HEAL_MISSING_PID_SECONDS`` and posts a `missing_pid_healed`
+#    event + comment so the desync is auditable.
+#
+# 2. **Long-running live worker** — a task is running with a live
+#    ``worker_pid`` but has been doing so for >2 h. Could be a genuine
+#    long encode, or could be a stuck worker that the operator would
+#    like to know about. AUTO-HEAL-01 does NOT auto-kill these; it
+#    posts an ``escalation`` event + structured comment with the
+#    kill-recommendation command so the operator can decide. Auto-kill
+#    is gated behind the explicit ``kanban.heal_auto_kill_on_escalation``
+#    config flag (off by default; the report's spec says "auto-kill endast
+#    efter Olle-signal").
+#
+# Both thresholds are tunable via env so an operator with a slower
+# dispatcher tick or longer-running tasks can shift the window without
+# code changes. ``=0`` (the dispatcher default) tells the function to
+# read the env-resolved default instead — so a value of ``0`` is
+# deliberately "use the configured default" rather than "disable", to
+# keep the dispatcher call sites uniform. Callers that want to
+# disable can pass an explicit negative value.
+
+DEFAULT_HEAL_MISSING_PID_SECONDS = 5 * 60
+DEFAULT_HEAL_ESCALATE_AFTER_SECONDS = 2 * 60 * 60
+DISABLED = -1  # sentinel: skip this heal pass entirely
+
+
+def _resolve_heal_missing_pid_seconds(value: int = 0) -> int:
+    """Return the missing-PID heal window, honoring env + call-site overrides.
+
+    Resolution order:
+
+    1. ``value`` (the explicit call-site arg) — if >0 use it, if
+       negative disable, if 0 fall through to env/default.
+    2. ``HERMES_KANBAN_HEAL_MISSING_PID_SECONDS`` env override.
+    3. ``DEFAULT_HEAL_MISSING_PID_SECONDS`` (5 min).
+    """
+    if value > 0:
+        return int(value)
+    if value < 0:
+        return DISABLED
+    raw = os.environ.get(
+        "HERMES_KANBAN_HEAL_MISSING_PID_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+        if parsed < 0:
+            return DISABLED
+    return DEFAULT_HEAL_MISSING_PID_SECONDS
+
+
+def _resolve_heal_escalate_after_seconds(value: int = 0) -> int:
+    """Return the long-running escalation window, honoring env + overrides.
+
+    Resolution order mirrors :func:`_resolve_heal_missing_pid_seconds`:
+    explicit call-site value → ``HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS``
+    env → ``DEFAULT_HEAL_ESCALATE_AFTER_SECONDS`` (2 h).
+    """
+    if value > 0:
+        return int(value)
+    if value < 0:
+        return DISABLED
+    raw = os.environ.get(
+        "HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+        if parsed < 0:
+            return DISABLED
+    return DEFAULT_HEAL_ESCALATE_AFTER_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -5744,6 +5837,17 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    healed_missing_pid: list[str] = field(default_factory=list)
+    """Task ids auto-reclaimed by ``detect_missing_pid`` (AUTO-HEAL-01)
+    because they sat in ``running`` with ``worker_pid IS NULL`` past
+    the configured heal window. The task is back to ``ready`` and a
+    fresh worker will be spawned on the next tick."""
+    escalations: list[str] = field(default_factory=list)
+    """Task ids surfaced by ``escalate_long_running`` (AUTO-HEAL-01)
+    because their live worker has been running longer than the
+    escalation window. By default no worker is killed; an
+    ``escalation`` event + structured comment carries the kill
+    recommendation for the operator."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -6540,6 +6644,347 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     return crashed
 
 
+# ---------------------------------------------------------------------------
+# AUTO-HEAL-01 — Hermes↔worker desync auto-healing.
+#
+# Two reconcile cases the existing dispatcher's crash / TTL paths cover
+# only partially:
+#
+# * ``detect_crashed_workers`` already handles "PID is set but the
+#   process is dead" (auto-reap + status reset to ready).
+# * ``detect_stale_running`` handles "no heartbeat for a long time" via
+#   an operator-configured ``stale_timeout_seconds`` (default 0 = off).
+# * ``release_stale_claims`` handles "claim TTL expired" by extending a
+#   live-pid claim or reclaiming a dead-pid one.
+#
+# What's missing for a self-healing loop:
+#
+# 1. A task that transitions to ``running`` but whose
+#    ``worker_pid IS NULL`` for >5 min — typically a wrapper crash
+#    between ``claim_task`` and ``_set_worker_pid``. The claim TTL
+#    eventually reclaims (15 min default), but the limbo is silent
+#    and the operator gets no event explaining the desync.
+#
+# 2. A live worker that has been running >2 h — could be a genuine
+#    long-running task (training, encoding) or could be stuck. The
+#    existing path silently reclaims on heartbeat staleness but does
+#    NOT proactively surface "you might want to look at this".
+#
+# The two functions below close those gaps. Both are no-ops when their
+# threshold is ``DISABLED`` (-1) or the call-site passes 0 (which
+# resolves to the env / default).
+# ---------------------------------------------------------------------------
+
+
+def detect_missing_pid(
+    conn: sqlite3.Connection,
+    *,
+    heal_missing_pid_seconds: int = 0,
+) -> list[str]:
+    """Reclaim ``running`` tasks whose ``worker_pid`` was never recorded.
+
+    A ``running`` task with ``worker_pid IS NULL`` for longer than the
+    configured heal window is almost always a Hermes↔worker desync:
+    the dispatcher recorded a claim and stepped the task to ``running``,
+    but the wrapper that should have launched the subprocess died
+    before ``_set_worker_pid`` could write its PID. The claim TTL
+    eventually reclaims the task (15 min default), but until then the
+    task is invisible to the crash detector (which skips
+    ``worker_pid IS NULL`` rows) and to the dashboard (which shows a
+    task with no live worker).
+
+    AUTO-HEAL-01 auto-reclaims these within the configured window:
+
+    * Resets the task to ``ready`` (matching the existing crash path
+      semantics — the next dispatch tick will try to spawn a fresh
+      worker).
+    * Emits a ``missing_pid_healed`` event with the elapsed window,
+      last_heartbeat_at, and the reclaim reason, so the desync is
+      auditable in the timeline.
+    * Posts a structured comment from author ``"auto-heal"`` with a
+      one-line summary the operator can grep for.
+
+    The function does NOT count a failure (matching
+    ``detect_stale_running``'s policy: a desync is dispatcher-side
+    detection, not a worker failure, so tripping the breaker on
+    legitimate desync noise would block cards wrongly). The next
+    dispatch tick will spawn a fresh worker; if THAT also dies without
+    recording a PID, the consecutive-missing-PID streak will be
+    visible in events even though it doesn't count toward the
+    breaker.
+
+    Returns the list of reclaimed task IDs. Returns ``[]`` if the
+    heal window resolves to ``DISABLED`` (env=``-1`` or call-site<0).
+
+    ``heal_missing_pid_seconds=0`` is the call-site default; it
+    resolves through :func:`_resolve_heal_missing_pid_seconds` so a
+    dispatcher operator can shift the window via env without code
+    changes. Tests pass explicit positive values.
+    """
+    threshold = _resolve_heal_missing_pid_seconds(heal_missing_pid_seconds)
+    if threshold == DISABLED:
+        return []
+    if threshold <= 0:
+        return []
+
+    now = int(time.time())
+    reclaimed: list[str] = []
+
+    rows = conn.execute(
+        "SELECT t.id, t.last_heartbeat_at, t.claim_lock, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.worker_pid IS NULL"
+    ).fetchall()
+
+    for row in rows:
+        if row["active_started_at"] is None:
+            continue
+        elapsed = now - int(row["active_started_at"])
+        if elapsed < threshold:
+            continue
+
+        tid = row["id"]
+        last_hb = row["last_heartbeat_at"]
+        # No PID to terminate — this is the whole point. The wrapper
+        # that should have launched the child is gone, so there's
+        # nothing host-local to SIGTERM. We just release the claim
+        # and let the next dispatch tick re-spawn.
+
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running'",
+                (tid,),
+            )
+            if cur.rowcount != 1:
+                # Another tick already healed this one.
+                continue
+
+            payload = {
+                "elapsed_seconds": int(elapsed),
+                "threshold_seconds": int(threshold),
+                "last_heartbeat_at": (
+                    int(last_hb) if last_hb is not None else None
+                ),
+                "claim_lock": row["claim_lock"],
+                "reason": (
+                    "running task never recorded worker_pid — "
+                    "wrapper likely crashed before subprocess launch"
+                ),
+            }
+            run_id = _end_run(
+                conn, tid,
+                outcome="reclaimed", status="reclaimed",
+                error=(
+                    f"missing worker_pid after {int(elapsed)}s "
+                    f"(threshold {int(threshold)}s)"
+                ),
+                metadata=payload,
+            )
+            _append_event(
+                conn, tid, "missing_pid_healed",
+                payload,
+                run_id=run_id,
+            )
+            # Audit comment so a human tailing the task can see WHY
+            # it was re-queued. ``add_comment`` is normally called
+            # from the public API; we inline a write_txn-friendly
+            # version here so we don't open a second transaction.
+            comment_body = (
+                f"auto-heal (AUTO-HEAL-01): task ran {int(elapsed)}s "
+                f"without recording a worker_pid (threshold "
+                f"{int(threshold)}s). Released back to ready; the "
+                f"wrapper that should have launched the child "
+                f"subprocess likely crashed before _set_worker_pid "
+                f"ran. No worker failure counted."
+            )
+            try:
+                conn.execute(
+                    "INSERT INTO task_comments "
+                    "(task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (tid, "auto-heal", comment_body, now),
+                )
+            except Exception:
+                # Comments are best-effort audit; never block the
+                # heal on a comment-write failure.
+                pass
+            reclaimed.append(tid)
+
+    return reclaimed
+
+
+def escalate_long_running(
+    conn: sqlite3.Connection,
+    *,
+    heal_escalate_after_seconds: int = 0,
+    auto_kill: bool = False,
+) -> list[str]:
+    """Escalate (do NOT kill by default) tasks running with a live PID
+    past the escalation window.
+
+    AUTO-HEAL-01 surfaces long-running live workers so the operator
+    can decide whether to let them run, kill them, or rerun them.
+    The default behaviour (``auto_kill=False``) emits an
+    ``escalation`` event + structured comment with a ready-to-paste
+    kill command, but does NOT send SIGTERM to the worker. The
+    spec for AUTO-HEAL-01 explicitly says "auto-kill endast efter
+    Olle-signal" — the auto-kill path is wired in (so a future
+    config knob can flip it on) but stays off by default.
+
+    A task is a candidate when ALL of these hold:
+
+    * status='running'
+    * worker_pid IS NOT NULL
+    * the active run started > ``heal_escalate_after_seconds`` ago
+    * the worker PID is still alive on this host (we don't escalate
+      for dead processes — ``detect_crashed_workers`` already handles
+      that)
+
+    We deliberately do NOT look at ``last_heartbeat_at`` here. The
+    heartbeat-staleness path in ``release_stale_claims`` already
+    reclaims at 1h; this function is the explicit "is this task
+    taking longer than the operator's tolerance for silent long
+    runs?" check, regardless of whether the worker is still
+    making observable progress.
+
+    We also enforce a per-task cooldown: a task is escalated at most
+    once per ``heal_escalate_after_seconds`` window, so a chronic
+    long-runner doesn't spam the timeline. The cooldown is keyed on
+    the latest ``escalation`` event for the task.
+
+    Returns the list of task IDs that received an escalation this
+    tick. The list is empty when the threshold resolves to
+    ``DISABLED`` or when no candidates pass the cooldown gate.
+
+    ``heal_escalate_after_seconds=0`` is the call-site default; it
+    resolves through :func:`_resolve_heal_escalate_after_seconds`.
+    ``auto_kill=False`` is the safe default. Tests that want the
+    kill path can pass ``auto_kill=True`` explicitly.
+    """
+    threshold = _resolve_heal_escalate_after_seconds(heal_escalate_after_seconds)
+    if threshold == DISABLED:
+        return []
+    if threshold <= 0:
+        return []
+
+    now = int(time.time())
+    escalated: list[str] = []
+
+    rows = conn.execute(
+        "SELECT t.id, t.worker_pid, t.claim_lock, t.assignee, "
+        "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       t.last_heartbeat_at "
+        "FROM tasks t "
+        "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
+    ).fetchall()
+
+    for row in rows:
+        if row["active_started_at"] is None:
+            continue
+        elapsed = now - int(row["active_started_at"])
+        if elapsed < threshold:
+            continue
+
+        pid = row["worker_pid"]
+        # Only escalate live workers; dead ones are already
+        # covered by detect_crashed_workers on the same tick.
+        if pid and not _pid_alive(pid):
+            continue
+
+        tid = row["id"]
+        # Per-task cooldown: skip if we already escalated within
+        # the same window. ``MAX(id)`` on the events table is the
+        # same cursor the notifier uses, so this matches the
+        # timeline a human would read.
+        cooldown_row = conn.execute(
+            "SELECT MAX(created_at) AS last_at "
+            "FROM task_events "
+            "WHERE task_id = ? AND kind = 'escalation'",
+            (tid,),
+        ).fetchone()
+        last_esc = cooldown_row["last_at"] if cooldown_row else None
+        if last_esc is not None and (now - int(last_esc)) < threshold:
+            continue
+
+        # Auto-kill must run OUTSIDE the write_txn: the helper
+        # SIGTERMs and then polls up to 5 s for the process to die,
+        # which would block the SQLite writer lock for the whole
+        # tick if held inside the txn. Pattern mirrors
+        # ``release_stale_claims`` and ``detect_stale_running`` —
+        # terminate first, then open a short txn for the state
+        # mutation.
+        termination: dict = {}
+        if auto_kill and pid:
+            termination = _terminate_reclaimed_worker(
+                pid, row["claim_lock"],
+            )
+
+        with write_txn(conn):
+            payload = {
+                "elapsed_seconds": int(elapsed),
+                "threshold_seconds": int(threshold),
+                "worker_pid": int(pid) if pid else None,
+                "assignee": row["assignee"],
+                "claim_lock": row["claim_lock"],
+                "last_heartbeat_at": (
+                    int(row["last_heartbeat_at"])
+                    if row["last_heartbeat_at"] is not None else None
+                ),
+                "auto_kill": bool(auto_kill),
+            }
+            if auto_kill:
+                payload["termination"] = termination
+                # Re-claim the task so it gets re-dispatched on the
+                # next tick. We don't count a failure here either;
+                # the operator asked for a manual kill, not a
+                # worker-fault classification.
+                conn.execute(
+                    "UPDATE tasks SET status = 'ready', "
+                    "claim_lock = NULL, claim_expires = NULL, "
+                    "worker_pid = NULL, last_heartbeat_at = NULL "
+                    "WHERE id = ? AND status = 'running'",
+                    (tid,),
+                )
+
+            kill_command = (
+                f"kill -TERM {int(pid)}" if pid else "kill -TERM <pid>"
+            )
+            comment_body = (
+                f"auto-heal (AUTO-HEAL-01): task running "
+                f"{int(elapsed)}s (threshold {int(threshold)}s) with "
+                f"live worker_pid={pid}. "
+                + (
+                    "AUTO-KILL executed; task re-queued. Inspect the "
+                    "termination details in the escalation event "
+                    "before re-dispatching."
+                    if auto_kill
+                    else (
+                        "No auto-kill by default. To terminate, run "
+                        f"`{kill_command}` (or `hermes kanban "
+                        f"reclaim {tid}` to release the claim)."
+                    )
+                )
+            )
+            conn.execute(
+                "INSERT INTO task_comments "
+                "(task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (tid, "auto-heal", comment_body, now),
+            )
+            _append_event(
+                conn, tid, "escalation",
+                payload,
+            )
+            escalated.append(tid)
+
+    return escalated
+
+
 def _record_task_failure(
     conn: sqlite3.Connection,
     task_id: str,
@@ -6942,6 +7387,9 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    heal_missing_pid_seconds: int = 0,
+    heal_escalate_after_seconds: int = 0,
+    heal_auto_kill: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7015,8 +7463,14 @@ def _dispatch_once_locked(
       1. Reclaim stale running tasks (TTL expired).
       2. Reclaim stale running tasks (no recent heartbeat).
       3. Reclaim crashed running tasks (host-local PID no longer alive).
-      3. Promote todo -> ready where all parents are done.
-      4. For each ready task with an assignee, atomically claim and call
+      3a. AUTO-HEAL-01: reclaim tasks running without ``worker_pid``
+          past ``heal_missing_pid_seconds`` (default 5 min via env).
+      3b. AUTO-HEAL-01: escalate (do NOT kill by default) tasks whose
+          live worker has been running past ``heal_escalate_after_seconds``
+          (default 2 h via env). Pass ``heal_auto_kill=True`` to enable
+          the kill path explicitly; the dispatcher never sets it.
+      4. Promote todo -> ready where all parents are done.
+      5. For each ready task with an assignee, atomically claim and call
          ``spawn_fn(task, workspace_path, board) -> Optional[int]``. The
          return value (if any) is recorded as ``worker_pid`` so subsequent
          ticks can detect crashes before the TTL expires.
@@ -7036,6 +7490,17 @@ def _dispatch_once_locked(
     ``spawn_fn`` defaults to ``_default_spawn``. Tests pass a stub.
     ``board`` pins workspace/log/db resolution for this tick to a specific
     board. When omitted, the current-board resolution chain is used.
+
+    AUTO-HEAL-01 thresholds:
+      * ``heal_missing_pid_seconds=0`` → resolve from
+        ``HERMES_KANBAN_HEAL_MISSING_PID_SECONDS`` env (default 5 min).
+        Pass a positive value to override per-call, or a negative value
+        to disable the check on this tick (e.g. in tests).
+      * ``heal_escalate_after_seconds=0`` → resolve from
+        ``HERMES_KANBAN_HEAL_ESCALATE_AFTER_SECONDS`` env (default 2 h).
+        Same override pattern.
+      * ``heal_auto_kill=False`` (default) → escalation only.
+        Flip to ``True`` for the operator-approved kill path.
     """
     # Reap zombie children from previously spawned workers. See
     # reap_worker_zombies() for the full rationale.
@@ -7064,6 +7529,25 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+    # AUTO-HEAL-01: reconcile the two desync cases the existing
+    # crash / TTL / heartbeat paths cover only partially.
+    # 1. ``worker_pid IS NULL`` past the heal window → reclaim.
+    #    Deliberately runs AFTER enforce_max_runtime so a task with
+    #    a real ``max_runtime_seconds`` is killed (counted failure)
+    #    rather than silently re-queued — the runtime cap is a
+    #    worker-side contract violation, not a desync.
+    result.healed_missing_pid = detect_missing_pid(
+        conn, heal_missing_pid_seconds=heal_missing_pid_seconds,
+    )
+    # 2. Live worker past the escalation window → emit escalation
+    #    event + comment. NO auto-kill unless ``heal_auto_kill=True``
+    #    is passed (the dispatcher never sets it; this is the
+    #    operator's kill-switch).
+    result.escalations = escalate_long_running(
+        conn,
+        heal_escalate_after_seconds=heal_escalate_after_seconds,
+        auto_kill=heal_auto_kill,
+    )
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

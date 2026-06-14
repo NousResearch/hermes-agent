@@ -278,8 +278,10 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     Args:
         platform: Explicit platform name (e.g. ``"telegram"``).  When
             *None*, resolves from ``HERMES_PLATFORM`` or
-            ``HERMES_SESSION_PLATFORM`` env vars.  Falls back to the
-            global disabled list when no platform is determined.
+            ``HERMES_SESSION_PLATFORM`` env vars.  Returns the global
+            disabled list, unioned with the platform-specific list when a
+            platform is resolved (a globally-disabled skill stays disabled
+            on every platform).
 
     Reads the config file directly (no CLI config imports) to stay
     lightweight.

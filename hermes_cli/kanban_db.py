@@ -2160,6 +2160,66 @@ def create_task(
             )
         skills_list = cleaned
 
+    # Pre-flight: refuse a create whose assignee profile cannot resolve a
+    # requested skill. Catches the operator-time mistake of passing
+    # ``--skill <name>`` for a skill that's only installed under the
+    # default root home and not under the assignee profile. Without this
+    # gate, the worker spawned later crashes at CLI startup with
+    # ``ValueError: Unknown skill(s): <name>``, the dispatcher records
+    # ``pid <N> not alive``, the circuit breaker trips at threshold, and
+    # operators chase the failure through worker logs instead of seeing it
+    # at create time. Skips validation when the assignee is unknown
+    # (no canonical profile to check against) or when the assignee is
+    # the default root profile (whose skill scope is the same as the
+    # dispatcher's). ``HERMES_KANBAN_SKIP_SKILL_PREFLIGHT=1`` opts out
+    # for test fixtures that monkey-patch the dispatcher without
+    # provisioning a real profile dir.
+    if (
+        skills_list
+        and assignee
+        and os.environ.get("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", "").strip()
+        not in {"1", "true", "yes"}
+    ):
+        from hermes_cli.profiles import (  # local import: avoids cycle
+            get_profile_dir,
+            normalize_profile_name,
+        )
+        try:
+            canon = normalize_profile_name(assignee)
+        except Exception:
+            canon = None
+        if canon and canon != "default":
+            try:
+                profile_dir = get_profile_dir(canon)
+            except Exception:
+                profile_dir = None
+            # Only enforce when the profile dir actually exists; an
+            # unknown profile fails later at dispatch with a clearer
+            # message and we don't want to block creates against profiles
+            # that will be provisioned shortly.
+            if profile_dir and profile_dir.is_dir():
+                unresolved = [
+                    sk for sk in skills_list
+                    if not _skill_resolvable_for_profile(sk, str(profile_dir))
+                ]
+                if unresolved:
+                    quoted = ", ".join(repr(s) for s in unresolved)
+                    noun = "skill is" if len(unresolved) == 1 else "skills are"
+                    raise ValueError(
+                        f"{quoted} {noun} not installed under profile "
+                        f"{canon!r} (looked in {profile_dir}/skills, "
+                        f"{profile_dir}/plugins, and config.yaml "
+                        f"skills.external_dirs). The dispatched worker would "
+                        f"crash at CLI startup with `Unknown skill(s)`. "
+                        f"Either (a) install the skill under the profile's "
+                        f"skills dir, (b) add its parent dir to "
+                        f"skills.external_dirs in "
+                        f"{profile_dir}/config.yaml, or (c) drop the "
+                        f"--skill flag and reference the skill via its "
+                        f"absolute SKILL.md path in the task body so the "
+                        f"worker file-walks on demand."
+                    )
+
     # Idempotency check — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the fast path fast
     # and to avoid holding a write lock during the lookup. Race is
@@ -6610,39 +6670,103 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
-def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
+def _skill_resolvable_for_profile(
+    skill_name: str,
+    hermes_home: Optional[str],
+) -> bool:
+    """True if ``skill_name`` resolves for the HERMES_HOME the spawned worker
+    will run under.
 
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs. Gate the flag on actual resolvability;
-    the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
-    omitting the flag only drops the supplementary pattern library.
+    The dispatcher injects ``--skills <name>`` into every worker (the built-in
+    ``kanban-worker`` plus any per-task force-loaded skills from
+    ``task.skills``). When the worker activates a profile (``hermes -p <name>``),
+    its ``SKILLS_DIR`` becomes ``<profile_home>/skills`` — which on many
+    profiles does NOT contain the requested skill (it may only ship in the
+    *default* root home at ``~/.hermes/skills/``, not every profile-scoped
+    skills dir). Preloading a missing skill is fatal at CLI startup
+    (``ValueError: Unknown skill(s): <name>``), aborting the worker before the
+    agent loop runs and tripping the circuit breaker.
+
+    Resolution sources checked, mirroring ``tools.skills_tool``'s search path:
+
+    * ``<profile_home>/skills/**/<name>/SKILL.md`` — profile's own skills
+    * ``<profile_home>/plugins/**/<name>/SKILL.md`` — plugin-shipped skills
+    * Each directory listed in ``<profile_home>/config.yaml``'s
+      ``skills.external_dirs`` (``~`` and ``${VAR}`` expanded)
+
+    Returns True on first match. Used both as a pre-flight gate in
+    :func:`create_task` (refuse a create whose assignee profile cannot
+    resolve a requested skill) and as defense-in-depth in
+    :func:`_default_spawn` (silently drop a stale per-task skill rather than
+    crash the worker).
     """
     from pathlib import Path as _Path
 
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
+    if not skill_name:
         return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
+    name = str(skill_name).strip()
+    if not name:
+        return False
+
+    # An unset HERMES_HOME means the worker falls back to the default root
+    # home (``~/.hermes``), which ships the bundled skill set.
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+
+    def _scan_skill_root(root: _Path) -> bool:
+        if not root.is_dir():
+            return False
+        # Bounded scan: any ``<name>/SKILL.md`` under the root counts. Skill
+        # bundles live anywhere under skills/ (organized by category dirs),
+        # so we can't pin a fixed depth.
+        try:
+            for skill_md in root.rglob(f"{name}/SKILL.md"):
+                if skill_md.is_file():
+                    return True
+        except OSError:
+            return False
+        return False
+
+    if _scan_skill_root(base / "skills"):
         return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
+    if _scan_skill_root(base / "plugins"):
+        return True
+
+    # External skill dirs declared in the profile's config.yaml. Parse
+    # tolerantly — a malformed config should not block dispatch.
+    config_path = base / "config.yaml"
+    if config_path.is_file():
+        try:
+            import yaml as _yaml
+            raw = config_path.read_text(encoding="utf-8")
+            parsed = _yaml.safe_load(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            skills_cfg = parsed.get("skills")
+            if isinstance(skills_cfg, dict):
+                ext_dirs = skills_cfg.get("external_dirs") or []
+                if isinstance(ext_dirs, str):
+                    ext_dirs = [ext_dirs]
+                if isinstance(ext_dirs, list):
+                    for raw_dir in ext_dirs:
+                        if not isinstance(raw_dir, str) or not raw_dir.strip():
+                            continue
+                        try:
+                            ext_path = _Path(
+                                os.path.expandvars(raw_dir)
+                            ).expanduser()
+                        except Exception:
+                            continue
+                        if _scan_skill_root(ext_path):
+                            return True
     return False
+
+
+def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
+    """Back-compat shim — True if the bundled ``kanban-worker`` skill
+    resolves for ``hermes_home``. See :func:`_skill_resolvable_for_profile`.
+    """
+    return _skill_resolvable_for_profile("kanban-worker", hermes_home)
 
 
 def _worker_terminal_timeout_env(
@@ -6835,11 +6959,43 @@ def _default_spawn(
     # per-name pairs are easier to read in `ps` output and avoid any
     # quoting ambiguity if a skill name ever contains unusual chars.
     # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
+    # if a task author asks for it explicitly. Defense-in-depth: also
+    # skip skills that don't resolve for the worker's profile home.
+    # ``create_task`` rejects unresolvable skills at create time, but
+    # legacy rows persisted before that gate landed (or skills uninstalled
+    # between create and dispatch) would otherwise still crash the worker
+    # at CLI startup. Logging the skip to the worker log keeps the drop
+    # auditable without tripping the circuit breaker.
     if task.skills:
+        worker_home = env.get("HERMES_HOME")
+        skip_preflight = (
+            os.environ.get("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", "").strip()
+            in {"1", "true", "yes"}
+        )
+        # Only enforce when we actually have a worker home to look in —
+        # otherwise the resolvability check returns False for everything
+        # and we'd silently drop every per-task skill in test fixtures
+        # that monkey-patch the dispatcher without a real profile dir.
+        enforce = (
+            (not skip_preflight)
+            and bool(worker_home)
+            and Path(worker_home).is_dir()
+        )
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
+            if not sk or sk == "kanban-worker":
+                continue
+            if enforce and not _skill_resolvable_for_profile(sk, worker_home):
+                try:
+                    print(
+                        f"kanban dispatcher: dropping --skills {sk!r} for "
+                        f"task {task.id}: not installed under profile "
+                        f"{profile_arg!r} (would crash worker at CLI startup)",
+                        file=sys.stderr,
+                    )
+                except Exception:
+                    pass
+                continue
+            cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))

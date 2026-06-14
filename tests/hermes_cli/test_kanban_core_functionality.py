@@ -2987,6 +2987,10 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    # Per-task skills don't exist under the test fixture's HERMES_HOME;
+    # opt out of the resolvability gate so the dispatcher still passes them
+    # through (the gate is exercised by its own dedicated tests).
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", "1")
     captured = {}
 
     class FakeProc:
@@ -3037,6 +3041,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", "1")
     captured = {}
 
     class FakeProc:
@@ -3067,6 +3072,227 @@ def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monke
     ]
     assert len(worker_pairs) == 1, (
         f"kanban-worker appeared {len(worker_pairs)} times in argv: {cmd}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-task skill resolvability gate (#kanban-bug-2026-06-13)
+# ---------------------------------------------------------------------------
+#
+# Symptom: ``kanban_create --skill <name>`` for a skill that exists under the
+# default root home but NOT under the assignee profile (e.g. ``qa``) caused
+# the spawned worker to crash at CLI startup with
+# ``ValueError: Unknown skill(s): <name>``. The dispatcher recorded
+# ``pid <N> not alive``; consecutive_failures incremented; the circuit
+# breaker auto-blocked the task at threshold=2. ``create_task`` now refuses
+# such creates up front with an actionable error, and ``_default_spawn``
+# silently drops still-unresolvable per-task skills as defense-in-depth
+# (legacy rows / skills uninstalled between create and dispatch).
+
+
+def _make_profile_with_skill(profile_root: Path, profile_name: str,
+                             skill_name: str) -> Path:
+    """Provision a fake profile dir containing ``skill_name``."""
+    profile_dir = profile_root / "profiles" / profile_name
+    skill_dir = profile_dir / "skills" / "test" / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {skill_name}\n---\n# {skill_name}\n",
+        encoding="utf-8",
+    )
+    return profile_dir
+
+
+def test_skill_resolvable_finds_profile_skill(tmp_path):
+    home = tmp_path / ".hermes"
+    profile_dir = _make_profile_with_skill(home, "qa", "my-skill")
+    assert kb._skill_resolvable_for_profile("my-skill", str(profile_dir))
+
+
+def test_skill_resolvable_missing_returns_false(tmp_path):
+    home = tmp_path / ".hermes"
+    profile_dir = _make_profile_with_skill(home, "qa", "other-skill")
+    assert not kb._skill_resolvable_for_profile("missing", str(profile_dir))
+
+
+def test_skill_resolvable_finds_plugin_skill(tmp_path):
+    home = tmp_path / ".hermes"
+    profile_dir = home / "profiles" / "qa"
+    plugin_skill = profile_dir / "plugins" / "vendor-pkg" / "skills" / "plug-skill"
+    plugin_skill.mkdir(parents=True)
+    (plugin_skill / "SKILL.md").write_text("---\nname: plug-skill\n---\n",
+                                           encoding="utf-8")
+    assert kb._skill_resolvable_for_profile("plug-skill", str(profile_dir))
+
+
+def test_skill_resolvable_honors_external_dirs(tmp_path):
+    home = tmp_path / ".hermes"
+    profile_dir = home / "profiles" / "qa"
+    profile_dir.mkdir(parents=True)
+    # Skill lives in an external dir, not in profile/skills.
+    external_root = tmp_path / "shared-skills"
+    ext_skill = external_root / "ext" / "shared-skill"
+    ext_skill.mkdir(parents=True)
+    (ext_skill / "SKILL.md").write_text("---\nname: shared-skill\n---\n",
+                                        encoding="utf-8")
+    (profile_dir / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external_root}\n",
+        encoding="utf-8",
+    )
+    assert kb._skill_resolvable_for_profile("shared-skill", str(profile_dir))
+
+
+def test_skill_resolvable_back_compat_shim(tmp_path):
+    """_kanban_worker_skill_available remains a working shim."""
+    home = tmp_path / ".hermes"
+    profile_dir = _make_profile_with_skill(home, "qa", "kanban-worker")
+    assert kb._kanban_worker_skill_available(str(profile_dir))
+    # Profile without it falls through to False.
+    bare_profile = home / "profiles" / "bare"
+    (bare_profile / "skills").mkdir(parents=True)
+    assert not kb._kanban_worker_skill_available(str(bare_profile))
+
+
+def test_create_task_rejects_skill_missing_under_assignee(
+    kanban_home, tmp_path, monkeypatch,
+):
+    """The mistake described in the bug report: --skill <name> where the
+    assignee profile doesn't have <name> installed."""
+    # Provision a `qa` profile that has SOME skill but not the requested one.
+    _make_profile_with_skill(kanban_home, "qa", "different-skill")
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match=r"not installed under profile 'qa'"):
+            kb.create_task(
+                conn,
+                title="bad-create",
+                assignee="qa",
+                skills=["turingproof-cli"],
+            )
+
+
+def test_create_task_accepts_skill_present_under_assignee(
+    kanban_home, tmp_path,
+):
+    _make_profile_with_skill(kanban_home, "qa", "good-skill")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ok-create",
+            assignee="qa",
+            skills=["good-skill"],
+        )
+        task = kb.get_task(conn, tid)
+    assert task.skills == ["good-skill"]
+
+
+def test_create_task_skips_validation_when_profile_missing(kanban_home):
+    """Don't block creates against profiles not yet provisioned —
+    dispatch-time validation catches them with a clearer error."""
+    # No profile dir created.
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="future-profile",
+            assignee="not-yet-real",
+            skills=["any-skill"],
+        )
+        task = kb.get_task(conn, tid)
+    assert task.skills == ["any-skill"]
+
+
+def test_create_task_skips_validation_for_default_assignee(kanban_home):
+    """Default assignee shares skill scope with the dispatcher — no check."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="default-create",
+            assignee="default",
+            skills=["whatever-skill"],
+        )
+        task = kb.get_task(conn, tid)
+    assert task.skills == ["whatever-skill"]
+
+
+def test_create_task_lists_all_unresolved_skills(kanban_home, tmp_path):
+    """Multi-skill creates surface every unresolved name in one error."""
+    _make_profile_with_skill(kanban_home, "qa", "present")
+    with kb.connect() as conn:
+        with pytest.raises(ValueError) as excinfo:
+            kb.create_task(
+                conn,
+                title="multi-bad",
+                assignee="qa",
+                skills=["present", "missing-a", "missing-b"],
+            )
+    msg = str(excinfo.value)
+    assert "'missing-a'" in msg and "'missing-b'" in msg
+    assert "'present'" not in msg
+
+
+def test_create_task_skip_preflight_env_var(kanban_home, monkeypatch):
+    """``HERMES_KANBAN_SKIP_SKILL_PREFLIGHT=1`` opts out for test fixtures."""
+    _make_profile_with_skill(kanban_home, "qa", "different")
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", "1")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="opt-out",
+            assignee="qa",
+            skills=["does-not-exist"],
+        )
+        task = kb.get_task(conn, tid)
+    assert task.skills == ["does-not-exist"]
+
+
+def test_default_spawn_drops_unresolvable_per_task_skill(
+    kanban_home, tmp_path, monkeypatch,
+):
+    """Defense-in-depth: a legacy task row with an unresolvable skill
+    must not pass --skills through to the worker (would crash CLI)."""
+    # Provision the assignee profile so the dispatcher-side gate kicks in.
+    profile_dir = _make_profile_with_skill(kanban_home, "qa", "real-skill")
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
+    captured = {}
+
+    class FakeProc:
+        pid = 99
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env") or {}
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    # Create with the preflight opt-out, then re-enable it for dispatch
+    # to simulate the legacy-row scenario.
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", "1")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="legacy-bad-skill",
+            assignee="qa",
+            skills=["real-skill", "ghost-skill"],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+    monkeypatch.delenv("HERMES_KANBAN_SKIP_SKILL_PREFLIGHT", raising=False)
+    # Force the spawn to see our provisioned profile dir as HERMES_HOME.
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+    kb._default_spawn(task, str(workspace))
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1] for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    assert "real-skill" in skill_names, (
+        f"resolvable skill should still pass through: {cmd}"
+    )
+    assert "ghost-skill" not in skill_names, (
+        f"unresolvable skill must be dropped: {cmd}"
     )
 
 

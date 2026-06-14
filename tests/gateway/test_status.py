@@ -330,6 +330,81 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_read_runtime_status_reconciles_stale_running_state_to_stopped(self, tmp_path, monkeypatch):
+        """A stale runtime file must not keep reporting a running gateway.
+
+        Regression for #46133: desktop- and status-style consumers that only
+        read ``gateway_state.json`` should not trust a leftover
+        ``gateway_state='running'`` record when there is no matching live
+        gateway for this profile anymore.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 111,
+            "kind": "hermes-gateway",
+            "gateway_state": "running",
+            "platforms": {"discord": {"state": "connected"}},
+            "updated_at": "2026-06-14T00:00:00+00:00",
+        }))
+
+        monkeypatch.setattr(status, "get_running_pid", lambda pid_path=None, cleanup_stale=False: None)
+
+        payload = status.read_runtime_status()
+        persisted = json.loads(state_path.read_text())
+
+        assert payload["gateway_state"] == "stopped"
+        assert payload["pid"] == 99999
+        assert payload["platforms"]["discord"]["state"] == "connected"
+        assert payload["updated_at"] != "2026-06-14T00:00:00+00:00"
+        assert persisted["gateway_state"] == "stopped"
+        assert persisted["pid"] == 99999
+        assert persisted["platforms"]["discord"]["state"] == "connected"
+        assert persisted["updated_at"] == payload["updated_at"]
+
+    def test_read_runtime_status_preserves_explicit_non_running_states(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "gateway_state": "startup_failed",
+            "exit_reason": "discord token invalid",
+            "updated_at": "2026-06-14T00:00:00+00:00",
+        }))
+
+        monkeypatch.setattr(status, "get_running_pid", lambda pid_path=None, cleanup_stale=False: None)
+
+        payload = status.read_runtime_status()
+        persisted = json.loads(state_path.read_text())
+
+        assert payload["gateway_state"] == "startup_failed"
+        assert payload["exit_reason"] == "discord token invalid"
+        assert persisted["gateway_state"] == "startup_failed"
+        assert persisted["updated_at"] == "2026-06-14T00:00:00+00:00"
+
+    def test_read_runtime_status_best_effort_if_stale_correction_write_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "gateway_state": "running",
+            "updated_at": "2026-06-14T00:00:00+00:00",
+        }))
+
+        monkeypatch.setattr(status, "get_running_pid", lambda pid_path=None, cleanup_stale=False: None)
+        monkeypatch.setattr(status, "_write_json_file", lambda path, payload: (_ for _ in ()).throw(OSError("disk full")))
+
+        payload = status.read_runtime_status()
+        persisted = json.loads(state_path.read_text())
+
+        assert payload["gateway_state"] == "stopped"
+        assert payload["updated_at"] == "2026-06-14T00:00:00+00:00"
+        assert persisted["gateway_state"] == "running"
+
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -351,7 +426,7 @@ class TestGatewayRuntimeStatus:
             error_message=None,
         )
 
-        payload = status.read_runtime_status()
+        payload = status.read_runtime_status_raw()
         assert payload["gateway_state"] == "running"
         assert payload["exit_reason"] is None
         assert payload["platforms"]["discord"]["state"] == "connected"

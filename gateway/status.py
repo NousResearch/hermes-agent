@@ -550,9 +550,66 @@ def write_runtime_status(
     _write_json_file(path, payload)
 
 
+def read_runtime_status_raw(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Read the persisted runtime health/status information verbatim.
+
+    This is the raw on-disk view, with no liveness reconciliation. Use it for
+    boot/recovery flows that need the last persisted intent rather than the
+    current effective state.
+    """
+    return _read_json_file(path or _get_runtime_status_path())
+
+
+def _reconcile_runtime_status(
+    payload: Optional[dict[str, Any]],
+    *,
+    path: Optional[Path] = None,
+    persist: bool = True,
+) -> Optional[dict[str, Any]]:
+    """Reconcile optimistic runtime status against current live-process truth."""
+    if not payload:
+        return payload
+
+    gateway_state = payload.get("gateway_state")
+    # Only reconcile states that imply a live gateway process should exist.
+    # Preserve explicit terminal/history states like "startup_failed" and
+    # "stopped" so operators still see the last real outcome.
+    if gateway_state != "running":
+        return payload
+
+    try:
+        running_pid = get_running_pid(cleanup_stale=False)
+    except Exception:
+        return payload
+
+    if running_pid is not None:
+        return payload
+
+    reconciled = dict(payload)
+    reconciled["gateway_state"] = "stopped"
+    if not persist:
+        return reconciled
+
+    persisted = dict(reconciled)
+    persisted["updated_at"] = _utc_now_iso()
+    try:
+        _write_json_file(path or _get_runtime_status_path(), persisted)
+    except Exception:
+        return reconciled
+    return persisted
+
+
 def read_runtime_status() -> Optional[dict[str, Any]]:
-    """Read the persisted gateway runtime health/status information."""
-    return _read_json_file(_get_runtime_status_path())
+    """Read the effective gateway runtime health/status information.
+
+    A leftover ``gateway_state='running'`` after an external kill or reboot is
+    stale state, not truth. Reconcile those optimistic runtime states against
+    the current profile's live PID guard so shared consumers do not each have
+    to rediscover the same mismatch independently. When that mismatch is found,
+    best-effort persist the corrected ``stopped`` state so later raw readers do
+    not keep inheriting the stale optimistic record.
+    """
+    return _reconcile_runtime_status(read_runtime_status_raw())
 
 
 def remove_pid_file() -> None:

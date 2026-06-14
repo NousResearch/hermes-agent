@@ -221,16 +221,17 @@ def _read_prior_state(profile_dir: Path) -> str | None:
     """Read gateway_state.json's ``gateway_state`` field, or None if
     missing or unparseable. Unparseable counts as "no prior state" so
     we don't bork the whole reconciliation on a corrupt file."""
+    from gateway.status import read_runtime_status_raw
+
     state_file = profile_dir / "gateway_state.json"
-    if not state_file.exists():
-        return None
-    try:
-        return json.loads(state_file.read_text()).get("gateway_state")
-    except (OSError, json.JSONDecodeError):
+    payload = read_runtime_status_raw(state_file)
+    if payload is not None:
+        return payload.get("gateway_state")
+    if state_file.exists():
         log.warning(
             "could not read %s; treating as no prior state", state_file,
         )
-        return None
+    return None
 
 
 def _cleanup_stale_runtime_files(profile_dir: Path) -> None:

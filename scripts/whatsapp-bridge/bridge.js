@@ -23,13 +23,12 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
-import { execSync } from 'child_process';
-import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { buildMediaPayload } from './media-payload.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -576,25 +575,6 @@ app.post('/edit', async (req, res) => {
   }
 });
 
-// MIME type map and media type inference for /send-media
-const MIME_MAP = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-  webp: 'image/webp', gif: 'image/gif',
-  mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
-  mkv: 'video/x-matroska', '3gp': 'video/3gpp',
-  pdf: 'application/pdf',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-};
-
-function inferMediaType(ext) {
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
-  if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
-  return 'document';
-}
-
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -611,55 +591,9 @@ app.post('/send-media', async (req, res) => {
       return res.status(404).json({ error: `File not found: ${filePath}` });
     }
 
-    const buffer = readFileSync(filePath);
-    const ext = filePath.toLowerCase().split('.').pop();
-    const type = mediaType || inferMediaType(ext);
-    let msgPayload;
-
-    switch (type) {
-      case 'image':
-        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
-        break;
-      case 'video':
-        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
-        break;
-      case 'audio': {
-        // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
-        // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),
-        // silently convert to ogg/opus via ffmpeg so ptt is always honoured.
-        let audioBuffer = buffer;
-        let audioExt = ext;
-        const needsConversion = !['ogg', 'opus'].includes(ext);
-        let tmpPath = null;
-        if (needsConversion) {
-          tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
-          try {
-            execSync(
-              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
-              { timeout: 30000, stdio: 'pipe' }
-            );
-            audioBuffer = readFileSync(tmpPath);
-            audioExt = 'ogg';
-          } catch (convErr) {
-            // ffmpeg not available or conversion failed — fall back to original format
-            console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', convErr.message);
-          } finally {
-            try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
-          }
-        }
-        const audioMime = (audioExt === 'ogg' || audioExt === 'opus') ? 'audio/ogg; codecs=opus' : 'audio/mpeg';
-        msgPayload = { audio: audioBuffer, mimetype: audioMime, ptt: audioExt === 'ogg' || audioExt === 'opus' };
-        break;
-      }
-      case 'document':
-      default:
-        msgPayload = {
-          document: buffer,
-          fileName: fileName || path.basename(filePath),
-          caption: caption || undefined,
-          mimetype: MIME_MAP[ext] || 'application/octet-stream',
-        };
-        break;
+    const { payload: msgPayload, warning } = buildMediaPayload({ filePath, mediaType, caption, fileName });
+    if (warning) {
+      console.warn('[bridge] ffmpeg conversion failed, sending as file attachment:', warning);
     }
 
     const sent = await sendWithTimeout(chatId, msgPayload);

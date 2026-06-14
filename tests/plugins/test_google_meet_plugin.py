@@ -1091,6 +1091,89 @@ def test_detect_admission_true_when_probe_returns_true():
     assert _detect_admission(_FakePage()) is True
 
 
+def test_detect_admission_true_from_rich_probe_dict():
+    from plugins.google_meet.meet_bot import _detect_admission
+
+    class _FakePage:
+        def evaluate(self, _js):
+            return {"inCall": True, "waitingLobby": False, "denied": False}
+
+    assert _detect_admission(_FakePage()) is True
+
+
+def test_detect_admission_false_when_probe_is_still_prejoin():
+    from plugins.google_meet.meet_bot import _detect_admission
+
+    class _FakePage:
+        def evaluate(self, _js):
+            return {
+                "inCall": True,
+                "waitingLobby": False,
+                "denied": False,
+                "preJoin": True,
+                "text": "Getting ready... You'll be able to join in just a moment",
+            }
+
+    assert _detect_admission(_FakePage()) is False
+
+
+def test_classify_meet_ui_blocks_getting_ready_page():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        "Getting ready... You'll be able to join in just a moment",
+        in_call_control=True,
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert result["inCall"] is False
+    assert result["preJoin"] is True
+
+
+def test_classify_meet_ui_blocks_ready_to_join_page_with_media_prompt():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        (
+            "mic Show more info videocam Show more info Ready to join? "
+            "Alex Lee and Morgan Patel are in this call Join now "
+            "Do you want people to see and hear you in the meeting? "
+            "Continue without microphone and camera"
+        ),
+        in_call_control=True,
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert result["inCall"] is False
+    assert result["preJoin"] is True
+
+
+def test_classify_meet_ui_blocks_landing_page_after_meet_error():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        "Meet Secure video conferencing for everyone New meeting Join",
+        in_call_text=True,
+        url="https://meet.google.com/landing",
+    )
+
+    assert result["inCall"] is False
+    assert result["landing"] is True
+
+
+def test_classify_meet_ui_blocks_could_not_start_video_call_error():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        "Couldn't start the video call because of an error",
+        in_call_control=True,
+        url="https://meet.google.com/landing",
+    )
+
+    assert result["inCall"] is False
+    assert result["callError"] is True
+
+
 def test_detect_denied_returns_false_on_error():
     from plugins.google_meet.meet_bot import _detect_denied
 
@@ -1098,6 +1181,362 @@ def test_detect_denied_returns_false_on_error():
         def evaluate(self, _js): raise RuntimeError("boom")
 
     assert _detect_denied(_FakePage()) is False
+
+
+def test_detect_denied_true_from_rich_probe_dict():
+    from plugins.google_meet.meet_bot import _detect_denied
+
+    class _FakePage:
+        def evaluate(self, _js):
+            return {"inCall": False, "waitingLobby": False, "denied": True}
+
+    assert _detect_denied(_FakePage()) is True
+
+
+def test_compute_meet_phase_marks_join_attempt_as_stalled(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _compute_meet_phase
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0)
+
+    phase, reason = _compute_meet_phase(state, now=205.0, stall_after=90.0)
+
+    assert phase == "stalled"
+    assert "no admission" in reason
+
+
+def test_compute_meet_phase_reports_capturing_after_transcript(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _compute_meet_phase
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(in_call=True, joined_at=100.0)
+    state.record_caption("Alice", "hello")
+
+    phase, reason = _compute_meet_phase(state, now=110.0, stall_after=90.0)
+
+    assert phase == "capturing"
+    assert reason is None
+
+
+def test_should_probe_admission_until_first_caption(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _should_probe_admission
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(in_call=True, joined_at=100.0)
+
+    assert _should_probe_admission(state, now=105.0, last_admission_check=100.0) is True
+
+    state.record_caption("Alice", "hello")
+
+    assert _should_probe_admission(state, now=110.0, last_admission_check=105.0) is False
+
+
+def test_apply_admission_probe_revokes_prejoin_false_positive(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(in_call=True, joined_at=100.0)
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {
+            "inCall": False,
+            "preJoin": True,
+            "waitingLobby": False,
+            "denied": False,
+            "text": "Getting ready... You'll be able to join in just a moment",
+        },
+        now=105.0,
+        lobby_deadline=400.0,
+    )
+
+    assert admitted is False
+    assert terminal is False
+    assert state.in_call is False
+    assert state.joined_at is None
+    assert state.phase == "joining"
+
+
+def test_apply_admission_probe_exits_when_meet_returns_to_landing(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0, in_call=True, joined_at=105.0)
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {
+            "inCall": False,
+            "landing": True,
+            "waitingLobby": False,
+            "denied": False,
+            "text": "Meet Secure video conferencing for everyone New meeting Join",
+            "url": "https://meet.google.com/landing",
+        },
+        now=110.0,
+        lobby_deadline=400.0,
+    )
+
+    assert admitted is False
+    assert terminal is True
+    assert state.in_call is False
+    assert state.joined_at is None
+    assert state.leave_reason == "meet_landing"
+    assert "landing" in state.error
+    assert state.phase == "exited"
+
+
+def test_apply_admission_probe_tolerates_single_transient_call_error(tmp_path):
+    """A one-off Meet "couldn't start the video call" flash must not kill a live session.
+
+    Google Meet routinely shows this banner transiently while the call is in
+    fact healthy (3 named participants, mic/cam off were observed in the live
+    failure). A single observation must not be treated as terminal.
+    """
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0, in_call=True, joined_at=105.0)
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {
+            "inCall": False,
+            "callError": True,
+            "waitingLobby": False,
+            "denied": False,
+            "text": "Couldn't start the video call because of an error",
+            "url": "https://meet.google.com/abc-defg-hij",
+        },
+        now=110.0,
+        lobby_deadline=400.0,
+        call_error_strike_limit=3,
+    )
+
+    assert terminal is False
+    assert state.in_call is True
+    assert state.joined_at == 105.0
+    assert state.leave_reason is None
+    assert state.phase != "exited"
+    assert state.call_error_strikes == 1
+
+
+def test_apply_admission_probe_resets_call_error_strikes_when_cleared(tmp_path):
+    """Strikes reset once Meet stops reporting the error, so a later flash starts fresh."""
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0, in_call=True, joined_at=105.0)
+
+    error_probe = {
+        "inCall": False,
+        "callError": True,
+        "text": "Couldn't start the video call because of an error",
+        "url": "",
+    }
+    for now in (110.0, 113.0):
+        _apply_admission_probe(
+            state, error_probe, now=now, lobby_deadline=400.0, call_error_strike_limit=3,
+        )
+    assert state.call_error_strikes == 2
+
+    # A clean in-call probe clears the count — the error was transient.
+    _apply_admission_probe(
+        state,
+        {"inCall": True, "callError": False, "text": "Meeting details", "url": ""},
+        now=116.0,
+        lobby_deadline=400.0,
+        call_error_strike_limit=3,
+    )
+    assert state.call_error_strikes == 0
+    assert state.in_call is True
+
+
+def test_apply_admission_probe_exits_on_persistent_call_start_error(tmp_path):
+    """Before ever being admitted, a call error persisting past the strike limit
+    is terminal — the call genuinely won't start."""
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0)  # never admitted
+
+    probe = {
+        "inCall": False,
+        "callError": True,
+        "waitingLobby": False,
+        "denied": False,
+        "text": "Couldn't start the video call because of an error",
+        "url": "https://meet.google.com/landing",
+    }
+
+    terminal = False
+    for now in (110.0, 113.0, 116.0):
+        _, terminal = _apply_admission_probe(
+            state, probe, now=now, lobby_deadline=400.0, call_error_strike_limit=3,
+        )
+
+    assert state.ever_admitted is False
+    assert terminal is True
+    assert state.in_call is False
+    assert state.joined_at is None
+    assert state.leave_reason == "meet_error"
+    assert "error" in state.error
+    assert state.phase == "exited"
+
+
+def test_apply_admission_probe_ignores_call_error_after_caption_evidence(tmp_path):
+    """Once captions have arrived, a transient call-error overlay is non-terminal.
+
+    Admission alone is not enough because Meet may expose roster text while
+    returning to an error page. Caption evidence proves the bot reached the
+    target functionality, so persistent media-layer overlays should not end the
+    transcript session.
+    """
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0)
+
+    admitted, _ = _apply_admission_probe(
+        state,
+        {"inCall": True, "callError": False, "text": "Meeting details", "url": ""},
+        now=105.0,
+        lobby_deadline=400.0,
+        call_error_strike_limit=3,
+    )
+    assert admitted is True
+    assert state.ever_admitted is True
+    state.set(last_caption_at=106.0, transcript_lines=1)
+
+    err = {
+        "inCall": False,
+        "callError": True,
+        "text": "Couldn't start the video call because of an error",
+        "url": "",
+    }
+    terminal = False
+    for now in (108.0, 111.0, 114.0, 117.0, 120.0):
+        _, terminal = _apply_admission_probe(
+            state, err, now=now, lobby_deadline=400.0, call_error_strike_limit=3,
+        )
+
+    assert terminal is False
+    assert state.leave_reason != "meet_error"
+    assert state.call_error_strikes == 0
+
+
+def test_apply_admission_probe_exits_on_persistent_call_error_after_false_admission(tmp_path):
+    """A false-positive admission must not mask a persistent Meet error page."""
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0)
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {"inCall": True, "callError": False, "text": "Meeting details", "url": ""},
+        now=105.0,
+        lobby_deadline=400.0,
+        call_error_strike_limit=3,
+    )
+    assert admitted is True
+    assert terminal is False
+    assert state.ever_admitted is True
+    assert state.last_caption_at is None
+
+    err = {
+        "inCall": False,
+        "callError": True,
+        "text": (
+            "Couldn't start the video call because of an error "
+            "Returning to home screen in 60 seconds."
+        ),
+        "url": "https://meet.google.com/abc-defg-hij?pli=1",
+    }
+    for now in (108.0, 111.0, 114.0):
+        _, terminal = _apply_admission_probe(
+            state, err, now=now, lobby_deadline=400.0, call_error_strike_limit=3,
+        )
+
+    assert terminal is True
+    assert state.in_call is False
+    assert state.joined_at is None
+    assert state.leave_reason == "meet_error"
+    assert "error" in state.error
+    assert state.phase == "exited"
+
+
+def test_should_retry_captions_after_join_attempt_even_before_admission_flag(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _should_retry_caption_enable
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0)
+
+    assert _should_retry_caption_enable(
+        state,
+        now=105.0,
+        last_caption_enable_check=100.0,
+    ) is True
+
+
+def test_should_not_retry_captions_before_join_attempt_or_admission(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _should_retry_caption_enable
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _should_retry_caption_enable(
+        state,
+        now=105.0,
+        last_caption_enable_check=100.0,
+    ) is False
 
 
 # ---------------------------------------------------------------------------

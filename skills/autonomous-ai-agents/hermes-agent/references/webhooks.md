@@ -96,6 +96,25 @@ If no prompt is specified, the full JSON payload is dumped into the agent prompt
 
 ## Common Patterns
 
+### Linear AgentSession webhooks
+
+Hermes' native Linear AgentSession gateway adapter lives in
+`plugins/platforms/linear/`. Read `plugins/platforms/linear/README.md` before
+debugging or changing Linear agent behavior; it covers the Agent/OAuth app
+webhook URL, HMAC signature validation, Agent Activity responses, plan updates,
+clarify/approval elicitations, and active issue work semantics.
+
+Important operational notes:
+
+- Configure the Linear Agent/OAuth app webhook URL, not Linear's generic
+  workspace webhook API.
+- Do not rely on a poller or replay script for normal operation; those are
+  short-lived rescue tools that can hide broken app delivery.
+- For issue-list and board visibility, Hermes sets the issue to a `started`
+  workflow state and sets the app user as `Issue.delegate` when processing
+  begins. The "active agent" indicator is session-scoped and disappears after
+  the AgentSession completes.
+
 ### GitHub: new issues
 ```bash
 hermes webhook subscribe github-issues \

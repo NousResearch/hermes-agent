@@ -79,3 +79,21 @@ The adapter uses Linear's Agent Session primitives directly:
 Linear Agent Session plans must be replaced as a full array on each update, so the adapter keeps plans intentionally short. It does not mirror every internal tool call into the plan; detailed progress still belongs in Hermes' normal activity stream and final response.
 
 Selected options and free-form replies arrive as normal Linear `prompted` events. Hermes captures the next clarify reply through its existing text-intercept and resumes the blocked agent turn. Slash-command control replies are passed through without appended issue context so approval and stop commands stay parseable.
+
+## Active issue work
+
+Linear's issue list and board surfaces treat active agent work as issue-linked,
+session-scoped state. When Hermes begins processing an AgentSession that is
+attached to an issue, the adapter follows Linear's agent best-practice guidance:
+
+- if the issue is not already in a `started`, `completed`, or `canceled`
+  workflow state, move it to the team's first `started` state by lowest
+  position;
+- if the issue has no `Issue.delegate`, set the Linear app user as the
+  delegate;
+- never overwrite an existing delegate.
+
+The visible "active agent" indicator is transient: it is expected only while the
+Linear AgentSession is active or awaiting input. Once Hermes sends its final
+response and marks the AgentSession complete, the issue can remain delegated to
+Hermes and in progress without showing as actively running.

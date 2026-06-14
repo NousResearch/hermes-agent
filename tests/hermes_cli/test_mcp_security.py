@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,51 @@ def test_save_mcp_server_rejects_dangerous_entry(tmp_path):
     assert "evil" not in load_config().get("mcp_servers", {})
 
 
+def test_mcp_add_rejects_dangerous_entry_before_probe(monkeypatch, capsys):
+    from hermes_cli.mcp_config import cmd_mcp_add
+
+    probed = False
+
+    def _probe_should_not_run(name, config):
+        nonlocal probed
+        probed = True
+        raise AssertionError("dangerous MCP config reached probe/spawn path")
+
+    monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", _probe_should_not_run)
+
+    cmd_mcp_add(Namespace(
+        name="evil",
+        url=None,
+        mcp_command="bash",
+        args=_dangerous_entry()["args"],
+        auth=None,
+        preset=None,
+        env=None,
+    ))
+
+    out = capsys.readouterr().out
+    assert probed is False
+    assert "NOT saved" in out
+
+
+def test_probe_rejects_dangerous_entry_before_connect(monkeypatch):
+    from hermes_cli.mcp_config import _probe_single_server
+
+    connected = False
+
+    async def _connect_should_not_run(name, config):
+        nonlocal connected
+        connected = True
+        raise AssertionError("dangerous MCP config reached connect/spawn path")
+
+    monkeypatch.setattr("tools.mcp_tool._connect_server", _connect_should_not_run)
+
+    with pytest.raises(ValueError, match="network egress"):
+        _probe_single_server("evil", _dangerous_entry(), connect_timeout=1)
+
+    assert connected is False
+
+
 def test_runtime_loader_skips_dangerous_entry(monkeypatch):
     from tools.mcp_tool import _load_mcp_config
 
@@ -72,6 +118,53 @@ def test_runtime_loader_skips_dangerous_entry(monkeypatch):
 
     assert "evil" not in loaded
     assert loaded["clean"]["command"] == "npx"
+
+
+def test_explicit_registration_skips_dangerous_entry_before_connect(monkeypatch):
+    import tools.mcp_tool as mcp_tool
+
+    monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
+    monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
+
+    connected = []
+
+    async def _discover_one(name, config):
+        connected.append(name)
+        return []
+
+    def _run_on_loop(coro_or_factory, timeout=30):
+        import asyncio
+        import inspect
+        coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+        assert inspect.iscoroutine(coro)
+        return asyncio.run(coro)
+
+    monkeypatch.setattr(mcp_tool, "_discover_and_register_server", _discover_one)
+    monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", _run_on_loop)
+
+    with mcp_tool._lock:
+        saved_servers = dict(mcp_tool._servers)
+        saved_connecting = set(mcp_tool._server_connecting)
+        saved_errors = dict(mcp_tool._server_connect_errors)
+        mcp_tool._servers.clear()
+        mcp_tool._server_connecting.clear()
+        mcp_tool._server_connect_errors.clear()
+
+    try:
+        mcp_tool.register_mcp_servers({
+            "evil": _dangerous_entry(),
+            "clean": {"command": "npx", "args": ["-y", "clean-mcp"]},
+        })
+    finally:
+        with mcp_tool._lock:
+            mcp_tool._servers.clear()
+            mcp_tool._servers.update(saved_servers)
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connecting.update(saved_connecting)
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connect_errors.update(saved_errors)
+
+    assert connected == ["clean"]
 
 
 def test_migration_disables_existing_dangerous_entry(tmp_path):

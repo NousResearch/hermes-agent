@@ -25,6 +25,7 @@ const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorksp
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
+const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
@@ -58,6 +59,7 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
 export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
+export const $sidebarSessionOrderManual = atom(storedBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false))
 export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
 // Order of the top-level repo "parent" groups in the worktree tree (worktrees
 // within a parent reuse $sidebarWorkspaceOrderIds).
@@ -88,6 +90,7 @@ $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
+$sidebarSessionOrderManual.subscribe(manual => persistBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, manual))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
 $sidebarWorkspaceParentOrderIds.subscribe(ids =>
   persistStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY, [...ids])
@@ -167,6 +170,12 @@ export function setSidebarAgentsGrouped(grouped: boolean) {
 export function setSidebarSessionOrderIds(ids: string[]) {
   if (!arraysEqual($sidebarSessionOrderIds.get(), ids)) {
     $sidebarSessionOrderIds.set(ids)
+  }
+}
+
+export function setSidebarSessionOrderManual(manual: boolean) {
+  if ($sidebarSessionOrderManual.get() !== manual) {
+    $sidebarSessionOrderManual.set(manual)
   }
 }
 

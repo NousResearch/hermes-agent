@@ -3246,7 +3246,11 @@ class AIAgent:
         return sanitize_api_messages(messages)
 
     @staticmethod
-    def _is_thinking_only_assistant(msg: Dict[str, Any]) -> bool:
+    def _is_thinking_only_assistant(
+        msg: Dict[str, Any],
+        *,
+        drop_codex_reasoning_items: bool = True,
+    ) -> bool:
         """Return True if ``msg`` is an assistant turn whose only payload is reasoning.
 
         "Thinking-only" means the model emitted reasoning (``reasoning`` or
@@ -3297,15 +3301,30 @@ class AIAgent:
         rd = msg.get("reasoning_details")
         if isinstance(rd, list) and rd:
             return True
+        # Codex Responses stores encrypted reasoning state under a separate
+        # assistant-message key. Treat only real reasoning items as
+        # thinking-only; empty/junk lists should fall through to the generic
+        # empty-turn handling instead of being dropped here.
+        codex_items = msg.get("codex_reasoning_items")
+        if drop_codex_reasoning_items and isinstance(codex_items, list):
+            return any(
+                isinstance(item, dict) and item.get("type") == "reasoning"
+                for item in codex_items
+            )
         return False
 
     @staticmethod
     def _drop_thinking_only_and_merge_users(
         messages: List[Dict[str, Any]],
+        *,
+        drop_codex_reasoning_items: bool = True,
     ) -> List[Dict[str, Any]]:
         """Forwarder — see ``agent.agent_runtime_helpers.drop_thinking_only_and_merge_users``."""
         from agent.agent_runtime_helpers import drop_thinking_only_and_merge_users
-        return drop_thinking_only_and_merge_users(messages)
+        return drop_thinking_only_and_merge_users(
+            messages,
+            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        )
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:

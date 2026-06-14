@@ -8,7 +8,16 @@ import {
   type SyntaxHighlighterProps
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  memo,
+  type ReactNode,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'

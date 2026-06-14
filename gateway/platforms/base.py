@@ -1128,8 +1128,11 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ini": "text/plain",
     ".cfg": "text/plain",
     ".zip": "application/zip",
+    ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".ts": "text/plain",
     ".py": "text/plain",
@@ -1913,16 +1916,21 @@ class BasePlatformAdapter(ABC):
         enforce it at intake: a message is dropped inside the adapter and never
         reaches the gateway unless it already passed that policy.
 
-        The gateway's env-based allowlist check runs *after* the adapter, so for
-        these platforms a message arriving at ``_is_user_authorized`` has, by
-        definition, already been authorized by the adapter. Without this flag the
-        gateway would then deny it again (no env allowlist → default deny),
-        silently breaking ``dm_policy: open`` and config-only allowlists.
+        The gateway's env-based allowlist check runs *after* the adapter. When
+        no env allowlist is configured, the gateway consults this flag so it can
+        honor a config-only ``dm_policy: allowlist`` / ``allow_from`` (which the
+        adapter already enforced) instead of double-denying it. Crucially, the
+        flag alone is NOT "already authorized": these adapters default
+        ``dm_policy`` / ``group_policy`` to ``"open"``, which forwards every
+        sender, so the gateway trusts the adapter only when its effective policy
+        for the chat type is an actual ``"allowlist"`` restriction — never for
+        ``"open"`` (that would be the network-exposed fail-open SECURITY.md §2.6
+        forbids). Open access still requires an explicit
+        ``{PLATFORM}_ALLOW_ALL_USERS`` / ``GATEWAY_ALLOW_ALL_USERS`` opt-in.
 
         Adapters that own their access policy override this to return ``True``.
-        The gateway treats that as "already authorized at intake" and skips the
-        env-allowlist default-deny. Adapters that delegate access control to the
-        gateway leave it ``False`` (the default).
+        Adapters that delegate access control to the gateway leave it ``False``
+        (the default).
         """
         return False
 
@@ -1944,6 +1952,46 @@ class BasePlatformAdapter(ABC):
         False or when ``send_draft`` raises.
         """
         return False
+
+    def prefers_fresh_final_streaming(
+        self,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Whether the stream consumer should finalize a streamed reply by
+        sending a *fresh* final message (and deleting the preview) instead of
+        final-editing the preview.
+
+        Some adapters can send richer final messages than their current edit
+        implementation supports. Telegram is the motivating case: Hermes sends
+        final replies through ``sendRichMessage`` but still finalizes streamed
+        previews through its existing MarkdownV2 edit path until Bot API 10.1's
+        ``rich_message`` edit parameter is wired directly. Such adapters
+        override this to ask the consumer to re-deliver the completed answer as
+        a new rich message and best-effort delete the stale preview, so the
+        final rendering matches the rich send path.
+
+        Default implementation returns False — legacy platforms keep the
+        edit-in-place finalization path.
+        """
+        return False
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Max single-message length (in this adapter's ``message_len_fn``
+        units) the stream consumer may accumulate before it splits, when the
+        adapter can deliver a larger message than its legacy per-message limit.
+
+        Telegram Bot API 10.1 Rich Messages accept up to 32,768 chars in a
+        single ``sendRichMessage`` / ``sendRichMessageDraft``, far above the
+        4,096 MarkdownV2 limit.  Adapters with such a richer send/draft path
+        override this so the consumer doesn't fragment a reply that fits one
+        rich message; the live edit preview is still bound by the platform's
+        edit limit, but the finalized reply (and DM draft preview) is delivered
+        whole.
+
+        Return ``None`` (default) to use ``MAX_MESSAGE_LENGTH``.
+        """
+        return None
 
     async def send_draft(
         self,

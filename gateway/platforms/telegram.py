@@ -349,8 +349,11 @@ class TelegramAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
-    # UTF-8 bytes. Content above this is sent via the legacy chunking path.
-    RICH_MESSAGE_MAX_BYTES = 32768
+    # UTF-8 characters. Content above this is sent via the legacy chunking path.
+    RICH_MESSAGE_MAX_CHARS = 32768
+    # Backwards-compatible alias for tests/external callers that referenced the
+    # initial implementation name. The API limit is character-based, not bytes.
+    RICH_MESSAGE_MAX_BYTES = RICH_MESSAGE_MAX_CHARS
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -416,10 +419,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages: opportunistically send final replies via
-        # sendRichMessage with the raw agent markdown so tables/task lists/etc.
-        # render natively. Opt-out via platforms.telegram.extra.rich_messages.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
+        # with the raw agent markdown so tables/task lists/etc. render natively.
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -922,19 +923,20 @@ class TelegramAdapter(BasePlatformAdapter):
     # the RAW agent markdown so richer constructs (tables, task lists,
     # collapsible details, math, ...) render natively. The legacy MarkdownV2
     # send() path stays as the fallback for unsupported/oversized content and
-    # older PTB/clients. Streaming edits/drafts are intentionally untouched —
-    # Telegram exposes no rich-edit method.
+    # older PTB/clients. Streaming edits stay on Hermes' existing MarkdownV2
+    # edit path for now; finalization can re-send as rich and delete the stale
+    # preview until rich_message edit support is wired directly.
     # ------------------------------------------------------------------
     def _content_fits_rich_limits(self, content: str) -> bool:
         """Cheap pre-check for the one hard rich limit we can count locally.
 
-        Only the 32,768 UTF-8 byte text cap is enforced here. Other Bot API
+        Only the 32,768 UTF-8 character text cap is enforced here. Other Bot API
         rich limits (500 blocks, 16 nesting levels, 20 table columns, ...) are
         not pre-counted; if exceeded Telegram returns a BadRequest, which
         :meth:`_is_rich_fallback_error` classifies as permanent so the send
         degrades to the legacy chunking path.
         """
-        return len(content.encode("utf-8")) <= self.RICH_MESSAGE_MAX_BYTES
+        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
 
     def _bot_supports_rich(self) -> bool:
         """True when the bound bot can issue raw ``sendRichMessage`` calls.
@@ -948,18 +950,56 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
-    def _should_attempt_rich(self, content: str) -> bool:
-        # getattr defaults: tests build adapters via object.__new__() (no
-        # __init__), so the flags may be unset — default rich OFF (the
-        # feature is opt-in via platforms.telegram.extra.rich_messages).
+    def _should_attempt_rich(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
         return bool(
-            getattr(self, "_rich_messages_enabled", False)
-            and not getattr(self, "_rich_send_disabled", False)
+            not getattr(self, "_rich_send_disabled", False)
+            and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
+
+    def prefers_fresh_final_streaming(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Finalize rich-eligible streamed replies with a fresh sendRichMessage
+        instead of Hermes' current MarkdownV2 edit path.
+
+        The final edit path has not yet been upgraded to Bot API 10.1's
+        ``rich_message`` edit parameter, so finalizing through edit would lose
+        rich constructs such as tables/task lists.  When the completed content
+        is rich-eligible, re-send it via ``sendRichMessage`` and delete the
+        preview (see ``gateway.stream_consumer._try_fresh_final``).
+
+        ``metadata`` is intentionally ignored: the preview was sent with
+        ``expect_edits=True`` (to stay on the editable path mid-stream), but the
+        FINAL answer is a brand-new message that should render rich.  Gating
+        otherwise matches :meth:`_should_attempt_rich`: rich not latched off,
+        content present and within the rich character limit, and the bot exposes
+        an async ``do_api_request``.
+        """
+        return self._should_attempt_rich(content)
+
+    def streaming_overflow_limit(self) -> Optional[int]:
+        """Allow the stream consumer to accumulate up to the rich-message cap
+        before splitting, so a reply that fits one ``sendRichMessage`` /
+        ``sendRichMessageDraft`` isn't fragmented at the 4,096 MarkdownV2 limit.
+
+        Gated on the same rich capability as the send path (minus the
+        content-length check — raising that cap is the whole point): rich not
+        latched off and the bot exposes an async ``do_api_request``.  Returns
+        ``None`` (→ legacy 4,096 limit) when rich isn't available, so non-rich
+        streams split exactly as before.
+        """
+        if (
+            not getattr(self, "_rich_send_disabled", False)
+            and self._bot_supports_rich()
+        ):
+            return self.RICH_MESSAGE_MAX_CHARS
+        return None
 
     def _rich_message_payload(
         self, content: str, *, skip_entity_detection: bool = False
@@ -982,16 +1022,19 @@ class TelegramAdapter(BasePlatformAdapter):
         rejections (BadRequest from a parser/limit issue) are NOT capability
         errors: the next message may be fine.
         """
+        name = exc.__class__.__name__.lower()
+        if name in {"endpointnotfound", "invalidtoken"}:
+            return True
         if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
             return True
         if getattr(exc, "error_code", None) == 404:
             return True
         s = str(exc).lower()
-        if ("method" in s and "not found" in s) or "no such method" in s:
+        if ("method" in s or "endpoint" in s) and (
+            "not found" in s or "does not exist" in s
+        ):
             return True
-        if "unsupported" in s or "not implemented" in s:
-            return True
-        return False
+        return "no such method" in s
 
     def _is_rich_fallback_error(self, exc: Exception) -> bool:
         """True ⇒ permanent/capability error ⇒ safe to fall back to legacy.
@@ -1003,7 +1046,10 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if self._is_bad_request_error(exc):
             return True
-        return self._is_rich_capability_error(exc)
+        if self._is_rich_capability_error(exc):
+            return True
+        s = str(exc).lower()
+        return "unsupported" in s or "not implemented" in s
 
     def _compute_single_send_routing(
         self,
@@ -1076,6 +1122,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # which must not be sent as a stray field on the raw endpoint.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
+        if getattr(self, "_disable_link_previews", False):
+            payload["link_preview_options"] = {"is_disabled": True}
         if reply_to_id is not None:
             # Spec: sendRichMessage takes reply_parameters (ReplyParameters
             # object), NOT the legacy reply_to_message_id scalar. Unknown
@@ -1084,8 +1132,12 @@ class TelegramAdapter(BasePlatformAdapter):
             payload["reply_parameters"] = {"message_id": reply_to_id}
 
         try:
+            # Take the raw Bot API result (dict under real PTB). Passing
+            # return_type=Message would make PTB deserialize a Bot API 10.1
+            # response shape it does not fully model yet; a post-delivery parse
+            # error must not be mistaken for a sendable failure.
             msg = await self._bot.do_api_request(
-                "sendRichMessage", api_kwargs=payload, return_type=Message
+                "sendRichMessage", api_kwargs=payload
             )
         except Exception as exc:
             if self._is_rich_fallback_error(exc):
@@ -1122,7 +1174,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(msg, dict):
             message_id = msg.get("message_id")
             if message_id is None:
-                message_id = msg.get("result", {}).get("message_id")
+                message_id = (msg.get("result") or {}).get("message_id")
         else:
             message_id = getattr(msg, "message_id", None)
         return SendResult(
@@ -1132,8 +1184,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            getattr(self, "_rich_messages_enabled", False)
-            and not getattr(self, "_rich_send_disabled", False)
+            not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
@@ -2153,7 +2204,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content):
+            if self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:

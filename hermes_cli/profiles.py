@@ -784,9 +784,9 @@ def create_profile(
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_config or clone_all):
+    if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-all "
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = normalize_profile_name(name)
@@ -1190,10 +1190,16 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     can re-register manually later via the gateway start command,
     which goes through the same dispatch path.
 
-    Port selection is governed by the profile's ``config.yaml``
-    (``[gateway] port = …``) — there is no Python-side allocator
-    (PR #30136 review item I5 retired the SHA-256-derived range
-    [9200, 9800) because it was dead code through the entire stack).
+    Port selection: each supervised profile gateway loads its own
+    ``HERMES_HOME`` and binds the port resolved by ``gateway/config.py``
+    from that profile's environment — ``API_SERVER_PORT`` (or
+    ``platforms.api_server.extra.port`` in the profile's
+    ``config.yaml``), defaulting to 8642. There is no ``[gateway] port``
+    key and no Python-side allocator (PR #30136 review item I5 retired
+    the SHA-256-derived range [9200, 9800) as dead code), so two
+    profiles that both leave the port at its default will both try to
+    bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in its
+    ``.env``.
 
     Host short-circuit: check ``detect_service_manager()`` first and
     return immediately if it isn't ``"s6"``. This keeps host

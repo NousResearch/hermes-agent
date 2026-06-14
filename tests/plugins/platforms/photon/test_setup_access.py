@@ -7,6 +7,8 @@ never clobbers a hand-tuned allowlist.
 """
 from __future__ import annotations
 
+import argparse
+
 import pytest
 
 from hermes_cli.config import get_env_value, save_env_value
@@ -67,3 +69,44 @@ def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPat
         "chat_id": "+15551234567",
         "name": "Home",
     }
+
+
+def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "token")
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "dashboard")
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "ensure_spectrum_enabled",
+        lambda token, dashboard_id: {"spectrumProjectId": "project_123"},
+    )
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "regenerate_project_secret",
+        lambda token, dashboard_id: "secret_123",
+    )
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli.photon_auth,
+        "register_user_if_absent",
+        lambda *args, **kwargs: ({"id": "user_123", "phoneNumber": "+15551234567"}, True),
+    )
+    monkeypatch.setattr(cli.photon_auth, "user_assigned_line", lambda user: "+15557654321")
+    monkeypatch.setattr(cli.photon_auth, "store_user_numbers", lambda **kwargs: None)
+    monkeypatch.setattr(cli, "_install_sidecar", lambda: 0)
+
+    rc = cli._cmd_setup(
+        argparse.Namespace(
+            project_name=None,
+            phone="+15551234567",
+            first_name=None,
+            last_name=None,
+            email=None,
+            no_browser=True,
+            skip_sidecar_install=False,
+        )
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Start the gateway:  hermes gateway start" in out
+    assert "--platform photon" not in out

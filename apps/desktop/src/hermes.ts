@@ -210,6 +210,19 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
   })
 }
 
+// Resolves a single session row by id on one backend (the active profile, or
+// the given `profile`). The backend resolves exact ids and unique prefixes and
+// 404s when the id isn't on that profile — so a cheap by-id lookup replaces the
+// cross-profile list scan when locating an unknown id's owner.
+export function getSession(id: string, profile?: string | null): Promise<SessionInfo> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
+  return window.hermesDesktop.api<SessionInfo>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`
+  })
+}
+
 // Reads another profile's transcript. For a remote profile Electron reroutes
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for

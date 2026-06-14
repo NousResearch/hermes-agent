@@ -2686,6 +2686,11 @@ def _load_mcp_config() -> Dict[str, dict]:
     """
     try:
         from hermes_cli.config import load_config
+        # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
+        # with all customizations disabled — no MCP servers connect.
+        from utils import env_var_enabled as _env_enabled
+        if _env_enabled("HERMES_SAFE_MODE"):
+            return {}
         config = load_config()
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):

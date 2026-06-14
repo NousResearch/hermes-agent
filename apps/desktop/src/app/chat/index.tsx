@@ -165,7 +165,12 @@ interface ChatRuntimeBoundaryProps {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  /** Route points at an unloaded session — render empty until resume swaps in
+   *  the new transcript, so the previous session's messages don't linger. */
+  suppressMessages: boolean
 }
+
+const NO_MESSAGES: ChatMessage[] = []
 
 /**
  * Owns the $messages subscription and the assistant-ui external-store runtime.
@@ -183,9 +188,11 @@ function ChatRuntimeBoundary({
   onCancel,
   onEdit,
   onReload,
-  onThreadMessagesChange
+  onThreadMessagesChange,
+  suppressMessages
 }: ChatRuntimeBoundaryProps) {
-  const messages = useStore($messages)
+  const storeMessages = useStore($messages)
+  const messages = suppressMessages ? NO_MESSAGES : storeMessages
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
 
   const runtimeMessageRepository = useMemo(() => {
@@ -286,7 +293,14 @@ export function ChatView({
   const messagesEmpty = useStore($messagesEmpty)
   const lastVisibleIsUser = useStore($lastVisibleMessageIsUser)
   const selectedSessionId = useStore($selectedStoredSessionId)
-  const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
+  const routedSessionId = routeSessionId(location.pathname)
+  const isRoutedSessionView = Boolean(routedSessionId)
+
+  // The URL points at a session the store hasn't loaded yet (sidebar / cmd-K /
+  // direct nav). Derived in render so the swap reads instantly: the same frame
+  // the id changes we drop the old transcript and show the loader, instead of
+  // waiting for the resume effect (which paints a frame later) to clear them.
+  const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
 
   const showIntro = freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
 
@@ -295,7 +309,7 @@ export function ChatView({
   // session exists — even if it has zero messages (a brand-new routed
   // session). The flicker where `busy` flips true briefly during hydrate
   // is handled by `threadLoadingState`'s last-visible-user gate.
-  const loadingSession = isRoutedSessionView && messagesEmpty && !activeSessionId
+  const loadingSession = isRoutedSessionView && (routeSessionMismatch || (messagesEmpty && !activeSessionId))
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   const showChatBar = !loadingSession
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
@@ -401,6 +415,7 @@ export function ChatView({
           onEdit={onEdit}
           onReload={onReload}
           onThreadMessagesChange={onThreadMessagesChange}
+          suppressMessages={routeSessionMismatch}
         >
           <Thread
             clampToComposer={showChatBar}
@@ -436,7 +451,7 @@ export function ChatView({
                 onSteer={onSteer}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
-                queueSessionKey={selectedSessionId || activeSessionId}
+                queueSessionKey={selectedSessionId}
                 sessionId={activeSessionId}
                 state={chatBarState}
               />

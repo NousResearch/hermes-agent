@@ -520,6 +520,87 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/profiles/sessions?archived=bogus")
         assert resp.status_code == 400
 
+    def test_sessions_endpoint_reads_requested_profile(self):
+        """The machine dashboard's global profile switcher must retarget
+        the Sessions page, not just config/skills/model pages."""
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        try:
+            default_db.create_session(session_id="default-only", source="cli")
+            default_db.append_message("default-only", role="user", content="default")
+        finally:
+            default_db.close()
+
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="worker-only", source="cli")
+            worker_db.append_message("worker-only", role="user", content="worker")
+        finally:
+            worker_db.close()
+
+        resp = self.client.get("/api/sessions?profile=worker&limit=20&min_messages=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        ids = {s["id"] for s in data["sessions"]}
+        assert "worker-only" in ids
+        assert "default-only" not in ids
+        row = next(s for s in data["sessions"] if s["id"] == "worker-only")
+        assert row["profile"] == "worker"
+        assert row["is_default_profile"] is False
+
+        stats = self.client.get("/api/sessions/stats?profile=worker").json()
+        assert stats["total"] == 1
+        assert stats["messages"] == 1
+
+        messages = self.client.get("/api/sessions/worker-only/messages?profile=worker").json()
+        assert [m["content"] for m in messages["messages"]] == ["worker"]
+
+    def test_analytics_endpoints_read_requested_profile(self):
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        try:
+            default_db.create_session(session_id="default-usage", source="cli", model="default/model")
+            default_db.update_token_counts("default-usage", input_tokens=10, output_tokens=5)
+        finally:
+            default_db.close()
+
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="worker-usage", source="cli", model="worker/model")
+            worker_db.update_token_counts(
+                "worker-usage",
+                input_tokens=123,
+                output_tokens=45,
+                billing_provider="worker-provider",
+            )
+        finally:
+            worker_db.close()
+
+        usage = self.client.get("/api/analytics/usage?days=7&profile=worker").json()
+        assert usage["totals"]["total_sessions"] == 1
+        assert usage["totals"]["total_input"] == 123
+        assert [m["model"] for m in usage["by_model"]] == ["worker/model"]
+
+        models = self.client.get("/api/analytics/models?days=7&profile=worker").json()
+        assert models["totals"]["distinct_models"] == 1
+        assert models["totals"]["total_input"] == 123
+        assert models["models"][0]["model"] == "worker/model"
+        assert models["models"][0]["provider"] == "worker-provider"
+
+        default_usage = self.client.get("/api/analytics/usage?days=7").json()
+        assert default_usage["totals"]["total_input"] == 10
+        assert default_usage["totals"]["total_output"] == 5
+
     def test_get_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/sessions?archived=bogus")
         assert resp.status_code == 400
@@ -2552,7 +2633,7 @@ class TestNewEndpoints:
 
         resp = self.client.post(
             "/api/profiles",
-            json={"name": "writer", "clone_from_default": False},
+            json={"name": "writer", "clone_from": None},
         )
 
         assert resp.status_code == 200
@@ -2560,7 +2641,7 @@ class TestNewEndpoints:
         assert wrapper_path.exists()
         assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
 
-    def test_profiles_create_with_clone_from_default_copies_default_skills(self, monkeypatch):
+    def test_profiles_create_with_clone_from_copies_source_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.profiles as profiles_mod
 
@@ -2571,7 +2652,7 @@ class TestNewEndpoints:
 
         resp = self.client.post(
             "/api/profiles",
-            json={"name": "cloned", "clone_from_default": True},
+            json={"name": "cloned", "clone_from": "default"},
         )
 
         assert resp.status_code == 200
@@ -2604,6 +2685,28 @@ class TestNewEndpoints:
         )
         assert cloned_skill.exists()
 
+    def test_profiles_create_clone_all_from_named_source(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        assert self.client.post("/api/profiles", json={"name": "full-src"}).status_code == 200
+        source_dir = get_hermes_home() / "profiles" / "full-src"
+        (source_dir / "config.yaml").write_text("model:\n  provider: source-only\n", encoding="utf-8")
+        (source_dir / "workspace" / "artifact.txt").parent.mkdir(parents=True, exist_ok=True)
+        (source_dir / "workspace" / "artifact.txt").write_text("copied", encoding="utf-8")
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "full-copy", "clone_from": "full-src", "clone_all": True},
+        )
+
+        assert resp.status_code == 200
+        target_dir = get_hermes_home() / "profiles" / "full-copy"
+        assert (target_dir / "config.yaml").read_text(encoding="utf-8") == "model:\n  provider: source-only\n"
+        assert (target_dir / "workspace" / "artifact.txt").read_text(encoding="utf-8") == "copied"
+
     def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.profiles as profiles_mod
@@ -2620,7 +2723,7 @@ class TestNewEndpoints:
 
         resp = self.client.post(
             "/api/profiles",
-            json={"name": "fresh", "clone_from_default": False},
+            json={"name": "fresh", "clone_from": None},
         )
 
         assert resp.status_code == 200
@@ -3195,6 +3298,56 @@ class TestNewEndpoints:
             },
             "top_skills": [],
         }
+
+    def test_models_analytics_merges_session_only_duplicate_into_accounted_provider(self):
+        """Session-only model rows should not render as duplicate zero-token cards.
+
+        Direct-provider-on-OpenRouter sessions can leave one row with only
+        ``model`` populated and another row with token/API accounting plus
+        ``billing_provider``. The Models dashboard should show one provider
+        card, not a real card plus a misleading duplicate empty card.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="deepseek-session-only",
+                source="cli",
+                model="deepseek/deepseek-v4-flash",
+            )
+            db.create_session(
+                session_id="deepseek-accounted",
+                source="cli",
+                model="deepseek/deepseek-v4-flash",
+            )
+            db.update_token_counts(
+                "deepseek-accounted",
+                input_tokens=20_000,
+                output_tokens=7_100,
+                billing_provider="openrouter",
+                api_call_count=9,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+
+        models = resp.json()["models"]
+        deepseek_rows = [
+            row for row in models
+            if row["model"] == "deepseek/deepseek-v4-flash"
+        ]
+
+        assert len(deepseek_rows) == 1
+        row = deepseek_rows[0]
+        assert row["provider"] == "openrouter"
+        assert row["sessions"] == 2
+        assert row["input_tokens"] == 20_000
+        assert row["output_tokens"] == 7_100
+        assert row["api_calls"] == 9
+        assert row["avg_tokens_per_session"] == 13_550
 
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB

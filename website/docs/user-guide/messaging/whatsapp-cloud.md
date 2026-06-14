@@ -514,7 +514,9 @@ outbound sidecar queue budget; adjust it with `--max-queued-tx-ms` on the
 wrapper or `--full-duplex-max-queued-tx-ms` on the aggregate verifier. Current
 sidecars report queue depth as both bytes and whole milliseconds
 (`queued_tx_bytes`/`queued_tx_ms`, `queued_rx_bytes`/`queued_rx_ms`) so Hermes
-can enforce latency budgets without duplicating PCM duration math.
+can enforce latency budgets without duplicating PCM duration math. Hermes
+accepts older sidecars that omit those fields, but rejects malformed telemetry
+when a sidecar does report it.
 
 To validate just the Cloud Calling control plane without sidecar media
 dependencies, run:

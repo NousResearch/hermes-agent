@@ -287,6 +287,10 @@ class CallingSidecarAudio:
     returned_bytes: int
     queued_rx_bytes: int
     audio: Dict[str, Any]
+    returned_ms: Optional[int] = None
+    queued_rx_ms: Optional[int] = None
+    max_rx_queue_bytes: Optional[int] = None
+    max_rx_queue_ms: Optional[int] = None
 
 
 def check_whatsapp_cloud_requirements() -> bool:
@@ -512,6 +516,42 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         spec = endpoints.get(endpoint)
         return isinstance(spec, dict) and bool(str(spec.get("path") or "").strip())
+
+    @staticmethod
+    def _calling_sidecar_optional_nonnegative_int(
+        data: Dict[str, Any],
+        key: str,
+    ) -> Optional[int]:
+        if key not in data or data.get(key) is None:
+            return None
+        try:
+            value = int(data[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+        if value < 0:
+            raise ValueError(f"{key} must be non-negative")
+        return value
+
+    @classmethod
+    def _normalize_calling_sidecar_telemetry(
+        cls,
+        body: Any,
+        fields: tuple[str, ...],
+    ) -> tuple[Any, Optional[str]]:
+        if not isinstance(body, dict):
+            return body, None
+        normalized = dict(body)
+        for field in fields:
+            try:
+                value = cls._calling_sidecar_optional_nonnegative_int(
+                    normalized,
+                    field,
+                )
+            except ValueError as exc:
+                return body, str(exc)
+            if value is not None:
+                normalized[field] = value
+        return normalized, None
 
     async def _ensure_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
         """Fetch the optional sidecar contract once per adapter lifetime."""
@@ -776,6 +816,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 retryable=resp.status_code == 429,
             )
 
+        body, telemetry_error = self._normalize_calling_sidecar_telemetry(
+            body,
+            (
+                "accepted_bytes",
+                "accepted_ms",
+                "queued_tx_bytes",
+                "queued_tx_ms",
+                "max_tx_queue_bytes",
+                "max_tx_queue_ms",
+            ),
+        )
+        if telemetry_error:
+            return SendResult(
+                success=False,
+                error=f"calling sidecar audio telemetry invalid: {telemetry_error}",
+                raw_response=body,
+            )
+
         return SendResult(success=True, raw_response=body)
 
     async def _clear_calling_sidecar_audio(self, call_id: str) -> SendResult:
@@ -834,6 +892,27 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 error=error_msg,
                 raw_response=body,
                 retryable=resp.status_code == 429,
+            )
+
+        body, telemetry_error = self._normalize_calling_sidecar_telemetry(
+            body,
+            (
+                "dropped_tx_bytes",
+                "dropped_tx_ms",
+                "queued_tx_bytes",
+                "queued_tx_ms",
+                "max_tx_queue_bytes",
+                "max_tx_queue_ms",
+            ),
+        )
+        if telemetry_error:
+            return SendResult(
+                success=False,
+                error=(
+                    "calling sidecar audio clear telemetry invalid: "
+                    f"{telemetry_error}"
+                ),
+                raw_response=body,
             )
 
         return SendResult(success=True, raw_response=body)
@@ -1293,6 +1372,29 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[whatsapp_cloud] calling sidecar audio drain had invalid byte counts"
             )
             return None
+        try:
+            returned_ms = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "returned_ms",
+            )
+            queued_rx_ms = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "queued_rx_ms",
+            )
+            max_rx_queue_bytes = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "max_rx_queue_bytes",
+            )
+            max_rx_queue_ms = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "max_rx_queue_ms",
+            )
+        except ValueError as exc:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain had invalid telemetry: %s",
+                exc,
+            )
+            return None
         if returned_bytes != len(pcm):
             logger.warning(
                 "[whatsapp_cloud] calling sidecar audio drain byte count mismatch "
@@ -1330,6 +1432,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             returned_bytes=returned_bytes,
             queued_rx_bytes=queued_rx_bytes,
             audio=audio,
+            returned_ms=returned_ms,
+            queued_rx_ms=queued_rx_ms,
+            max_rx_queue_bytes=max_rx_queue_bytes,
+            max_rx_queue_ms=max_rx_queue_ms,
         )
 
     def _write_calling_sidecar_pcm_wav(self, call_id: str, pcm_s16le: bytes) -> str:

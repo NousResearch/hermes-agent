@@ -752,7 +752,14 @@ class TestCallingSidecarClient:
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(
                 200,
-                {"accepted_bytes": 4, "queued_tx_bytes": 4},
+                {
+                    "accepted_bytes": "4",
+                    "accepted_ms": "1",
+                    "queued_tx_bytes": "4",
+                    "queued_tx_ms": "1",
+                    "max_tx_queue_bytes": "960000",
+                    "max_tx_queue_ms": "10000",
+                },
             )
         )
 
@@ -763,7 +770,14 @@ class TestCallingSidecarClient:
         )
 
         assert result.success is True
-        assert result.raw_response == {"accepted_bytes": 4, "queued_tx_bytes": 4}
+        assert result.raw_response == {
+            "accepted_bytes": 4,
+            "accepted_ms": 1,
+            "queued_tx_bytes": 4,
+            "queued_tx_ms": 1,
+            "max_tx_queue_bytes": 960000,
+            "max_tx_queue_ms": 10000,
+        }
         call = adapter._http_client.post.call_args
         assert call.args[0] == (
             "http://127.0.0.1:8787/calls/wacid.call%2Fwith%2Fslash/audio"
@@ -827,6 +841,25 @@ class TestCallingSidecarClient:
         assert result.retryable is True
 
     @pytest.mark.asyncio
+    async def test_send_calling_sidecar_audio_rejects_invalid_latency_telemetry(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "accepted_bytes": 4,
+                    "queued_tx_ms": "soon",
+                },
+            )
+        )
+
+        result = await adapter._send_calling_sidecar_audio("call-1", b"\x00\x00")
+
+        assert result.success is False
+        assert "queued_tx_ms must be an integer" in result.error
+
+    @pytest.mark.asyncio
     async def test_clear_calling_sidecar_audio_posts_contract_endpoint(self):
         contract = {
             "contract": "voice.webrtc_sidecar",
@@ -851,14 +884,28 @@ class TestCallingSidecarClient:
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(
                 200,
-                {"dropped_tx_bytes": 3840, "queued_tx_bytes": 0},
+                {
+                    "dropped_tx_bytes": "3840",
+                    "dropped_tx_ms": "40",
+                    "queued_tx_bytes": "0",
+                    "queued_tx_ms": "0",
+                    "max_tx_queue_bytes": "960000",
+                    "max_tx_queue_ms": "10000",
+                },
             )
         )
 
         result = await adapter._clear_calling_sidecar_audio("call/1")
 
         assert result.success is True
-        assert result.raw_response == {"dropped_tx_bytes": 3840, "queued_tx_bytes": 0}
+        assert result.raw_response == {
+            "dropped_tx_bytes": 3840,
+            "dropped_tx_ms": 40,
+            "queued_tx_bytes": 0,
+            "queued_tx_ms": 0,
+            "max_tx_queue_bytes": 960000,
+            "max_tx_queue_ms": 10000,
+        }
         call = adapter._http_client.post.call_args
         assert call.args[0] == "http://127.0.0.1:8787/v1/calls/call%2F1/clear-audio"
         assert call.kwargs["timeout"] == 2.5
@@ -1031,7 +1078,11 @@ class TestCallingSidecarClient:
                 {
                     "call_id": "wacid.call/with/slash",
                     "returned_bytes": 4,
+                    "returned_ms": 1,
                     "queued_rx_bytes": 8,
+                    "queued_rx_ms": 1,
+                    "max_rx_queue_bytes": 960000,
+                    "max_rx_queue_ms": 10000,
                     "pcm_s16le_base64": base64.b64encode(
                         b"\x01\x00\xff\xff"
                     ).decode("ascii"),
@@ -1054,7 +1105,11 @@ class TestCallingSidecarClient:
         assert audio.call_id == "wacid.call/with/slash"
         assert audio.pcm_s16le == b"\x01\x00\xff\xff"
         assert audio.returned_bytes == 4
+        assert audio.returned_ms == 1
         assert audio.queued_rx_bytes == 8
+        assert audio.queued_rx_ms == 1
+        assert audio.max_rx_queue_bytes == 960000
+        assert audio.max_rx_queue_ms == 10000
         assert audio.audio["encoding"] == "pcm_s16le"
         call = adapter._http_client.get.call_args
         assert call.args[0] == (
@@ -1134,6 +1189,32 @@ class TestCallingSidecarClient:
                     "returned_bytes": 99,
                     "queued_rx_bytes": 0,
                     "pcm_s16le_base64": base64.b64encode(b"\x00\x00").decode("ascii"),
+                },
+            )
+        )
+
+        audio = await adapter._receive_calling_sidecar_audio("call-1")
+
+        assert audio is None
+
+    @pytest.mark.asyncio
+    async def test_receive_calling_sidecar_audio_rejects_bad_latency_telemetry(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "returned_bytes": 2,
+                    "queued_rx_bytes": 0,
+                    "queued_rx_ms": -1,
+                    "pcm_s16le_base64": base64.b64encode(b"\x00\x00").decode("ascii"),
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
                 },
             )
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict
 
@@ -35,10 +36,25 @@ class LinearClient:
         resp.raise_for_status()
         data = resp.json()
         if data.get("errors"):
-            raise RuntimeError("Linear GraphQL error")
+            messages = []
+            for error in data.get("errors") or []:
+                if isinstance(error, dict):
+                    message = str(error.get("message") or "").strip()
+                    if message:
+                        messages.append(message)
+            detail = "; ".join(messages[:3]) or json.dumps(data.get("errors"), default=str)[:500]
+            raise RuntimeError(f"Linear GraphQL error: {detail}")
         return data
 
-    async def create_agent_activity(self, *, agent_session_id: str, content: Dict[str, Any]) -> Dict[str, Any]:
+    async def create_agent_activity(
+        self,
+        *,
+        agent_session_id: str,
+        content: Dict[str, Any],
+        ephemeral: bool | None = None,
+        signal: str | None = None,
+        signal_metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
         mutation = """
         mutation HermesAgentActivityCreate($input: AgentActivityCreateInput!) {
           agentActivityCreate(input: $input) {
@@ -49,9 +65,43 @@ class LinearClient:
         """
         data = await self.graphql(
             mutation,
-            {"input": {"agentSessionId": agent_session_id, "content": content}},
+            {
+                "input": {
+                    "agentSessionId": agent_session_id,
+                    "content": content,
+                    **({} if ephemeral is None else {"ephemeral": ephemeral}),
+                    **({} if signal is None else {"signal": signal}),
+                    **({} if signal_metadata is None else {"signalMetadata": signal_metadata}),
+                }
+            },
         )
         result = (data.get("data") or {}).get("agentActivityCreate") or {}
         if not result.get("success"):
             raise RuntimeError("Linear agentActivityCreate failed")
         return result.get("agentActivity") or {}
+
+    async def update_agent_session(
+        self,
+        *,
+        agent_session_id: str,
+        plan: list[Dict[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
+        mutation = """
+        mutation HermesAgentSessionUpdate($id: String!, $input: AgentSessionUpdateInput!) {
+          agentSessionUpdate(id: $id, input: $input) {
+            success
+            agentSession { id status plan }
+          }
+        }
+        """
+        input_data: Dict[str, Any] = {}
+        if plan is not None:
+            input_data["plan"] = plan
+        data = await self.graphql(
+            mutation,
+            {"id": agent_session_id, "input": input_data},
+        )
+        result = (data.get("data") or {}).get("agentSessionUpdate") or {}
+        if not result.get("success"):
+            raise RuntimeError("Linear agentSessionUpdate failed")
+        return result.get("agentSession") or {}

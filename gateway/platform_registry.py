@@ -141,6 +141,11 @@ class PlatformEntry:
     # resolve the default chat/room ID.  Empty = no cron home-channel support.
     cron_deliver_env_var: str = ""
 
+    # Some platform chats are ephemeral task-scoped sessions rather than
+    # sensible targets for proactive cron/cross-platform delivery.  When true,
+    # the gateway does not ask users to run /sethome in new chats.
+    suppress_home_channel_prompt: bool = False
+
     # ── Standalone (out-of-process) sending ──
     # Optional: async coroutine that delivers a message without a live
     # gateway adapter.  Called by ``tools/send_message_tool._send_via_adapter``

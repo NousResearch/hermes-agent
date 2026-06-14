@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 try:
     from aiohttp import web
@@ -21,7 +21,13 @@ except ImportError:  # pragma: no cover
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+)
 
 from .linear_client import LinearClient
 
@@ -30,6 +36,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8655
 DEDUP_TTL_SECONDS = 3600
+MAX_WEBHOOK_BODY_BYTES = 1_048_576
+DEFAULT_AUTH_USER_ID = "linear-agent-session"
+DEFAULT_AUTH_USER_NAME = "Linear Agent Session"
 
 
 class LinearAgentSessionAdapter(BasePlatformAdapter):
@@ -56,6 +65,45 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
         self.client = LinearClient(token=token)
         self._runner = None
         self._seen_deliveries: Dict[str, float] = {}
+        self._awaiting_clarify_sessions: Dict[str, float] = {}
+
+    @staticmethod
+    def _agent_session_id_from_chat_id(chat_id: str) -> str:
+        return str(chat_id or "").removeprefix("agentSession:")
+
+    @staticmethod
+    def _prompt_summary(text: str, *, fallback: str = "Linear request") -> str:
+        text = " ".join(str(text or "").split())
+        if not text:
+            return fallback
+        return text[:117] + "..." if len(text) > 120 else text
+
+    @staticmethod
+    def _select_signal_metadata(choices: list) -> Dict[str, Any]:
+        return {
+            "options": [
+                {"label": str(choice), "value": str(choice)}
+                for choice in choices
+            ]
+        }
+
+    def _mark_awaiting_clarify_reply(self, agent_session_id: str) -> None:
+        try:
+            from tools.clarify_gateway import get_clarify_timeout
+            timeout_seconds = float(get_clarify_timeout())
+        except Exception:
+            timeout_seconds = 600.0
+        self._awaiting_clarify_sessions[agent_session_id] = time.time() + max(timeout_seconds, 0.0) + 60.0
+
+    def _consume_awaiting_clarify_reply(self, agent_session_id: str) -> bool:
+        deadline = self._awaiting_clarify_sessions.get(agent_session_id)
+        if deadline is None:
+            return False
+        if deadline < time.time():
+            self._awaiting_clarify_sessions.pop(agent_session_id, None)
+            return False
+        self._awaiting_clarify_sessions.pop(agent_session_id, None)
+        return True
 
     async def connect(self) -> bool:
         if not AIOHTTP_AVAILABLE:
@@ -67,7 +115,7 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
         if not self._token:
             logger.warning("[linear] LINEAR_ACCESS_TOKEN or LINEAR_API_KEY not configured")
             return False
-        app = web.Application()
+        app = web.Application(client_max_size=MAX_WEBHOOK_BODY_BYTES)
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/linear/agent-sessions", self._handle_agent_session_webhook)
         self._runner = web.AppRunner(app)
@@ -88,33 +136,78 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
         return web.json_response({"status": "ok", "platform": "linear"})
 
     async def _handle_agent_session_webhook(self, request: "web.Request") -> "web.Response":
-        if request.content_length and request.content_length > 1_048_576:
+        if request.content_length is not None and request.content_length > MAX_WEBHOOK_BODY_BYTES:
             return web.json_response({"error": "Payload too large"}, status=413)
         body = await request.read()
-        if not self._validate_signature(request, body):
-            return web.json_response({"error": "Invalid signature"}, status=401)
+        status, payload = self._handle_agent_session_body(
+            body=body,
+            headers=request.headers,
+            content_length=request.content_length,
+        )
+        return web.json_response(payload, status=status)
+
+    def _handle_agent_session_body(
+        self,
+        *,
+        body: bytes,
+        headers: Mapping[str, str],
+        content_length: Optional[int] = None,
+    ) -> tuple[int, Dict[str, Any]]:
+        if (
+            content_length is not None
+            and content_length > MAX_WEBHOOK_BODY_BYTES
+        ) or len(body) > MAX_WEBHOOK_BODY_BYTES:
+            return 413, {"error": "Payload too large"}
+        if not self._validate_signature_headers(headers, body):
+            return 401, {"error": "Invalid signature"}
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
-            return web.json_response({"error": "Cannot parse body"}, status=400)
+            return 400, {"error": "Cannot parse body"}
 
-        delivery_id = request.headers.get("Linear-Delivery") or request.headers.get("linear-delivery") or ""
+        delivery_id = headers.get("Linear-Delivery") or headers.get("linear-delivery") or ""
         if not delivery_id:
-            delivery_id = payload.get("webhookId") or payload.get("webhook_id") or payload.get("id") or str(int(time.time() * 1000))
+            delivery_id = (
+                payload.get("webhookId")
+                or payload.get("webhook_id")
+                or payload.get("id")
+                or f"body-sha256:{hashlib.sha256(body).hexdigest()}"
+            )
         self._prune_seen()
         if delivery_id in self._seen_deliveries:
-            return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+            return 200, {"status": "duplicate", "delivery_id": delivery_id}
         self._seen_deliveries[delivery_id] = time.time()
 
         task = asyncio.create_task(self._process_agent_session_event(payload, delivery_id))
+        self._track_background_task(task, delivery_id)
+        return 200, {"status": "accepted", "delivery_id": delivery_id}
+
+    def _track_background_task(self, task: "asyncio.Task", delivery_id: str) -> None:
         self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
-        return web.json_response({"status": "accepted", "delivery_id": delivery_id}, status=200)
+
+        def _done(done_task: "asyncio.Task") -> None:
+            self._background_tasks.discard(done_task)
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                logger.warning(
+                    "[linear] AgentSession background task failed delivery=%s: %s",
+                    delivery_id,
+                    exc,
+                    exc_info=exc,
+                )
+
+        task.add_done_callback(_done)
 
     def _validate_signature(self, request: "web.Request", body: bytes) -> bool:
+        return self._validate_signature_headers(request.headers, body)
+
+    def _validate_signature_headers(self, headers: Mapping[str, str], body: bytes) -> bool:
         if not self._webhook_secret:
             return False
-        signature = request.headers.get("Linear-Signature") or request.headers.get("linear-signature") or ""
+        signature = headers.get("Linear-Signature") or headers.get("linear-signature") or ""
         if not signature:
             return False
         expected = hmac.new(self._webhook_secret.encode(), body, hashlib.sha256).hexdigest()
@@ -123,6 +216,121 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
     def _prune_seen(self) -> None:
         cutoff = time.time() - DEDUP_TTL_SECONDS
         self._seen_deliveries = {k: v for k, v in self._seen_deliveries.items() if v >= cutoff}
+
+    def _first_scalar(self, *values: Any) -> str:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return ""
+
+    def _first_nested_scalar(self, data: Dict[str, Any], *paths: tuple[str, ...]) -> str:
+        for path in paths:
+            value: Any = data
+            for key in path:
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(key)
+            text = self._first_scalar(value)
+            if text:
+                return text
+        return ""
+
+    def _agent_activity_text(self, activity: Dict[str, Any], payload: Dict[str, Any]) -> str:
+        content = activity.get("content") if isinstance(activity.get("content"), dict) else {}
+        return self._first_scalar(
+            activity.get("body"),
+            content.get("body"),
+            content.get("bodyData"),
+            payload.get("body"),
+        )
+
+    def _linear_actor_identity(
+        self,
+        payload: Dict[str, Any],
+        agent_session: Dict[str, Any],
+        activity: Dict[str, Any],
+    ) -> tuple[str, str]:
+        """Return the stable Linear user identity used for gateway auth.
+
+        AgentSession ids are per-task conversation ids, so using them as
+        ``user_id`` makes pairing expire on every new Linear session. Prefer
+        actor/user fields from the webhook payload when Linear includes them;
+        otherwise use a stable signed-webhook principal.
+        """
+        user_id = self._first_nested_scalar(
+            payload,
+            ("actor", "id"),
+            ("actor", "email"),
+            ("user", "id"),
+            ("user", "email"),
+            ("creator", "id"),
+            ("creator", "email"),
+            ("createdBy", "id"),
+            ("createdBy", "email"),
+            ("organization", "id"),
+            ("workspace", "id"),
+        ) or self._first_nested_scalar(
+            agent_session,
+            ("actor", "id"),
+            ("actor", "email"),
+            ("user", "id"),
+            ("user", "email"),
+            ("creator", "id"),
+            ("creator", "email"),
+            ("createdBy", "id"),
+            ("createdBy", "email"),
+        ) or self._first_nested_scalar(
+            activity,
+            ("actor", "id"),
+            ("actor", "email"),
+            ("user", "id"),
+            ("user", "email"),
+            ("creator", "id"),
+            ("creator", "email"),
+            ("createdBy", "id"),
+            ("createdBy", "email"),
+        )
+
+        user_name = self._first_nested_scalar(
+            payload,
+            ("actor", "name"),
+            ("actor", "displayName"),
+            ("user", "name"),
+            ("user", "displayName"),
+            ("creator", "name"),
+            ("creator", "displayName"),
+            ("createdBy", "name"),
+            ("createdBy", "displayName"),
+        ) or self._first_nested_scalar(
+            agent_session,
+            ("actor", "name"),
+            ("actor", "displayName"),
+            ("user", "name"),
+            ("user", "displayName"),
+            ("creator", "name"),
+            ("creator", "displayName"),
+            ("createdBy", "name"),
+            ("createdBy", "displayName"),
+        ) or self._first_nested_scalar(
+            activity,
+            ("actor", "name"),
+            ("actor", "displayName"),
+            ("user", "name"),
+            ("user", "displayName"),
+            ("creator", "name"),
+            ("creator", "displayName"),
+            ("createdBy", "name"),
+            ("createdBy", "displayName"),
+        )
+
+        return (
+            user_id or os.getenv("LINEAR_AUTH_USER_ID", DEFAULT_AUTH_USER_ID),
+            user_name or os.getenv("LINEAR_AUTH_USER_NAME", DEFAULT_AUTH_USER_NAME),
+        )
 
     async def _process_agent_session_event(self, payload: Dict[str, Any], delivery_id: str) -> None:
         agent_session = payload.get("agentSession") or payload.get("agent_session") or {}
@@ -136,6 +344,7 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
         signal = (activity.get("signal") or payload.get("signal") or "").lower()
 
         if signal == "stop":
+            self._awaiting_clarify_sessions.pop(agent_session_id, None)
             text = "/stop"
         elif action == "created":
             text = str(agent_session.get("promptContext") or payload.get("promptContext") or "").strip()
@@ -143,21 +352,25 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
                 text = "Linear AgentSession created."
             await self._create_thought(agent_session_id)
         else:
-            body = str(activity.get("body") or payload.get("body") or "").strip()
+            body = self._agent_activity_text(activity, payload)
             context = str(agent_session.get("promptContext") or payload.get("promptContext") or "").strip()
             text = body
-            if context:
+            awaiting_clarify_reply = bool(body) and self._consume_awaiting_clarify_reply(agent_session_id)
+            if awaiting_clarify_reply:
+                pass
+            elif context and not body.lstrip().startswith("/"):
                 text = f"{body}\n\nContext:\n{context}" if body else context
             if not text:
                 text = "Linear AgentSession prompt."
 
         message_id = str(activity.get("id") or delivery_id)
+        user_id, user_name = self._linear_actor_identity(payload, agent_session, activity)
         source = self.build_source(
             chat_id=f"agentSession:{agent_session_id}",
             chat_name=f"Linear AgentSession {agent_session_id}",
             chat_type="dm",
-            user_id=agent_session_id,
-            user_name="Linear",
+            user_id=user_id,
+            user_name=user_name,
         )
         event = MessageEvent(
             text=text,
@@ -171,12 +384,177 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
 
     async def _create_thought(self, agent_session_id: str) -> None:
         try:
-            await self.client.create_agent_activity(
+            activity = await self.client.create_agent_activity(
                 agent_session_id=agent_session_id,
                 content={"type": "thought", "body": "Hermes received this Linear AgentSession and is thinking…"},
             )
+            logger.info(
+                "[linear] Created initial thought activity for AgentSession %s activity=%s",
+                agent_session_id,
+                activity.get("id") or "?",
+            )
         except Exception as e:
             logger.warning("[linear] Failed to create thought activity: %s", e)
+
+    async def _update_plan(
+        self,
+        agent_session_id: str,
+        plan: list[Dict[str, Any]],
+    ) -> None:
+        try:
+            session = await self.client.update_agent_session(
+                agent_session_id=agent_session_id,
+                plan=plan,
+            )
+            logger.info(
+                "[linear] Updated AgentSession %s plan steps=%d session_status=%s",
+                agent_session_id,
+                len(plan),
+                session.get("status") or "?",
+            )
+        except Exception as e:
+            logger.warning("[linear] Failed to update AgentSession plan: %s", e)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        agent_session_id = self._agent_session_id_from_chat_id(event.source.chat_id)
+        if not agent_session_id:
+            return
+        summary = self._prompt_summary(event.text)
+        try:
+            activity = await self.client.create_agent_activity(
+                agent_session_id=agent_session_id,
+                content={
+                    "type": "action",
+                    "action": "Processing",
+                    "parameter": summary,
+                },
+                ephemeral=True,
+            )
+            logger.info(
+                "[linear] Created processing action for AgentSession %s activity=%s",
+                agent_session_id,
+                activity.get("id") or "?",
+            )
+        except Exception as e:
+            logger.warning("[linear] Failed to create processing action: %s", e)
+        await self._update_plan(
+            agent_session_id,
+            plan=[{"content": summary, "status": "inProgress"}],
+        )
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        agent_session_id = self._agent_session_id_from_chat_id(event.source.chat_id)
+        if not agent_session_id:
+            return
+        summary = self._prompt_summary(event.text)
+        if outcome == ProcessingOutcome.SUCCESS:
+            status = "completed"
+            content = summary
+        else:
+            status = "canceled"
+            content = f"Stopped: {summary}"
+        await self._update_plan(
+            agent_session_id,
+            plan=[{"content": content, "status": status}],
+        )
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        agent_session_id = self._agent_session_id_from_chat_id(chat_id)
+        if not agent_session_id:
+            return SendResult(success=False, error="Missing Linear AgentSession id")
+        if choices:
+            from tools.clarify_gateway import mark_awaiting_text
+            mark_awaiting_text(clarify_id)
+        body = str(question or "").strip()
+        if not body:
+            body = "Please provide more information."
+        activity_kwargs: Dict[str, Any] = {
+            "agent_session_id": agent_session_id,
+            "content": {"type": "elicitation", "body": body},
+        }
+        if choices:
+            activity_kwargs["signal"] = "select"
+            activity_kwargs["signal_metadata"] = self._select_signal_metadata(choices)
+        try:
+            activity = await self.client.create_agent_activity(
+                **activity_kwargs,
+            )
+            logger.info(
+                "[linear] Created elicitation activity for AgentSession %s activity=%s",
+                agent_session_id,
+                activity.get("id") or "?",
+            )
+        except Exception as e:
+            logger.warning("[linear] Failed to create elicitation activity: %s", e)
+            return SendResult(success=False, error="Linear elicitation failed")
+        self._mark_awaiting_clarify_reply(agent_session_id)
+        await self._update_plan(
+            agent_session_id,
+            plan=[
+                {"content": self._prompt_summary(question, fallback="Await user response"), "status": "inProgress"},
+                {"content": "Continue after user response", "status": "pending"},
+            ],
+        )
+        return SendResult(success=True, message_id=activity.get("id"))
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        agent_session_id = self._agent_session_id_from_chat_id(chat_id)
+        if not agent_session_id:
+            return SendResult(success=False, error="Missing Linear AgentSession id")
+        cmd_preview = str(command or "")
+        if len(cmd_preview) > 500:
+            cmd_preview = cmd_preview[:497] + "..."
+        reason = str(description or "dangerous command").strip()
+        body = (
+            "Dangerous command requires approval:\n\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {reason}"
+        )
+        try:
+            activity = await self.client.create_agent_activity(
+                agent_session_id=agent_session_id,
+                content={"type": "elicitation", "body": body},
+                signal="select",
+                signal_metadata={
+                    "options": [
+                        {"label": "Allow once", "value": "/approve"},
+                        {"label": "Allow for session", "value": "/approve session"},
+                        {"label": "Always allow", "value": "/approve always"},
+                        {"label": "Deny", "value": "/deny"},
+                    ]
+                },
+            )
+            logger.info(
+                "[linear] Created approval elicitation for AgentSession %s activity=%s",
+                agent_session_id,
+                activity.get("id") or "?",
+            )
+        except Exception as e:
+            logger.warning("[linear] Failed to create approval elicitation: %s", e)
+            return SendResult(success=False, error="Linear approval prompt failed")
+        await self._update_plan(
+            agent_session_id,
+            plan=[
+                {"content": "Await command approval", "status": "inProgress"},
+                {"content": self._prompt_summary(reason, fallback="Continue after approval"), "status": "pending"},
+            ],
+        )
+        return SendResult(success=True, message_id=activity.get("id"))
 
     async def send(
         self,
@@ -186,7 +564,7 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         metadata = metadata or {}
-        agent_session_id = chat_id.removeprefix("agentSession:")
+        agent_session_id = self._agent_session_id_from_chat_id(chat_id)
         if not agent_session_id:
             return SendResult(success=False, error="Missing Linear AgentSession id")
         content_obj = metadata.get("content")
@@ -212,7 +590,7 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
     async def wait_background_tasks(self) -> None:
         tasks = [task for task in self._background_tasks if not task.done()]
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _env_secret() -> str:
@@ -281,5 +659,6 @@ def register(ctx) -> None:
         emoji="📐",
         pii_safe=True,
         allow_update_command=True,
+        suppress_home_channel_prompt=True,
         platform_hint="You are communicating through Linear Agent Sessions. Keep responses actionable and issue-focused.",
     )

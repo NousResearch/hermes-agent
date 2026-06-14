@@ -925,6 +925,21 @@ def _home_thread_env_var(platform_name: str) -> str:
     return f"{_home_target_env_var(platform_name)}_THREAD_ID"
 
 
+def _should_prompt_home_channel(source) -> bool:
+    """Return True when a first-time chat should receive /sethome onboarding."""
+    platform = getattr(source, "platform", None)
+    if not platform or platform in {Platform.LOCAL, Platform.WEBHOOK}:
+        return False
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform.value)
+        if entry and getattr(entry, "suppress_home_channel_prompt", False):
+            return False
+    except Exception:
+        pass
+    return not os.getenv(_home_target_env_var(platform.value))
+
+
 def _restart_notification_pending() -> bool:
     """Return True when a /restart completion marker is waiting to be delivered."""
     return (_hermes_home / ".restart_notify.json").exists()
@@ -8526,28 +8541,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 context_prompt += _intro_note
         
-        # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        # One-time prompt if no home channel is set for this platform.
+        if not history and _should_prompt_home_channel(source):
             platform_name = source.platform.value
-            env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
-                # Slack dispatches all Hermes commands through a single
-                # parent slash command `/hermes`; bare `/sethome` is not
-                # registered and would fail with "app did not respond".
-                sethome_cmd = (
-                    "/hermes sethome"
-                    if source.platform == Platform.SLACK
-                    else "/sethome"
-                )
-                notice = (
-                    f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
-                    f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
-                )
-                await self._deliver_platform_notice(source, notice)
+            # Slack dispatches all Hermes commands through a single parent
+            # slash command `/hermes`; bare `/sethome` is not registered and
+            # would fail with "app did not respond".
+            sethome_cmd = (
+                "/hermes sethome"
+                if source.platform == Platform.SLACK
+                else "/sethome"
+            )
+            notice = (
+                f"📬 No home channel is set for {platform_name.title()}. "
+                f"A home channel is where Hermes delivers cron job results "
+                f"and cross-platform messages.\n\n"
+                f"Type {sethome_cmd} to make this chat your home channel, "
+                f"or ignore to skip."
+            )
+            await self._deliver_platform_notice(source, notice)
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state

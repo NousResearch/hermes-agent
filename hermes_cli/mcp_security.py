@@ -27,10 +27,11 @@ _SHELL_INTERPRETERS = frozenset({
 })
 
 _EGRESS_PATTERN = re.compile(
-    r"(?<![\w.-])(?:curl|wget|nc|ncat|socat)(?![\w.-])"
+    r"(?<![\w.-])(?:curl|wget|nc|ncat|socat)(?:\.exe)?(?![\w.-])"
     r"|/dev/tcp/"
     r"|\bInvoke-WebRequest\b"
     r"|\bInvoke-RestMethod\b"
+    r"|(?<![\w.-])(?:iwr|irm)(?![\w.-])"
     r"|\bSystem\.Net\.WebClient\b",
     re.IGNORECASE,
 )

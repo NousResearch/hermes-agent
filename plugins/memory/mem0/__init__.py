@@ -237,7 +237,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         return (
             "# Mem0 Memory\n"
-            f"Active. User: {self._user_id}.\n"
+            f"Active. User: {self._user_id}, App: {self._app_id or '(none)'}.\n"
             "Use mem0_search to find memories, mem0_conclude to store facts, "
             "mem0_profile for a full overview."
         )

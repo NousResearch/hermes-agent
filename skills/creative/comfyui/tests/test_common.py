@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
 from _common import (
-    DEFAULT_LOCAL_HOST,
     EMBEDDING_REGEX,
-    FOLDER_ALIASES,
-    build_cloud_aware_url,
     cloud_endpoint,
     coerce_seed,
     folder_aliases_for,

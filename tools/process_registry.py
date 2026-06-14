@@ -129,6 +129,7 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
+    _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -472,6 +473,7 @@ class ProcessRegistry:
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
+                    stdin=subprocess.DEVNULL,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 try:
@@ -633,7 +635,8 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
@@ -697,7 +700,11 @@ class ProcessRegistry:
         )
 
         try:
-            result = env.execute(bg_command, timeout=timeout)
+            result = env.execute(
+                bg_command,
+                timeout=timeout,
+                rewrite_compound_background=False,
+            )
             output = result.get("output", "").strip()
             # Try to extract the PID from the output
             for line in output.splitlines():
@@ -705,6 +712,15 @@ class ProcessRegistry:
                 if line.isdigit():
                     session.pid = int(line)
                     break
+            # If the wrapper couldn't produce a PID (for example, syntax
+            # error or broken redirect), treat it as a failed launch instead
+            # of exposing a fake running session.
+            if session.pid is None:
+                session.exited = True
+                session.exit_code = int(result.get("returncode", -1))
+                if session.exit_code == 0:
+                    session.exit_code = -1
+                session.output_buffer = result.get("output", "").strip()
         except Exception as e:
             session.exited = True
             session.exit_code = -1
@@ -723,9 +739,12 @@ class ProcessRegistry:
 
         with self._lock:
             self._prune_if_needed()
-            self._running[session.id] = session
+            if not session.exited:
+                self._running[session.id] = session
 
-        self._write_checkpoint()
+        if not session.exited:
+            self._write_checkpoint()
+
         return session
 
     # ----- Reader / Poller Threads -----
@@ -852,6 +871,7 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
@@ -863,6 +883,7 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
+                "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
@@ -1074,6 +1095,8 @@ class ProcessRegistry:
 
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
+            if session is None:
+                return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
             # child has already exited (issue #17327).
@@ -1099,7 +1122,10 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            session._completion_event.wait(timeout=min(1.0, remaining))
 
         result = {
             "status": "timeout",
@@ -1189,10 +1215,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
+                if _IS_WINDOWS:
+                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:

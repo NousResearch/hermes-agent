@@ -1,7 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
-import os
 import sys
 import types
 from pathlib import Path
@@ -13,17 +12,20 @@ import yaml
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
-    LoadedPlugin,
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_manager,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
+    has_middleware,
     resolve_plugin_command_result,
-    discover_plugins,
-    invoke_hook,
+)
+from hermes_cli.middleware import (
+    VALID_MIDDLEWARE,
+    apply_llm_request_middleware,
+    apply_tool_request_middleware,
+    run_tool_execution_middleware,
 )
 
 
@@ -101,6 +103,223 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "mw_plugin",
+            register_body=(
+                "ctx.register_middleware('llm_request', "
+                "lambda **kw: {'request': {**kw['request'], 'mw': True}})\n"
+                "    ctx.register_middleware('tool_request', "
+                "lambda **kw: {'args': {**kw['args'], 'mw': True}})"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "llm_request" in VALID_MIDDLEWARE
+        assert "tool_request" in VALID_MIDDLEWARE
+        assert set(mgr._plugins["mw_plugin"].middleware_registered) == {"llm_request", "tool_request"}
+        assert mgr.invoke_middleware("llm_request", request={"messages": []}) == [
+            {"request": {"messages": [], "mw": True}}
+        ]
+        assert mgr.invoke_middleware("tool_request", args={"path": "README.md"}) == [
+            {"args": {"path": "README.md", "mw": True}}
+        ]
+        assert mgr.has_middleware("llm_request") is True
+
+    def test_execution_middleware_does_not_retry_downstream_failure(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            return kwargs["next_call"](kwargs["args"])
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            raise RuntimeError("tool failed")
+
+        with pytest.raises(RuntimeError, match="tool failed"):
+            run_tool_execution_middleware("terminal", {"command": "false"}, terminal)
+
+        assert calls == [{"command": "false"}]
+
+    def test_middleware_helpers_skip_no_listener_work(self, monkeypatch):
+        manager = types.SimpleNamespace(_middleware={})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        request = {"messages": []}
+        args = {"path": "README.md"}
+
+        llm_result = apply_llm_request_middleware(request)
+        tool_result = apply_tool_request_middleware("read_file", args)
+
+        assert llm_result.payload is request
+        assert llm_result.original_payload is request
+        assert llm_result.changed is False
+        assert llm_result.trace == []
+        assert tool_result.payload is args
+        assert tool_result.original_payload is args
+        assert tool_result.changed is False
+        assert tool_result.trace == []
+        assert run_tool_execution_middleware("terminal", args, lambda payload: payload) is args
+        assert has_middleware("tool_request") is False
+
+    def test_request_middleware_changed_tracks_trace_not_deep_equality(self, monkeypatch):
+        def same_payload_middleware(**kwargs):
+            return {"args": kwargs["args"], "source": "same-payload"}
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [same_payload_middleware]},
+            invoke_middleware=lambda kind, **kwargs: [same_payload_middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        args = {"path": "README.md"}
+        result = apply_tool_request_middleware("read_file", args)
+
+        assert result.payload == args
+        assert result.original_payload == args
+        assert result.changed is True
+        assert result.trace == [{"source": "same-payload"}]
+
+    def test_execution_middleware_post_next_call_error_does_not_retry(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            result = kwargs["next_call"](kwargs["args"])
+            raise RuntimeError(f"post-processing failed after {result}")
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            return "terminal-result"
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == "terminal-result"
+        assert calls == [{"command": "printf ok"}]
+
+    def test_execution_middleware_pre_next_call_error_fails_open_to_remaining_chain(self, monkeypatch):
+        calls = []
+
+        def failing_middleware(**kwargs):
+            calls.append("failing")
+            raise RuntimeError("middleware setup failed")
+
+        def downstream_middleware(**kwargs):
+            calls.append("downstream")
+            return kwargs["next_call"]({**kwargs["args"], "rewritten": True})
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [failing_middleware, downstream_middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(("terminal", args))
+            return args
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == {"command": "printf ok", "rewritten": True}
+        assert calls == ["failing", "downstream", ("terminal", {"command": "printf ok", "rewritten": True})]
+
+    def test_execution_middleware_translated_downstream_failure_is_not_masked(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            try:
+                return kwargs["next_call"](kwargs["args"])
+            except Exception as exc:
+                raise RuntimeError(f"translated downstream failure: {exc}") from exc
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            raise RuntimeError("terminal failed")
+
+        with pytest.raises(RuntimeError, match="translated downstream failure: terminal failed"):
+            run_tool_execution_middleware("terminal", {"command": "false"}, terminal)
+
+        assert calls == [{"command": "false"}]
+
+    def test_execution_middleware_downstream_base_exception_is_not_wrapped(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            try:
+                return kwargs["next_call"](kwargs["args"])
+            except Exception as exc:
+                raise RuntimeError(f"middleware should not catch base exception: {exc}") from exc
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            raise KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            run_tool_execution_middleware("terminal", {"command": "interrupt"}, terminal)
+
+        assert calls == [{"command": "interrupt"}]
+
+    def test_execution_middleware_double_next_call_does_not_run_terminal_twice(self, monkeypatch):
+        calls = []
+
+        def middleware(**kwargs):
+            first = kwargs["next_call"](kwargs["args"])
+            # Deliberate misuse: a second next_call() must not re-run the
+            # downstream tool. The chain surfaces it as an error and preserves
+            # the first (successful) downstream result.
+            kwargs["next_call"](kwargs["args"])
+            return first
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        def terminal(args):
+            calls.append(args)
+            return "terminal-result"
+
+        result = run_tool_execution_middleware("terminal", {"command": "printf ok"}, terminal)
+
+        assert result == "terminal-result"
+        assert calls == [{"command": "printf ok"}]
+
+    def test_request_middleware_tolerates_non_deepcopyable_payload(self, monkeypatch):
+        import threading
+
+        recorded = {}
+
+        def middleware(**kwargs):
+            recorded["args"] = kwargs["args"]
+            return None
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        # threading.Lock is not deepcopyable; a hard deepcopy would raise.
+        args = {"command": "noop", "lock": threading.Lock()}
+        result = apply_tool_request_middleware("terminal", args)
+
+        # Middleware ran (payload was copied via the shallow fallback) and the
+        # non-deepcopyable member is shared by reference rather than aborting.
+        assert recorded["args"]["command"] == "noop"
+        assert result.payload["command"] == "noop"
+        assert result.payload["lock"] is args["lock"]
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"
@@ -146,6 +365,40 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 1
 
+    def test_failed_discovery_is_not_cached(self, tmp_path, monkeypatch):
+        """A sweep that raises must not cache 'discovered' with no plugins.
+
+        Regression for the stranded-empty-registry class of failures: callers
+        (e.g. tools.web_tools._ensure_web_plugins_loaded) swallow discovery
+        exceptions as warnings, so if a failed sweep flipped ``_discovered``
+        permanently, every later call would early-return against an empty
+        registry ("No web provider configured") for the process lifetime.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "retry_plugin")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+
+        def _boom(self_inner):
+            raise RuntimeError("sweep failed")
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _boom)
+        with pytest.raises(RuntimeError, match="sweep failed"):
+            mgr.discover_and_load()
+        assert mgr._discovered is False, "failed sweep was cached as discovered"
+
+        # A later call (with discovery healthy again) must do the real scan.
+        monkeypatch.undo()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        mgr.discover_and_load()
+        assert mgr._discovered is True
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 1
+
     def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
         """Directories without plugin.yaml are silently skipped."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -185,6 +438,50 @@ class TestPluginDiscovery:
             mgr.discover_and_load()
 
         assert "ep_plugin" in mgr._plugins
+
+    def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
+        """force=True must clear every plugin-populated registry.
+
+        Regression: ``_plugin_platform_names`` was populated by
+        ``register_platform`` but omitted from the ``discover_and_load(force=True)``
+        clear block, so a platform plugin disabled between force-rediscovers
+        left a stale entry behind forever (the set diverged from the real
+        platform_registry / _plugins truth). This asserts the clear block
+        empties the full set of per-plugin registries so no future addition
+        silently leaks across a force pass either.
+        """
+        mgr = PluginManager()
+
+        # Seed every registry that a plugin's register() can populate, then
+        # mark discovery done so force=True takes the clear path (we stub the
+        # inner sweep so the test doesn't depend on any on-disk plugins).
+        mgr._plugins["p"] = MagicMock()
+        mgr._hooks["pre_tool_call"] = [lambda **_: None]
+        mgr._middleware["llm_request"] = [lambda **_: None]
+        mgr._plugin_tool_names.add("some_tool")
+        mgr._plugin_platform_names.add("irc")
+        mgr._cli_commands["c"] = {"plugin": "p"}
+        mgr._plugin_commands["cmd"] = {"plugin": "p"}
+        mgr._plugin_skills["p:skill"] = {}
+        mgr._aux_tasks["task"] = {"plugin": "p"}
+        mgr._slack_action_handlers.append(("aid", lambda **_: None, "p"))
+        mgr._discovered = True
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", lambda self_inner: None)
+        mgr.discover_and_load(force=True)
+
+        assert mgr._plugins == {}
+        assert mgr._hooks == {}
+        assert mgr._middleware == {}
+        assert mgr._plugin_tool_names == set()
+        assert mgr._plugin_platform_names == set(), (
+            "_plugin_platform_names was not cleared on force-rediscover"
+        )
+        assert mgr._cli_commands == {}
+        assert mgr._plugin_commands == {}
+        assert mgr._plugin_skills == {}
+        assert mgr._aux_tasks == {}
+        assert mgr._slack_action_handlers == []
 
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────
@@ -328,6 +625,8 @@ class TestPluginHooks:
     def test_valid_hooks_include_request_scoped_api_hooks(self):
         assert "pre_api_request" in VALID_HOOKS
         assert "post_api_request" in VALID_HOOKS
+        assert "api_request_error" in VALID_HOOKS
+        assert "subagent_start" in VALID_HOOKS
         assert "transform_terminal_output" in VALID_HOOKS
         assert "transform_tool_result" in VALID_HOOKS
         assert "transform_llm_output" in VALID_HOOKS
@@ -373,6 +672,26 @@ class TestPluginHooks:
 
         # Should not raise
         mgr.invoke_hook("pre_tool_call", tool_name="test", args={}, task_id="t1")
+
+    def test_invoke_hook_adds_observer_schema_version(self, tmp_path, monkeypatch):
+        """invoke_hook() supplies the observer schema version for all hooks."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "schema_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_call", '
+                'lambda **kw: kw.get("telemetry_schema_version"))'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="test", args={}) == [
+            "hermes.observer.v1"
+        ]
 
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
         """A hook callback that raises does NOT crash the caller."""
@@ -440,6 +759,8 @@ class TestPluginHooks:
         mgr = PluginManager()
         mgr.discover_and_load()
 
+        assert mgr.has_hook("pre_api_request") is True
+        assert mgr.has_hook("post_api_request") is False
         results = mgr.invoke_hook(
             "pre_api_request",
             session_id="s1",
@@ -492,7 +813,6 @@ class TestPluginHooks:
             mgr.discover_and_load()
 
         assert any("on_banana" in record.message for record in caplog.records)
-
 
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
@@ -882,6 +1202,36 @@ class TestPluginManagerList:
             assert "enabled" in p
             assert "tools" in p
             assert "hooks" in p
+
+    def test_shared_hook_name_credited_to_every_plugin(self, tmp_path, monkeypatch):
+        """Two plugins registering the SAME hook name are each credited.
+
+        Regression: hook/middleware/tool attribution diffed names against all
+        already-loaded plugins, so when a later plugin registered a hook name
+        an earlier plugin had already used, the shared name was attributed to
+        the first plugin only and the later plugin reported 0 hooks in
+        `hermes plugins list`. Attribution now counts what each plugin's own
+        register() added (per-registration delta), so both get credit.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "first_hooker",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: None)',
+        )
+        _make_plugin_dir(
+            plugins_dir, "second_hooker",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        by_name = {p["name"]: p for p in mgr.list_plugins()}
+        assert by_name["first_hooker"]["hooks"] == 1
+        assert by_name["second_hooker"]["hooks"] == 1, (
+            "second plugin sharing a hook name was not credited with its hook"
+        )
 
 
 
@@ -1309,7 +1659,6 @@ class TestPluginCommandResultResolution:
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
-        import pytest
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())
 

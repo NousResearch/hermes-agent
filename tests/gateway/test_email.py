@@ -18,8 +18,6 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from gateway.platforms.base import SendResult
@@ -395,6 +393,68 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(captured_events[0].message_type, MessageType.PHOTO)
         self.assertEqual(captured_events[0].media_urls, ["/tmp/img.jpg"])
 
+    def test_document_attachment_sets_document_type(self):
+        """Email with a document attachment must set DOCUMENT so run.py injects file context."""
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"6",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Re: report",
+            "message_id": "<msg6@test.com>",
+            "in_reply_to": "",
+            "body": "See attached",
+            "attachments": [{"path": "/tmp/report.pdf", "filename": "report.pdf", "type": "document", "media_type": "application/pdf"}],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertEqual(captured_events[0].message_type, MessageType.DOCUMENT)
+        self.assertEqual(captured_events[0].media_urls, ["/tmp/report.pdf"])
+
+    def test_mixed_image_and_document_prefers_document(self):
+        """DOCUMENT wins for mixed attachments — image handling keys off per-path
+        mime types, but document injection gates strictly on MessageType.DOCUMENT."""
+        import asyncio
+        from gateway.platforms.base import MessageType
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+
+        msg_data = {
+            "uid": b"7",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Re: both",
+            "message_id": "<msg7@test.com>",
+            "in_reply_to": "",
+            "body": "Photo and PDF",
+            "attachments": [
+                {"path": "/tmp/img.jpg", "filename": "img.jpg", "type": "image", "media_type": "image/jpeg"},
+                {"path": "/tmp/report.pdf", "filename": "report.pdf", "type": "document", "media_type": "application/pdf"},
+            ],
+            "date": "",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+        self.assertEqual(len(captured_events), 1)
+        self.assertEqual(captured_events[0].message_type, MessageType.DOCUMENT)
+        self.assertEqual(len(captured_events[0].media_urls), 2)
+
     def test_source_built_correctly(self):
         """Session source should have correct chat_id and user info."""
         import asyncio
@@ -660,7 +720,6 @@ class TestSendMethods(unittest.TestCase):
     def test_send_image_includes_url(self):
         """send_image should include image URL in email body."""
         import asyncio
-        from unittest.mock import AsyncMock
         adapter = self._make_adapter()
 
         adapter.send = AsyncMock(return_value=SendResult(success=True))

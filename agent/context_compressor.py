@@ -1337,6 +1337,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             "compact record of prior work. "
             "Produce only the structured summary; do not add a greeting, "
             "preamble, or prefix. "
+            "Write a mission brief, not a warehouse inventory: preserve the "
+            "active handoff, completed outcome, blockers, files, decisions, "
+            "and only evidence needed to act safely. Compress raw logs, SQL, "
+            "timestamps, IDs, and tool minutiae unless they are directly needed "
+            "for the next action or prove a blocker. If the source says an "
+            "exact raw detail is not needed, drop the raw detail and keep only "
+            "the conclusion. "
             "Write the summary in the same language the user was using in the "
             "conversation — do not translate or switch to English. "
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
@@ -1404,7 +1411,8 @@ Example:
 Be specific only when the source provides specifics.]
 
 ## Active State
-[Current working state — include only details present in the source:
+[Top-line continuation brief first: one sentence that says what is already done, what the latest active issue/ask is, and the recommended next action.
+Then include current working state only when present in the source:
 - Working directory and branch (if specified)
 - Modified/created files with brief note on each (if specified)
 - Test status (only exact results from source)
@@ -1430,12 +1438,12 @@ Be specific only when the source provides specifics.]
 [Files read, modified, or created — with brief note on each]
 
 {HISTORICAL_REMAINING_WORK_HEADING}
-[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
+[STALE reference only. Keep this to at most 2 short bullets. Do not list broad task backlogs here. If the next action belongs to the user's latest active ask, put it in Active State's top-line continuation brief instead. If nothing stale matters, write "None."]
 
 ## Critical Context
-[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. Almost never preserve raw SQL/epoch/log fragments; keep the conclusion instead. Preserve an exact raw snippet only when the latest active ask is specifically to rerun/debug that snippet or it is the only reproducible blocker evidence. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
-Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
+Target ~{summary_budget} tokens, but prefer being ~40% shorter than the source would naturally suggest. Be CONCRETE without hoarding details — include file paths, commands, error messages, line numbers, and specific values only when they change the next action or prevent a wrong turn. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
 
@@ -1451,7 +1459,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. Preserve existing information only if it is still relevant to the current handoff, a hard user constraint, a blocker, or a fact needed to avoid repeating work. Do not carry forward warehouse-inventory details just because they appeared in the previous summary. Add new completed actions, move finished items out of in-progress, move answered questions to Resolved Questions, and update Active State to the current top-line continuation brief. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:

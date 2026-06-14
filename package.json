@@ -36,7 +36,10 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
-    "lodash": "4.18.1"
+    "esbuild": "0.28.1",
+    "joi": "18.2.1",
+    "lodash": "4.18.1",
+    "vite": "8.0.16"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -1583,6 +1583,30 @@ class TestRunJobConfigEnvVarExpansion:
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
 
+    def test_missing_model_default_fails_before_agent_start(self, tmp_path, monkeypatch):
+        """Cron reports a clear error when neither job nor config resolves a model."""
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  provider: openrouter\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "missing-model", "name": "missing model", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert "No model resolved for cron job" in (error or "")
+        assert "model.default" in (error or "")
+        mock_agent_cls.assert_not_called()
+
     def test_legacy_agent_prefill_messages_file_is_loaded(self, tmp_path, monkeypatch):
         """Cron accepts the legacy agent.prefill_messages_file fallback."""
         prefill = [{"role": "system", "content": "legacy cron prefill"}]

@@ -1578,6 +1578,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        _missing_model_default = False
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -1594,8 +1595,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
                         model = _model_cfg.get("default", model)
+                        _missing_model_default = (
+                            "model" in _cfg and not str(model or "").strip()
+                        )
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        if _missing_model_default:
+            raise RuntimeError(
+                "No model resolved for cron job. Set a model on the job, set "
+                "HERMES_MODEL, or configure model.default in config.yaml."
+            )
 
         # Apply IPv4 preference if configured.
         try:

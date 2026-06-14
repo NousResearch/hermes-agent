@@ -1,7 +1,7 @@
 {
   "id": "task-037",
   "title": "Add Zod-first entity schema catalog",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Domain Modeling",
   "summary": "Define the required validated schemas for core Hermes OS and project entities.",

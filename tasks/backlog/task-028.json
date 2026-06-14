@@ -1,7 +1,7 @@
 {
   "id": "task-028",
   "title": "Add architect review CLI specification",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Architect Review",
   "summary": "Specify the `hermes architect review <project>` command behavior, options, outputs, and exit codes.",

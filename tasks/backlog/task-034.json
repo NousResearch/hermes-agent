@@ -1,7 +1,7 @@
 {
   "id": "task-034",
   "title": "Add required project document templates",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Project Bootstrap",
   "summary": "Create templates for the required source-of-truth project documents.",

@@ -1,7 +1,7 @@
 {
   "id": "task-025",
   "title": "Add architecture order violation warnings",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Constitution",
   "summary": "Define warnings for attempts to code before business, domain, workflow, dashboard, metric, approval, and agent-boundary readiness.",

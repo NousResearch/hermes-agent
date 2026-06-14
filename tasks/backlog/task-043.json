@@ -1,7 +1,7 @@
 {
   "id": "task-043",
   "title": "Add dashboard readiness gate",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Dashboard-First Gates",
   "summary": "Block automation when dashboard requirements are missing or incomplete.",

@@ -1,7 +1,7 @@
 {
   "id": "task-041",
   "title": "Add workflow metrics contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Workflow Design",
   "summary": "Define how workflows produce measurable outcomes and dashboard metrics.",

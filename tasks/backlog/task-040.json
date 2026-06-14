@@ -1,7 +1,7 @@
 {
   "id": "task-040",
   "title": "Add workflow approval and escalation model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Workflow Design",
   "summary": "Define approval gates and escalation rules for workflow steps.",

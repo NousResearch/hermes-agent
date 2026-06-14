@@ -1,7 +1,7 @@
 {
   "id": "task-042",
   "title": "Design dashboard requirements generator",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Dashboard-First Gates",
   "summary": "Generate dashboard requirements before automation or agent execution begins.",

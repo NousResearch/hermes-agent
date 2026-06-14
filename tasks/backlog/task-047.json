@@ -1,7 +1,7 @@
 {
   "id": "task-047",
   "title": "Add runtime delegation readiness gate",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Agent Boundaries",
   "summary": "Ensure official Hermes Agent delegation only occurs after architecture readiness requirements pass.",

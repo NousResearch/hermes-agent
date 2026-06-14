@@ -1,7 +1,7 @@
 {
   "id": "task-027",
   "title": "Build architect review contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Architect Review",
   "summary": "Define validated request and response payloads for `hermes architect review`.",

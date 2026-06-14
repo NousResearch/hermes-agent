@@ -1,7 +1,7 @@
 {
   "id": "task-036",
   "title": "Design domain modeling engine",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Domain Modeling",
   "summary": "Design the engine responsible for entities, relationships, lifecycle definitions, schemas, storage models, and documentation.",

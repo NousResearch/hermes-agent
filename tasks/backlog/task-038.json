@@ -1,7 +1,7 @@
 {
   "id": "task-038",
   "title": "Add domain lifecycle documentation generator contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Domain Modeling",
   "summary": "Define how domain lifecycle documentation is generated and updated.",

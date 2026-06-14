@@ -1,7 +1,7 @@
 {
   "id": "task-048",
   "title": "Review Kalshi VC architecture readiness",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Existing Project Reviews",
   "summary": "Run the architecture-first review model against Kalshi VC and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmap.",

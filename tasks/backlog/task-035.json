@@ -1,7 +1,7 @@
 {
   "id": "task-035",
   "title": "Add specification-to-task generation contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Project Bootstrap",
   "summary": "Define how approved specifications become executable tasks.",

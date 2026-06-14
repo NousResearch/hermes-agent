@@ -1,7 +1,7 @@
 {
   "id": "task-039",
   "title": "Design workflow engine contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Workflow Design",
   "summary": "Define workflow representation for triggers, inputs, steps, outputs, approvals, metrics, failure states, and escalation rules.",

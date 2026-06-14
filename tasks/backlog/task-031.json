@@ -1,7 +1,7 @@
 {
   "id": "task-031",
   "title": "Build grill-me session schema",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Grill-Me",
   "summary": "Define validated session state for a grill-me interview.",

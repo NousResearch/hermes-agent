@@ -1,7 +1,7 @@
 {
   "id": "task-030",
   "title": "Define grill-me question bank",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Grill-Me",
   "summary": "Create the assumption-challenge question bank for `/grill-me` across business, domain, workflow, metrics, dashboard, approvals, automation, agents, scalability, monetization, risk, and data.",

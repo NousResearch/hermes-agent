@@ -1,7 +1,7 @@
 {
   "id": "task-023",
   "title": "Create global Hermes constitution",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Constitution",
   "summary": "Create the architecture-first constitution that every Hermes-controlled project and agent session must load before work.",

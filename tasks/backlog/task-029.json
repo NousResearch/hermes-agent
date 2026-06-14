@@ -1,7 +1,7 @@
 {
   "id": "task-029",
   "title": "Add architect review report template",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Architect Review",
   "summary": "Create the standard report template emitted by architecture reviews.",

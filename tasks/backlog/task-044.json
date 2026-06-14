@@ -1,7 +1,7 @@
 {
   "id": "task-044",
   "title": "Add dashboard feedback loop contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Dashboard-First Gates",
   "summary": "Define how dashboard observations generate feedback loops, improvements, and new tasks.",

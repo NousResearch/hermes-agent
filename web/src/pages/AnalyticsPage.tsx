@@ -358,9 +358,15 @@ function ProviderTable({ providers }: { providers: AnalyticsProviderEntry[] }) {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Cpu className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Provider usage</CardTitle>
+        <div className="flex items-start gap-2">
+          <Cpu className="h-5 w-5 text-muted-foreground mt-0.5" />
+          <div>
+            <CardTitle className="text-base">Provider usage</CardTitle>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Local debug estimates gated by dashboard.show_token_analytics;
+              not authoritative provider billing.
+            </p>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -371,8 +377,8 @@ function ProviderTable({ providers }: { providers: AnalyticsProviderEntry[] }) {
                 <SortHeader label="Provider" col="provider" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label="Estimated cost" col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label="Actual cost" col="actual_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label="Estimated cost (local)" col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label="Logged cost (local)" col="actual_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>

@@ -468,7 +468,7 @@ Returns log lines. Query parameters: `file` (agent/errors/gateway), `lines` (cou
 
 ### GET /api/analytics/usage
 
-Returns token usage, cost, and session analytics. Query parameter: `days` (default 30). Response includes daily breakdowns and per-model aggregates.
+Returns token usage, cost, and session analytics. Query parameter: `days` (default 30). Response includes daily breakdowns, per-provider aggregates in `by_provider`, per-model aggregates in `by_model`, totals, and skill usage. These analytics are local debug estimates gated by `dashboard.show_token_analytics`; they are not authoritative provider billing totals.
 
 ### GET /api/cron/jobs
 

@@ -908,6 +908,122 @@ class TestCallingSidecarClient:
                 except OSError:
                     pass
 
+    def test_calling_sidecar_pcm_speech_gate_ignores_silence(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        silence = b"\x00\x00" * 960
+        speech = (1000).to_bytes(2, "little", signed=True) * 960
+
+        assert adapter._calling_sidecar_pcm_peak(silence) == 0
+        assert adapter._calling_sidecar_pcm_has_speech(silence) is False
+        assert adapter._calling_sidecar_pcm_peak(speech) == 1000
+        assert adapter._calling_sidecar_pcm_has_speech(speech) is True
+
+    @pytest.mark.asyncio
+    async def test_calling_sidecar_audio_loop_ignores_pure_silence(self):
+        from gateway.platforms.whatsapp_cloud import (
+            CALLING_AUDIO_CONTRACT,
+            CALLING_PCM_DEFAULT_DRAIN_BYTES,
+            CallingSidecarAudio,
+        )
+
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("call-1")
+        adapter._dispatch_calling_sidecar_pcm = AsyncMock()
+        silence = b"\x00" * CALLING_PCM_DEFAULT_DRAIN_BYTES
+        responses = [
+            CallingSidecarAudio(
+                call_id="call-1",
+                pcm_s16le=silence,
+                returned_bytes=len(silence),
+                queued_rx_bytes=0,
+                audio=dict(CALLING_AUDIO_CONTRACT),
+            ),
+            CallingSidecarAudio(
+                call_id="call-1",
+                pcm_s16le=silence,
+                returned_bytes=len(silence),
+                queued_rx_bytes=0,
+                audio=dict(CALLING_AUDIO_CONTRACT),
+            ),
+        ]
+
+        async def receive(_call_id):
+            if responses:
+                return responses.pop(0)
+            adapter._calling_sidecar_call_ids.discard("call-1")
+            return None
+
+        adapter._receive_calling_sidecar_audio = receive
+
+        await adapter._run_calling_sidecar_audio_loop(
+            "call-1",
+            "13557825698",
+            "Jessica Laverdetman",
+        )
+
+        adapter._dispatch_calling_sidecar_pcm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_calling_sidecar_audio_loop_flushes_speech_after_silence(self):
+        from gateway.platforms.whatsapp_cloud import (
+            CALLING_AUDIO_CONTRACT,
+            CALLING_PCM_DEFAULT_DRAIN_BYTES,
+            CallingSidecarAudio,
+        )
+
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("call-1")
+        adapter._dispatch_calling_sidecar_pcm = AsyncMock()
+        speech = (
+            (1000).to_bytes(2, "little", signed=True)
+            * (CALLING_PCM_DEFAULT_DRAIN_BYTES // 2)
+        )
+        silence = b"\x00" * CALLING_PCM_DEFAULT_DRAIN_BYTES
+        responses = [
+            CallingSidecarAudio(
+                call_id="call-1",
+                pcm_s16le=speech,
+                returned_bytes=len(speech),
+                queued_rx_bytes=0,
+                audio=dict(CALLING_AUDIO_CONTRACT),
+            ),
+            CallingSidecarAudio(
+                call_id="call-1",
+                pcm_s16le=silence,
+                returned_bytes=len(silence),
+                queued_rx_bytes=0,
+                audio=dict(CALLING_AUDIO_CONTRACT),
+            ),
+            CallingSidecarAudio(
+                call_id="call-1",
+                pcm_s16le=silence,
+                returned_bytes=len(silence),
+                queued_rx_bytes=0,
+                audio=dict(CALLING_AUDIO_CONTRACT),
+            ),
+        ]
+
+        async def receive(_call_id):
+            if responses:
+                return responses.pop(0)
+            adapter._calling_sidecar_call_ids.discard("call-1")
+            return None
+
+        adapter._receive_calling_sidecar_audio = receive
+
+        await adapter._run_calling_sidecar_audio_loop(
+            "call-1",
+            "13557825698",
+            "Jessica Laverdetman",
+        )
+
+        adapter._dispatch_calling_sidecar_pcm.assert_awaited_once()
+        call = adapter._dispatch_calling_sidecar_pcm.call_args
+        assert call.args[:3] == ("call-1", "13557825698", "Jessica Laverdetman")
+        dispatched_pcm = call.args[3]
+        assert dispatched_pcm.startswith(speech)
+        assert len(dispatched_pcm) == len(speech) + len(silence)
+
     @pytest.mark.asyncio
     async def test_close_calling_sidecar_session_posts_close(self):
         adapter = _make_adapter(

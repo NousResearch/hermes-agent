@@ -53,6 +53,7 @@ import mimetypes
 import os
 import re
 import shutil
+import struct
 import wave
 import uuid
 from collections import OrderedDict
@@ -120,6 +121,14 @@ CALLING_PCM_MAX_INBOUND_QUEUE_BYTES = (
     CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 10
 )
 CALLING_PCM_ENCODING = "pcm_s16le"
+CALLING_PCM_SPEECH_PEAK_THRESHOLD = 384
+CALLING_PCM_MAX_SEGMENT_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 5
+)
+CALLING_PCM_MIN_DISPATCH_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE // 4
+)
+CALLING_PCM_TRAILING_SILENCE_POLLS = 2
 CALLING_AUDIO_CONTRACT = {
     "sample_rate": CALLING_PCM_SAMPLE_RATE,
     "channels": CALLING_PCM_CHANNELS,
@@ -955,6 +964,26 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             wav.writeframes(pcm_s16le)
         return str(out_path)
 
+    @staticmethod
+    def _calling_sidecar_pcm_peak(pcm_s16le: bytes) -> int:
+        """Return the absolute peak amplitude of signed 16-bit PCM."""
+        if not pcm_s16le or len(pcm_s16le) % CALLING_PCM_BYTES_PER_SAMPLE:
+            return 0
+        peak = 0
+        for (sample,) in struct.iter_unpack("<h", pcm_s16le):
+            magnitude = abs(sample)
+            if magnitude > peak:
+                peak = magnitude
+        return peak
+
+    @staticmethod
+    def _calling_sidecar_pcm_has_speech(pcm_s16le: bytes) -> bool:
+        """Cheap silence gate for decoded call audio before STT dispatch."""
+        return (
+            WhatsAppCloudAdapter._calling_sidecar_pcm_peak(pcm_s16le)
+            >= CALLING_PCM_SPEECH_PEAK_THRESHOLD
+        )
+
     async def _dispatch_calling_sidecar_pcm(
         self,
         call_id: str,
@@ -1064,27 +1093,44 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Long-poll sidecar PCM and dispatch speech-ish chunks to Hermes."""
         buffer = bytearray()
         silent_polls = 0
-        segment_limit = CALLING_PCM_SAMPLE_RATE * CALLING_PCM_BYTES_PER_SAMPLE * 5
 
         try:
             while call_id in self._calling_sidecar_call_ids:
                 audio = await self._receive_calling_sidecar_audio(call_id)
                 if audio is not None and audio.pcm_s16le:
-                    buffer.extend(audio.pcm_s16le)
-                    silent_polls = 0
-                    if len(buffer) >= segment_limit:
-                        await self._dispatch_calling_sidecar_pcm(
-                            call_id,
-                            chat_id,
-                            sender_name,
-                            bytes(buffer),
-                        )
-                        buffer.clear()
+                    pcm = audio.pcm_s16le
+                    if self._calling_sidecar_pcm_has_speech(pcm):
+                        buffer.extend(pcm)
+                        silent_polls = 0
+                        if len(buffer) >= CALLING_PCM_MAX_SEGMENT_BYTES:
+                            await self._dispatch_calling_sidecar_pcm(
+                                call_id,
+                                chat_id,
+                                sender_name,
+                                bytes(buffer),
+                            )
+                            buffer.clear()
+                        continue
+
+                    if buffer:
+                        silent_polls += 1
+                        if silent_polls == 1:
+                            buffer.extend(pcm)
+                        if silent_polls >= CALLING_PCM_TRAILING_SILENCE_POLLS:
+                            if len(buffer) >= CALLING_PCM_MIN_DISPATCH_BYTES:
+                                await self._dispatch_calling_sidecar_pcm(
+                                    call_id,
+                                    chat_id,
+                                    sender_name,
+                                    bytes(buffer),
+                                )
+                            buffer.clear()
+                            silent_polls = 0
                     continue
 
                 if buffer:
                     silent_polls += 1
-                    if silent_polls >= 2:
+                    if silent_polls >= CALLING_PCM_TRAILING_SILENCE_POLLS:
                         await self._dispatch_calling_sidecar_pcm(
                             call_id,
                             chat_id,

@@ -511,3 +511,52 @@ def test_hermes_version_is_valid():
     assert _HERMES_VERSION != "0.0.0", (
         "Version should resolve from hermes_cli.__version__, not the fallback"
     )
+
+
+@pytest.mark.parametrize("model, expected", [
+    ("gemini-3.5-flash", True),
+    ("gemini-3.1-pro-preview", True),
+    ("google/gemini-3.5-flash", True),
+    ("gemini-3-flash-preview", True),  # unversioned 3.0 preview is a Gemini 3.x model
+    ("gemini-3-pro-preview", True),
+    ("gemini-2.5-flash", False),
+    ("gemini-2.0-flash", False),
+    ("", False),
+])
+def test_is_gemini_3x_model(model, expected):
+    from agent.gemini_native_adapter import is_gemini_3x_model
+
+    assert is_gemini_3x_model(model) is expected
+
+
+@pytest.mark.parametrize(
+    "model", ["gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3-pro-preview"]
+)
+def test_gemini_3x_drops_temperature_and_top_p(model):
+    """Gemini 3.x is tuned for default sampling — temperature/top_p must be omitted."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model=model,
+        temperature=0.7,
+        top_p=0.9,
+    )
+    gen = req["generationConfig"]
+    assert "temperature" not in gen
+    assert "topP" not in gen
+
+
+def test_non_gemini_3x_keeps_temperature_and_top_p():
+    """Gemini 2.x still honors explicit sampling params."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        top_p=0.9,
+    )
+    gen = req["generationConfig"]
+    assert gen["temperature"] == 0.7
+    assert gen["topP"] == 0.9

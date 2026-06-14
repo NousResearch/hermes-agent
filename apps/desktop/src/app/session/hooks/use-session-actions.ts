@@ -12,7 +12,14 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $activeGatewayProfile, $newChatProfile, browseProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profiles,
+  browseProfile,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $currentCwd,
   $currentFastMode,

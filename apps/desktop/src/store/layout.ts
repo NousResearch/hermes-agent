@@ -27,6 +27,7 @@ const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorksp
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
+const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrderManual'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 
@@ -60,7 +61,9 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
 export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
+export const $sidebarSessionOrderManual = atom(storedBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false))
 export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
+export const $sidebarWorkspaceParentOrderIds = $sidebarWorkspaceOrderIds
 export const $sidebarPinsOpen = atom(true)
 // Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
 // true the whole time it's a floating overlay (not just while shown) so the
@@ -87,6 +90,7 @@ $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
+$sidebarSessionOrderManual.subscribe(manual => persistBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, manual))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
@@ -166,10 +170,20 @@ export function setSidebarSessionOrderIds(ids: string[]) {
   }
 }
 
+export function setSidebarSessionOrderManual(manual: boolean) {
+  if ($sidebarSessionOrderManual.get() !== manual) {
+    $sidebarSessionOrderManual.set(manual)
+  }
+}
+
 export function setSidebarWorkspaceOrderIds(ids: string[]) {
   if (!arraysEqual($sidebarWorkspaceOrderIds.get(), ids)) {
     $sidebarWorkspaceOrderIds.set(ids)
   }
+}
+
+export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
+  setSidebarWorkspaceOrderIds(ids)
 }
 
 export function setSidebarResizing(resizing: boolean) {
@@ -191,6 +205,12 @@ export function unpinSession(sessionId: string) {
 
   if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
+  }
+}
+
+export function setPinnedSessionOrder(ids: string[]) {
+  if (!arraysEqual($pinnedSessionIds.get(), ids)) {
+    $pinnedSessionIds.set(ids)
   }
 }
 

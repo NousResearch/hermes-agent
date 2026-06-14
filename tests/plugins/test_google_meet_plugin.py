@@ -1565,6 +1565,35 @@ def test_apply_admission_probe_revokes_prejoin_false_positive(tmp_path):
     assert state.phase == "joining"
 
 
+def test_apply_admission_probe_ignores_denied_before_join_attempt(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {
+            "inCall": False,
+            "waitingLobby": False,
+            "denied": True,
+            "preJoin": False,
+            "text": "No one can join a meeting unless invited or admitted by the host",
+        },
+        now=105.0,
+        lobby_deadline=400.0,
+    )
+
+    assert admitted is False
+    assert terminal is False
+    assert state.error is None
+    assert state.leave_reason is None
+    assert state.phase == "starting"
+
+
 def test_apply_admission_probe_exits_when_meet_returns_to_landing(tmp_path):
     from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
 

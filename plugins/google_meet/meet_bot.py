@@ -1180,7 +1180,7 @@ def _apply_admission_probe(
             phase="exited",
         )
         return False, True
-    if bool(ui_probe.get("denied")):
+    if bool(ui_probe.get("denied")) and state.join_attempted_at:
         state.set(
             error="host denied admission",
             leave_reason="denied",

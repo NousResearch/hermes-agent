@@ -16224,7 +16224,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             for _ in range(20):
                 if not _pid_exists(existing_pid):
                     break  # Process is gone
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
             else:
                 # Still alive after 10s — force kill
                 logger.warning(
@@ -16233,7 +16233,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 )
                 try:
                     terminate_pid(existing_pid, force=True)
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()

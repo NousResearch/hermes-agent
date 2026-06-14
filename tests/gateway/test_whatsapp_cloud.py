@@ -849,6 +849,21 @@ class TestCallingSidecarClient:
 
         assert audio is None
 
+    def test_calling_sidecar_call_id_from_metadata_requires_active_call(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("wacid.call-1")
+
+        assert adapter._calling_sidecar_call_id_from_metadata({
+            "whatsapp_call_id": "wacid.call-1",
+        }) == "wacid.call-1"
+        assert adapter._calling_sidecar_call_id_from_metadata({
+            "thread_id": "wacid.call-1",
+        }) == "wacid.call-1"
+        assert adapter._calling_sidecar_call_id_from_metadata({
+            "whatsapp_call_id": "wacid.unknown",
+        }) is None
+        assert adapter._calling_sidecar_call_id_from_metadata(None) is None
+
     @pytest.mark.asyncio
     async def test_close_calling_sidecar_session_posts_close(self):
         adapter = _make_adapter(
@@ -2133,6 +2148,55 @@ class TestSendVoice:
             _os.unlink(mp3_path)
             if _os.path.exists(opus_path):
                 _os.unlink(opus_path)
+
+    @pytest.mark.asyncio
+    async def test_send_voice_active_call_metadata_posts_pcm_to_sidecar(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("wacid.call/1")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "call_id": "wacid.call/1",
+                    "accepted_bytes": 1920,
+                    "queued_tx_bytes": 1920,
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            )
+        )
+        adapter._decode_call_audio_file_to_pcm = AsyncMock(
+            return_value=(b"\x01\x00\xff\xff", None)
+        )
+        audio_path = _tmpfile(".ogg", content=b"OggS")
+        try:
+            result = await adapter.send_voice(
+                "15551234567",
+                audio_path,
+                metadata={"thread_id": "wacid.call/1"},
+            )
+        finally:
+            _os.unlink(audio_path)
+
+        assert result.success is True
+        assert adapter._http_client.post.call_count == 1
+        call = adapter._http_client.post.call_args
+        assert call.args[0] == "http://127.0.0.1:8787/calls/wacid.call%2F1/audio"
+        payload = call.kwargs["json"]
+        assert payload["sample_rate"] == 48000
+        assert payload["channels"] == 1
+        assert payload["frame_ms"] == 20
+        assert payload["encoding"] == "pcm_s16le"
+        assert payload["sequence"] == 0
+        pcm = base64.b64decode(payload["pcm_s16le_base64"])
+        assert pcm.startswith(b"\x01\x00\xff\xff")
+        assert len(pcm) == 1920
+        assert result.raw_response["queued_pcm_bytes"] == 4
 
     @pytest.mark.asyncio
     async def test_warn_once_no_ffmpeg_actually_only_warns_once(self):

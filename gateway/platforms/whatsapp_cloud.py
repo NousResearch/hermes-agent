@@ -688,6 +688,118 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         return SendResult(success=True, raw_response=body)
 
+    def _calling_sidecar_call_id_from_metadata(
+        self,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Return an active sidecar call id carried by delivery metadata."""
+        if not isinstance(metadata, dict):
+            return None
+        for key in ("whatsapp_call_id", "call_id", "thread_id"):
+            candidate = str(metadata.get(key) or "").strip()
+            if candidate and candidate in self._calling_sidecar_call_ids:
+                return candidate
+        return None
+
+    async def _decode_call_audio_file_to_pcm(
+        self,
+        audio_path: str,
+    ) -> tuple[Optional[bytes], Optional[str]]:
+        """Decode a local audio file into the sidecar's fixed PCM shape."""
+        if not audio_path or audio_path.startswith(("http://", "https://")):
+            return None, "Calling sidecar audio requires a local file"
+        if not os.path.isfile(audio_path):
+            return None, f"Audio file not found: {audio_path}"
+        if not _FFMPEG_PATH:
+            return None, "ffmpeg is required to decode TTS audio for live calls"
+
+        proc = await asyncio.create_subprocess_exec(
+            _FFMPEG_PATH,
+            "-v",
+            "error",
+            "-i",
+            audio_path,
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(CALLING_PCM_SAMPLE_RATE),
+            "-ac",
+            str(CALLING_PCM_CHANNELS),
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=max(self._calling_sidecar_timeout, 30.0),
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return None, "ffmpeg timed out while decoding TTS audio for live call"
+
+        if proc.returncode != 0:
+            detail = (stderr or b"").decode("utf-8", errors="replace").strip()
+            return None, (
+                "ffmpeg failed to decode TTS audio for live call"
+                + (f": {detail[:500]}" if detail else "")
+            )
+        if not stdout:
+            return None, "ffmpeg produced no PCM for live call audio"
+        if len(stdout) % CALLING_PCM_BYTES_PER_SAMPLE:
+            return None, "ffmpeg produced partial s16le samples for live call audio"
+        return stdout, None
+
+    async def _send_calling_sidecar_audio_file(
+        self,
+        call_id: str,
+        audio_path: str,
+    ) -> SendResult:
+        """Decode a TTS file and pace it into the live sidecar call."""
+        pcm, error = await self._decode_call_audio_file_to_pcm(audio_path)
+        if error:
+            return SendResult(success=False, error=error)
+        if not pcm:
+            return SendResult(success=False, error="No PCM decoded from TTS audio")
+
+        sequence = 0
+        for offset in range(0, len(pcm), CALLING_PCM_FRAME_BYTES):
+            frame = pcm[offset : offset + CALLING_PCM_FRAME_BYTES]
+            if len(frame) < CALLING_PCM_FRAME_BYTES:
+                frame += b"\x00" * (CALLING_PCM_FRAME_BYTES - len(frame))
+
+            result = await self._send_calling_sidecar_audio(
+                call_id,
+                frame,
+                sequence=sequence,
+            )
+            if not result.success and result.retryable:
+                await asyncio.sleep(CALLING_PCM_FRAME_MS / 1_000)
+                result = await self._send_calling_sidecar_audio(
+                    call_id,
+                    frame,
+                    sequence=sequence,
+                )
+            if not result.success:
+                return result
+
+            sequence += 1
+            if offset + CALLING_PCM_FRAME_BYTES < len(pcm):
+                await asyncio.sleep(CALLING_PCM_FRAME_MS / 1_000)
+
+        return SendResult(
+            success=True,
+            raw_response={
+                "call_id": call_id,
+                "queued_pcm_bytes": len(pcm),
+                "frames": sequence,
+                "audio": CALLING_AUDIO_CONTRACT,
+            },
+        )
+
     async def _receive_calling_sidecar_audio(
         self,
         call_id: str,
@@ -1723,6 +1835,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send an audio file as a WhatsApp voice message.
@@ -1733,6 +1846,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ffmpeg conversion to opus first and fall back to sending the
         MP3 as-is when ffmpeg is unavailable.
         """
+        call_id = self._calling_sidecar_call_id_from_metadata(metadata)
+        if call_id:
+            return await self._send_calling_sidecar_audio_file(call_id, audio_path)
+
         source = audio_path
         mime_type: Optional[str] = None
 

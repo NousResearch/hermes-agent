@@ -405,6 +405,9 @@ WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND='voice stream --quiet --sample
 WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180
 ```
 
+Hermes posts that stdout PCM to the sidecar on the negotiated `frame_ms`
+cadence, so a fast TTS process does not build a large outbound playback queue.
+
 For a local Linux user-service deployment, let Hermes generate the sidecar unit
 and gateway drop-in first. The default is a dry run that prints the files and
 config it would write:

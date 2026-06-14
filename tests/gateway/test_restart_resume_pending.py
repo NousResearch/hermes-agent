@@ -35,6 +35,7 @@ import pytest
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
+    _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
@@ -1188,6 +1189,86 @@ async def test_auto_resume_skips_sessions_with_running_agent():
     adapter.handle_message.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_startup_restore_gate_queues_real_inbound_messages():
+    """Real inbound messages wait while startup restore is in progress."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+
+    result = await runner._handle_message(inbound)
+
+    assert result is None
+    assert runner._startup_restore_queue == [inbound]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_waits_for_resume_before_draining_inbound():
+    """Queued inbound turns replay only after startup resume tasks finish."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    source = make_restart_source(chat_id="restore-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:restore-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    resume_done = asyncio.Event()
+    seen: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        if event.internal:
+            seen.append("resume-start")
+            task = asyncio.create_task(resume_done.wait())
+            adapter._session_tasks[pending_entry.session_key] = task
+            return
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    assert await runner._handle_message(inbound) is None
+    assert scheduled == 1
+    assert seen == ["resume-start"]
+    assert runner._startup_restore_queue == [inbound]
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    await asyncio.sleep(0)
+    assert seen == ["resume-start"]
+
+    resume_done.set()
+    await finish_task
+
+    assert seen == ["resume-start", "inbound:hello"]
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+
+
 # ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------
@@ -1420,3 +1501,194 @@ class TestStuckLoopEscalation:
                 {"indent": None},
             )
         ]
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_sets_sentinel_before_task_execution():
+    """Auto-resume must claim the session slot before the task starts.
+
+    Regression for #45456: between ``asyncio.create_task()`` and the task's
+    first await (where ``_process_message_background`` sets the real
+    sentinel), an inbound message could arrive and spin up a duplicate
+    AIAgent.  The fix pre-claims the slot so the inbound path sees it as
+    occupied.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="race-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:race-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    # Slow mock: hold the task open so we can inspect _running_agents
+    # while it's in-flight.
+    gate = asyncio.Event()
+
+    async def _slow_handle(event):
+        await gate.wait()
+
+    adapter.handle_message = _slow_handle
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 1
+    # The sentinel must be set immediately — before the task starts executing.
+    assert pending_entry.session_key in runner._running_agents
+    assert runner._running_agents[pending_entry.session_key] is _AGENT_PENDING_SENTINEL
+    assert pending_entry.session_key in runner._running_agents_ts
+
+    # Release the task and let it complete.
+    gate.set()
+    await asyncio.sleep(0.05)
+
+    # After the task completes, the sentinel should be cleaned up.
+    assert pending_entry.session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_sentinel_cleaned_on_task_failure():
+    """If handle_message raises before _process_message_background, the
+    sentinel must still be released so the session is not locked forever.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="fail-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:fail-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    async def _failing_handle(event):
+        raise RuntimeError("adapter exploded")
+
+    adapter.handle_message = _failing_handle
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    assert scheduled == 1
+
+    # Sentinel is set immediately.
+    assert pending_entry.session_key in runner._running_agents
+
+    # Let the task run and fail.
+    await asyncio.sleep(0.05)
+
+    # The sentinel must be cleaned up despite the failure.
+    assert pending_entry.session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_runs_agent_exactly_once_through_full_path():
+    """Full-path regression: the pre-claim must NOT make auto-resume a no-op.
+
+    The two tests above mock ``adapter.handle_message`` outright, so they
+    only prove the sentinel is set/cleaned around a stub — they never
+    exercise the real dispatch chain.  This drives the production path
+    end to end:
+
+        _schedule_resume_pending_sessions
+          -> _guarded_handle_message
+            -> adapter.handle_message            (real)
+              -> _process_message_background      (real)
+                -> _handle_message                (real)
+
+    The risk the pre-claim introduces is a *self-bounce*: the resume
+    turn's own ``_handle_message`` sees the sentinel it pre-claimed at
+    the early running-agent guard, queues the event into
+    ``_pending_messages`` and returns ``None`` without running the
+    agent.  The adapter's late-arrival drain (in
+    ``_process_message_background``'s ``finally``) re-dispatches the
+    queued event, and because the guard wrapper's ``finally`` releases
+    the pre-claim before the spawned drain task starts, the agent runs
+    exactly once.  This test locks that invariant in: the resume agent
+    must run once — never zero (regression) and never twice (the bug
+    the fix targets).
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="full-path-chat")
+    session_key = runner._session_key_for_source(source)
+    pending_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {session_key: pending_entry}
+
+    # Wire the REAL runner pipeline that _handle_message depends on.
+    from gateway.run import GatewayRunner
+
+    runner._handle_message = GatewayRunner._handle_message.__get__(
+        runner, GatewayRunner
+    )
+    runner._release_running_agent_state = (
+        GatewayRunner._release_running_agent_state.__get__(runner, GatewayRunner)
+    )
+    runner._check_slash_access = lambda *a, **k: None
+    runner._begin_session_run_generation = lambda session_key: 1
+    runner._is_session_run_current = lambda session_key, generation: True
+    runner._invalidate_session_run_generation = lambda *a, **k: 0
+    runner._claim_active_session_slot = lambda session_key, source: (object(), None)
+    runner._active_session_leases = {}
+    runner._busy_ack_ts = {}
+    runner._post_turn_goal_continuation = AsyncMock()
+    runner.session_store.get_or_create_session.return_value = None
+
+    # Count how many times an actual agent run is started for this session.
+    agent_runs: list[str] = []
+
+    async def _fake_run(event, source, _quick_key, run_generation):
+        agent_runs.append(_quick_key)
+        return "RESUMED OK"
+
+    runner._handle_message_with_agent = _fake_run
+
+    # Route the adapter's real background pipeline at the real handler,
+    # and stub the leaf send/typing calls so delivery is a no-op.
+    adapter.set_message_handler(runner._handle_message)
+    adapter.send = AsyncMock()
+    adapter._keep_typing = AsyncMock()
+    adapter._stop_typing_refresh = AsyncMock()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="1")
+    )
+    adapter._run_processing_hook = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    assert scheduled == 1
+    # Pre-claim must be visible immediately.
+    assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+
+    # Let the guarded task, the background task, and the late-arrival
+    # drain task all settle.
+    for _ in range(20):
+        await asyncio.sleep(0.02)
+
+    # Exactly one agent run for the resumed session — not zero (the
+    # pre-claim did not swallow the resume) and not two (no duplicate).
+    assert agent_runs == [session_key]
+    # No leaked sentinel and no orphaned queued event.
+    assert session_key not in runner._running_agents
+    assert session_key not in getattr(adapter, "_pending_messages", {})

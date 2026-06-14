@@ -596,6 +596,8 @@ CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(ex
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
+CREATE INDEX IF NOT EXISTS idx_sessions_active
+    ON sessions(started_at DESC) WHERE ended_at IS NULL;
 """
 
 FTS_SQL = """
@@ -674,8 +676,8 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a PASSIVE WAL checkpoint every N successful writes.
-    _CHECKPOINT_EVERY_N_WRITES = 50
+    # Attempt a TRUNCATE WAL checkpoint every N successful writes.
+    _CHECKPOINT_EVERY_N_WRITES = 25
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1971,6 +1973,33 @@ class SessionDB:
                 return current
             current = row["id"]
         return current
+
+    def active_session_count(self, idle_secs: int = 300) -> int:
+        """Return count of active (unended, recently-active) sessions.
+
+        Uses the ``idx_sessions_active`` partial index for O(1) lookup
+        instead of loading sessions into Python and iterating.
+
+        Parameters
+        ----------
+        idle_secs
+            A session is "active" if it has a message within this many
+            seconds.  Default 300 (5 minutes), matching the dashboard.
+        """
+        cutoff = time.time() - idle_secs
+        try:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions s"
+                " WHERE s.ended_at IS NULL"
+                " AND EXISTS ("
+                "   SELECT 1 FROM messages m"
+                "   WHERE m.session_id = s.id AND m.timestamp > ?"
+                " )",
+                (cutoff,),
+            )
+            return cursor.fetchone()[0]
+        except Exception:
+            return 0
 
     def list_sessions_rich(
         self,

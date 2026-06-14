@@ -48,6 +48,11 @@ _start_time: Optional[float] = None
 _interval_seconds: float = 300.0  # 5 minutes
 _lock = threading.Lock()
 
+# Proactive GC — trigger gc.collect() when RSS exceeds threshold.
+_gc_threshold_mb: int = 400
+_gc_cooldown_secs: float = 600.0  # 10 minutes
+_last_gc_time: float = 0.0
+
 
 def _get_rss_mb() -> Optional[int]:
     """Return current process resident set size in MB, or None if unavailable.
@@ -126,11 +131,41 @@ def log_memory_usage(prefix: str = "") -> None:
         )
 
 
+def _maybe_proactive_gc() -> None:
+    """Trigger gc.collect() if RSS exceeds threshold and cooldown elapsed.
+
+    The gateway is a long-lived process that accumulates references to
+    agent instances, session transcripts, tool schemas, and MCP connections.
+    Passive logging alone cannot prevent gradual growth — proactive
+    collection reclaims unreachable objects before hitting the 500MB target.
+    """
+    global _last_gc_time
+    rss = _get_rss_mb()
+    if rss is None or rss < _gc_threshold_mb:
+        return
+    now = time.monotonic()
+    if now - _last_gc_time < _gc_cooldown_secs:
+        return
+    _last_gc_time = now
+    unreachable_before = len(gc.garbage)
+    collected = gc.collect()
+    rss_after = _get_rss_mb()
+    logger.info(
+        "[MEMORY] Proactive GC: rss=%dMB→%sMB collected=%d unreachable=%d→%d",
+        rss,
+        f"{rss_after}" if rss_after is not None else "?",
+        collected,
+        unreachable_before,
+        len(gc.garbage),
+    )
+
+
 def _monitor_loop(stop_event: threading.Event, interval: float) -> None:
     """Background thread body — log every ``interval`` seconds until stopped."""
     while not stop_event.wait(interval):
         try:
             log_memory_usage()
+            _maybe_proactive_gc()
         except Exception as e:
             # Never let the monitor crash the gateway; just log and carry on.
             logger.debug("Memory monitor iteration failed: %s", e)

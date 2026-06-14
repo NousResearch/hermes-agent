@@ -19,8 +19,10 @@ from gateway import memory_monitor as mm
 def _ensure_monitor_stopped():
     """Every test starts from a clean state and leaves one behind."""
     mm.stop_memory_monitoring(timeout=1.0)
+    mm._last_gc_time = 0.0
     yield
     mm.stop_memory_monitoring(timeout=1.0)
+    mm._last_gc_time = 0.0
 
 
 def test_log_memory_usage_emits_memory_line(caplog):
@@ -120,3 +122,36 @@ def test_unavailable_rss_warns_and_does_not_start(caplog, monkeypatch):
     assert started is False
     assert mm.is_running() is False
     assert any("Memory monitoring unavailable" in r.getMessage() for r in caplog.records)
+
+
+def test_proactive_gc_triggers_above_threshold(caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
+    monkeypatch.setattr(mm, "_get_rss_mb", lambda: 450)
+    mm._gc_threshold_mb = 400
+    mm._gc_cooldown_secs = 0.0  # No cooldown for test
+    mm._last_gc_time = 0.0
+    mm._maybe_proactive_gc()
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("Proactive GC" in m for m in messages), messages
+
+
+def test_proactive_gc_respects_cooldown(caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
+    monkeypatch.setattr(mm, "_get_rss_mb", lambda: 450)
+    mm._gc_threshold_mb = 400
+    mm._gc_cooldown_secs = 600.0
+    mm._last_gc_time = time.monotonic()  # Just ran GC
+    mm._maybe_proactive_gc()
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("Proactive GC" in m for m in messages), messages
+
+
+def test_proactive_gc_skips_below_threshold(caplog, monkeypatch):
+    caplog.set_level(logging.INFO, logger="gateway.memory_monitor")
+    monkeypatch.setattr(mm, "_get_rss_mb", lambda: 200)
+    mm._gc_threshold_mb = 400
+    mm._gc_cooldown_secs = 0.0
+    mm._last_gc_time = 0.0
+    mm._maybe_proactive_gc()
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("Proactive GC" in m for m in messages), messages

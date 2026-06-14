@@ -583,7 +583,7 @@ class TestCallingSidecarClient:
         assert call.args[0] == (
             "http://127.0.0.1:8787/calls/wacid.call%2Fwith%2Fslash/audio"
         )
-        assert call.kwargs["params"] == {"max_bytes": 4}
+        assert call.kwargs["params"] == {"max_bytes": 4, "wait_ms": 500}
         assert call.kwargs["timeout"] == 2.5
 
     @pytest.mark.asyncio
@@ -604,6 +604,17 @@ class TestCallingSidecarClient:
         adapter._http_client.get = AsyncMock()
 
         audio = await adapter._receive_calling_sidecar_audio("call-1", max_bytes=1)
+
+        assert audio is None
+        adapter._http_client.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_receive_calling_sidecar_audio_rejects_negative_wait(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock()
+
+        audio = await adapter._receive_calling_sidecar_audio("call-1", wait_ms=-1)
 
         assert audio is None
         adapter._http_client.get.assert_not_called()

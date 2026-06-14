@@ -106,6 +106,7 @@ CALLING_PCM_FRAME_BYTES = (
     * CALLING_PCM_FRAME_MS
     // 1_000
 )
+CALLING_PCM_DRAIN_WAIT_MS = 500
 CALLING_PCM_ENCODING = "pcm_s16le"
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
@@ -533,6 +534,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         call_id: str,
         *,
         max_bytes: int = CALLING_PCM_FRAME_BYTES,
+        wait_ms: int = CALLING_PCM_DRAIN_WAIT_MS,
     ) -> Optional[CallingSidecarAudio]:
         """Drain decoded inbound 48 kHz PCM from a local WebRTC sidecar call."""
         if not self._calling_sidecar_enabled():
@@ -558,13 +560,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[whatsapp_cloud] sidecar audio max_bytes must preserve s16le samples"
             )
             return None
+        if not isinstance(wait_ms, int) or wait_ms < 0:
+            logger.warning("[whatsapp_cloud] invalid sidecar audio wait_ms=%r", wait_ms)
+            return None
 
         encoded_call_id = quote(normalized_call_id, safe="")
         url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/audio"
         try:
             resp = await self._http_client.get(
                 url,
-                params={"max_bytes": max_bytes},
+                params={"max_bytes": max_bytes, "wait_ms": wait_ms},
                 timeout=self._calling_sidecar_timeout,
             )
         except Exception:

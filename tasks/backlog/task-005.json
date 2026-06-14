@@ -1,0 +1,14 @@
+{
+  "id": "task-005",
+  "title": "Build runtime wrapper prototype",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 2 - Runtime Wrapper",
+  "summary": "Build a thin wrapper that launches official Hermes Agent and captures structured output for Hermes OS.",
+  "acceptanceCriteria": [
+    "Wrapper can invoke hermes-agent with a prompt and working directory",
+    "Wrapper captures stdout, stderr, exit code, and duration",
+    "Wrapper supports timeout and cancellation",
+    "Wrapper fails gracefully when runtime is unavailable"
+  ]
+}

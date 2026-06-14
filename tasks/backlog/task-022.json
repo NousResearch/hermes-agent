@@ -1,0 +1,14 @@
+{
+  "id": "task-022",
+  "title": "Create integration rollout plan",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Validation",
+  "summary": "Create a staged rollout plan for enabling official runtime delegation inside Hermes OS.",
+  "acceptanceCriteria": [
+    "Rollout begins with opt-in dry-run mode",
+    "Rollout includes rollback and disable switch",
+    "Rollout defines project-by-project enablement",
+    "Success metrics and failure thresholds are documented"
+  ]
+}

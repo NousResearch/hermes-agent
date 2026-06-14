@@ -1,0 +1,14 @@
+{
+  "id": "task-002",
+  "title": "Create hermes-agent launcher",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 1 - Standalone Runtime",
+  "summary": "Create a non-conflicting launcher named hermes-agent for the official runtime.",
+  "acceptanceCriteria": [
+    "hermes-agent launches the official runtime from this repo",
+    "Existing hermes command remains untouched",
+    "Launcher works from outside the repo directory",
+    "Docs explain how Hermes OS and hermes-agent coexist"
+  ]
+}

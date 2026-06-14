@@ -1,0 +1,14 @@
+{
+  "id": "task-001",
+  "title": "Verify standalone Hermes Agent runtime",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 1 - Standalone Runtime",
+  "summary": "Verify the official Hermes Agent runtime starts and operates independently from Hermes OS.",
+  "acceptanceCriteria": [
+    "Local runtime starts from the nous-hermes-agent repo",
+    "Runtime can show help or run a basic chat/session command",
+    "Verification does not modify Hermes OS",
+    "Results are recorded in the integration execution log"
+  ]
+}

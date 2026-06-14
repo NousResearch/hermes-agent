@@ -1,0 +1,14 @@
+{
+  "id": "task-012",
+  "title": "Define memory boundary",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 6 - Memory Boundary",
+  "summary": "Define how Hermes OS memory and official runtime memory coexist without source-of-truth conflicts.",
+  "acceptanceCriteria": [
+    "Hermes OS remains authoritative for projects, tasks, reports, research, reviews, and experiments",
+    "Runtime memory is documented as cache or execution-local context",
+    "Runtime outputs are persisted back into Hermes OS stores",
+    "Docs include examples of allowed and disallowed memory use"
+  ]
+}

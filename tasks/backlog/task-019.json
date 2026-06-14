@@ -1,0 +1,14 @@
+{
+  "id": "task-019",
+  "title": "Build checkpointed workflow prototype",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 9 - Long-Running Workflows",
+  "summary": "Build a prototype checkpointed workflow using official runtime workers for at least two steps.",
+  "acceptanceCriteria": [
+    "Prototype runs at least two delegated steps",
+    "Each step writes a Hermes OS checkpoint",
+    "Workflow can resume from the latest checkpoint",
+    "Failure creates a retryable or escalated state"
+  ]
+}

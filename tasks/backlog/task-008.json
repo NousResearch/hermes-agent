@@ -1,0 +1,14 @@
+{
+  "id": "task-008",
+  "title": "Create official-agent registry",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 4 - Agent Registry",
+  "summary": "Create a registry of official-runtime-backed agent definitions for Hermes OS delegation.",
+  "acceptanceCriteria": [
+    "Registry defines research, coding, testing, review, documentation, and deployment agents",
+    "Each agent has purpose, inputs, outputs, allowed tools, and runtime provider",
+    "Registry supports non-official-runtime agents where appropriate",
+    "Registry is documented for Hermes OS integration"
+  ]
+}

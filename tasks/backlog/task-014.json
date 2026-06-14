@@ -1,0 +1,14 @@
+{
+  "id": "task-014",
+  "title": "Design MCP permission bridge",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 7 - MCP Integration",
+  "summary": "Design how Hermes OS grants MCP/tool permissions to official runtime workers.",
+  "acceptanceCriteria": [
+    "Design lists supported MCP categories",
+    "Hermes OS remains permission authority",
+    "Runtime receives only delegated tool access",
+    "Design covers GitHub, Discord, browser, filesystem, docs, research, Kalshi, and broker integrations"
+  ]
+}

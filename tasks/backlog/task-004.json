@@ -1,0 +1,14 @@
+{
+  "id": "task-004",
+  "title": "Define runtime adapter contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 2 - Runtime Wrapper",
+  "summary": "Define the request/response contract Hermes OS will use to invoke the official runtime.",
+  "acceptanceCriteria": [
+    "Contract includes task id, project id, agent kind, prompt, context, and tool policy",
+    "Contract includes status, output, artifacts, errors, cost, and timing fields",
+    "Contract is documented before implementation",
+    "Contract treats Hermes OS as source of truth"
+  ]
+}

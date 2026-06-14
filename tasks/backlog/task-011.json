@@ -1,0 +1,14 @@
+{
+  "id": "task-011",
+  "title": "Build delegation prototype",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 5 - Delegation",
+  "summary": "Build a minimal delegation prototype that routes one Hermes OS task to the official runtime and stores the result.",
+  "acceptanceCriteria": [
+    "Prototype delegates a single task to a selected agent",
+    "Result is returned in the validated response schema",
+    "Hermes OS stores final output, not runtime memory",
+    "Prototype includes a dry-run mode"
+  ]
+}

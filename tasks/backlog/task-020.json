@@ -1,0 +1,14 @@
+{
+  "id": "task-020",
+  "title": "Define Kalshi research agent architecture",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Phase 10 - Kalshi Research",
+  "summary": "Define the long-term Kalshi research architecture using official runtime worker agents under Hermes OS.",
+  "acceptanceCriteria": [
+    "Architecture covers research, evidence, validation, portfolio, experiment tracking, and dashboard",
+    "Hermes OS remains command center",
+    "Official runtime is worker layer only",
+    "Architecture identifies which tasks stay direct DeepSeek vs official runtime"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-007",
+  "title": "Add adapter error taxonomy",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Phase 3 - Contracts",
+  "summary": "Define standard error codes for runtime, validation, timeout, permission, and tool failures.",
+  "acceptanceCriteria": [
+    "Error taxonomy is documented",
+    "Wrapper maps runtime failures to standard codes",
+    "Hermes OS can distinguish retryable and non-retryable failures",
+    "Tests cover timeout, validation, and unavailable runtime cases"
+  ]
+}

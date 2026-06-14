@@ -1,0 +1,14 @@
+{
+  "id": "task-003",
+  "title": "Document command ownership",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 1 - Standalone Runtime",
+  "summary": "Document the command boundary between Hermes OS and official Hermes Agent.",
+  "acceptanceCriteria": [
+    "hermes is documented as Hermes OS owned",
+    "hermes-agent is documented as official runtime owned",
+    "No alias or shell setup overwrites hermes",
+    "Troubleshooting notes cover PATH conflicts"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-017",
+  "title": "Add runtime health endpoint contract",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Phase 8 - Dashboard",
+  "summary": "Define and implement a health/status contract Hermes OS can poll for official runtime availability.",
+  "acceptanceCriteria": [
+    "Health response includes availability, provider, latency, version, and recent errors",
+    "Contract is validated",
+    "Unavailable runtime returns a safe degraded status",
+    "Tests cover healthy and unavailable runtime states"
+  ]
+}

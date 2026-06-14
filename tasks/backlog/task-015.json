@@ -1,0 +1,14 @@
+{
+  "id": "task-015",
+  "title": "Build MCP adapter prototype",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Phase 7 - MCP Integration",
+  "summary": "Build a prototype MCP adapter that exposes one controlled tool capability to the official runtime.",
+  "acceptanceCriteria": [
+    "Prototype grants a narrow tool permission",
+    "Hermes OS permission policy is checked before runtime use",
+    "Runtime invocation records tool usage",
+    "Tests cover allowed and denied tool access"
+  ]
+}

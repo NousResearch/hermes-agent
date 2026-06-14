@@ -1,0 +1,14 @@
+{
+  "id": "task-010",
+  "title": "Design delegation engine",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 5 - Delegation",
+  "summary": "Design the Hermes OS delegation engine that selects agents, invokes runtime, and returns results.",
+  "acceptanceCriteria": [
+    "Design covers agent selection, retries, escalation, and result persistence",
+    "Design supports sequential and parallel execution",
+    "Design keeps Hermes OS as source of truth",
+    "Design includes failure and rollback behavior"
+  ]
+}

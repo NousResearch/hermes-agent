@@ -1,0 +1,14 @@
+{
+  "id": "task-021",
+  "title": "Create integration smoke tests",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Validation",
+  "summary": "Create smoke tests that verify Hermes OS and official Hermes Agent can coexist and delegate safely.",
+  "acceptanceCriteria": [
+    "Smoke test verifies hermes command is not overwritten",
+    "Smoke test verifies hermes-agent command works",
+    "Smoke test runs a dry-run delegation",
+    "Smoke test verifies output is validated before storage"
+  ]
+}

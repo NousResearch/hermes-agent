@@ -1,0 +1,14 @@
+{
+  "id": "task-018",
+  "title": "Design long-running workflow orchestration",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 9 - Long-Running Workflows",
+  "summary": "Design long-running Hermes OS workflows that use the official runtime for worker execution.",
+  "acceptanceCriteria": [
+    "Design covers research to validation to review to report workflows",
+    "Design supports overnight execution and resume after crash",
+    "Design includes checkpoints, retries, and partial result persistence",
+    "Design keeps Hermes OS workflow state authoritative"
+  ]
+}

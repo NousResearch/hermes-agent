@@ -1,0 +1,14 @@
+{
+  "id": "task-006",
+  "title": "Add validated integration schemas",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Phase 3 - Contracts",
+  "summary": "Add typed schemas for all Hermes OS to Hermes Agent integration messages.",
+  "acceptanceCriteria": [
+    "Schemas validate agent requests and responses",
+    "Schemas validate delegation requests and research results",
+    "Invalid runtime output is rejected with clear errors",
+    "Tests cover valid and invalid payloads"
+  ]
+}

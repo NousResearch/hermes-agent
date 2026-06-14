@@ -18,6 +18,7 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -66,6 +67,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
+    for attr in ("parent_chat_id", "guild_id", "chat_type"):
+        value = getattr(source, attr, None)
+        if value is not None:
+            metadata[attr] = str(value)
+    sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
+    if sender is not None:
+        metadata["user_id"] = str(sender)
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
@@ -484,6 +492,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.runtime_guard import GuardContext, get_runtime_guard_manager
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -2274,6 +2283,80 @@ class BasePlatformAdapter(ABC):
         except Exception:
             logger.debug("topic recovery rewrite failed", exc_info=True)
 
+    def _runtime_guard_config_source(self) -> Any:
+        """Return the adapter-local runtime guard config mapping, if present."""
+        config = getattr(self, "config", None)
+        extra = getattr(config, "extra", None)
+        if isinstance(extra, Mapping):
+            runtime_guard = extra.get("runtime_guard")
+            return runtime_guard if isinstance(runtime_guard, Mapping) else None
+        if isinstance(config, Mapping):
+            runtime_guard = config.get("runtime_guard")
+            return runtime_guard if isinstance(runtime_guard, Mapping) else None
+        return None
+
+    def _build_runtime_guard_context(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        surface: str,
+    ) -> GuardContext:
+        source = getattr(event, "source", None)
+        get_command = getattr(event, "get_command", None)
+        try:
+            command = get_command() if callable(get_command) else None
+        except Exception:
+            command = None
+        message_id = (
+            getattr(event, "message_id", None)
+            or getattr(source, "message_id", None)
+        )
+        return GuardContext(
+            surface=surface,
+            platform=getattr(source, "platform", getattr(self, "platform", None)),
+            chat_id=getattr(source, "chat_id", None),
+            thread_id=getattr(source, "thread_id", None),
+            parent_chat_id=getattr(source, "parent_chat_id", None),
+            guild_id=getattr(source, "guild_id", None),
+            user_id=getattr(source, "user_id_alt", None) or getattr(source, "user_id", None),
+            message_id=message_id,
+            session_key=session_key,
+            chat_type=getattr(source, "chat_type", None),
+            is_internal=bool(getattr(event, "internal", False)),
+            command=command,
+            metadata={
+                "message_type": getattr(getattr(event, "message_type", None), "value", None),
+            },
+        )
+
+    def _runtime_guard_manager(self):
+        return get_runtime_guard_manager(self._runtime_guard_config_source())
+
+    def _check_runtime_guard_inbound(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ):
+        context = self._build_runtime_guard_context(
+            event,
+            session_key,
+            surface="inbound_message",
+        )
+        return self._runtime_guard_manager().check(context)
+
+    def _check_runtime_guard_assistant_final(
+        self,
+        event: MessageEvent,
+        session_key: str,
+    ):
+        context = self._build_runtime_guard_context(
+            event,
+            session_key,
+            surface="assistant_final",
+        )
+        return self._runtime_guard_manager().check_surface_policy(context)
+
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
@@ -3940,6 +4023,16 @@ class BasePlatformAdapter(ABC):
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
+        _runtime_guard_decision = self._check_runtime_guard_inbound(event, session_key)
+        if not _runtime_guard_decision.allowed:
+            logger.warning(
+                "[%s] Runtime guard blocked inbound message for %s: %s",
+                self.name,
+                session_key,
+                _runtime_guard_decision.reason,
+            )
+            return
+
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
         # cancelled), the lock is stale.  Clear it and fall through to
@@ -4157,6 +4250,9 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        if _thread_metadata is not None:
+            _thread_metadata = dict(_thread_metadata)
+            _thread_metadata["session_key"] = session_key
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -4212,6 +4308,19 @@ class BasePlatformAdapter(ABC):
                     session_key,
                 )
                 response = None
+            if response:
+                _runtime_guard_decision = self._check_runtime_guard_assistant_final(
+                    event,
+                    session_key,
+                )
+                if not _runtime_guard_decision.allowed:
+                    logger.warning(
+                        "[%s] Runtime guard blocked assistant final for %s: %s",
+                        self.name,
+                        session_key,
+                        _runtime_guard_decision.reason,
+                    )
+                    response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
@@ -4545,6 +4654,15 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
+                _runtime_guard_decision = self._check_runtime_guard_assistant_final(event, session_key)
+                if not _runtime_guard_decision.allowed:
+                    logger.warning(
+                        "[%s] Runtime guard blocked error response for %s: %s",
+                        self.name,
+                        session_key,
+                        _runtime_guard_decision.reason,
+                    )
+                    return
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                 await self.send(
                     chat_id=event.source.chat_id,

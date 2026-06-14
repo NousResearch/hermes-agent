@@ -172,6 +172,31 @@ class DeliveryTarget:
         return self.platform.value
 
 
+def check_delivery_router_runtime_guard(
+    config_source: Any,
+    target: DeliveryTarget,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+):
+    """Classify a delivery-router send against runtime_guard policy.
+
+    The helper is intentionally pure: it does not send, resolve, or mutate
+    router state. Live wiring can call it later without coupling tests to
+    adapters.
+    """
+
+    from gateway.runtime_guard import check_delivery_surface_policy
+
+    return check_delivery_surface_policy(
+        config_source,
+        "delivery_router",
+        platform=target.platform,
+        chat_id=target.chat_id,
+        thread_id=target.thread_id,
+        metadata=metadata,
+    )
+
+
 class DeliveryRouter:
     """
     Routes messages to appropriate destinations.
@@ -220,6 +245,21 @@ class DeliveryRouter:
                 if target.platform == Platform.LOCAL:
                     result = self._deliver_local(content, job_id, job_name, metadata)
                 else:
+                    pconfig = self.config.platforms.get(target.platform) if self.config else None
+                    runtime_guard_config = None
+                    if pconfig is not None:
+                        runtime_guard_config = {"runtime_guard": (getattr(pconfig, "extra", {}) or {}).get("runtime_guard")}
+                    decision = check_delivery_router_runtime_guard(
+                        runtime_guard_config,
+                        target,
+                        metadata=metadata,
+                    )
+                    if not decision.allowed:
+                        results[target.to_string()] = {
+                            "success": False,
+                            "error": decision.reason or decision.status,
+                        }
+                        continue
                     result = await self._deliver_to_platform(target, content, metadata)
                 
                 results[target.to_string()] = {
@@ -427,7 +467,6 @@ class DeliveryRouter:
             if _send_result_failed(result):
                 raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
         return result
-
 
 
 

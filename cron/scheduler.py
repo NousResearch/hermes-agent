@@ -30,7 +30,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -510,6 +510,37 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     }
 
 
+def check_cron_delivery_runtime_guard(
+    config_source: Any,
+    target: dict,
+    *,
+    job: Optional[dict] = None,
+):
+    """Classify a cron delivery target against runtime_guard policy.
+
+    Pure helper only: no delivery, adapter lookup, job mutation, or network
+    access. Missing runtime_guard config is disabled/no-op.
+    """
+
+    from gateway.runtime_guard import check_delivery_surface_policy
+
+    metadata = {}
+    if job:
+        if job.get("id"):
+            metadata["job_id"] = job.get("id")
+        if job.get("name"):
+            metadata["job_name"] = job.get("name")
+
+    return check_delivery_surface_policy(
+        config_source,
+        "cron_delivery",
+        platform=(target or {}).get("platform"),
+        chat_id=(target or {}).get("chat_id"),
+        thread_id=(target or {}).get("thread_id"),
+        metadata=metadata or None,
+    )
+
+
 def _normalize_deliver_value(deliver) -> str:
     """Normalize a stored/submitted ``deliver`` value to its canonical string form.
 
@@ -748,6 +779,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         pconfig = config.platforms.get(platform)
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            delivery_errors.append(msg)
+            continue
+
+        runtime_guard_config = {"runtime_guard": (getattr(pconfig, "extra", {}) or {}).get("runtime_guard")}
+        guard_decision = check_cron_delivery_runtime_guard(runtime_guard_config, target, job=job)
+        if not guard_decision.allowed:
+            msg = f"cron delivery blocked by runtime_guard: {guard_decision.reason or guard_decision.status}"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue

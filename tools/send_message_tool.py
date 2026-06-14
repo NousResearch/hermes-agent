@@ -212,8 +212,9 @@ def _handle_react(args, remove=False):
     platform_name = parts[0].strip().lower()
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
+    thread_id = None
     if target_ref:
-        chat_id, _thread_id, _ = _parse_target_ref(platform_name, target_ref)
+        chat_id, thread_id, _ = _parse_target_ref(platform_name, target_ref)
         if not chat_id:
             try:
                 from gateway.channel_directory import resolve_channel_name
@@ -223,7 +224,11 @@ def _handle_react(args, remove=False):
             # Opaque platform-native ids (e.g. photon space GUIDs like
             # 'any;-;+1555...') match no parser pattern and no directory
             # entry — pass them through verbatim; the adapter validates.
-            chat_id = resolved or target_ref
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+                chat_id = chat_id or resolved
+            else:
+                chat_id = target_ref
 
     try:
         from gateway.config import Platform, load_gateway_config
@@ -231,10 +236,30 @@ def _handle_react(args, remove=False):
     except (ValueError, KeyError):
         return tool_error(f"Unknown platform: {platform_name}")
 
+    config = None
+    pconfig = None
+    try:
+        config = load_gateway_config()
+        pconfig = config.platforms.get(platform)
+    except Exception:
+        config = None
+
+    runner = None
+    adapter = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        adapter = runner.adapters.get(platform) if runner is not None else None
+        if pconfig is None and adapter is not None:
+            pconfig = getattr(adapter, "config", None)
+    except Exception:
+        runner = None
+        adapter = None
+
+    used_home_channel = False
     if not chat_id:
         try:
-            config = load_gateway_config()
-            home = config.get_home_channel(platform)
+            home = config.get_home_channel(platform) if config is not None else None
         except Exception:
             home = None
         if not home:
@@ -243,14 +268,28 @@ def _handle_react(args, remove=False):
                 f"Use '{platform_name}:chat_id'."
             )
         chat_id = home.chat_id
+        thread_id = getattr(home, "thread_id", None) or thread_id
+        used_home_channel = True
 
-    runner = None
-    try:
-        from gateway.run import _gateway_runner_ref
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
-    adapter = runner.adapters.get(platform) if runner is not None else None
+    runtime_guard_decision = _check_send_message_runtime_guard(
+        pconfig,
+        platform,
+        chat_id,
+        thread_id,
+        target_ref=target_ref,
+        used_home_channel=used_home_channel,
+        surface="send_message_reaction",
+        extra_metadata={"action": "unreact" if remove else "react"},
+    )
+    if not runtime_guard_decision.allowed:
+        return tool_error(
+            "Runtime guard blocked send_message reaction",
+            blocked=True,
+            reason=runtime_guard_decision.reason,
+            status=runtime_guard_decision.status,
+            surface=runtime_guard_decision.surface,
+        )
+
     if adapter is None:
         return tool_error(
             f"Reactions require a live {platform_name} adapter in the running "
@@ -392,6 +431,23 @@ def _handle_send(args):
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
+
+    runtime_guard_decision = _check_send_message_runtime_guard(
+        pconfig,
+        platform,
+        chat_id,
+        thread_id,
+        target_ref=target_ref,
+        used_home_channel=used_home_channel,
+    )
+    if not runtime_guard_decision.allowed:
+        return tool_error(
+            "Runtime guard blocked send_message delivery",
+            blocked=True,
+            reason=runtime_guard_decision.reason,
+            status=runtime_guard_decision.status,
+            surface=runtime_guard_decision.surface,
+        )
 
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
@@ -589,6 +645,72 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
             "your final response instead, or use a different target if you want an additional message."
         ),
     }
+
+
+def _send_message_runtime_guard_config_source(pconfig):
+    extra = getattr(pconfig, "extra", None)
+    if isinstance(extra, dict):
+        runtime_guard = extra.get("runtime_guard")
+        return runtime_guard if isinstance(runtime_guard, dict) else None
+    if isinstance(pconfig, dict):
+        runtime_guard = pconfig.get("runtime_guard")
+        return runtime_guard if isinstance(runtime_guard, dict) else None
+    return None
+
+
+def _check_send_message_runtime_guard(
+    pconfig,
+    platform,
+    chat_id,
+    thread_id,
+    *,
+    target_ref=None,
+    used_home_channel=False,
+    surface="send_message_tool",
+    extra_metadata=None,
+):
+    from gateway.runtime_guard import check_delivery_surface_policy
+
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        get_session_env = None
+
+    def _session_env(name):
+        if get_session_env is None:
+            return ""
+        try:
+            return get_session_env(name, "")
+        except Exception:
+            return ""
+
+    source_platform = _session_env("HERMES_SESSION_PLATFORM")
+    source_chat_id = _session_env("HERMES_SESSION_CHAT_ID")
+    source_thread_id = _session_env("HERMES_SESSION_THREAD_ID")
+    metadata = {
+        "target_ref": target_ref,
+        "used_home_channel": used_home_channel,
+    }
+    if isinstance(extra_metadata, dict):
+        metadata.update(extra_metadata)
+    if source_platform:
+        metadata["source_platform"] = source_platform
+    if source_chat_id:
+        metadata["source_chat_id"] = source_chat_id
+    if source_thread_id:
+        metadata["source_thread_id"] = source_thread_id
+
+    return check_delivery_surface_policy(
+        _send_message_runtime_guard_config_source(pconfig),
+        surface,
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        user_id=_session_env("HERMES_SESSION_USER_ID") or None,
+        message_id=_session_env("HERMES_SESSION_MESSAGE_ID") or None,
+        session_key=_session_env("HERMES_SESSION_KEY") or None,
+        metadata=metadata,
+    )
 
 
 async def _send_via_adapter(

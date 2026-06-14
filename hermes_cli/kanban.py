@@ -361,6 +361,12 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument("--model", default=None, dest="model_override",
+                          metavar="MODEL",
+                          help="Per-task model override. Pins the worker to "
+                               "this model (passed as `hermes -m MODEL`) "
+                               "instead of the assignee profile's default. "
+                               "Omit to use the profile default.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -535,7 +541,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_edit.add_argument("task_id")
     p_edit.add_argument(
         "--result",
-        required=True,
+        default=None,
         help="Backfilled task result text for a done task",
     )
     p_edit.add_argument(
@@ -547,6 +553,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--metadata",
         default=None,
         help="JSON dict of structured facts to store on the latest completed run.",
+    )
+    p_edit.add_argument(
+        "--model",
+        default=None,
+        dest="model_override",
+        metavar="MODEL",
+        help="Set the per-task model override (passed to the worker as "
+             "`hermes -m MODEL`). Omitting --model leaves the existing "
+             "override untouched; use --clear-model to remove it.",
+    )
+    p_edit.add_argument(
+        "--clear-model",
+        action="store_true",
+        dest="clear_model",
+        help="Clear the per-task model override (revert to the assignee "
+             "profile default). Mutually exclusive with --model.",
     )
 
     p_block = sub.add_parser("block", help="Mark one or more tasks blocked")
@@ -1346,6 +1368,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            model_override=getattr(args, "model_override", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1919,21 +1942,60 @@ def _cmd_edit(args: argparse.Namespace) -> int:
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"kanban: --metadata: {exc}", file=sys.stderr)
             return 2
+
+    model_override = getattr(args, "model_override", None)
+    clear_model = bool(getattr(args, "clear_model", False))
+    if model_override is not None and clear_model:
+        print(
+            "kanban: --model and --clear-model are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The result-backfill edit is only attempted when --result is given;
+    # --model / --clear-model are independent edits that apply to any task.
+    do_result = getattr(args, "result", None) is not None
+    do_model = model_override is not None or clear_model
+
+    if not do_result and not do_model:
+        print(
+            "kanban: nothing to edit (pass --result, --model, or --clear-model)",
+            file=sys.stderr,
+        )
+        return 2
+
+    rc = 0
     with kb.connect_closing() as conn:
-        if not kb.edit_completed_task_result(
-            conn,
-            args.task_id,
-            result=args.result,
-            summary=getattr(args, "summary", None),
-            metadata=metadata,
-        ):
-            print(
-                f"cannot edit {args.task_id} (unknown id or task is not done)",
-                file=sys.stderr,
-            )
-            return 1
-    print(f"Edited {args.task_id}")
-    return 0
+        if do_model:
+            # --clear-model writes NULL; --model X writes X literally. The
+            # None sentinel ("--model omitted") never reaches here.
+            new_model = None if clear_model else model_override
+            affected = kb.set_task_model(conn, args.task_id, new_model)
+            if affected == 0:
+                print(
+                    f"cannot set model on {args.task_id} (unknown id)",
+                    file=sys.stderr,
+                )
+                return 1
+            if clear_model:
+                print(f"Cleared model override on {args.task_id}")
+            else:
+                print(f"Set model override on {args.task_id}: {new_model}")
+        if do_result:
+            if not kb.edit_completed_task_result(
+                conn,
+                args.task_id,
+                result=args.result,
+                summary=getattr(args, "summary", None),
+                metadata=metadata,
+            ):
+                print(
+                    f"cannot edit {args.task_id} (unknown id or task is not done)",
+                    file=sys.stderr,
+                )
+                return 1
+            print(f"Edited {args.task_id}")
+    return rc
 
 
 def _cmd_block(args: argparse.Namespace) -> int:

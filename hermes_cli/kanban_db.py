@@ -2072,6 +2072,7 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    model_override: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2236,8 +2237,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        model_override
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2259,6 +2261,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        model_override,
                     ),
                 )
                 for pid in parents:
@@ -4708,6 +4711,28 @@ def set_workspace_path(
         )
 
 
+def set_task_model(
+    conn: sqlite3.Connection, task_id: str, model: Optional[str]
+) -> int:
+    """Set (or clear) a task's per-task model override.
+
+    ``model`` is taken literally: a non-empty string pins that model, and
+    ``None`` writes SQL NULL (clears the override). The DB layer does NOT
+    interpret ``""`` — empty-string handling is a CLI concern; whatever is
+    passed is stored verbatim.
+
+    Returns the number of rows affected: a call against a nonexistent
+    ``task_id`` returns ``0`` (never a silent success), so callers can tell
+    a real write from a no-op.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET model_override = ? WHERE id = ?",
+            (model, task_id),
+        )
+    return int(cur.rowcount or 0)
+
+
 # ---------------------------------------------------------------------------
 def schedule_task(
     conn: sqlite3.Connection,
@@ -6758,6 +6783,16 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+        # Structured spawn line so per-task model overrides are auditable
+        # post-hoc ("why did this task cost Opus money"). Only emitted when
+        # an override is actually set — a cleared/no-override task logs
+        # nothing here, so a stale line never misattributes spend.
+        _log.info(
+            "kanban spawn task=%s assignee=%s model_override=%s",
+            task.id,
+            profile_arg,
+            task.model_override,
+        )
     cmd.extend([
         "chat",
         "-q", prompt,

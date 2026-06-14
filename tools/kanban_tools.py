@@ -773,6 +773,12 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    model_override = args.get("model_override")
+    if model_override is not None and not isinstance(model_override, str):
+        return tool_error(
+            f"model_override must be a model name string, got "
+            f"{type(model_override).__name__}"
+        )
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -816,6 +822,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                model_override=model_override,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(
@@ -1275,6 +1282,17 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "model_override": {
+                "type": "string",
+                "description": (
+                    "Per-task model override. Pins the dispatched worker "
+                    "to this model (passed as `hermes -m MODEL`) instead "
+                    "of the assignee profile's default model. Use this to "
+                    "run one task on a stronger/cheaper model without "
+                    "cloning a whole profile. Omit to use the profile "
+                    "default."
                 ),
             },
             "goal_mode": {

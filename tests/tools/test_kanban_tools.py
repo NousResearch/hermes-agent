@@ -925,6 +925,45 @@ def test_create_rejects_no_assignee(worker_env):
     assert json.loads(kt._handle_create({"title": "t"})).get("error")
 
 
+def test_create_persists_model_override(worker_env):
+    """kanban_create accepts model_override and persists it (the read side
+    at 327/372 already surfaces it)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    d = json.loads(kt._handle_create({
+        "title": "opus child", "assignee": "peer",
+        "model_override": "claude-opus-4-8",
+    }))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.model_override == "claude-opus-4-8"
+    finally:
+        conn.close()
+
+
+def test_create_no_model_override_is_null(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    d = json.loads(kt._handle_create({"title": "plain child", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.model_override is None
+    finally:
+        conn.close()
+
+
+def test_create_rejects_non_string_model_override(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "t", "assignee": "a", "model_override": 42,
+    })
+    assert json.loads(out).get("error")
+
+
 def test_create_rejects_non_list_parents(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({"title": "t", "assignee": "a", "parents": 42})

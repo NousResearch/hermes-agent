@@ -156,6 +156,23 @@ def test_estimate_usage_cost_marks_true_subscription_routes_included(monkeypatch
     assert result.amount_usd is not None and float(result.amount_usd) == 0.0  # type: ignore[arg-type]
 
 
+def test_notional_anthropic_includes_f2_failover_aliases():
+    """Regression: the -f2 failover lane (Sub#3 / claude-usw-f2 VPS) must be a
+    notional-Anthropic provider, same as bare and -f1. Missing aliases caused
+    every f2-routed turn to price as 'unknown'/$0, blinding /cost to ~25% of
+    real Opus spend (audit 2026-06-13)."""
+    for provider in ("claude-api-proxy-f2", "claude-bridge-f2"):
+        assert provider in NOTIONAL_ANTHROPIC_PROVIDERS, provider
+        result = estimate_usage_cost(
+            "claude-opus-4-8",
+            CanonicalUsage(input_tokens=1000, output_tokens=100,
+                           cache_read_tokens=5000, cache_write_tokens=200),
+            provider=provider,
+        )
+        assert result.status == "estimated", f"{provider}: {result.status}"
+        assert result.amount_usd is not None and float(result.amount_usd) > 0
+
+
 def test_notional_anthropic_providers_price_at_official_rates():
     """The 4 Claude subscription proxies/bridges must price claude-opus-4-8 at
     official Anthropic rates ($5/$25 per M, $0.50 cache-read, $6.25 cache-write)

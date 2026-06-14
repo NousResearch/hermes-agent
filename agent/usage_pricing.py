@@ -34,8 +34,10 @@ CostSource = Literal[
 NOTIONAL_ANTHROPIC_PROVIDERS = frozenset({
     "claude-api-proxy",
     "claude-api-proxy-f1",
+    "claude-api-proxy-f2",
     "claude-bridge",
     "claude-bridge-f1",
+    "claude-bridge-f2",
 })
 
 # Notional pricing for ChatGPT-subscription Codex providers (openai-codex).

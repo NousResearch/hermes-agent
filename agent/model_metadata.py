@@ -201,6 +201,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-sonnet-4-6": 1000000,
     "claude-opus-4.6": 1000000,
     "claude-sonnet-4.6": 1000000,
+    # Claude Fable 5 / Mythos 5 (1M context, 128k max output) — released 2026-06-09.
+    "claude-fable-5": 1000000,
+    "claude-mythos-5": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)

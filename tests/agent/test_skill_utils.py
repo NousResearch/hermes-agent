@@ -4,7 +4,10 @@ from unittest.mock import patch
 
 from agent.skill_utils import (
     extract_skill_conditions,
+    get_disabled_skill_names,
+    get_external_skills_dirs,
     iter_skill_index_files,
+    resolve_skill_config_values,
     skill_matches_platform,
 )
 
@@ -100,6 +103,69 @@ def test_iter_skill_index_files_prunes_dependency_dirs(tmp_path):
     found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
 
     assert found == [real / "SKILL.md"]
+
+
+def test_skill_config_helpers_share_raw_config_parse_cache(tmp_path, monkeypatch):
+    """Repeated skill config helpers should parse config.yaml only once."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    external = tmp_path / "external-skills"
+    external.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        f"""
+skills:
+  disabled:
+    - hidden-skill
+  external_dirs:
+    - {external}
+  config:
+    wiki:
+      path: ~/wiki
+""".strip(),
+        encoding="utf-8",
+    )
+    parse_count = 0
+    real_yaml_load = skill_utils.yaml_load
+
+    def counting_yaml_load(text):
+        nonlocal parse_count
+        parse_count += 1
+        return real_yaml_load(text)
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+    getattr(skill_utils, "_raw_config_cache_clear", lambda: None)()
+    monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+
+    assert get_disabled_skill_names() == {"hidden-skill"}
+    assert get_external_skills_dirs() == [external.resolve()]
+    assert resolve_skill_config_values([
+        {"key": "wiki.path", "description": "Wiki path"}
+    ])["wiki.path"].endswith("/wiki")
+    assert parse_count == 1
+
+
+def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch):
+    """Editing config.yaml should invalidate the shared raw config cache."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text("skills:\n  disabled: [old-skill]\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+    assert get_disabled_skill_names() == {"old-skill"}
+
+    config_path.write_text("skills:\n  disabled: [new-skill]\n", encoding="utf-8")
+    import os
+    os.utime(config_path, None)
+
+    assert get_disabled_skill_names() == {"new-skill"}
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────

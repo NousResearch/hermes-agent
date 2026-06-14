@@ -272,6 +272,49 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+
+
+def _raw_config_cache_clear() -> None:
+    """Test hook — drop the shared raw config cache."""
+    _RAW_CONFIG_CACHE.clear()
+
+
+def _load_raw_config() -> Dict[str, Any]:
+    """Read config.yaml with a shared mtime+size keyed cache.
+
+    This module intentionally avoids importing ``hermes_cli.config`` on the
+    skill prompt/build path. A tiny local cache gives the same repeated-read
+    win without pulling the heavier CLI config stack into startup.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return {}
+    try:
+        stat = config_path.stat()
+        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+
+    if cache_key is not None:
+        cached = _RAW_CONFIG_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    if cache_key is not None:
+        _RAW_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE[cache_key] = parsed
+    return parsed
+
+
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Read disabled skill names from config.yaml.
 
@@ -286,15 +329,8 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     Reads the config file directly (no CLI config imports) to stay
     lightweight.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return set()
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return set()
-    if not isinstance(parsed, dict):
+    parsed = _load_raw_config()
+    if not parsed:
         return set()
 
     skills_cfg = parsed.get("skills")
@@ -339,6 +375,7 @@ _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
 def _external_dirs_cache_clear() -> None:
     """Test hook — drop the in-process cache."""
     _EXTERNAL_DIRS_CACHE.clear()
+    _raw_config_cache_clear()
 
 
 def get_external_skills_dirs() -> List[Path]:
@@ -371,11 +408,8 @@ def get_external_skills_dirs() -> List[Path]:
             # Return a copy so callers can't mutate the cached list.
             return list(cached)
 
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
+    parsed = _load_raw_config()
+    if not parsed:
         return []
 
     skills_cfg = parsed.get("skills")
@@ -587,15 +621,7 @@ def resolve_skill_config_values(
     current values (or the declared default if the key isn't set).
     Path values are expanded via ``os.path.expanduser``.
     """
-    config_path = get_config_path()
-    config: Dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                config = parsed
-        except Exception:
-            pass
+    config = _load_raw_config()
 
     resolved: Dict[str, Any] = {}
     for var in config_vars:

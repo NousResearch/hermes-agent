@@ -223,6 +223,83 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
+def _index_lock_path(index_file: Path) -> Path:
+    """Return the lock path git creates for a custom GIT_INDEX_FILE."""
+    return index_file.with_name(index_file.name + ".lock")
+
+
+def _cleanup_stale_index_lock(index_file: Path) -> None:
+    """Best-effort cleanup for abandoned checkpoint index locks.
+
+    Git creates ``<GIT_INDEX_FILE>.lock`` with O_EXCL and removes it on normal
+    exit. If a Hermes worker is killed mid-checkpoint, that zero-byte lock can
+    linger forever and every later checkpoint for the same project fails with
+    "Unable to create ...index.lock: File exists". Active git commands in this
+    module are bounded by ``_GIT_TIMEOUT`` (or ``*_2`` for add/restore), so a
+    lock older than a few timeouts is treated as stale.
+    """
+    lock_path = _index_lock_path(index_file)
+    try:
+        st = lock_path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not stat checkpoint index lock %s: %s", lock_path, exc)
+        return
+
+    min_age = max(_GIT_TIMEOUT * 3, 300)
+    age = time.time() - st.st_mtime
+    if age < min_age:
+        logger.debug(
+            "Checkpoint index lock is recent; leaving in place: %s (age %.1fs)",
+            lock_path,
+            age,
+        )
+        return
+
+    # Avoid unlinking a fresh lock that replaced the stale file between the
+    # first stat and the removal attempt. Another Hermes process may have
+    # removed the same stale lock, started git, and caused git to create a new
+    # active lock at the identical path.
+    try:
+        current = lock_path.stat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.debug("Could not re-stat checkpoint index lock %s: %s", lock_path, exc)
+        return
+    current_age = time.time() - current.st_mtime
+    same_lock = (
+        getattr(current, "st_dev", None),
+        getattr(current, "st_ino", None),
+        getattr(current, "st_mtime_ns", int(current.st_mtime * 1_000_000_000)),
+        current.st_size,
+    ) == (
+        getattr(st, "st_dev", None),
+        getattr(st, "st_ino", None),
+        getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)),
+        st.st_size,
+    )
+    if not same_lock or current_age < min_age:
+        logger.debug(
+            "Checkpoint index lock changed before cleanup; leaving in place: %s",
+            lock_path,
+        )
+        return
+
+    try:
+        lock_path.unlink()
+        logger.warning(
+            "Removed stale checkpoint index lock: %s (age %.0fs)",
+            lock_path,
+            age,
+        )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Could not remove stale checkpoint index lock %s: %s", lock_path, exc)
+
+
 def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
 
@@ -295,6 +372,9 @@ def _run_git(
         msg = f"working directory is not a directory: {normalized_working_dir}"
         logger.error("Git command skipped: %s (%s)", " ".join(["git"] + list(args)), msg)
         return False, "", msg
+
+    if index_file is not None:
+        _cleanup_stale_index_lock(index_file)
 
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     cmd = ["git"] + list(args)

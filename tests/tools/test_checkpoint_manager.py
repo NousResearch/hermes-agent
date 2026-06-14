@@ -14,9 +14,11 @@ from tools.checkpoint_manager import (
     _shadow_repo_path,
     _init_shadow_repo,
     _init_store,
+    _cleanup_stale_index_lock,
     _run_git,
     _git_env,
     _dir_file_count,
+    _index_lock_path,
     _project_hash,
     _store_path,
     _ref_name,
@@ -200,6 +202,60 @@ class TestTakeCheckpoint:
         mgr.ensure_checkpoint(str(work_dir), "initial")
         mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "no changes") is False
+
+    def test_stale_index_lock_is_removed(self, mgr, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        store = _store_path(checkpoint_base)
+        dir_hash = _project_hash(str(work_dir))
+        index_file = store / "indexes" / dir_hash
+        lock_path = _index_lock_path(index_file)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("", encoding="utf-8")
+        old = time.time() - 900
+        os.utime(lock_path, (old, old))
+
+        assert mgr.ensure_checkpoint(str(work_dir), "initial") is True
+
+        assert not lock_path.exists()
+
+    def test_recent_index_lock_is_preserved(self, work_dir, checkpoint_base):
+        store = _store_path(checkpoint_base)
+        dir_hash = _project_hash(str(work_dir))
+        index_file = store / "indexes" / dir_hash
+        lock_path = _index_lock_path(index_file)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("", encoding="utf-8")
+
+        _cleanup_stale_index_lock(index_file)
+
+        assert lock_path.exists()
+
+    def test_replaced_index_lock_is_preserved(self, work_dir, checkpoint_base, monkeypatch):
+        store = _store_path(checkpoint_base)
+        dir_hash = _project_hash(str(work_dir))
+        index_file = store / "indexes" / dir_hash
+        lock_path = _index_lock_path(index_file)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("stale", encoding="utf-8")
+        old = time.time() - 900
+        os.utime(lock_path, (old, old))
+
+        original_stat = Path.stat
+        calls = {"count": 0}
+
+        def stat_with_replacement(path, *args, **kwargs):
+            if path == lock_path:
+                calls["count"] += 1
+                if calls["count"] == 2:
+                    lock_path.unlink()
+                    lock_path.write_text("fresh", encoding="utf-8")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", stat_with_replacement)
+
+        _cleanup_stale_index_lock(index_file)
+
+        assert lock_path.read_text(encoding="utf-8") == "fresh"
 
     def test_skip_root_dir(self, mgr):
         assert mgr.ensure_checkpoint("/", "root") is False

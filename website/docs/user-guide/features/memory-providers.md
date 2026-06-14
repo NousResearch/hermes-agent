@@ -346,6 +346,17 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 
 The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
 
+**Local external service management (macOS):** If you configure Hindsight in `local_external` mode, Hermes connects to an already-running Hindsight API. On macOS, Hermes can install a user LaunchAgent so that API survives terminal exits, reboots, and Hermes updates:
+
+```bash
+hermes memory service install hindsight --executable /path/to/hindsight-api
+hermes memory service status hindsight
+hermes memory service restart hindsight
+hermes memory service logs hindsight
+```
+
+The generated LaunchAgent runs a wrapper under `$HERMES_HOME/services/hindsight/`, writes logs under `$HERMES_HOME/logs/`, reads host/port from `$HERMES_HOME/hindsight/config.json`, and sources secrets from env files instead of embedding them in the plist.
+
 **Local mode UI:** `hindsight-embed -p hermes ui start`
 
 **Config:** `$HERMES_HOME/hindsight/config.json`

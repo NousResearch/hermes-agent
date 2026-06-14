@@ -1155,6 +1155,10 @@ Subcommands:
 |------------|-------------|
 | `setup` | Interactive provider selection and configuration. |
 | `status` | Show current memory provider config. |
+| `service install hindsight` | Install and start the Hindsight `local_external` daemon service on macOS. |
+| `service status hindsight` | Show the Hindsight external daemon service status. |
+| `service restart hindsight` | Restart the Hindsight external daemon service. |
+| `service logs hindsight` | Show the Hindsight external daemon service log paths. |
 | `off` | Disable external provider (built-in only). |
 
 :::info Provider-specific subcommands

@@ -82,6 +82,7 @@ AUTHOR_MAP = {
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "max@c60spaceship.com": "MaxFreedomPollard",
+    "drmani215@gmail.com": "bionicbutterfly13",
     "achaljhawar03@gmail.com": "achaljhawar",
     "claytonchew@ClaytonMacMiniM4.local": "claytonchew",
     "hbentel@gmail.com": "hbentel",

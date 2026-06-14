@@ -466,6 +466,10 @@ def memory_command(args) -> None:
             cmd_setup_provider(provider)
         else:
             cmd_setup(args)
+    elif sub == "service":
+        from hermes_cli.memory_service import memory_service_command
+
+        memory_service_command(args)
     elif sub == "status":
         cmd_status(args)
     else:

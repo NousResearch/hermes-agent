@@ -662,6 +662,8 @@ def register(ctx) -> None:
         required_env=["LINEAR_WEBHOOK_SECRET"],
         env_enablement_fn=_env_enablement,
         install_hint="Set LINEAR_WEBHOOK_SECRET and LINEAR_ACCESS_TOKEN (or LINEAR_API_KEY).",
+        allowed_users_env="LINEAR_ALLOWED_USERS",
+        allow_all_env="LINEAR_ALLOW_ALL_USERS",
         emoji="📐",
         pii_safe=True,
         allow_update_command=True,

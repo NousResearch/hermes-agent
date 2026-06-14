@@ -36,6 +36,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
         "QQ_ALLOW_ALL_USERS",
+        "LINEAR_ALLOWED_USERS",
+        "LINEAR_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -135,6 +137,37 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
         user_name="hujikuji",   # adapter sets this to displayName
         chat_type="dm",
     )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_plugin_allow_all_authorizes_linear_agent_session(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("LINEAR_ALLOW_ALL_USERS", "true")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="linear",
+        label="Linear Agent Sessions",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="LINEAR_ALLOWED_USERS",
+        allow_all_env="LINEAR_ALLOW_ALL_USERS",
+    ))
+
+    linear = Platform("linear")
+    runner, _adapter = _make_runner(
+        linear,
+        GatewayConfig(platforms={linear: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=linear,
+        user_id="linear-agent-session",
+        chat_id="agentSession:as_123",
+        user_name="Linear Agent Session",
+        chat_type="dm",
+    )
+
     assert runner._is_user_authorized(source) is True
 
 

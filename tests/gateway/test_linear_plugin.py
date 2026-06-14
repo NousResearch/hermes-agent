@@ -182,6 +182,9 @@ def test_register_declares_secret_and_token_requirements():
     assert ctx.kwargs["required_env"] == ["LINEAR_WEBHOOK_SECRET"]
     assert "LINEAR_ACCESS_TOKEN" in ctx.kwargs["install_hint"]
     assert "LINEAR_API_KEY" in ctx.kwargs["install_hint"]
+    assert ctx.kwargs["allowed_users_env"] == "LINEAR_ALLOWED_USERS"
+    assert ctx.kwargs["allow_all_env"] == "LINEAR_ALLOW_ALL_USERS"
+    assert ctx.kwargs["suppress_home_channel_prompt"] is True
 
 
 @pytest.mark.asyncio

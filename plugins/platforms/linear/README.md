@@ -11,6 +11,7 @@ export LINEAR_WEBHOOK_SECRET=...
 export LINEAR_ACCESS_TOKEN=...   # or LINEAR_API_KEY
 export LINEAR_HOST=0.0.0.0       # optional
 export LINEAR_PORT=8655          # optional
+export LINEAR_ALLOW_ALL_USERS=true  # optional, or use LINEAR_ALLOWED_USERS
 ```
 
 Or in `config.yaml`:
@@ -25,6 +26,11 @@ platforms:
       host: "0.0.0.0"
       port: 8655
 ```
+
+Linear uses the gateway's normal user authorization layer. Set
+`LINEAR_ALLOWED_USERS` to a comma-separated allowlist, set
+`LINEAR_ALLOW_ALL_USERS=true`, or approve users through the normal pairing
+flow.
 
 ## Endpoint
 

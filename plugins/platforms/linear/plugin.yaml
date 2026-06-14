@@ -28,3 +28,11 @@ optional_env:
     description: "Port for the Linear webhook receiver (default: 8655)"
     prompt: "Linear webhook port"
     password: false
+  - name: LINEAR_ALLOWED_USERS
+    description: "Comma-separated Linear actor/user ids allowed to use Hermes"
+    prompt: "Linear allowed users"
+    password: false
+  - name: LINEAR_ALLOW_ALL_USERS
+    description: "Allow any signed Linear AgentSession webhook user"
+    prompt: "Allow all Linear users"
+    password: false

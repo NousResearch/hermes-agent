@@ -26,6 +26,7 @@ import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
   $busy,
+  $compressingStatus,
   $connection,
   $currentUsage,
   $sessionStartedAt,
@@ -100,6 +101,7 @@ export function useStatusbarItems({
   const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
   const connection = useStore($connection)
+  const compressingStatus = useStore($compressingStatus)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
@@ -412,11 +414,22 @@ export function useStatusbarItems({
         variant: 'action'
       },
       clientVersionItem,
-      ...(backendVersionItem ? [backendVersionItem] : [])
+      ...(backendVersionItem ? [backendVersionItem] : []),
+      // Compress progress indicator (shown during /compress).
+      ...(compressingStatus
+        ? [{
+            className: 'text-primary animate-pulse',
+            detail: compressingStatus,
+            icon: <Loader2 className="size-3 animate-spin" />,
+            id: 'compressing',
+            title: compressingStatus
+          }]
+        : [])
     ],
     [
       busy,
       chatOpen,
+      compressingStatus,
       contextBar,
       contextUsage,
       copy,

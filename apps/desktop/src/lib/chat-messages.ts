@@ -69,6 +69,9 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // session.info — session rotation after compression
+  session_id?: string
+  new_session_id?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

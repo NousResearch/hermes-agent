@@ -246,15 +246,39 @@ export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
-export const $currentUsage = atom<UsageStats>({
-  calls: 0,
-  input: 0,
-  output: 0,
-  total: 0
-})
+export const $currentUsage = atom<UsageStats>(getRememberedUsage())
 export const $sessionStartedAt = atom<number | null>(null)
 export const $turnStartedAt = atom<number | null>(null)
+/** Text shown during /compress (e.g. "⠋ compressing 12 messages (~5k tok)…"). null when idle. */
+export const $compressingStatus = atom<string | null>(null)
 export const $introPersonality = atom('')
+
+// Persist context usage across app restarts so the status bar shows
+// the last-known context amount instead of resetting to 0/1.0M.
+const USAGE_STORAGE_KEY = 'hermes:current-usage'
+
+function getRememberedUsage(): UsageStats {
+  try {
+    const raw = storedString(USAGE_STORAGE_KEY)
+    if (!raw) return { calls: 0, input: 0, output: 0, total: 0 }
+    const parsed = JSON.parse(raw) as Partial<UsageStats>
+    return {
+      calls: parsed.calls ?? 0,
+      input: parsed.input ?? 0,
+      output: parsed.output ?? 0,
+      total: parsed.total ?? 0,
+      context_used: parsed.context_used,
+      context_max: parsed.context_max,
+      context_percent: parsed.context_percent,
+    }
+  } catch {
+    return { calls: 0, input: 0, output: 0, total: 0 }
+  }
+}
+
+$currentUsage.subscribe(usage => {
+  persistString(USAGE_STORAGE_KEY, JSON.stringify(usage))
+})
 export const $currentPersonality = atom('')
 export const $availablePersonalities = atom<string[]>([])
 export const $introSeed = atom(0)

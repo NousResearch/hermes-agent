@@ -36,6 +36,7 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  $compressingStatus,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -45,6 +46,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSelectedStoredSessionId,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -54,6 +56,7 @@ import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
 
+import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 interface MessageStreamOptions {
@@ -63,10 +66,12 @@ interface MessageStreamOptions {
     storedSessionId?: string | null,
     runtimeSessionId?: string | null
   ) => Promise<void>
+  navigate: (path: string) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -257,10 +262,12 @@ function delegateTaskPayloads(
 export function useMessageStream({
   activeSessionIdRef,
   hydrateFromStoredSession,
+  navigate,
   queryClient,
   refreshHermesConfig,
   refreshSessions,
   sessionStateByRuntimeIdRef,
+  selectedStoredSessionIdRef,
   updateSessionState
 }: MessageStreamOptions) {
   const sessionInterrupted = useCallback(
@@ -735,6 +742,33 @@ export function useMessageStream({
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
 
+        // Detect session rotation after /compress. The gateway includes
+        // the current stored session id in session.info; when it differs
+        // from the desktop's selectedStoredSessionId, the agent has
+        // rotated to a new continuation session and we must follow it.
+        //
+        // For manual /compress the gateway sets payload.new_session_id;
+        // for auto-compression during a turn it only updates
+        // payload.session_id (the current session key after rotation).
+        //
+        // IMPORTANT: event.session_id is the runtime hex sid, NOT the
+        // stored session key — never use it for rotation detection.
+        const rotatedSessionId =
+          (typeof payload?.new_session_id === 'string' && payload.new_session_id) ||
+          (typeof payload?.session_id === 'string' && payload.session_id !== selectedStoredSessionIdRef.current
+            ? payload.session_id
+            : '')
+        if (
+          rotatedSessionId &&
+          rotatedSessionId !== selectedStoredSessionIdRef.current &&
+          isActiveEvent
+        ) {
+          setSelectedStoredSessionId(rotatedSessionId)
+          selectedStoredSessionIdRef.current = rotatedSessionId
+          navigate(sessionRoute(rotatedSessionId))
+          void refreshSessions().catch(() => undefined)
+        }
+
         if (apply) {
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
@@ -1080,6 +1114,12 @@ export function useMessageStream({
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
+        } else if (payload?.kind === 'compressing') {
+          // Show compress progress in the status bar.
+          $compressingStatus.set(payload.text ?? null)
+        } else if (payload?.kind === 'ready') {
+          // Compression finished or was cancelled — clear the indicator.
+          $compressingStatus.set(null)
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills
@@ -1159,9 +1199,11 @@ export function useMessageStream({
       completeAssistantMessage,
       failAssistantMessage,
       flushQueuedDeltas,
+      navigate,
       queryClient,
       refreshHermesConfig,
       sessionInterrupted,
+      selectedStoredSessionIdRef,
       updateSessionState,
       upsertToolCall
     ]

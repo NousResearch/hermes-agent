@@ -43,7 +43,7 @@ import type {
   ToolsetInfo
 } from '@/types/hermes'
 
-const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 120_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
 export type {

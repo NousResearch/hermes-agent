@@ -636,9 +636,11 @@ export function DesktopController() {
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
     hydrateFromStoredSession,
+    navigate,
     queryClient,
     refreshHermesConfig,
     refreshSessions,
+    selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,
     updateSessionState
   })

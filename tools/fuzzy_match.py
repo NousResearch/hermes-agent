@@ -610,36 +610,50 @@ def _strategy_block_anchor(content: str, pattern: str) -> List[Tuple[int, int]]:
 
 def _strategy_context_aware(content: str, pattern: str) -> List[Tuple[int, int]]:
     """
-    Strategy 9: Line-by-line similarity with 50% threshold.
-    
-    Finds blocks where at least 50% of lines have high similarity.
+    Strategy 9: Line-by-line similarity with adaptive threshold.
+
+    Finds blocks where a sufficient fraction of lines have high similarity.
+    The threshold scales with pattern length — short patterns (≤5 lines)
+    require ≥70% line similarity to avoid false-matching unrelated code;
+    medium patterns (6-15 lines) use ≥60%; long patterns (>15 lines)
+    stay at 50% because larger blocks naturally have more noise.
     """
     pattern_lines = pattern.split('\n')
     content_lines = content.split('\n')
-    
+
     if not pattern_lines:
         return []
-    
+
+    # Adaptive threshold: shorter patterns need a higher bar to avoid
+    # false positives on unrelated code with similar variable names.
+    n = len(pattern_lines)
+    if n <= 5:
+        threshold = 0.70
+    elif n <= 15:
+        threshold = 0.60
+    else:
+        threshold = 0.50
+
     matches = []
     pattern_line_count = len(pattern_lines)
-    
+
     for i in range(len(content_lines) - pattern_line_count + 1):
         block_lines = content_lines[i:i + pattern_line_count]
-        
+
         # Calculate line-by-line similarity
         high_similarity_count = 0
         for p_line, c_line in zip(pattern_lines, block_lines):
             sim = SequenceMatcher(None, p_line.strip(), c_line.strip()).ratio()
             if sim >= 0.80:
                 high_similarity_count += 1
-        
-        # Need at least 50% of lines to have high similarity
-        if high_similarity_count >= len(pattern_lines) * 0.5:
+
+        # Need at least threshold% of lines to have high similarity
+        if high_similarity_count >= len(pattern_lines) * threshold:
             start_pos, end_pos = _calculate_line_positions(
                 content_lines, i, i + pattern_line_count, len(content)
             )
             matches.append((start_pos, end_pos))
-    
+
     return matches
 
 

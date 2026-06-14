@@ -67,6 +67,28 @@ export interface SessionTitleResponse {
   session_key?: string
 }
 
+export interface SessionCompressResponse {
+  status?: string
+  removed?: number
+  before_messages?: number
+  after_messages?: number
+  before_tokens?: number
+  after_tokens?: number
+  summary?: {
+    headline?: string
+    noop?: boolean
+    note?: string | null
+    token_line?: string
+  }
+  usage?: {
+    input?: number
+    output?: number
+    total?: number
+  }
+  info?: Record<string, unknown>
+  messages?: Array<Record<string, unknown>>
+}
+
 export interface HandoffRequestResponse {
   queued?: boolean
   session_key?: string
@@ -150,4 +172,6 @@ export interface ClientSessionState {
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** Text shown during /compress (e.g. "⠋ compressing 12 messages (~5k tok)…"). null when idle. */
+  compressingStatus: string | null
 }

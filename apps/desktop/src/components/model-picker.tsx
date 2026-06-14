@@ -190,7 +190,8 @@ function ModelResults({
   // Only configured providers (those with curated models) are selectable
   // here. Switching to a NOT-yet-configured provider goes through the
   // "Add provider" footer button, which opens the full onboarding selector.
-  const configured = providers.filter(p => (p.models ?? []).length > 0)
+  // Filter out providers the user doesn't use (e.g. Anthropic if no API key).
+  const configured = providers.filter(p => (p.models ?? []).length > 0 && p.slug !== 'anthropic')
 
   return (
     <>

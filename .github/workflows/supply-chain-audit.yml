@@ -29,6 +29,8 @@ jobs:
       scan: ${{ steps.filter.outputs.scan }}
       # True when pyproject.toml changed in this PR
       deps: ${{ steps.filter.outputs.deps }}
+      # True when the curated MCP catalog / bundled MCP manifests changed.
+      mcp_catalog: ${{ steps.filter.outputs.mcp_catalog }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -53,6 +55,14 @@ jobs:
             echo "deps=true" >> "$GITHUB_OUTPUT"
           else
             echo "deps=false" >> "$GITHUB_OUTPUT"
+          fi
+          MCP_CATALOG_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- \
+            'optional-mcps/**' \
+            'hermes_cli/mcp_catalog.py' || true)
+          if [ -n "$MCP_CATALOG_FILES" ]; then
+            echo "mcp_catalog=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "mcp_catalog=false" >> "$GITHUB_OUTPUT"
           fi
 
   scan:
@@ -268,3 +278,50 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "No pyproject.toml changes, skipping dependency bounds check."
+
+  mcp-catalog-review:
+    name: MCP catalog security review
+    needs: changes
+    if: needs.changes.outputs.mcp_catalog == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Require explicit MCP catalog review label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+          LABELS=$(gh pr view "$PR" --json labels --jq '.labels[].name' || true)
+          if echo "$LABELS" | grep -Fxq 'mcp-catalog-reviewed'; then
+            echo "MCP catalog review label present."
+            exit 0
+          fi
+
+          BODY="## ⚠️ MCP catalog security review required
+
+          This PR changes the bundled MCP catalog or MCP catalog installer code. MCP entries can define local commands that users later install into \`mcp_servers\`, so this needs explicit maintainer review before merge.
+
+          A maintainer should verify:
+          - any new/changed \`optional-mcps/**/manifest.yaml\` command and args are expected,
+          - stdio transports do not use shell+egress/exfiltration payloads,
+          - git install refs are pinned and bootstrap commands are minimal,
+          - requested env vars/secrets match the upstream MCP's documented needs.
+
+          After review, add the \`mcp-catalog-reviewed\` label and re-run this check."
+
+          gh pr comment "$PR" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
+          echo "::error::MCP catalog changes require the mcp-catalog-reviewed label."
+          exit 1
+
+  mcp-catalog-review-gate:
+    name: MCP catalog security review
+    needs: changes
+    if: always() && needs.changes.outputs.mcp_catalog != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No MCP catalog changes, skipping MCP catalog security review."

@@ -2695,13 +2695,32 @@ def _load_mcp_config() -> Dict[str, dict]:
         servers = config.get("mcp_servers")
         if not servers or not isinstance(servers, dict):
             return {}
+        try:
+            from hermes_cli.mcp_security import validate_mcp_server_entry
+        except Exception:
+            validate_mcp_server_entry = None
         # Ensure .env vars are available for interpolation
         try:
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
             pass
-        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+        safe_servers = {}
+        for name, cfg in servers.items():
+            if not isinstance(cfg, dict):
+                safe_servers[name] = cfg
+                continue
+            if validate_mcp_server_entry:
+                issues = validate_mcp_server_entry(name, cfg)
+                if issues:
+                    logger.warning(
+                        "Skipping suspicious MCP server '%s': %s",
+                        name,
+                        "; ".join(issues),
+                    )
+                    continue
+            safe_servers[name] = _interpolate_env_vars(cfg)
+        return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}

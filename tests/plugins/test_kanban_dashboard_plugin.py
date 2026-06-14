@@ -240,11 +240,50 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     js = bundle.read_text()
 
-    assert 'useState(() => readSelectedBoard() || null)' in js
+    assert "const urlBoard = readKanbanUrlBoard();" in js
+    assert "return readSelectedBoard() || null;" in js
     assert "const storedBoard = readSelectedBoard();" in js
     assert "if (!storedBoard && !board && data && data.current)" in js
     assert "setBoard(data.current);" in js
     assert 'readSelectedBoard() || "default"' not in js
+
+
+def test_dashboard_supports_task_deep_links():
+    """The dashboard should open and synchronize /kanban?board=...&task=... links."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function readKanbanUrlBoard()" in js
+    assert "function readKanbanUrlTask()" in js
+    assert 'readKanbanUrlParam("task") || readKanbanUrlParam("task_id")' in js
+    assert "writeSelectedBoard(urlBoard);" in js
+    assert "useState(() => readKanbanUrlTask())" in js
+    assert "writeKanbanUrlState(board, taskId);" in js
+    assert "writeKanbanUrlState(board, null);" in js
+    assert "writeKanbanUrlState(nextSlug, null);" in js
+    assert 'window.addEventListener("popstate", syncFromUrl);' in js
+    assert "setSelectedTaskId(urlTask);" in js
+
+
+def test_dashboard_task_drawer_has_copy_link_action():
+    """Task drawers need a visible affordance for canonical task links."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text()
+
+    assert "function buildKanbanTaskUrl(board, taskId)" in js
+    assert "function copyTextToClipboard(text)" in js
+    assert "function copyTextWithTextarea(text)" in js
+    assert "return navigator.clipboard.writeText(text).catch(function ()" in js
+    assert 'new Error("Copy command is not available")' in js
+    assert 'new Error("Copy command was not accepted")' in js
+    assert "const handleCopyLink = function ()" in js
+    assert 'tx(t, "copyLink", "Copy link")' in js
+    assert "hermes-kanban-drawer-linkcopy" in js
+    assert "hermes-kanban-drawer-linkcopy" in css
 
 
 # ---------------------------------------------------------------------------

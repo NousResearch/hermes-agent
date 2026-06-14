@@ -98,7 +98,7 @@ class CompressionConfig:
     protect_last_n_turns: int = 4
     
     # Summarization (OpenRouter)
-    summarization_model: str = "google/gemini-3-flash-preview"
+    summarization_model: str = "google/gemini-2.5-flash"
     base_url: str = OPENROUTER_BASE_URL
     api_key_env: str = "OPENROUTER_API_KEY"
     temperature: float = 0.3

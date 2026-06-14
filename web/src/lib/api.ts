@@ -1955,13 +1955,14 @@ export interface ToolsetEnvResult {
   is_set: Record<string, boolean>;
 }
 
-export interface SessionSearchResult {
+export interface SessionSearchResult extends SessionInfo {
   session_id: string;
   snippet: string;
   role: string | null;
   source: string | null;
   model: string | null;
   session_started: number | null;
+  lineage_root?: string;
 }
 
 export interface SessionSearchResponse {

@@ -116,6 +116,8 @@ class TestCompressionConfig:
         assert config.summary_target_tokens == 750
         assert config.protect_last_n_turns == 4
         assert config.skip_under_target is True
+        assert config.summarization_model == "google/gemini-2.5-flash"
+        assert "preview" not in config.summarization_model
 
     def test_from_yaml(self, tmp_path):
         yaml_content = """\

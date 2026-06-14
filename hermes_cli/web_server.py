@@ -2857,8 +2857,22 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                 root = compression_root(raw_sid)
                 if root in seen or len(seen) >= safe_limit:
                     return
+                tip = lineage_tip(root)
+                rich = None
+                try:
+                    rich = db._get_session_rich_row(tip)
+                except Exception:
+                    rich = None
+                if not isinstance(rich, dict):
+                    try:
+                        rich = db.get_session(tip)
+                    except Exception:
+                        rich = None
                 payload = dict(payload)
-                payload["session_id"] = lineage_tip(root)
+                if isinstance(rich, dict):
+                    payload = {**rich, **payload}
+                payload["id"] = tip
+                payload["session_id"] = tip
                 payload["lineage_root"] = root
                 seen[root] = payload
 

@@ -664,6 +664,27 @@ type SessionsView = "list" | "overview";
 
 const PAGE_SIZE = 20;
 
+function sessionFromSearchResult(result: SessionSearchResult): SessionInfo {
+  const startedAt = result.started_at ?? result.session_started ?? 0;
+  const lastActive = result.last_active ?? result.session_started ?? startedAt;
+  return {
+    id: result.session_id,
+    source: result.source ?? null,
+    model: result.model ?? null,
+    title: result.title ?? null,
+    started_at: startedAt,
+    ended_at: result.ended_at ?? null,
+    last_active: lastActive,
+    is_active: result.is_active ?? false,
+    message_count: result.message_count ?? 0,
+    tool_call_count: result.tool_call_count ?? 0,
+    input_tokens: result.input_tokens ?? 0,
+    output_tokens: result.output_tokens ?? 0,
+    preview: result.preview ?? null,
+    parent_session_id: result.parent_session_id ?? null,
+  };
+}
+
 function SessionsPagination({
   className,
   compact = false,
@@ -1162,10 +1183,8 @@ export default function SessionsPage() {
     }
   }
 
-  // When searching, filter sessions to those with FTS matches;
-  // when not searching, show all sessions
   const filtered = searchResults
-    ? sessions.filter((s) => snippetMap.has(s.id))
+    ? searchResults.map(sessionFromSearchResult)
     : sessions;
 
   const platformEntries = status

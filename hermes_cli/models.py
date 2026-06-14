@@ -3214,10 +3214,13 @@ def ensure_lmstudio_model_loaded(
 ) -> Optional[int]:
     """Ensure LM Studio has ``model`` loaded with at least ``target_context_length``.
 
-    No-op when an instance is already loaded with sufficient context. Otherwise
-    POSTs ``/api/v1/models/load`` to (re)load with the target context, capped
-    at the model's ``max_context_length``. Returns the resolved loaded context
-    length, or ``None`` when the probe / load failed.
+    No-op when exactly one LLM instance is loaded and it is the requested model
+    with sufficient context. If LM Studio has a dirty LLM state, such as another
+    LLM loaded at the same time or the target loaded with insufficient context,
+    unload the loaded LLM instances before loading the requested target model.
+
+    This prevents LM Studio from keeping multiple large local LLMs resident when
+    Hermes switches models, which can force RAM/CPU fallback and severe slowdown.
     """
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
@@ -3246,11 +3249,87 @@ def ensure_lmstudio_model_loaded(
     if isinstance(max_ctx, int) and max_ctx > 0:
         target_context_length = min(target_context_length, max_ctx)
 
-    for inst in target_entry.get("loaded_instances") or []:
-        cfg = inst.get("config") if isinstance(inst, dict) else None
-        loaded_ctx = cfg.get("context_length") if isinstance(cfg, dict) else None
-        if isinstance(loaded_ctx, int) and loaded_ctx >= target_context_length:
-            return loaded_ctx
+    target_ids = {model}
+    for key in ("key", "id"):
+        value = target_entry.get(key)
+        if isinstance(value, str) and value:
+            target_ids.add(value)
+
+    # Unload competing LM Studio LLM instances before loading target.
+    loaded_llm_instances = []
+    target_loaded_ctx: Optional[int] = None
+    target_loaded_sufficient = False
+
+    for raw in raw_models:
+        if not isinstance(raw, dict):
+            continue
+
+        model_type = raw.get("type")
+        if not isinstance(model_type, str) or model_type.lower() != "llm":
+            continue
+
+        raw_ids = set()
+        for key in ("key", "id"):
+            value = raw.get(key)
+            if isinstance(value, str) and value:
+                raw_ids.add(value)
+
+        is_target_model = bool(raw_ids & target_ids)
+
+        for inst in raw.get("loaded_instances") or []:
+            if not isinstance(inst, dict):
+                continue
+
+            instance_id = inst.get("id") or inst.get("instance_id")
+            if not isinstance(instance_id, str) or not instance_id:
+                continue
+
+            inst_cfg = inst.get("config")
+            cfg = inst_cfg if isinstance(inst_cfg, dict) else {}
+            loaded_ctx = cfg.get("context_length")
+
+            item = {
+                "instance_id": instance_id,
+                "is_target": is_target_model or instance_id in target_ids,
+                "loaded_ctx": loaded_ctx,
+            }
+            loaded_llm_instances.append(item)
+
+            if item["is_target"] and isinstance(loaded_ctx, int):
+                target_loaded_ctx = loaded_ctx
+                if loaded_ctx >= target_context_length:
+                    target_loaded_sufficient = True
+
+    if (
+        len(loaded_llm_instances) == 1
+        and loaded_llm_instances[0]["is_target"]
+        and target_loaded_sufficient
+    ):
+        return target_loaded_ctx
+
+    # When LM Studio is in a dirty loaded state, reload the target too.
+    # The target may have been loaded while resources were already contended,
+    # so cleaning up other LLMs after the fact is not always enough to recover
+    # the intended GPU/RAM allocation.
+    unload_headers = dict(headers)
+    unload_headers["Content-Type"] = "application/json"
+
+    for item in loaded_llm_instances:
+        body = json.dumps({"instance_id": item["instance_id"]}).encode()
+        try:
+            unload_request = urllib.request.Request(
+                server_root + "/api/v1/models/unload",
+                data=body,
+                headers=unload_headers,
+                method="POST",
+            )
+            with _urlopen_model_catalog_request(
+                unload_request,
+                timeout=timeout,
+            ) as resp:
+                resp.read()
+        except Exception:
+            return None
 
     body = json.dumps({
         "model": model,
@@ -3270,7 +3349,6 @@ def ensure_lmstudio_model_loaded(
     except Exception:
         return None
     return target_context_length
-
 
 def lmstudio_model_reasoning_options(
     model: str,

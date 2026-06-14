@@ -101,6 +101,9 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
       if (ev.payload) {
         setInfo((prev) => ({ ...prev, ...ev.payload }));
+        if (!ev.payload.credential_warning) {
+          setError(null);
+        }
       }
     });
 

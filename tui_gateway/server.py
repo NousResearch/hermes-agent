@@ -2306,7 +2306,11 @@ def _probe_credentials(agent) -> str:
         key = getattr(agent, "api_key", "") or ""
         provider = getattr(agent, "provider", "") or ""
         if not key or key == "no-key-required":
-            return f"No API key configured for provider '{provider}'. First message will fail."
+            return (
+                "No usable model credentials are configured yet. Run `hermes setup` "
+                "to connect a provider, or `hermes model` to choose an already "
+                f"configured model. Current provider: '{provider or 'auto'}'."
+            )
     except Exception:
         pass
     return ""

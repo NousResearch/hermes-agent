@@ -71,6 +71,48 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+_FIRST_RUN_SETUP_GUIDANCE = (
+    "No usable model credentials are configured yet. Run `hermes setup` to "
+    "connect a provider, or `hermes model` to choose an already configured "
+    "model, then send your message again."
+)
+
+
+def _friendly_first_run_api_error(
+    summary: str,
+    *,
+    provider: str,
+    model: str,
+    error: BaseException | None = None,
+) -> str | None:
+    """Translate common first-run auth failures into setup guidance.
+
+    A fresh desktop install can fall into Bedrock/Converse with no valid AWS
+    credentials, which otherwise leaks provider-specific jargon into the chat
+    transcript (``UnrecognizedClientException`` / ``ConverseStream``).  Keep
+    this intentionally narrow so ordinary provider outages and non-auth errors
+    retain their diagnostic detail.
+    """
+    text = " ".join(
+        str(part or "")
+        for part in (summary, error, provider, model)
+    ).lower()
+    is_bedrock_route = provider.lower() == "bedrock" or "bedrock" in model.lower()
+    is_first_run_auth = any(
+        marker in text
+        for marker in (
+            "unrecognizedclientexception",
+            "security token included in the request is invalid",
+            "could not find credentials",
+            "unable to locate credentials",
+            "no credentials found",
+        )
+    )
+    if is_bedrock_route and is_first_run_auth:
+        return _FIRST_RUN_SETUP_GUIDANCE
+    return None
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -3192,7 +3234,15 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
-                    if classified.reason == FailoverReason.billing:
+                    friendly_first_run = _friendly_first_run_api_error(
+                        _final_summary,
+                        provider=_provider,
+                        model=_model,
+                        error=api_error,
+                    )
+                    if friendly_first_run:
+                        _final_response = friendly_first_run
+                    elif classified.reason == FailoverReason.billing:
                         _final_response = f"Billing or credits exhausted: {_final_summary}"
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"

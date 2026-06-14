@@ -851,6 +851,18 @@ install_node() {
     ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
 
+    # Point this Node's `npm install -g` at a directory that is actually on
+    # PATH. By default npm's global prefix is the Node install dir, so user
+    # globals land in $HERMES_HOME/node/bin — which is NOT on PATH (only the
+    # link dir is) and is wiped on every Node upgrade. Redirecting the prefix
+    # to the link dir's parent makes global bins land in the link dir
+    # (node/npm/npx live there too, and it's already on PATH) and survive
+    # upgrades. Scoped to this Node via its prefix-local global npmrc, so the
+    # user's other Node installs and their ~/.npmrc are untouched. Hermes's
+    # own global installs pass an explicit --prefix and are unaffected.
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$node_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
     local installed_ver

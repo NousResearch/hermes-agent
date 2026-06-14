@@ -206,6 +206,14 @@ _nb_install_bundled_node() {
     ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+
+    # Redirect this Node's `npm install -g` to the link dir (already on PATH)
+    # instead of the default $HERMES_HOME/node/bin, which is off PATH and wiped
+    # on every Node upgrade. Scoped to this Node via its prefix-local global
+    # npmrc; the user's other Node installs / ~/.npmrc are untouched.
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
     _nb_have_modern_node || return 1

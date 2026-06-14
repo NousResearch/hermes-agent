@@ -419,11 +419,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
-        # with the raw agent markdown so tables/task lists/etc. render natively.
-        # Enabled by default; users can opt out for clients that accept but do
-        # not render rich messages via platforms.telegram.extra.rich_messages.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", True)
+        # Bot API 10.1 Rich Messages: when explicitly enabled, send final
+        # replies via sendRichMessage with the raw agent markdown so
+        # tables/task lists/etc. render natively. Disabled by default because
+        # several Telegram clients accept but render rich messages poorly.
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -983,7 +983,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         return bool(
-            getattr(self, "_rich_messages_enabled", True)
+            getattr(self, "_rich_messages_enabled", False)
             and not getattr(self, "_rich_send_disabled", False)
             and not (metadata or {}).get("expect_edits")
             and content
@@ -996,23 +996,16 @@ class TelegramAdapter(BasePlatformAdapter):
     def prefers_fresh_final_streaming(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
-        """Finalize rich-eligible streamed replies with a fresh sendRichMessage
-        instead of Hermes' current MarkdownV2 edit path.
+        """Whether to replace a streamed preview with a fresh rich final.
 
-        The final edit path has not yet been upgraded to Bot API 10.1's
-        ``rich_message`` edit parameter, so finalizing through edit would lose
-        rich constructs such as tables/task lists.  When the completed content
-        is rich-eligible, re-send it via ``sendRichMessage`` and delete the
-        preview (see ``gateway.stream_consumer._try_fresh_final``).
-
-        ``metadata`` is intentionally ignored: the preview was sent with
-        ``expect_edits=True`` (to stay on the editable path mid-stream), but the
-        FINAL answer is a brand-new message that should render rich.  Gating
-        otherwise matches :meth:`_should_attempt_rich`: rich not latched off,
-        content present and within the rich character limit, and the bot exposes
-        an async ``do_api_request``.
+        Keep this disabled for Telegram. The fresh-final path briefly shows two
+        copies of the final answer, then deletes the streaming preview after the
+        rich send succeeds. That is especially visible on clients that support
+        rich messages well, and it looks like duplicate delivery at the end of
+        every streamed turn. Until Telegram rich edits are wired directly, final
+        streamed replies should edit the existing preview in place.
         """
-        return self._should_attempt_rich(content)
+        return False
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
@@ -1026,7 +1019,7 @@ class TelegramAdapter(BasePlatformAdapter):
         streams split exactly as before.
         """
         if (
-            getattr(self, "_rich_messages_enabled", True)
+            getattr(self, "_rich_messages_enabled", False)
             and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
@@ -1216,7 +1209,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            getattr(self, "_rich_messages_enabled", True)
+            getattr(self, "_rich_messages_enabled", False)
             and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content

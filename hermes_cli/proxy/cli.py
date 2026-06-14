@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import sys
 from typing import Any
@@ -16,6 +17,16 @@ from hermes_cli.proxy.server import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_loopback_bind_host(host: str) -> bool:
+    normalized = host.strip().lower().strip("[]")
+    if normalized in {"localhost"}:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 def _print_aiohttp_missing() -> None:
@@ -54,6 +65,16 @@ def cmd_proxy_start(args: Any) -> int:
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT
+    allow_network = bool(getattr(args, "allow_network", False))
+
+    if not allow_network and not _is_loopback_bind_host(host):
+        print(
+            "Refusing to expose the credential-attaching proxy on a non-loopback "
+            f"address ({host}). Use --allow-network only if you intend to make "
+            "your authenticated provider proxy reachable from this network.",
+            file=sys.stderr,
+        )
+        return 2
 
     print(
         f"Starting Hermes proxy for {adapter.display_name}\n"

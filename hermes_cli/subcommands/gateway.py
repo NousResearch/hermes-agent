@@ -265,13 +265,24 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
     proxy_start.add_argument(
         "--host",
         default=None,
-        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.",
+        help=(
+            "Bind address (default: 127.0.0.1). Non-loopback addresses require "
+            "--allow-network."
+        ),
     )
     proxy_start.add_argument(
         "--port",
         type=int,
         default=None,
         help="Bind port (default: 8645)",
+    )
+    proxy_start.add_argument(
+        "--allow-network",
+        action="store_true",
+        help=(
+            "Allow binding the credential-attaching proxy to a non-loopback "
+            "address such as 0.0.0.0."
+        ),
     )
 
     proxy_subparsers.add_parser(

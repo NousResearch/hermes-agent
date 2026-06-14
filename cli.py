@@ -7660,6 +7660,38 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
+                        # Guard: block dangerous and hardline commands before execution.
+                        # Quick commands are user-defined config, but the guard prevents
+                        # accidental destructive commands from reaching the shell.
+                        try:
+                            from tools.approval import (
+                                detect_dangerous_command,
+                                detect_hardline_command,
+                            )
+                            _is_hl, _hl_desc = detect_hardline_command(exec_cmd)
+                            if _is_hl:
+                                self._console_print(
+                                    f"[bold red]BLOCKED (hardline): {_hl_desc}. "
+                                    "This command cannot be executed via quick command. "
+                                    "Run it directly in your terminal if needed.[/]"
+                                )
+                                return True
+                            _is_dg, _, _dg_desc = detect_dangerous_command(exec_cmd)
+                            if _is_dg:
+                                self._console_print(
+                                    f"[bold red]BLOCKED: Quick command matches a "
+                                    f"dangerous pattern ({_dg_desc}). "
+                                    "Edit quick_commands in config.yaml to use a "
+                                    "safe command, or run it directly in your terminal.[/]"
+                                )
+                                return True
+                        except Exception:
+                            # Fail closed: block execution if guard cannot be loaded.
+                            self._console_print(
+                                "[bold red]BLOCKED: Could not verify command safety "
+                                "(guard module unavailable).[/]"
+                            )
+                            return True
                         try:
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.

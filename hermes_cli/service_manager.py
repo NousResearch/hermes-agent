@@ -823,15 +823,15 @@ class S6ServiceManager:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         """Create the s6 service directory for a profile gateway.
 
         Triggers ``s6-svscanctl -a`` so s6-svscan picks the new directory
-        up immediately. The service is created in the *up* state — to
-        register without auto-starting, follow up with ``stop(profile)``
-        (or pass the start flag via the future ``start_now=False`` arg,
-        which the Phase 4 reconciliation path uses via a ``down``
-        marker file written directly).
+        up immediately. When *start_now* is True (the default) the service
+        starts immediately. When False, a ``down`` marker is written so
+        s6-supervise keeps the service stopped until the user brings it
+        up explicitly with ``hermes -p <profile> gateway start``.
 
         Raises:
             ValueError: if the profile name is invalid or the service
@@ -877,6 +877,15 @@ class S6ServiceManager:
             # the hermes user) won't hit EACCES on root-owned 0700
             # dirs. See ``_seed_supervise_skeleton`` for the full
             # rationale.
+
+            # The presence of a `down` file tells s6-supervise to NOT
+            # start the service when s6-svscan picks it up. User brings
+            # it up explicitly with `hermes -p <profile> gateway start`
+            # (which routes through _dispatch_via_service_manager_if_s6
+            # to `s6-svc -u`).  See GH-45963.
+            if not start_now:
+                (tmp_dir / "down").touch()
+
             _seed_supervise_skeleton(tmp_dir)
 
             tmp_dir.rename(svc_dir)

@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
@@ -383,6 +384,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
+        self._rollover_deferred_until = 0.0
         super().__init__(*args, **kwargs)
         # Snapshot the inode of the currently open stream so emit() can
         # detect external rotation without an extra fstat per write.
@@ -466,8 +468,42 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._chmod_if_managed()
         return stream
 
+    def shouldRollover(self, record: logging.LogRecord) -> bool:
+        """Skip retry storms after a cross-process Windows rollover lock.
+
+        ``RotatingFileHandler`` is process-local.  On Windows, a second Hermes
+        process holding the same agent.log handle makes ``os.rename`` fail with
+        ``PermissionError``.  If we immediately retry on every record, logging
+        emits multi-KB "--- Logging error ---" tracebacks forever because the
+        file is still above maxBytes.  Defer retries briefly and keep appending
+        instead; the next process that can acquire the file will rotate later.
+        """
+        if self._rollover_deferred_until:
+            if time.monotonic() < self._rollover_deferred_until:
+                return False
+            self._rollover_deferred_until = 0.0
+        return super().shouldRollover(record)
+
+    def _defer_locked_rollover(self) -> None:
+        self._rollover_deferred_until = time.monotonic() + 60.0
+        if self.stream is None:
+            try:
+                self.stream = self._open()
+            except Exception:
+                pass
+        self._record_stream_stat()
+
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except PermissionError:
+            self._defer_locked_rollover()
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == 32:
+                self._defer_locked_rollover()
+                return
+            raise
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

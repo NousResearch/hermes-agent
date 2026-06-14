@@ -145,6 +145,72 @@ class TestSetupLogging:
         assert agent_handlers[0].maxBytes == 10 * 1024 * 1024
         assert agent_handlers[0].backupCount == 5
 
+    def test_locked_windows_rollover_defers_without_losing_records(self, hermes_home):
+        """A locked log file must not spam stderr or drop the triggering record.
+
+        On Windows multiple Hermes processes can hold agent.log open. The stdlib
+        RotatingFileHandler raises PermissionError when one process tries to
+        rename a file another process still has open; without a guard every log
+        event after maxBytes emits a huge "--- Logging error ---" traceback.
+        """
+        log_path = hermes_home / "logs" / "agent.log"
+        root = logging.getLogger()
+        hermes_logging._add_rotating_handler(
+            root,
+            log_path,
+            level=logging.INFO,
+            max_bytes=1,
+            backup_count=1,
+            formatter=logging.Formatter("%(message)s"),
+        )
+        handler = next(
+            h
+            for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and getattr(h, "baseFilename", "") == str(log_path.resolve())
+        )
+
+        rollover_calls = {"count": 0}
+
+        def locked_rollover(self):
+            rollover_calls["count"] += 1
+            raise PermissionError(13, "file is locked", str(log_path))
+
+        with patch.object(RotatingFileHandler, "doRollover", locked_rollover):
+            with patch.object(
+                handler,
+                "handleError",
+                side_effect=AssertionError("handleError should not be called"),
+            ):
+                handler.emit(
+                    logging.LogRecord(
+                        "test.locked_rollover",
+                        logging.INFO,
+                        __file__,
+                        1,
+                        "first record survives locked rollover",
+                        (),
+                        None,
+                    )
+                )
+                handler.emit(
+                    logging.LogRecord(
+                        "test.locked_rollover",
+                        logging.INFO,
+                        __file__,
+                        1,
+                        "second record skips retry during cooldown",
+                        (),
+                        None,
+                    )
+                )
+
+        handler.flush()
+        content = log_path.read_text(encoding="utf-8")
+        assert "first record survives locked rollover" in content
+        assert "second record skips retry during cooldown" in content
+        assert rollover_calls["count"] == 1
+
     def test_suppresses_noisy_loggers(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
 
@@ -747,6 +813,10 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX mode bits are not enforced on NTFS by default",
+    )
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         logger = logging.getLogger("_test_rotating_managed_open")
@@ -771,6 +841,10 @@ class TestAddRotatingHandler:
                 logger.removeHandler(h)
                 h.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="POSIX mode bits are not enforced on NTFS by default",
+    )
     def test_managed_mode_rollover_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-rollover.log"
         logger = logging.getLogger("_test_rotating_managed_rollover")
@@ -859,6 +933,10 @@ class TestExternalRotationRecovery:
         handler.emit(record)
         handler.flush()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows forbids renaming open log files; locked-rollover behavior is covered separately",
+    )
     def test_recovers_after_external_rename(self, tmp_path):
         """logrotate-style external rename: ``mv gateway.log gateway.log.1``.
 
@@ -887,6 +965,10 @@ class TestExternalRotationRecovery:
         finally:
             handler.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows forbids unlinking open log files; locked-rollover behavior is covered separately",
+    )
     def test_recovers_after_external_unlink(self, tmp_path):
         """``rm gateway.log`` then keep writing — handler recreates the file."""
         log_path = tmp_path / "gateway.log"
@@ -957,6 +1039,10 @@ class TestExternalRotationRecovery:
         finally:
             handler.close()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows forbids external rename of an open gateway.log handle",
+    )
     def test_gateway_log_attached_after_external_rotation_then_re_setup(
         self, hermes_home,
     ):

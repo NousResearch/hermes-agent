@@ -37,6 +37,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
@@ -44,13 +45,19 @@ _SCHTASKS_TIMEOUT_S = 15
 _SCHTASKS_NO_OUTPUT_TIMEOUT_S = 30
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
 _FALLBACK_PATTERNS = re.compile(
-    r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
+    r"(access is denied|acceso denegado|odmowa dost\S*pu|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
     re.IGNORECASE,
 )
-_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+_ACCESS_DENIED_PATTERN = re.compile(
+    r"(access is denied|acceso denegado|odmowa dost\S*pu)",
+    re.IGNORECASE,
+)
 
 _TASK_NAME_DEFAULT = "Hermes_Gateway"
 _TASK_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+_TASK_XML_NS = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+
+ET.register_namespace("", _TASK_XML_NS)
 
 
 def _schtasks_encoding() -> str:
@@ -443,6 +450,76 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
+def _task_xml_tag(name: str) -> str:
+    return f"{{{_TASK_XML_NS}}}{name}"
+
+
+def _xml_text(parent: ET.Element, name: str, value: str) -> ET.Element:
+    child = ET.SubElement(parent, _task_xml_tag(name))
+    child.text = value
+    return child
+
+
+def _build_scheduled_task_xml(script_path: Path, user: str | None = None) -> str:
+    """Build Task Scheduler XML for the gateway daemon.
+
+    ``schtasks /Create /SC ONLOGON`` applies Windows' default 72-hour execution
+    limit.  Hermes gateway is a long-running daemon, so import XML and set
+    ``ExecutionTimeLimit`` to ``PT0S`` (unlimited) explicitly.
+    """
+    task = ET.Element(_task_xml_tag("Task"), {"version": "1.2"})
+
+    registration = ET.SubElement(task, _task_xml_tag("RegistrationInfo"))
+    _xml_text(registration, "Description", _TASK_DESCRIPTION)
+
+    triggers = ET.SubElement(task, _task_xml_tag("Triggers"))
+    logon_trigger = ET.SubElement(triggers, _task_xml_tag("LogonTrigger"))
+    _xml_text(logon_trigger, "Enabled", "true")
+    if user:
+        _xml_text(logon_trigger, "UserId", user)
+
+    principals = ET.SubElement(task, _task_xml_tag("Principals"))
+    principal = ET.SubElement(principals, _task_xml_tag("Principal"), {"id": "Author"})
+    if user:
+        _xml_text(principal, "UserId", user)
+    _xml_text(principal, "LogonType", "InteractiveToken")
+    _xml_text(principal, "RunLevel", "LeastPrivilege")
+
+    settings = ET.SubElement(task, _task_xml_tag("Settings"))
+    _xml_text(settings, "MultipleInstancesPolicy", "IgnoreNew")
+    _xml_text(settings, "DisallowStartIfOnBatteries", "true")
+    _xml_text(settings, "StopIfGoingOnBatteries", "true")
+    _xml_text(settings, "AllowHardTerminate", "true")
+    _xml_text(settings, "StartWhenAvailable", "false")
+    _xml_text(settings, "RunOnlyIfNetworkAvailable", "false")
+    idle = ET.SubElement(settings, _task_xml_tag("IdleSettings"))
+    _xml_text(idle, "StopOnIdleEnd", "true")
+    _xml_text(idle, "RestartOnIdle", "false")
+    _xml_text(settings, "AllowStartOnDemand", "true")
+    _xml_text(settings, "Enabled", "true")
+    _xml_text(settings, "Hidden", "false")
+    _xml_text(settings, "RunOnlyIfIdle", "false")
+    _xml_text(settings, "WakeToRun", "false")
+    _xml_text(settings, "ExecutionTimeLimit", "PT0S")
+    _xml_text(settings, "Priority", "7")
+
+    actions = ET.SubElement(task, _task_xml_tag("Actions"), {"Context": "Author"})
+    exec_action = ET.SubElement(actions, _task_xml_tag("Exec"))
+    _xml_text(exec_action, "Command", str(script_path))
+
+    return ET.tostring(task, encoding="unicode")
+
+
+def _write_scheduled_task_xml(task_name: str, script_path: Path, user: str | None) -> Path:
+    xml_path = script_path.with_name(f"{_sanitize_filename(task_name)}.xml")
+    xml_path.write_text(
+        _build_scheduled_task_xml(script_path, user),
+        encoding="utf-16",
+        newline="",
+    )
+    return xml_path
+
+
 def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, str]:
     """Create or replace the Scheduled Task. Returns (success, detail).
 
@@ -451,8 +528,6 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     preserves those stale triggers and can make the gateway relaunch every
     minute. Delete+create gives us a clean ONLOGON task every install.
     """
-    quoted_script = _quote_schtasks_arg(str(script_path))
-
     delete_code, delete_out, delete_err = _exec_schtasks(["/Delete", "/F", "/TN", task_name])
     delete_detail = (delete_err or delete_out or "").strip()
     if delete_code != 0 and delete_detail and "cannot find" not in delete_detail.lower():
@@ -460,20 +535,9 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
             return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
         # Non-fatal: /Create /F below may still replace it. Keep the detail in
         # the final error if creation also fails.
-    # password" variant; if that fails, retry without /RU /NP /IT.
-    base = [
-        "/Create",
-        "/F",
-        "/SC",
-        "ONLOGON",
-        "/RL",
-        "LIMITED",
-        "/TN",
-        task_name,
-        "/TR",
-        quoted_script,
-    ]
     user = _resolve_task_user()
+    xml_path = _write_scheduled_task_xml(task_name, script_path, user)
+    base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
     variants = []
     if user:
         variants.append([*base, "/RU", user, "/NP", "/IT"])
@@ -481,11 +545,17 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
 
     last_code = 1
     last_err = ""
-    for argv in variants:
-        code, out, err = _exec_schtasks(argv)
-        if code == 0:
-            return (True, f"Created Scheduled Task {task_name!r}")
-        last_code, last_err = code, (err or out or "")
+    try:
+        for argv in variants:
+            code, out, err = _exec_schtasks(argv)
+            if code == 0:
+                return (True, f"Created Scheduled Task {task_name!r}")
+            last_code, last_err = code, (err or out or "")
+    finally:
+        try:
+            xml_path.unlink(missing_ok=True)
+        except Exception:
+            pass
     if delete_detail and "cannot find" not in delete_detail.lower():
         last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")

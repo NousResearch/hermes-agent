@@ -35,6 +35,11 @@ from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from hermes_cli.config import cfg_get
+from hermes_cli.goals import (
+    format_goal_budget,
+    goal_completion_hint,
+    is_unbounded_goal_turns,
+)
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -1626,6 +1631,12 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
+        if is_unbounded_goal_turns(state.max_turns):
+            return (
+                f"⊙ Goal set ({format_goal_budget(state.max_turns)}): {state.goal}\n"
+                f"{goal_completion_hint(state.max_turns)}\n"
+                "Controls: /goal status · /goal pause · /goal resume · /goal clear"
+            )
         return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:

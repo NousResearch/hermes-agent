@@ -1,6 +1,6 @@
 """Regression tests for unbounded iteration budgets."""
 
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import IterationBudget, is_unbounded_iteration_limit
 
 
 def test_non_positive_iteration_budget_is_unbounded_and_still_counts_usage():
@@ -22,3 +22,10 @@ def test_positive_iteration_budget_still_exhausts_at_limit():
     assert budget.consume() is True
     assert budget.consume() is False
     assert budget.remaining == 0
+
+
+def test_boolean_false_iteration_limit_is_not_unbounded():
+    budget = IterationBudget(False)
+
+    assert not budget.is_unbounded
+    assert not is_unbounded_iteration_limit(False)

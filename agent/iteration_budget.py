@@ -41,6 +41,8 @@ class IterationBudget:
     @property
     def is_unbounded(self) -> bool:
         """True when this budget has no hard iteration ceiling."""
+        if isinstance(self.max_total, bool):
+            return False
         try:
             return int(self.max_total) <= 0
         except (TypeError, ValueError):
@@ -75,6 +77,8 @@ class IterationBudget:
 
 def is_unbounded_iteration_limit(max_iterations: int) -> bool:
     """Return True when a configured max-iteration value disables the cap."""
+    if isinstance(max_iterations, bool):
+        return False
     try:
         return int(max_iterations) <= 0
     except (TypeError, ValueError):

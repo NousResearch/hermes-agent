@@ -57,6 +57,32 @@ def test_goal_mode_persists(kanban_home):
     assert task.goal_max_turns == 7
 
 
+def test_goal_mode_preserves_zero_max_turns(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="unbounded task",
+            assignee="worker",
+            goal_mode=True,
+            goal_max_turns=0,
+        )
+        task = kb.get_task(conn, tid)
+    assert task.goal_mode is True
+    assert task.goal_max_turns == 0
+
+
+def test_goal_mode_rejects_boolean_false_max_turns(kanban_home):
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="goal_max_turns must be an integer, not boolean"):
+            kb.create_task(
+                conn,
+                title="bad bool budget",
+                assignee="worker",
+                goal_mode=True,
+                goal_max_turns=False,
+            )
+
+
 def test_goal_mode_without_max_turns(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(

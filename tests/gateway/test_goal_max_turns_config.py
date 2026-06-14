@@ -60,3 +60,85 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
         assert state.max_turns == 7
     finally:
         goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_preserves_zero_max_turns_from_full_config(tmp_path, monkeypatch):
+    """Gateway /goal should preserve goals.max_turns=0 as unbounded."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("goals:\n  max_turns: 0\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+
+    event = MessageEvent(
+        text="/goal ship without a turn ceiling",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-config-zero",
+    )
+
+    response = await GatewayRunner._handle_goal_command(runner, event)
+
+    try:
+        assert "⊙ Goal set (unbounded): ship without a turn ceiling" in response
+        assert "budget is exhausted" not in response
+        state = goals.GoalManager("sid-gateway-goal-config").state
+        assert state is not None
+        assert state.max_turns == 0
+    finally:
+        goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_goal_boolean_false_max_turns_falls_back_to_default(tmp_path, monkeypatch):
+    """YAML false must not silently become unbounded via int(False) == 0."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("goals:\n  max_turns: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+
+    event = MessageEvent(
+        text="/goal stay bounded",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-config-false",
+    )
+
+    response = await GatewayRunner._handle_goal_command(runner, event)
+
+    try:
+        assert "⊙ Goal set (20-turn budget): stay bounded" in response
+        assert "unbounded" not in response
+        state = goals.GoalManager("sid-gateway-goal-config").state
+        assert state is not None
+        assert state.max_turns == 20
+    finally:
+        goals._DB_CACHE.clear()

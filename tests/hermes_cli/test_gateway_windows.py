@@ -12,6 +12,18 @@ import hermes_cli.setup as setup
 @pytest.mark.parametrize(
     "detail",
     [
+        "ERROR: Odmowa dost\u0119pu.",
+        "ERROR: Odmowa dost\ufffdpu.",
+    ],
+)
+def test_polish_schtasks_access_denied_uses_uac_or_fallback_path(detail):
+    assert gateway_windows._should_fall_back(1, detail) is True
+    assert gateway_windows._is_access_denied(detail) is True
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
         "ERROR: Access is denied.",
         "ERROR: Acceso denegado.",
         "ERROR: Přístup byl odepřen.",
@@ -247,6 +259,10 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
         if args[0] == "/Delete":
             return (0, "SUCCESS", "")
         if args[0] == "/Create":
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml = xml_path.read_text(encoding="utf-16")
+            assert "<LogonTrigger>" in xml
+            assert "<Enabled>true</Enabled>" in xml
             return (0, "SUCCESS", "")
         raise AssertionError(f"unexpected schtasks args: {args}")
 
@@ -257,8 +273,43 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "/Change" not in [arg for call in calls for arg in call]
     assert calls[0][:4] == ("/Delete", "/F", "/TN", "Hermes_Gateway_alice")
     assert calls[1][0] == "/Create"
-    assert "/SC" in calls[1]
-    assert "ONLOGON" in calls[1]
+    assert "/XML" in calls[1]
+
+
+def test_install_scheduled_task_disables_windows_72h_runtime_cap(monkeypatch, tmp_path):
+    """Scheduled Task XML must set unlimited runtime for the daemon.
+
+    Windows' default Task Scheduler execution limit is 72h. Hermes gateway is a
+    daemon, so a freshly installed task must opt out instead of being killed
+    after three days.
+    """
+    calls = []
+    script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
+
+    def fake_schtasks(args):
+        calls.append(tuple(args))
+        if args[0] == "/Delete":
+            return (0, "SUCCESS", "")
+        if args[0] == "/Create":
+            xml_path = Path(args[args.index("/XML") + 1])
+            xml = xml_path.read_text(encoding="utf-16")
+            assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml
+            assert "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" in xml
+            assert str(script_path) in xml
+            return (0, "SUCCESS", "")
+        raise AssertionError(f"unexpected schtasks args: {args}")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+
+    ok, detail = gateway_windows._install_scheduled_task("Hermes_Gateway_alice", script_path)
+
+    assert ok is True
+    assert detail == "Created Scheduled Task 'Hermes_Gateway_alice'"
+    assert calls[1][0] == "/Create"
+    assert "/XML" in calls[1]
 
 
 def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run(monkeypatch, tmp_path, capsys):

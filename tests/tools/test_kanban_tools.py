@@ -768,6 +768,19 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_rejects_boolean_false_goal_max_turns(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "bad goal budget",
+        "assignee": "peer",
+        "goal_mode": True,
+        "goal_max_turns": False,
+    })
+
+    assert "goal_max_turns must be an integer, not boolean" in json.loads(out).get("error", "")
+
+
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
     """A worker scoped to a dir: task that spawns a child without a
     workspace arg inherits the dir, not scratch (so follow-up code-gen

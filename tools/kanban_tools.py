@@ -773,6 +773,13 @@ def _handle_create(args: dict, **kw) -> str:
     if goal_bool_error:
         return tool_error(goal_bool_error)
     goal_max_turns = args.get("goal_max_turns")
+    if isinstance(goal_max_turns, bool):
+        return tool_error("goal_max_turns must be an integer, not boolean")
+    if goal_max_turns is not None:
+        try:
+            goal_max_turns = int(goal_max_turns)
+        except (TypeError, ValueError):
+            return tool_error("goal_max_turns must be an integer")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):

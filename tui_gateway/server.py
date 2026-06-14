@@ -252,6 +252,8 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             env=os.environ.copy(),
@@ -1098,6 +1100,8 @@ def _git_branch_for_cwd(cwd: str) -> str:
             ["git", "-C", cwd, "branch", "--show-current"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=1.5,
             check=False,
             stdin=subprocess.DEVNULL,
@@ -1110,6 +1114,8 @@ def _git_branch_for_cwd(cwd: str) -> str:
             ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=1.5,
             check=False,
             stdin=subprocess.DEVNULL,
@@ -3032,15 +3038,34 @@ def _apply_personality_to_session(
     return False, None
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
+def _cfg_int_or_none(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
-        if env_max > 0:
-            return env_max
+        return int(value)
     except (TypeError, ValueError):
-        pass
+        return None
+
+
+def _cfg_max_turns(cfg: dict, default: int) -> int:
+    raw_env = os.environ.get("HERMES_TUI_MAX_TURNS")
+    if raw_env not in (None, ""):
+        env_max = _cfg_int_or_none(raw_env)
+        if env_max is not None:
+            return env_max
+
     agent_cfg = cfg.get("agent") or {}
-    return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
+        nested_max = _cfg_int_or_none(agent_cfg.get("max_turns"))
+        if nested_max is not None:
+            return nested_max
+
+    if "max_turns" in cfg:
+        root_max = _cfg_int_or_none(cfg.get("max_turns"))
+        if root_max is not None:
+            return root_max
+
+    return int(default)
 
 
 def _parse_tui_skills_env() -> list[str]:
@@ -5954,13 +5979,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # outcome. Mirrors gateway/run._post_turn_goal_continuation.
             if status == "complete" and isinstance(raw, str) and raw.strip():
                 try:
-                    from hermes_cli.goals import GoalManager
+                    from hermes_cli.goals import GoalManager, resolve_goal_max_turns
 
                     sid_key = session.get("session_key") or ""
                     if sid_key:
                         try:
                             goals_cfg = _load_cfg().get("goals") or {}
-                            goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+                            goal_max_turns = resolve_goal_max_turns(goals_cfg)
                         except Exception:
                             goal_max_turns = 20
                         goal_mgr = GoalManager(
@@ -6460,7 +6485,15 @@ def _(rid, params: dict) -> dict:
             str(pdf_path), str(out_prefix),
         ]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            res = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                stdin=subprocess.DEVNULL,
+            )
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -8005,6 +8038,8 @@ def _(rid, params: dict) -> dict:
             [sys.executable, "-m", "hermes_cli.main", *argv],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=min(int(params.get("timeout", 240)), 600),
             cwd=os.getcwd(),
             env=os.environ.copy(),
@@ -8068,6 +8103,8 @@ def _(rid, params: dict) -> dict:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
                 stdin=subprocess.DEVNULL,
             )
@@ -8190,7 +8227,12 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import (
+                GoalManager,
+                format_goal_budget,
+                goal_completion_hint,
+                resolve_goal_max_turns,
+            )
         except Exception as exc:
             return _err(rid, 5030, f"goals unavailable: {exc}")
 
@@ -8200,7 +8242,7 @@ def _(rid, params: dict) -> dict:
 
         try:
             goals_cfg = _load_cfg().get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = resolve_goal_max_turns(goals_cfg)
         except Exception:
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
@@ -8244,8 +8286,8 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
         notice = (
-            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            f"⊙ Goal set ({format_goal_budget(state.max_turns)}): {state.goal}\n"
+            f"{goal_completion_hint(state.max_turns)}\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
         # Send the goal text as the kickoff prompt. The TUI client sees
@@ -10288,7 +10330,14 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

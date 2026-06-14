@@ -43,6 +43,17 @@ def server(hermes_home):
         },
     ):
         mod = importlib.import_module("tui_gateway.server")
+        # Other tests may import tui_gateway.server at collection time before this
+        # fixture sets HERMES_HOME. Keep these tests hermetic by forcing the
+        # module-level cached home/config to the temp Hermes home for each case.
+        old_home = getattr(mod, "_hermes_home", None)
+        old_cfg_cache = getattr(mod, "_cfg_cache", None)
+        old_cfg_mtime = getattr(mod, "_cfg_mtime", None)
+        old_cfg_path = getattr(mod, "_cfg_path", None)
+        mod._hermes_home = hermes_home
+        mod._cfg_cache = None
+        mod._cfg_mtime = None
+        mod._cfg_path = None
         yield mod
         # Reset module-level session state without re-importing. importlib.reload
         # would re-register the module's atexit hooks (ThreadPoolExecutor
@@ -55,6 +66,10 @@ def server(hermes_home):
         mod._sessions.clear()
         mod._pending.clear()
         mod._answers.clear()
+        mod._hermes_home = old_home
+        mod._cfg_cache = old_cfg_cache
+        mod._cfg_mtime = old_cfg_mtime
+        mod._cfg_path = old_cfg_path
 
 
 @pytest.fixture()
@@ -120,6 +135,43 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state is not None
     assert mgr.state.goal == "build a rocket"
     assert mgr.state.status == "active"
+
+
+def test_goal_set_preserves_zero_max_turns_from_config(server, session, monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"goals": {"max_turns": 0}})
+    sid, session_key, _ = session
+
+    r = _call(server, "command.dispatch", name="goal", arg="build forever", session_id=sid)
+
+    result = r["result"]
+    assert result["type"] == "send"
+    assert "Goal set" in result["notice"]
+    assert "unbounded" in result["notice"]
+    assert "budget is exhausted" not in result["notice"]
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    assert mgr.state is not None
+    assert mgr.state.max_turns == 0
+
+
+def test_goal_set_boolean_false_max_turns_falls_back_to_default(server, session, monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"goals": {"max_turns": False}})
+    sid, session_key, _ = session
+
+    r = _call(server, "command.dispatch", name="goal", arg="stay bounded", session_id=sid)
+
+    result = r["result"]
+    assert result["type"] == "send"
+    assert "20-turn budget" in result["notice"]
+    assert "unbounded" not in result["notice"]
+
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    assert mgr.state is not None
+    assert mgr.state.max_turns == 20
 
 
 def test_goal_pause_after_set(server, session):

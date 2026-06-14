@@ -1844,11 +1844,15 @@ class CLICommandsMixin:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        from hermes_cli.goals import format_goal_budget, goal_completion_hint
+
+        goal_hint = goal_completion_hint(state.max_turns).replace(
+            "I'll keep working", "Hermes keeps working", 1
+        )
+        _cprint(f"  ⊙ Goal set ({format_goal_budget(state.max_turns)}): {state.goal}")
         _cprint(
             f"  {_DIM}After each turn, a judge model will check if the goal is done. "
-            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
+            f"{goal_hint} Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.

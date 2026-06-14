@@ -32,6 +32,39 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Budget parsing / formatting
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalBudgetParsing:
+    def test_coerce_max_turns_preserves_numeric_zero(self):
+        from hermes_cli.goals import coerce_max_turns, is_unbounded_goal_turns
+
+        assert coerce_max_turns(0, default=20) == 0
+        assert coerce_max_turns("0", default=20) == 0
+        assert is_unbounded_goal_turns(0)
+
+    def test_boolean_max_turns_falls_back_instead_of_unbounded(self):
+        from hermes_cli.goals import (
+            coerce_max_turns,
+            format_goal_budget,
+            is_unbounded_goal_turns,
+            resolve_goal_max_turns,
+        )
+
+        assert coerce_max_turns(False, default=20) == 20
+        assert resolve_goal_max_turns({"max_turns": False}, default=20) == 20
+        assert not is_unbounded_goal_turns(False)
+        assert format_goal_budget(False) == "20-turn budget"
+
+    def test_unbounded_completion_hint_omits_budget_exhausted(self):
+        from hermes_cli.goals import goal_completion_hint
+
+        assert "budget is exhausted" not in goal_completion_hint(0)
+        assert "budget is exhausted" in goal_completion_hint(20)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # _parse_judge_response
 # ──────────────────────────────────────────────────────────────────────
 
@@ -204,6 +237,25 @@ class TestGoalManager:
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
 
+    def test_set_preserves_zero_default_max_turns_as_unbounded(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="test-sid-zero-default", default_max_turns=0)
+        state = mgr.set("keep going")
+
+        assert state.max_turns == 0
+        assert "unbounded" in mgr.status_line()
+        assert "0/0" not in mgr.status_line()
+
+    def test_set_preserves_explicit_zero_max_turns_as_unbounded(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="test-sid-zero-explicit", default_max_turns=5)
+        state = mgr.set("keep going", max_turns=0)
+
+        assert state.max_turns == 0
+        assert "unbounded" in mgr.status_line()
+
     def test_set_rejects_empty(self, hermes_home):
         from hermes_cli.goals import GoalManager
 
@@ -306,6 +358,26 @@ class TestGoalManager:
             assert mgr.state.status == "paused"
             assert mgr.state.turns_used == 2
             assert "budget" in (mgr.state.paused_reason or "").lower()
+
+    def test_evaluate_after_turn_zero_max_turns_does_not_pause_on_budget(
+        self, hermes_home
+    ):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="eval-sid-unbounded", default_max_turns=0)
+        mgr.set("hard goal")
+
+        with patch.object(goals, "judge_goal", return_value=("continue", "not yet", False)):
+            for idx in range(3):
+                decision = mgr.evaluate_after_turn(f"step {idx}")
+                assert decision["should_continue"] is True
+                assert decision["verdict"] == "continue"
+                assert mgr.state.status == "active"
+
+        assert mgr.state.turns_used == 3
+        assert mgr.state.max_turns == 0
+        assert mgr.state.paused_reason is None
 
     def test_evaluate_after_turn_inactive(self, hermes_home):
         """evaluate_after_turn is a no-op when goal isn't active."""
@@ -539,6 +611,20 @@ class TestGoalStateSubgoalsBackcompat:
         state = GoalState.from_json(legacy)
         assert state.goal == "do a thing"
         assert state.subgoals == []
+
+    def test_zero_max_turns_round_trips_as_unbounded(self):
+        from hermes_cli.goals import GoalState
+
+        raw = json.dumps({
+            "goal": "do a thing",
+            "status": "active",
+            "turns_used": 1,
+            "max_turns": 0,
+        })
+
+        state = GoalState.from_json(raw)
+
+        assert state.max_turns == 0
 
     def test_subgoals_round_trip(self):
         from hermes_cli.goals import GoalState

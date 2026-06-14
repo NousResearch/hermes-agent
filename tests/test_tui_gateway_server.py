@@ -3861,6 +3861,36 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     assert "failed" in resp["error"]["message"]
 
 
+def test_command_dispatch_exec_decodes_subprocess_output_lossily(monkeypatch):
+    """Gateway subprocess reads must tolerate non-UTF-8 tool output.
+
+    Python's subprocess.run(..., text=True) spawns _readerthread workers for
+    captured pipes on Windows.  Without errors="replace", one bad byte in a
+    child process stream surfaces through threading.excepthook as a scary
+    [gateway-crash] UnicodeDecodeError.
+    """
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"ok": {"type": "exec", "command": "ok"}}},
+    )
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(returncode=0, stdout="decoded", stderr="")
+
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "ok"}}
+    )
+
+    assert resp["result"]["output"] == "decoded"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
 def test_plugins_list_surfaces_loader_error(monkeypatch):
     with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
         resp = server.handle_request(
@@ -6457,6 +6487,71 @@ def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):
     assert waited == [0.75]
 
 
+def test_make_agent_preserves_nested_zero_max_turns(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 0}})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 0
+
+
+def test_make_agent_preserves_root_zero_max_turns(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"max_turns": 0})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 0
+
+
+def test_make_agent_ignores_boolean_false_nested_max_turns(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": False}})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 90
+
+
+def test_make_agent_ignores_boolean_false_root_max_turns(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"max_turns": False})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 90
+
+
+def test_make_agent_nested_zero_takes_priority_over_root_max_turns(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 0}, "max_turns": 100})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 0
+
+
+def test_make_agent_preserves_env_zero_max_turns(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_MAX_TURNS", "0")
+    _setup_make_agent_mocks(monkeypatch, {})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 0
+
+
+def test_make_agent_env_max_turns_takes_priority(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_MAX_TURNS", "40")
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 20}, "max_turns": 30})
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent("sid1", "key1")
+
+    assert mock_agent.call_args.kwargs["max_iterations"] == 40
+
+
 def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
     _setup_make_agent_mocks(
         monkeypatch, {"agent": {"max_turns": 500}, "max_turns": 100}
@@ -6555,12 +6650,28 @@ def test_background_agent_kwargs_reads_nested_max_turns(monkeypatch):
     assert kwargs["max_iterations"] == 300
 
 
+def test_background_agent_kwargs_preserves_nested_zero_max_turns(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"max_turns": 0}})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 0
+
+
 def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 50})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
     assert kwargs["max_iterations"] == 50
+
+
+def test_background_agent_kwargs_preserves_root_zero_max_turns(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 0})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 0
 
 
 def test_background_agent_kwargs_defaults_to_25(monkeypatch):
@@ -6594,6 +6705,23 @@ def test_config_show_displays_nested_max_turns(monkeypatch):
     )
 
     assert ["Max Turns", "120"] in agent_rows
+
+
+def test_config_show_displays_zero_max_turns(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {"max_turns": 0}, "enabled_toolsets": [], "verbose": False},
+    )
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    resp = server.handle_request({"id": "1", "method": "config.show", "params": {}})
+    sections = resp["result"]["sections"]
+    agent_rows = next(
+        section["rows"] for section in sections if section["title"] == "Agent"
+    )
+
+    assert ["Max Turns", "0"] in agent_rows
 
 
 def test_notification_poller_delivers_completion(monkeypatch):

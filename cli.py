@@ -7827,9 +7827,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return existing
 
         try:
+            from hermes_cli.goals import resolve_goal_max_turns
+
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = resolve_goal_max_turns(goals_cfg)
         except Exception:
             max_turns = 20
 
@@ -13423,7 +13425,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     if not goal_text:
         return
 
-    max_turns = task.goal_max_turns or _DEF_TURNS
+    max_turns = task.goal_max_turns if task.goal_max_turns is not None else _DEF_TURNS
 
     def _run_turn(prompt: str) -> str:
         result = cli.agent.run_conversation(

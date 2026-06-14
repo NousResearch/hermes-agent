@@ -68,6 +68,52 @@ _JUDGE_RESPONSE_SNIPPET_CHARS = 4000
 DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES = 3
 
 
+def coerce_max_turns(value: Any, default: int = DEFAULT_MAX_TURNS) -> int:
+    """Parse a configured turn budget while preserving explicit 0 as unbounded."""
+    if value is None or isinstance(value, bool):
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def resolve_goal_max_turns(goals_cfg: Any, default: int = DEFAULT_MAX_TURNS) -> int:
+    """Resolve goals.max_turns from a config block without losing explicit 0."""
+    if isinstance(goals_cfg, dict) and "max_turns" in goals_cfg:
+        return coerce_max_turns(goals_cfg.get("max_turns"), default)
+    return int(default)
+
+
+def is_unbounded_goal_turns(max_turns: int) -> bool:
+    if isinstance(max_turns, bool):
+        return False
+    try:
+        return int(max_turns) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def format_goal_budget(max_turns: int) -> str:
+    if isinstance(max_turns, bool):
+        max_turns = DEFAULT_MAX_TURNS
+    if is_unbounded_goal_turns(max_turns):
+        return "unbounded"
+    return f"{int(max_turns)}-turn budget"
+
+
+def goal_completion_hint(max_turns: int) -> str:
+    if is_unbounded_goal_turns(max_turns):
+        return "I'll keep working until the goal is done or you pause/clear it."
+    return "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted."
+
+
+def _format_goal_turns(turns_used: int, max_turns: int) -> str:
+    if is_unbounded_goal_turns(max_turns):
+        return f"unbounded ({int(turns_used)} turns used)"
+    return f"{int(turns_used)}/{int(max_turns)} turns"
+
+
 CONTINUATION_PROMPT_TEMPLATE = (
     "[Continuing toward your standing goal]\n"
     "Goal: {goal}\n\n"
@@ -174,7 +220,7 @@ class GoalState:
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
             turns_used=int(data.get("turns_used", 0) or 0),
-            max_turns=int(data.get("max_turns", DEFAULT_MAX_TURNS) or DEFAULT_MAX_TURNS),
+            max_turns=coerce_max_turns(data.get("max_turns", DEFAULT_MAX_TURNS)),
             created_at=float(data.get("created_at", 0.0) or 0.0),
             last_turn_at=float(data.get("last_turn_at", 0.0) or 0.0),
             last_verdict=data.get("last_verdict"),
@@ -487,7 +533,7 @@ class GoalManager:
 
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
-        self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self.default_max_turns = coerce_max_turns(default_max_turns)
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -506,7 +552,7 @@ class GoalManager:
         s = self._state
         if s is None or s.status in {"cleared",}:
             return "No active goal. Set one with /goal <text>."
-        turns = f"{s.turns_used}/{s.max_turns} turns"
+        turns = _format_goal_turns(s.turns_used, s.max_turns)
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         if s.status == "active":
             return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
@@ -527,7 +573,7 @@ class GoalManager:
             goal=goal,
             status="active",
             turns_used=0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=coerce_max_turns(max_turns, self.default_max_turns),
             created_at=time.time(),
             last_turn_at=0.0,
         )
@@ -708,7 +754,7 @@ class GoalManager:
                 ),
             }
 
-        if state.turns_used >= state.max_turns:
+        if not is_unbounded_goal_turns(state.max_turns) and state.turns_used >= state.max_turns:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
             save_goal(self.session_id, state)
@@ -732,7 +778,7 @@ class GoalManager:
             "verdict": "continue",
             "reason": reason,
             "message": (
-                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
+                f"↻ Continuing toward goal ({_format_goal_turns(state.turns_used, state.max_turns)}): {reason}"
             ),
         }
 
@@ -822,9 +868,8 @@ def run_kanban_goal_loop(
             except Exception:
                 pass
 
-    max_turns = int(max_turns or DEFAULT_MAX_TURNS)
-    if max_turns < 1:
-        max_turns = DEFAULT_MAX_TURNS
+    max_turns = coerce_max_turns(max_turns)
+    budget_unbounded = is_unbounded_goal_turns(max_turns)
 
     last_response = first_response or ""
     # The first turn already consumed one unit of budget.
@@ -852,7 +897,7 @@ def run_kanban_goal_loop(
 
         # Still open — judge whether the latest response satisfies the card.
         verdict, reason, _parse_failed = judge_goal(goal_text, last_response)
-        _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
+        _log(f"kanban goal loop: turn {_format_goal_turns(turns_used, max_turns)} verdict={verdict} reason={_truncate(reason, 120)}")
 
         if verdict == "done":
             if nudged_to_finalize:
@@ -873,7 +918,7 @@ def run_kanban_goal_loop(
             prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
 
         # Budget check BEFORE spending another turn.
-        if turns_used >= max_turns:
+        if not budget_unbounded and turns_used >= max_turns:
             _log(f"kanban goal loop: task {task_id} exhausted {turns_used}/{max_turns} turns; blocking")
             try:
                 block_fn(
@@ -904,6 +949,10 @@ __all__ = [
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",
+    "coerce_max_turns",
+    "resolve_goal_max_turns",
+    "is_unbounded_goal_turns",
+    "format_goal_budget",
     "load_goal",
     "save_goal",
     "clear_goal",

@@ -6,7 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _popen_bash
 
 
 class _TestableEnv(BaseEnvironment):
@@ -20,6 +20,26 @@ class _TestableEnv(BaseEnvironment):
 
     def cleanup(self):
         pass
+
+
+class TestPopenBash:
+    def test_uses_lossy_utf8_decoding_for_pipes(self, monkeypatch):
+        captured = {}
+
+        class FakeProc:
+            stdin = None
+
+        def fake_popen(*args, **kwargs):
+            captured.update(kwargs)
+            return FakeProc()
+
+        monkeypatch.setattr("tools.environments.base.subprocess.Popen", fake_popen)
+
+        _popen_bash(["bash", "-lc", "printf bad"])
+
+        assert captured["text"] is True
+        assert captured["encoding"] == "utf-8"
+        assert captured["errors"] == "replace"
 
 
 class TestWrapCommand:

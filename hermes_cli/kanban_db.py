@@ -871,7 +871,7 @@ class Task:
                 bool(row["goal_mode"]) if "goal_mode" in keys and row["goal_mode"] else False
             ),
             goal_max_turns=(
-                row["goal_max_turns"] if "goal_max_turns" in keys and row["goal_max_turns"] else None
+                row["goal_max_turns"] if "goal_max_turns" in keys else None
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
@@ -2193,6 +2193,15 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # Normalize the per-card goal-loop budget once before any persistence.
+    # Explicit numeric 0 means "unbounded"; booleans are rejected so a
+    # model/tool caller cannot accidentally turn JSON false into 0 via
+    # Python's int(False) == 0.
+    if isinstance(goal_max_turns, bool):
+        raise ValueError("goal_max_turns must be an integer, not boolean")
+    if goal_max_turns is not None:
+        goal_max_turns = int(goal_max_turns)
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -2257,7 +2266,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         1 if goal_mode else 0,
-                        int(goal_max_turns) if goal_max_turns is not None else None,
+                        goal_max_turns,
                         session_id,
                     ),
                 )

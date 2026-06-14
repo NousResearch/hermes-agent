@@ -1574,26 +1574,33 @@ class AIAgent:
             # repair compacts the list around them.
             current_session_id = getattr(self, "session_id", None)
             flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
-            if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
-                self._flushed_db_message_ids = set()
+            if (
+                not isinstance(getattr(self, "_flushed_db_messages", None), list)
+                or flushed_session_id != current_session_id
+                or self._last_flushed_db_idx == 0
+            ):
+                self._flushed_db_messages = []
                 self._flushed_db_message_session_id = current_session_id
-            flushed_ids = getattr(self, "_flushed_db_message_ids", None)
-            if not isinstance(flushed_ids, set):
-                flushed_ids = set()
-                self._flushed_db_message_ids = flushed_ids
-            history_ids = {
-                id(item) for item in (conversation_history or [])
-                if isinstance(item, dict)
-            }
+            # Track already-written messages by OBJECT IDENTITY, holding a strong
+            # reference to each. id()-based tracking is unsafe: repair can drop a
+            # this-turn message that was already flushed, after which CPython may
+            # recycle its id() onto a freshly-appended dict (the assistant reply),
+            # which an id()-set would then wrongly skip — silent transcript loss
+            # (#160). Pinning the objects stops their id()s from being recycled
+            # while still tracked; comparing with ``is`` is reuse-proof regardless.
+            # The pin is pruned to messages still present on each call, so memory
+            # stays bounded — a repair-removed message drops out and may then be
+            # garbage-collected safely.
+            flushed = self._flushed_db_messages
+            flushed[:] = [o for o in flushed if any(o is m for m in messages)]
+            history = conversation_history or []
 
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
-                msg_id = id(msg)
-                if msg_id in flushed_ids:
+                if any(msg is o for o in flushed):
                     continue
-                if msg_id in history_ids:
-                    flushed_ids.add(msg_id)
+                if any(msg is h for h in history):
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -1633,7 +1640,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                 )
-                flushed_ids.add(msg_id)
+                flushed.append(msg)
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

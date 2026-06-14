@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,9 +36,12 @@ def _args(**overrides):
         "command_text": "command smoke",
         "voice_contract_text": "contract smoke",
         "voice_contract_timeout": 240.0,
+        "whatsapp_bridge_media_timeout": 15.0,
+        "node_bin": "node",
         "stream_text": "stream smoke",
         "stream_command_template": None,
         "skip_voice_contract": False,
+        "skip_whatsapp_bridge_media": False,
         "skip_calling_control_plane": False,
         "skip_full_duplex": False,
         "voice_repo": Path("/voice"),
@@ -101,6 +105,23 @@ def test_voice_contract_command_requires_daemon_and_passes_text():
         "--text",
         "contract text",
         "--require-daemon",
+    ]
+
+
+def test_whatsapp_bridge_media_payload_command_runs_node_test():
+    script = _load_script_module()
+
+    command = script.whatsapp_bridge_media_payload_command(node_bin="/usr/bin/node")
+
+    assert command == [
+        "/usr/bin/node",
+        "--test",
+        str(
+            Path(__file__).resolve().parents[2]
+            / "scripts"
+            / "whatsapp-bridge"
+            / "media-payload.test.mjs"
+        ),
     ]
 
 
@@ -208,6 +229,21 @@ def test_run_json_step_rejects_unsuccessful_result(monkeypatch):
 
     with pytest.raises(SystemExit, match="reported failure"):
         script.run_json_step("demo", ["demo"], timeout=1.0, env={})
+
+
+def test_child_env_sets_hermes_home_and_checkout_pythonpath(
+    monkeypatch, tmp_path: Path
+):
+    script = _load_script_module()
+    monkeypatch.setenv("PYTHONPATH", "/existing")
+
+    env = script.child_env(hermes_home=tmp_path)
+
+    assert env["HERMES_HOME"] == str(tmp_path)
+    assert env["PYTHONPATH"].split(os.pathsep)[:2] == [
+        str(Path(__file__).resolve().parents[2]),
+        "/existing",
+    ]
 
 
 def _write_live_root(root: Path, *, include_cloud: bool = True) -> None:

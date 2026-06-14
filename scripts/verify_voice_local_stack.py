@@ -6,10 +6,11 @@ This aggregate preflight runs the existing focused verifiers in a safe order:
 1. The local Hermes CLI entrypoint starts with an isolated HERMES_HOME.
 2. The voice checkout's own WhatsApp contract verifier proves the installed
    voice binary can emit Ogg/Opus and WebRTC-shaped PCM frames.
-3. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
-4. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
-5. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
-6. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
+3. The local Baileys bridge keeps Ogg/Opus as native voice notes.
+4. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
+5. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
+6. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
+7. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
 
 By default the script creates a temporary Hermes home and removes it after a
 passing or failing run. Pass --keep-home to inspect the generated config.
@@ -36,6 +37,7 @@ DEFAULT_VOICE_CONTRACT_TEXT = "Hermes voice contract preflight."
 DEFAULT_STREAM_TEXT = "Hermes local voice stream preflight."
 DEFAULT_FULL_DUPLEX_INBOUND_TEXT = "hello world"
 DEFAULT_FULL_DUPLEX_OUTBOUND_TEXT = "Hello from Hermes through the local voice sidecar."
+DEFAULT_WHATSAPP_BRIDGE_MEDIA_TIMEOUT = 15.0
 
 LIVE_ROOT_REQUIREMENTS = (
     {
@@ -251,6 +253,17 @@ def run_json_step(
     }
 
 
+def child_env(*, hermes_home: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    root = str(repo_root())
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{root}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else root
+    )
+    return env
+
+
 def command_tts_command(
     args: argparse.Namespace,
     *,
@@ -342,6 +355,13 @@ def voice_contract_command(
     return command
 
 
+def whatsapp_bridge_media_payload_command(*, node_bin: str) -> list[str]:
+    test_path = repo_root() / "scripts" / "whatsapp-bridge" / "media-payload.test.mjs"
+    if not test_path.is_file():
+        raise SystemExit(f"WhatsApp bridge media-payload test not found: {test_path}")
+    return [node_bin, "--test", str(test_path)]
+
+
 def calling_control_plane_command(args: argparse.Namespace) -> list[str]:
     return [
         sys.executable,
@@ -414,6 +434,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--command-text", default=DEFAULT_COMMAND_TEXT)
     parser.add_argument("--voice-contract-text", default=DEFAULT_VOICE_CONTRACT_TEXT)
     parser.add_argument("--voice-contract-timeout", type=float, default=240.0)
+    parser.add_argument(
+        "--whatsapp-bridge-media-timeout",
+        type=float,
+        default=DEFAULT_WHATSAPP_BRIDGE_MEDIA_TIMEOUT,
+    )
+    parser.add_argument("--node-bin", default=os.environ.get("NODE_BIN", "node"))
     parser.add_argument("--stream-text", default=DEFAULT_STREAM_TEXT)
     parser.add_argument("--stream-command-template")
     parser.add_argument(
@@ -428,6 +454,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--voice-repo", type=Path, default=default_voice_repo())
     parser.add_argument("--webrtc-python-bin", default=os.environ.get("VOICE_WEBRTC_PYTHON"))
     parser.add_argument("--skip-voice-contract", action="store_true")
+    parser.add_argument("--skip-whatsapp-bridge-media", action="store_true")
     parser.add_argument("--skip-calling-control-plane", action="store_true")
     parser.add_argument("--skip-full-duplex", action="store_true")
     parser.add_argument(
@@ -454,6 +481,11 @@ def main() -> int:
     args = parse_args()
     voice_bin = resolve_executable(args.voice_bin, label="voice binary")
     hermes_bin = resolve_executable(args.hermes_bin, label="Hermes CLI")
+    node_bin = (
+        None
+        if args.skip_whatsapp_bridge_media
+        else resolve_executable(args.node_bin, label="Node.js")
+    )
     voice_contract_script = resolve_voice_contract_script(args)
     voice_repo = resolve_voice_repo_for_full_duplex(args)
 
@@ -465,8 +497,7 @@ def main() -> int:
     )
     hermes_home.mkdir(parents=True, exist_ok=True)
 
-    env = os.environ.copy()
-    env["HERMES_HOME"] = str(hermes_home)
+    env = child_env(hermes_home=hermes_home)
 
     checks: dict[str, Any] = {}
     try:
@@ -499,6 +530,20 @@ def main() -> int:
                     script=voice_contract_script,
                 ),
                 timeout=args.voice_contract_timeout,
+                env=env,
+                include_stdout_lines=True,
+            )
+        if node_bin is None:
+            checks["whatsapp_bridge_media_payload"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-whatsapp-bridge-media was provided",
+            }
+        else:
+            checks["whatsapp_bridge_media_payload"] = run_plain_step(
+                "WhatsApp bridge media-payload verifier",
+                whatsapp_bridge_media_payload_command(node_bin=node_bin),
+                timeout=args.whatsapp_bridge_media_timeout,
                 env=env,
                 include_stdout_lines=True,
             )
@@ -549,6 +594,7 @@ def main() -> int:
                     "retained": bool(args.keep_home or not temporary_home),
                     "voice_bin": voice_bin,
                     "hermes_bin": hermes_bin,
+                    "node_bin": node_bin,
                     "voice_repo": str(voice_repo) if voice_repo is not None else None,
                     "checks": checks,
                 },

@@ -200,6 +200,17 @@ tts:
 
 With that shape Hermes asks `voice` for `.ogg` output up front, and the bridge sends it as a native voice note without a WAV or MP3 intermediate.
 
+To prove the local bridge behavior before sending a real message, run the local
+voice stack preflight from a Hermes checkout. It includes the Baileys bridge
+media-payload test that keeps `.ogg` / `.opus` audio as
+`audio/ogg; codecs=opus` with `ptt: true`.
+
+```bash
+scripts/verify_voice_local_stack.py \
+  --voice-bin /path/to/voice \
+  --voice-repo /path/to/voice
+```
+
 After installing a local gateway service, verify the running process is using
 the expected voice-native checkout before relying on WhatsApp delivery:
 

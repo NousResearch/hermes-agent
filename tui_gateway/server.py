@@ -10393,6 +10393,8 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    session = _sessions.get(params.get("session_id", ""))
+    cwd = _session_cwd(session) if session else os.getcwd()
     try:
         from tools.approval import detect_dangerous_command, detect_hardline_command
 
@@ -10410,7 +10412,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
         )
         return _ok(

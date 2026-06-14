@@ -1624,6 +1624,34 @@ def _session(agent=None, **extra):
     }
 
 
+def test_shell_exec_uses_session_cwd(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    calls = {}
+
+    def fake_run(*args, **kwargs):
+        calls["args"] = args
+        calls["kwargs"] = kwargs
+        return types.SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    server._sessions["sid"] = _session(cwd=str(project))
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "shell.exec",
+                "params": {"session_id": "sid", "command": "pwd"},
+            }
+        )
+
+        assert resp["result"]["code"] == 0
+        assert calls["kwargs"]["cwd"] == str(project)
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

@@ -150,10 +150,14 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const shellExec = useCallback(
     (cmd: string) => {
+      const sid = getUiState().sid
       appendMessage({ role: 'user', text: `!${cmd}` })
       patchUiState({ busy: true, status: 'running…' })
 
-      gw.request<ShellExecResponse>('shell.exec', { command: cmd })
+      gw.request<ShellExecResponse>('shell.exec', {
+        command: cmd,
+        ...(sid && { session_id: sid })
+      })
         .then(raw => {
           const r = asRpcResult<ShellExecResponse>(raw)
 
@@ -180,12 +184,16 @@ export function useSubmission(opts: UseSubmissionOptions) {
   const interpolate = useCallback(
     (text: string, then: (result: string) => void) => {
       patchUiState({ status: 'interpolating…' })
+      const sid = getUiState().sid
       const matches = [...text.matchAll(new RegExp(INTERPOLATION_RE.source, 'g'))]
 
       Promise.all(
         matches.map(m =>
           gw
-            .request<ShellExecResponse>('shell.exec', { command: m[1]! })
+            .request<ShellExecResponse>('shell.exec', {
+              command: m[1]!,
+              ...(sid && { session_id: sid })
+            })
             .then(raw => {
               const r = asRpcResult<ShellExecResponse>(raw)
 

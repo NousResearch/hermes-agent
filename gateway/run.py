@@ -126,6 +126,71 @@ _GATEWAY_RATE_LIMIT_RE = re.compile(
     re.IGNORECASE,
 )
 
+
+def _progress_thread_target_for_source(
+    source: Any,
+    event_message_id: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (thread_id, reply_to) for progress/status bubbles.
+
+    Slack already treats a top-level channel prompt as a thread root by falling
+    back to the triggering message ID. Mattermost needs the same fallback, plus
+    a reply anchor, so progress/warning messages land under the prompt instead
+    of as flat channel posts.
+    """
+    platform = getattr(source, "platform", None)
+    source_thread_id = getattr(source, "thread_id", None)
+    if platform in (Platform.SLACK, Platform.MATTERMOST):
+        progress_thread_id = source_thread_id or event_message_id
+    else:
+        progress_thread_id = source_thread_id
+
+    progress_reply_to = (
+        event_message_id
+        if platform in (Platform.FEISHU, Platform.MATTERMOST)
+        and progress_thread_id
+        and event_message_id
+        else None
+    )
+    return progress_thread_id, progress_reply_to
+
+
+def _status_thread_metadata_for_progress(
+    source: Any,
+    event_message_id: Optional[str],
+    progress_thread_id: Optional[str],
+    progress_metadata: Optional[Dict[str, Any]],
+    base_metadata_builder,
+) -> Optional[Dict[str, Any]]:
+    """Return thread metadata for status_callback notices.
+
+    Status callbacks (compression/lifecycle warnings) do not go through the
+    editable progress sender, so they must reuse the already-computed progress
+    fallback metadata.  Otherwise Mattermost top-level prompts compute a valid
+    progress thread from ``event_message_id`` but status notices still call the
+    generic source metadata builder, see ``source.thread_id is None``, and land
+    as flat channel posts.
+    """
+    if not progress_thread_id:
+        return None
+
+    platform = getattr(source, "platform", None)
+    source_thread_id = getattr(source, "thread_id", None)
+    if platform == Platform.FEISHU and source_thread_id and event_message_id:
+        # Feishu topics only keep messages inside the topic when they are sent
+        # via the reply API with reply_in_thread=true. Status/interim, approval,
+        # and stream-consumer paths usually only receive metadata, so carry the
+        # triggering message id as a Feishu-specific fallback.
+        return {
+            "thread_id": progress_thread_id,
+            "reply_to_message_id": event_message_id,
+        }
+
+    if progress_metadata is not None:
+        return progress_metadata
+    return base_metadata_builder(source, event_message_id)
+
+
 _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
@@ -13531,26 +13596,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Accumulates tool lines into a single message that gets edited.
         #
         # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
+        # - Slack and Mattermost top-level channel prompts use event_message_id
+        #   fallback so progress/warning bubbles stay under the triggering post
         # - Telegram forum topics use message_thread_id; Hermes-created private
         #   DM topic lanes require both thread metadata and a reply anchor
         # - Feishu only honors reply_in_thread when sending a reply, so topic
         #   progress uses the triggering event message as the reply target
-        # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
-        else:
-            _progress_thread_id = source.thread_id
+        _progress_thread_id, _progress_reply_to = _progress_thread_target_for_source(
+            source,
+            event_message_id,
+        )
         _progress_metadata = (
             self._thread_metadata_for_source(source, event_message_id)
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
-        _progress_reply_to = (
-            event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
-            else None
-        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -13922,17 +13982,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            # Feishu topics only keep messages inside the topic when they are
-            # sent via the reply API with reply_in_thread=true. Status/interim,
-            # approval, and stream-consumer paths usually only receive metadata,
-            # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
-                "reply_to_message_id": event_message_id,
-            }
-        else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
+        _status_thread_metadata = _status_thread_metadata_for_progress(
+            source,
+            event_message_id,
+            _progress_thread_id,
+            _progress_metadata,
+            self._thread_metadata_for_source,
+        )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

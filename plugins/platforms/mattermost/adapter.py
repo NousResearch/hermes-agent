@@ -9,15 +9,21 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_APPROVAL_ACTION_URL   Public/internal URL for approval buttons
+    MATTERMOST_APPROVAL_ACTION_HOST  Optional local callback bind host
+    MATTERMOST_APPROVAL_ACTION_PORT  Optional local callback bind port
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -99,6 +105,37 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
+        # Interactive approval button support. Mattermost actions POST to an
+        # integration URL supplied per button. When no callback URL is
+        # configured, send_exec_approval returns failure so the gateway falls
+        # back to the existing text /approve prompt.
+        self._approval_action_url: str = (
+            config.extra.get("approval_action_url", "")
+            or os.getenv("MATTERMOST_APPROVAL_ACTION_URL", "")
+        ).strip()
+        self._approval_action_token: str = (
+            config.extra.get("approval_action_token", "")
+            or os.getenv("MATTERMOST_APPROVAL_ACTION_TOKEN", "")
+            or secrets.token_urlsafe(24)
+        )
+        self._approval_action_host: str = (
+            config.extra.get("approval_action_host", "")
+            or os.getenv("MATTERMOST_APPROVAL_ACTION_HOST", "")
+        ).strip()
+        self._approval_action_port: int = int(
+            config.extra.get("approval_action_port", "0")
+            or os.getenv("MATTERMOST_APPROVAL_ACTION_PORT", "0")
+            or 0
+        )
+        self._approval_action_path: str = (
+            config.extra.get("approval_action_path", "")
+            or os.getenv("MATTERMOST_APPROVAL_ACTION_PATH", "/hermes/mattermost/actions")
+        )
+        if not self._approval_action_path.startswith("/"):
+            self._approval_action_path = "/" + self._approval_action_path
+        self._approval_action_runner: Any = None
+        self._approval_action_site: Any = None
+
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
@@ -163,6 +200,59 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
+    async def _start_approval_action_server(self) -> None:
+        """Start the optional Mattermost interactive-action callback server."""
+        if not self._approval_action_host or not self._approval_action_port:
+            return
+        if self._approval_action_runner is not None:
+            return
+        try:
+            from aiohttp import web
+
+            app = web.Application()
+            app.router.add_post(self._approval_action_path, self._handle_approval_action_request)
+            app.router.add_get(
+                "/health",
+                lambda _request: web.json_response({"ok": True, "platform": "mattermost"}),
+            )
+            runner = web.AppRunner(app, access_log=None)
+            await runner.setup()
+            site = web.TCPSite(
+                runner,
+                self._approval_action_host,
+                self._approval_action_port,
+            )
+            await site.start()
+            self._approval_action_runner = runner
+            self._approval_action_site = site
+            logger.info(
+                "Mattermost approval action server listening on %s:%s%s",
+                self._approval_action_host,
+                self._approval_action_port,
+                self._approval_action_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Mattermost approval action server failed; falling back to text approvals: %s",
+                exc,
+            )
+            self._approval_action_url = ""
+
+    async def _handle_approval_action_request(self, request: Any) -> Any:
+        """HTTP endpoint for Mattermost interactive message actions."""
+        from aiohttp import web
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                {"error": {"message": "Invalid JSON payload."}},
+                status=400,
+            )
+        response = await self._handle_approval_action_payload(payload)
+        status = 400 if "error" in response else 200
+        return web.json_response(response, status=status)
+
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
@@ -223,6 +313,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
+        await self._start_approval_action_server()
         self._mark_connected()
         return True
 
@@ -246,6 +337,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
         if self._session and not self._session.closed:
             await self._session.close()
+
+        if self._approval_action_runner is not None:
+            await self._approval_action_runner.cleanup()
+            self._approval_action_runner = None
+            self._approval_action_site = None
 
         logger.info("Mattermost: disconnected")
 
@@ -286,11 +382,14 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
+            # Thread support: reply_to is the root post ID. Synthetic sends
+            # such as progress/status/restart notices may only have generic
+            # thread metadata, so use metadata["thread_id"] as a fallback.
+            thread_anchor = reply_to or (metadata or {}).get("thread_id")
+            if thread_anchor and self._reply_mode == "thread":
                 # Ensure root_id points to the thread root, not a reply.
                 # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
+                resolved_root = await self._resolve_root_id(str(thread_anchor))
                 payload["root_id"] = resolved_root
 
             data = await self._api_post("posts", payload)
@@ -299,6 +398,176 @@ class MattermostAdapter(BasePlatformAdapter):
             last_id = data["id"]
 
         return SendResult(success=True, message_id=last_id)
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Mattermost interactive approval prompt.
+
+        Mattermost supports Slack-compatible attachment actions. Each button
+        carries a signed context payload back to the configured integration URL;
+        the callback resolves the same pending approval as /approve.
+        """
+        if not self._approval_action_url:
+            return SendResult(
+                success=False,
+                error="MATTERMOST_APPROVAL_ACTION_URL is not configured",
+            )
+
+        cmd_preview = command[:1800] + "..." if len(command) > 1800 else command
+        desc_preview = description[:500]
+        issued_at = str(int(time.time()))
+        nonce = secrets.token_urlsafe(12)
+
+        def _action_context(choice: str) -> Dict[str, str]:
+            context = {
+                "action": "approval",
+                "choice": choice,
+                "session_key": session_key,
+                "ts": issued_at,
+                "nonce": nonce,
+            }
+            context["sig"] = self._sign_approval_action_context(context)
+            return context
+
+        def _action(action_id: str, name: str, choice: str, style: str = "default") -> Dict[str, Any]:
+            payload: Dict[str, Any] = {
+                "id": action_id,
+                "type": "button",
+                "name": name,
+                "integration": {
+                    "url": self._approval_action_url,
+                    "context": _action_context(choice),
+                },
+            }
+            if style != "default":
+                payload["style"] = style
+            return payload
+
+        payload: Dict[str, Any] = {
+            "channel_id": chat_id,
+            "message": "⚠️ **Command Approval Required**",
+            "props": {
+                "attachments": [
+                    {
+                        "text": f"```\n{cmd_preview}\n```\nReason: {desc_preview}",
+                        "actions": [
+                            _action("approveonce", "Allow Once", "once", "primary"),
+                            _action("approvesession", "Allow Session", "session"),
+                            _action("approvealways", "Always Allow", "always"),
+                            _action("deny", "Deny", "deny", "danger"),
+                        ],
+                    }
+                ]
+            },
+        }
+
+        thread_anchor = (metadata or {}).get("thread_id")
+        if thread_anchor and self._reply_mode == "thread":
+            payload["root_id"] = await self._resolve_root_id(str(thread_anchor))
+
+        data = await self._api_post("posts", payload)
+        if not data or "id" not in data:
+            return SendResult(success=False, error="Failed to create approval post")
+        return SendResult(success=True, message_id=data["id"], raw_response=data)
+
+    async def _handle_approval_action_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve a Mattermost interactive approval action payload."""
+        context = payload.get("context") or {}
+        if context.get("action") != "approval":
+            return {"error": {"message": "Unknown Mattermost action."}}
+
+        if not self._verify_approval_action_context(context):
+            return {"error": {"message": "Invalid or expired approval action signature."}}
+
+        user_id = str(payload.get("user_id") or "")
+        if not self._is_approval_action_user_allowed(user_id):
+            return {"error": {"message": "You are not allowed to approve this command."}}
+
+        choice = str(context.get("choice") or "deny")
+        if choice not in {"once", "session", "always", "deny"}:
+            choice = "deny"
+        session_key = str(context.get("session_key") or "")
+        if not session_key:
+            return {"error": {"message": "Missing approval session."}}
+
+        from tools.approval import resolve_gateway_approval
+
+        count = resolve_gateway_approval(session_key, choice)
+        if not count:
+            return {"error": {"message": "No pending approval found or it already expired."}}
+
+        label_map = {
+            "once": "✅ Approved once",
+            "session": "✅ Approved for session",
+            "always": "✅ Approved permanently",
+            "deny": "❌ Denied",
+        }
+        decision = label_map.get(choice, "Resolved")
+        if user_id:
+            decision = f"{decision} by `{user_id}`"
+        return {
+            "update": {
+                "message": f"{decision}\n\nCommand approval request resolved.",
+                "props": {},
+            },
+            "ephemeral_text": decision,
+            "skip_slack_parsing": True,
+        }
+
+    def _approval_action_signature_payload(self, context: Dict[str, Any]) -> str:
+        """Return the stable string signed for Mattermost approval actions."""
+        return "\n".join(
+            str(context.get(key, ""))
+            for key in ("action", "choice", "session_key", "ts", "nonce")
+        )
+
+    def _sign_approval_action_context(self, context: Dict[str, Any]) -> str:
+        """Sign a button context without exposing the callback secret in the post."""
+        return hmac.new(
+            self._approval_action_token.encode("utf-8"),
+            self._approval_action_signature_payload(context).encode("utf-8"),
+            "sha256",
+        ).hexdigest()
+
+    def _verify_approval_action_context(self, context: Dict[str, Any]) -> bool:
+        """Validate Mattermost approval button context signature and freshness."""
+        signature = str(context.get("sig") or "")
+        if not signature:
+            return False
+        try:
+            issued_at = int(str(context.get("ts") or "0"))
+        except (TypeError, ValueError):
+            return False
+        # Buttons are only useful while tools.approval is waiting; keep the
+        # context short-lived so a stored post cannot be replayed indefinitely.
+        if abs(time.time() - issued_at) > 600:
+            return False
+        expected = self._sign_approval_action_context(context)
+        return hmac.compare_digest(signature, expected)
+
+    def _is_approval_action_user_allowed(self, user_id: str) -> bool:
+        """Authorize a Mattermost button click using gateway-compatible allowlists."""
+        if not user_id:
+            return False
+        truthy = {"1", "true", "yes", "on"}
+        if os.getenv("MATTERMOST_ALLOW_ALL_USERS", "").lower() in truthy:
+            return True
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in truthy:
+            return True
+
+        allowed_ids = set()
+        for env_name in ("MATTERMOST_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
+            raw = os.getenv(env_name, "")
+            allowed_ids.update(uid.strip() for uid in raw.split(",") if uid.strip())
+        if "*" in allowed_ids:
+            return True
+        return user_id in allowed_ids
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return channel name and type."""
@@ -1118,6 +1387,17 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    action_env_map = {
+        "approval_action_url": "MATTERMOST_APPROVAL_ACTION_URL",
+        "approval_action_token": "MATTERMOST_APPROVAL_ACTION_TOKEN",
+        "approval_action_host": "MATTERMOST_APPROVAL_ACTION_HOST",
+        "approval_action_port": "MATTERMOST_APPROVAL_ACTION_PORT",
+        "approval_action_path": "MATTERMOST_APPROVAL_ACTION_PATH",
+    }
+    for key, env_name in action_env_map.items():
+        value = mattermost_cfg.get(key)
+        if value is not None and not os.getenv(env_name):
+            os.environ[env_name] = str(value)
     return None  # all settings flow through env; nothing to merge into extras
 
 

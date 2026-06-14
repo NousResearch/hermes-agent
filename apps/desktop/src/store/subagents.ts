@@ -226,6 +226,24 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   }
 
   const next = toProgress(payload, prev, eventType)
+
+  // Subagent reached a terminal state — drop it immediately. The summary is
+  // already baked into the assistant's response; keeping a completed entry in
+  // the panel is pure noise.
+  if (TERMINAL.has(next.status)) {
+    if (idx >= 0) {
+      const nextList = list.filter(item => item.id !== id)
+      if (nextList.length === 0) {
+        const { [id]: _, ...rest } = map
+        void rest
+        $subagentsBySession.set({ [sid]: nextList })
+      } else {
+        $subagentsBySession.set({ ...map, [sid]: nextList })
+      }
+    }
+    return
+  }
+
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })

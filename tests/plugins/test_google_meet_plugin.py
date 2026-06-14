@@ -101,6 +101,19 @@ def test_bot_state_dedupes_captions_and_flushes_status(tmp_path):
     assert status["transcriptPath"].endswith("transcript.txt")
 
 
+def test_bot_state_flushes_local_media_state(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+    state.set(local_microphone_on=False, local_camera_on=False)
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["localMicrophoneOn"] is False
+    assert status["localCameraOn"] is False
+
+
 def test_bot_state_ignores_blank_text(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 
@@ -1666,3 +1679,537 @@ def test_cmd_install_realtime_skips_when_deps_present(capsys):
     assert sudo_calls == [], f"unexpected sudo invocation: {sudo_calls}"
     out = capsys.readouterr().out
     assert "already installed" in out
+
+
+def test_meet_proxy_env_adds_chromium_proxy_arg(monkeypatch):
+    from plugins.google_meet.meet_bot import _apply_meet_proxy_args
+
+    args = []
+    monkeypatch.setenv("HERMES_MEET_PROXY_SERVER", "http://proxy.example:8080")
+
+    _apply_meet_proxy_args(args)
+
+    assert args == ["--proxy-server=http://proxy.example:8080"]
+
+
+def test_transcribe_browser_config_uses_fake_device_and_fake_ui_flags_only(monkeypatch):
+    from plugins.google_meet.meet_bot import _build_browser_launch_config
+
+    monkeypatch.delenv("HERMES_MEET_PROXY_SERVER", raising=False)
+
+    chrome_args, permissions = _build_browser_launch_config(realtime_enabled=False)
+
+    assert "--use-fake-device-for-media-stream" in chrome_args
+    assert "--use-fake-ui-for-media-stream" in chrome_args
+    assert not any(arg.startswith("--use-file-for-fake-video-capture=") for arg in chrome_args)
+    assert not any(arg.startswith("--use-file-for-fake-audio-capture=") for arg in chrome_args)
+    assert chrome_args.count("--use-fake-ui-for-media-stream") == 1
+    assert permissions == ["microphone", "camera"]
+
+
+def test_realtime_browser_config_requests_microphone_with_fake_media(monkeypatch):
+    from plugins.google_meet.meet_bot import _build_browser_launch_config
+
+    monkeypatch.delenv("HERMES_MEET_PROXY_SERVER", raising=False)
+
+    chrome_args, permissions = _build_browser_launch_config(realtime_enabled=True)
+
+    assert "--use-fake-ui-for-media-stream" in chrome_args
+    assert "--use-fake-device-for-media-stream" in chrome_args
+    assert permissions == ["microphone", "camera"]
+
+
+def test_enable_captions_clicks_visible_turn_on_captions_button_before_keyboard():
+    from plugins.google_meet.meet_bot import _enable_captions
+
+    clicked = []
+    pressed = []
+
+    class _Button:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return True
+
+        def click(self, **_kwargs):
+            clicked.append("captions")
+
+    class _Keyboard:
+        def press(self, key):
+            pressed.append(key)
+
+    class _Page:
+        keyboard = _Keyboard()
+
+        def get_by_role(self, role, *, name, **_kwargs):
+            assert role == "button"
+            assert name.search("Turn on captions (c)")
+            return _Button()
+
+    assert _enable_captions(_Page()) is True
+    assert clicked == ["captions"]
+    assert pressed == []
+
+
+def test_enable_captions_uses_playwright_keyboard_press():
+    from plugins.google_meet.meet_bot import _enable_captions
+
+    pressed = []
+    evaluated = []
+
+    class _Keyboard:
+        def press(self, key):
+            pressed.append(key)
+
+    class _Page:
+        keyboard = _Keyboard()
+
+        def evaluate(self, script):
+            evaluated.append(script)
+
+    assert _enable_captions(_Page()) is True
+    assert pressed == ["c"]
+    assert evaluated == []
+
+
+def test_enable_captions_treats_turn_off_captions_as_already_enabled():
+    from plugins.google_meet.meet_bot import _enable_captions
+
+    pressed = []
+
+    class _Button:
+        def __init__(self, visible):
+            self.visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.visible else 0
+
+        def is_visible(self):
+            return self.visible
+
+        def click(self, **_kwargs):
+            raise AssertionError("already-enabled captions must not be clicked")
+
+    class _Keyboard:
+        def press(self, key):
+            pressed.append(key)
+
+    class _Page:
+        keyboard = _Keyboard()
+
+        def get_by_role(self, _role, *, name, **_kwargs):
+            if name.search("Turn off captions"):
+                return _Button(True)
+            return _Button(False)
+
+        def locator(self, selector):
+            return _Button("Turn off captions" in selector)
+
+    assert _enable_captions(_Page()) is True
+    assert pressed == []
+
+
+def test_enable_captions_can_skip_shortcut_when_controls_are_missing():
+    from plugins.google_meet.meet_bot import _enable_captions
+
+    pressed = []
+    evaluated = []
+
+    class _Keyboard:
+        def press(self, key):
+            pressed.append(key)
+
+    class _Page:
+        keyboard = _Keyboard()
+
+        def evaluate(self, script):
+            evaluated.append(script)
+
+    assert _enable_captions(_Page(), allow_shortcut=False) is False
+    assert pressed == []
+    assert evaluated == []
+
+
+def test_retry_caption_enable_allows_shortcut_after_admission(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _retry_caption_enable
+
+    pressed = []
+
+    class _Keyboard:
+        def __init__(self, page):
+            self.page = page
+
+        def press(self, key):
+            pressed.append(key)
+            self.page.enabled = True
+
+    class _Page:
+        def __init__(self):
+            self.enabled = False
+            self.keyboard = _Keyboard(self)
+
+        def get_by_role(self, _role, *, name, **_kwargs):
+            return _Button(self.enabled and name.search("Turn off captions"))
+
+        def locator(self, selector):
+            return _Button(self.enabled and "Turn off captions" in selector)
+
+    class _Button:
+        def __init__(self, visible):
+            self.visible = bool(visible)
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.visible else 0
+
+        def is_visible(self):
+            return self.visible
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(in_call=True, joined_at=100.0)
+
+    assert _retry_caption_enable(_Page(), state) is True
+    assert pressed == ["c"]
+
+    status = json.loads((tmp_path / "meet" / "status.json").read_text())
+    assert status["captioning"] is True
+    assert status["captionsEnabledAttempted"] is True
+
+
+def test_retry_caption_enable_does_not_report_captioning_without_verification(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _retry_caption_enable
+
+    pressed = []
+
+    class _Keyboard:
+        def press(self, key):
+            pressed.append(key)
+
+    class _MissingButton:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+    class _Page:
+        keyboard = _Keyboard()
+
+        def get_by_role(self, *_args, **_kwargs):
+            return _MissingButton()
+
+        def locator(self, *_args, **_kwargs):
+            return _MissingButton()
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(in_call=True, joined_at=100.0)
+
+    assert _retry_caption_enable(_Page(), state) is False
+    assert pressed == ["c"]
+
+    status = json.loads((tmp_path / "meet" / "status.json").read_text())
+    assert status["captioning"] is False
+    assert status["captionsEnabledAttempted"] is False
+
+
+def test_retry_caption_enable_does_not_report_captioning_without_success(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _retry_caption_enable
+
+    pressed = []
+
+    class _Keyboard:
+        def press(self, key):
+            pressed.append(key)
+
+    class _Page:
+        keyboard = _Keyboard()
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0)
+
+    assert _retry_caption_enable(_Page(), state) is False
+    assert pressed == []
+
+    status = json.loads((tmp_path / "meet" / "status.json").read_text())
+    assert status["captioning"] is False
+    assert status["captionsEnabledAttempted"] is False
+
+
+def test_click_join_returns_false_when_join_button_not_ready(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    class _MissingButton:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+    class _Page:
+        def get_by_role(self, *_args, **_kwargs):
+            return _MissingButton()
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _click_join(_Page(), state) is False
+    assert state.lobby_waiting is False
+
+
+def test_click_join_returns_true_and_marks_lobby_for_ask_to_join(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    clicked = []
+
+    class _Button:
+        def __init__(self, label):
+            self.label = label
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.label == "Ask to join" else 0
+
+        def is_visible(self):
+            return self.label == "Ask to join"
+
+        def click(self, **_kwargs):
+            clicked.append(self.label)
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            return _Button(name)
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _click_join(_Page(), state) is True
+    assert clicked == ["Ask to join"]
+    assert state.lobby_waiting is True
+
+
+def test_click_join_handles_continue_without_media_gate_before_join_now(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    clicked = []
+
+    class _Button:
+        def __init__(self, label):
+            self.label = label
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.label in {"Continue without microphone and camera", "Join now"} else 0
+
+        def is_visible(self):
+            return self.label in {"Continue without microphone and camera", "Join now"}
+
+        def click(self, **_kwargs):
+            clicked.append(self.label)
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            return _Button(name)
+
+        def wait_for_timeout(self, _timeout):
+            clicked.append("wait")
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _click_join(_Page(), state) is True
+    assert clicked == ["Continue without microphone and camera", "wait", "Join now"]
+    assert state.lobby_waiting is False
+
+
+def test_disable_local_media_clicks_visible_turn_off_controls():
+    from plugins.google_meet.meet_bot import _disable_local_media
+
+    clicked = []
+
+    class _Button:
+        def __init__(self, label):
+            self.label = label
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.label in {"Turn off microphone", "Turn off camera"} else 0
+
+        def is_visible(self):
+            return self.count() == 1
+
+        def click(self, **_kwargs):
+            clicked.append(self.label)
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            if name.search("Turn off microphone"):
+                return _Button("Turn off microphone")
+            if name.search("Turn off camera"):
+                return _Button("Turn off camera")
+            return _Button("missing")
+
+    assert _disable_local_media(_Page()) == 2
+    assert clicked == ["Turn off microphone", "Turn off camera"]
+
+
+def test_disable_local_media_clicks_first_visible_duplicate_control():
+    from plugins.google_meet.meet_bot import _disable_local_media
+
+    clicked = []
+
+    class _Button:
+        def __init__(self, label, visible):
+            self.label = label
+            self.visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return self.visible
+
+        def click(self, **_kwargs):
+            clicked.append(self.label)
+
+    class _Locator:
+        def __init__(self, label):
+            self.buttons = [
+                _Button(f"{label}:hidden", False),
+                _Button(f"{label}:visible", True),
+            ]
+
+        @property
+        def first(self):
+            return self.buttons[0]
+
+        def count(self):
+            return len(self.buttons)
+
+        def nth(self, index):
+            return self.buttons[index]
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            if name.search("Turn off microphone"):
+                return _Locator("microphone")
+            if name.search("Turn off camera"):
+                return _Locator("camera")
+            return _Locator("missing")
+
+    assert _disable_local_media(_Page()) == 2
+    assert clicked == ["microphone:visible", "camera:visible"]
+
+
+def test_probe_local_media_state_reports_visible_control_state():
+    from plugins.google_meet.meet_bot import _probe_local_media_state
+
+    class _Button:
+        def __init__(self, visible):
+            self.visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.visible else 0
+
+        def is_visible(self):
+            return self.visible
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            pattern = name.pattern.lower()
+            if "turn on" in pattern and "microphone" in pattern:
+                return _Button(True)
+            if "turn off" in pattern and "camera" in pattern:
+                return _Button(True)
+            return _Button(False)
+
+    assert _probe_local_media_state(_Page()) == {
+        "local_microphone_on": False,
+        "local_camera_on": True,
+    }
+
+
+def test_disable_local_media_ignores_already_off_controls():
+    from plugins.google_meet.meet_bot import _disable_local_media
+
+    clicked = []
+
+    class _MissingButton:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+        def click(self, **_kwargs):
+            clicked.append("unexpected")
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            assert not name.search("Turn on microphone")
+            assert not name.search("Turn on camera")
+            return _MissingButton()
+
+    assert _disable_local_media(_Page()) == 0
+    assert clicked == []

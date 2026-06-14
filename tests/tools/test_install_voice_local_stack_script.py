@@ -135,6 +135,25 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert "--webrtc-python-bin" in local_stack
     assert "--live-hermes-root" in local_stack
     assert str(live_root.resolve()) in local_stack
+    local_stack_live = plan["verify_commands"]["local_stack_live_gateway"]
+    assert local_stack_live[: len(local_stack)] == local_stack
+    assert "--run-live-gateway" in local_stack_live
+    assert local_stack_live[local_stack_live.index("--calling-sidecar-url") + 1] == (
+        "http://127.0.0.1:8787"
+    )
+    assert local_stack_live[local_stack_live.index("--live-gateway-python-bin") + 1] == (
+        str(hermes_home.resolve() / "hermes-agent" / "venv" / "bin" / "python")
+    )
+    assert local_stack_live[
+        local_stack_live.index("--live-gateway-hermes-home") + 1
+    ] == str(hermes_home.resolve())
+    assert local_stack_live[
+        local_stack_live.index("--live-gateway-sidecar-service") + 1
+    ] == "voice-webrtc-sidecar.service"
+    assert "--run-live-gateway-stt-smoke" not in local_stack_live
+    assert plan["verify_commands"]["local_stack_live_gateway_cloud_only"][-1] == (
+        "--skip-live-gateway-bridge-health"
+    )
     live_gateway = plan["verify_commands"]["live_gateway"]
     assert live_gateway[:2] == [
         sys.executable,
@@ -186,10 +205,12 @@ def test_build_plan_adds_live_stt_smoke_when_configuring_stt(tmp_path: Path):
 
     plan = script.build_plan(args)
     live_gateway = plan["verify_commands"]["live_gateway"]
+    local_stack_live = plan["verify_commands"]["local_stack_live_gateway"]
 
     assert "--run-stt-smoke" in live_gateway
     assert live_gateway[live_gateway.index("--stt-provider") + 1] == "voice"
     assert live_gateway[live_gateway.index("--stt-timeout") + 1] == "123"
+    assert "--run-live-gateway-stt-smoke" in local_stack_live
 
 
 def test_configure_tts_provider_writes_voice_compatible_ogg_provider(tmp_path: Path):

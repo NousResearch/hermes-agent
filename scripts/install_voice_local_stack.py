@@ -248,13 +248,46 @@ def build_verify_commands(
     stt_provider_name: str,
     stt_timeout: int,
 ) -> dict[str, list[str]]:
+    hermes_python_bin = str(hermes_home / "hermes-agent" / "venv" / "bin" / "python")
+    local_stack_command = [
+        verifier_python_bin,
+        str(repo_root() / "scripts" / "verify_voice_local_stack.py"),
+        "--voice-bin",
+        voice_bin,
+        "--voice-repo",
+        str(voice_repo),
+        "--webrtc-python-bin",
+        webrtc_python_bin,
+        "--live-hermes-root",
+        str(live_hermes_root),
+    ]
+    local_stack_live_gateway_command = [
+        *local_stack_command,
+        "--run-live-gateway",
+        "--calling-sidecar-url",
+        sidecar_url,
+        "--live-gateway-python-bin",
+        hermes_python_bin,
+        "--live-gateway-hermes-home",
+        str(hermes_home),
+    ]
+    if run_stt_smoke:
+        local_stack_live_gateway_command.append("--run-live-gateway-stt-smoke")
+    if sidecar_service:
+        local_stack_live_gateway_command.extend(
+            [
+                "--live-gateway-sidecar-service",
+                sidecar_service,
+            ]
+        )
+
     live_gateway_command = [
         verifier_python_bin,
         str(repo_root() / "scripts" / "verify_voice_live_gateway.py"),
         "--live-hermes-root",
         str(live_hermes_root),
         "--python-bin",
-        str(hermes_home / "hermes-agent" / "venv" / "bin" / "python"),
+        hermes_python_bin,
         "--hermes-home",
         str(hermes_home),
         "--calling-sidecar-url",
@@ -286,17 +319,11 @@ def build_verify_commands(
             ]
         )
     return {
-        "local_stack": [
-            verifier_python_bin,
-            str(repo_root() / "scripts" / "verify_voice_local_stack.py"),
-            "--voice-bin",
-            voice_bin,
-            "--voice-repo",
-            str(voice_repo),
-            "--webrtc-python-bin",
-            webrtc_python_bin,
-            "--live-hermes-root",
-            str(live_hermes_root),
+        "local_stack": local_stack_command,
+        "local_stack_live_gateway": local_stack_live_gateway_command,
+        "local_stack_live_gateway_cloud_only": [
+            *local_stack_live_gateway_command,
+            "--skip-live-gateway-bridge-health",
         ],
         "live_gateway": live_gateway_command,
         "live_gateway_cloud_only": [*live_gateway_command, "--skip-bridge-health"],

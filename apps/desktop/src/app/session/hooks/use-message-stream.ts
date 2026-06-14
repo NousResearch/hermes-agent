@@ -15,6 +15,7 @@ import {
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
+import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import {
   dedupeGeneratedImageEchoesInParts,
@@ -870,9 +871,7 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
 
-        if (isActiveEvent) {
-          triggerHaptic('streamDone')
-        }
+        playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)

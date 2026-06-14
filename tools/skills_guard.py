@@ -453,15 +453,22 @@ THREAT_PATTERNS = [
      "sets SUID/SGID bit on a file"),
 
     # ── Agent config persistence ──
-    (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
+    # A plain reference to AGENTS.md/CLAUDE.md is common in operational docs and
+    # should not make agent-created skill maintenance impossible. Treat naked
+    # references as informational, and reserve critical findings for text that
+    # actually tells the skill/user to write or mutate persistent agent config.
+    (r'(?:\b(?:write|append|add|insert|modify|change|patch|edit|rewrite|replace|delete|remove|overwrite|create|install|persist|update|alter)\b[^\n]{0,80}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)|(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)[^\n]{0,80}\b(?:write|append|add|insert|modify|change|patch|edit|rewrite|replace|delete|remove|overwrite|create|install|persist|update|updated|alter)\b)',
      "agent_config_mod", "critical", "persistence",
-     "references agent config files (could persist malicious instructions across sessions)"),
-    (r'\.hermes/config\.yaml|\.hermes/SOUL\.md',
-     "hermes_config_mod", "critical", "persistence",
-     "references Hermes configuration files directly"),
-    (r'\.claude/settings|\.codex/config',
-     "other_agent_config", "high", "persistence",
-     "references other agent configuration files"),
+     "instructs modification of agent config files (could persist malicious instructions across sessions)"),
+    (r'(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)',
+     "agent_config_ref", "low", "persistence",
+     "references agent config files (informational unless modification is instructed)"),
+    (r'(?:\b(?:write|append|add|insert|modify|change|patch|edit|rewrite|replace|delete|remove|overwrite|create|install|persist|update|alter)\b[^\n]{0,80}(?:\.hermes/config\.yaml|\.hermes/SOUL\.md|\.claude/settings|\.codex/config)|(?:\.hermes/config\.yaml|\.hermes/SOUL\.md|\.claude/settings|\.codex/config)[^\n]{0,80}\b(?:write|append|add|insert|modify|change|patch|edit|rewrite|replace|delete|remove|overwrite|create|install|persist|update|updated|alter)\b)',
+     "agent_runtime_config_mod", "critical", "persistence",
+     "instructs modification of Hermes/agent runtime configuration"),
+    (r'\.hermes/config\.yaml|\.hermes/SOUL\.md|\.claude/settings|\.codex/config',
+     "agent_runtime_config_ref", "low", "persistence",
+     "references Hermes/agent runtime configuration (informational unless modification is instructed)"),
 
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',

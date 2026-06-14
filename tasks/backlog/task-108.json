@@ -1,7 +1,7 @@
 {
   "id": "task-108",
   "title": "Add continuous architecture score history",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Autonomous Review Loops",
   "summary": "Track architecture score history over time for each project.",

@@ -1,7 +1,7 @@
 {
   "id": "task-103",
   "title": "Add hermes portfolio CLI entrypoint",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Portfolio Control Plane",
   "summary": "Add a `hermes portfolio` CLI entrypoint for cross-project control-plane status.",

@@ -1,7 +1,7 @@
 {
   "id": "task-106",
   "title": "Add scheduled architecture review contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Autonomous Review Loops",
   "summary": "Define scheduled project review behavior for continuous architecture governance.",

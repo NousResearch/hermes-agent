@@ -1,7 +1,7 @@
 {
   "id": "task-096",
   "title": "Add assignment confidence and fallback behavior",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Intelligent Agent Assignment",
   "summary": "Represent assignment confidence and fallback behavior when no ideal agent exists.",

@@ -1,7 +1,7 @@
 {
   "id": "task-085",
   "title": "Build architecture-to-work-graph compiler",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Planning Engine",
   "summary": "Compile architecture artifacts into an executable work graph.",

@@ -1,7 +1,7 @@
 {
   "id": "task-104",
   "title": "Add portfolio dashboard contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Portfolio Control Plane",
   "summary": "Define portfolio dashboard panels for all projects, all work, all reviews, all approvals, and all agents.",

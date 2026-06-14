@@ -1,7 +1,7 @@
 {
   "id": "task-110",
   "title": "Model market research-to-portfolio work graph",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Market Work Graph Expansion",
   "summary": "Represent market research, evidence collection, validation, experiment, promotion decision, and portfolio assignment as a work graph.",

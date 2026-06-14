@@ -1,7 +1,7 @@
 {
   "id": "task-091",
   "title": "Add graph-aware execution gate integration",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Graph Execution Orchestration",
   "summary": "Apply architecture and approval gates to work graph execution.",

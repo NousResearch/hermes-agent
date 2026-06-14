@@ -1,7 +1,7 @@
 {
   "id": "task-086",
   "title": "Add hermes plan CLI entrypoint",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Planning Engine",
   "summary": "Add a `hermes plan <project>` CLI entrypoint that emits `workgraph.json`.",

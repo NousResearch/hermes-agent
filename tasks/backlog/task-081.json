@@ -1,7 +1,7 @@
 {
   "id": "task-081",
   "title": "Add dependency and execution-order model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Work Graph Schema",
   "summary": "Represent task and subtask dependencies so Hermes OS can compute execution order.",

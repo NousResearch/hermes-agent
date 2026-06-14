@@ -1,7 +1,7 @@
 {
   "id": "task-098",
   "title": "Add work graph dashboard data model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Work Graph Dashboards",
   "summary": "Define dashboard data for epics, tasks, dependencies, blocked work, execution progress, agent assignments, and approval queue.",

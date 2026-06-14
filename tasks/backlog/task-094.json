@@ -1,7 +1,7 @@
 {
   "id": "task-094",
   "title": "Add agent capability model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Intelligent Agent Assignment",
   "summary": "Model agent capabilities for research, testing, documentation, review, validation, and coding work.",

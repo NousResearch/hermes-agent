@@ -1,7 +1,7 @@
 {
   "id": "task-097",
   "title": "Add runtime usage tracking for assignments",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Intelligent Agent Assignment",
   "summary": "Track runtime usage, cost, latency, retries, and success by agent assignment.",

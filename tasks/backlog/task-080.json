@@ -1,7 +1,7 @@
 {
   "id": "task-080",
   "title": "Define work graph core schema",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Work Graph Schema",
   "summary": "Define validated work graph entities for Project, Epic, Workflow, Task, Subtask, Dependency, Approval, Artifact, Metric, AgentAssignment, ExecutionResult, and ValidationResult.",

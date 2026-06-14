@@ -1,7 +1,7 @@
 {
   "id": "task-105",
   "title": "Add cross-project blocker and approval summaries",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Portfolio Control Plane",
   "summary": "Summarize blockers and approvals across every workspace project.",

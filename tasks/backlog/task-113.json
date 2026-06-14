@@ -1,7 +1,7 @@
 {
   "id": "task-113",
   "title": "Add market research dashboard metrics for work graph execution",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Market Research Work Graph Expansion",
   "summary": "Expose market research history, decision rate, evidence quality, and portfolio impact from work graph execution.",

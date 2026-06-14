@@ -25,3 +25,4 @@
 - Implemented tasks `task-051` through `task-079` with an architect review CLI entrypoint, workspace project scanners, safe missing-doc generation, review artifacts, dashboard panel contracts, execution gates, local persistence, and real `hermes-agent --oneshot` command assembly with dry-run fallback.
 - Reviewed Hermes OS v3 Control Plane + Governance + Work Graph Architecture roadmap.
 - Updated the plan around the new Work Graph Compiler north star and generated backlog tasks `task-080` through `task-113`.
+- Implemented tasks `task-080` through `task-113` with work graph schemas, architecture artifact reading, graph compilation, `hermes plan`, dependency resolution, execution queues, validation rules, intelligent assignment contracts, work graph dashboard panels, portfolio summaries, autonomous review loops, and generic market research graph templates.

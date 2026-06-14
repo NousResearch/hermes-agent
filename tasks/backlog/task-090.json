@@ -1,7 +1,7 @@
 {
   "id": "task-090",
   "title": "Add execution queue builder",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Graph Execution Orchestration",
   "summary": "Build an execution queue from dependency-resolved work graph nodes.",

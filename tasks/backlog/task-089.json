@@ -1,7 +1,7 @@
 {
   "id": "task-089",
   "title": "Add dependency resolver",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Graph Execution Orchestration",
   "summary": "Resolve work graph dependencies into executable layers.",

@@ -1,7 +1,7 @@
 {
   "id": "task-087",
   "title": "Add missing-work detection",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Planning Engine",
   "summary": "Detect missing tasks, approvals, validation rules, metrics, and agent assignments during graph compilation.",

@@ -1,7 +1,7 @@
 {
   "id": "task-112",
   "title": "Add experiment and promotion decision graph nodes",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Market Research Work Graph Expansion",
   "summary": "Represent market research experiment history and decision records as graph nodes.",

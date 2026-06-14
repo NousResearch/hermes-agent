@@ -70,6 +70,18 @@ def persist_agent_artifact(repository: LocalRepository, artifact_id: str, artifa
     return repository.save("agent-artifacts", artifact_id, artifact)
 
 
+def persist_work_graph(repository: LocalRepository, project_id: str, graph: Any):
+    return repository.save("work-graphs", project_id, graph)
+
+
+def persist_score_history(repository: LocalRepository, record_id: str, score_record: Dict[str, Any]):
+    return repository.save("score-history", record_id, score_record)
+
+
+def persist_runtime_usage(repository: LocalRepository, usage_id: str, usage_record: Dict[str, Any]):
+    return repository.save("runtime-usage", usage_id, usage_record)
+
+
 def _to_jsonable(value: Any):
     if is_dataclass(value):
         return asdict(value)

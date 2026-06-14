@@ -1,7 +1,7 @@
 {
   "id": "task-084",
   "title": "Implement architecture artifact reader",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Planning Engine",
   "summary": "Read PROJECT, DOMAIN, WORKFLOWS, DASHBOARD, METRICS, APPROVALS, and AGENTS artifacts for planning.",

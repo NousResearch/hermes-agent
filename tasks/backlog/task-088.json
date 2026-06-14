@@ -1,7 +1,7 @@
 {
   "id": "task-088",
   "title": "Add work graph persistence",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Planning Engine",
   "summary": "Persist compiled work graphs and graph history for projects.",

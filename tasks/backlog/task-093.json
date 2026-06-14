@@ -1,7 +1,7 @@
 {
   "id": "task-093",
   "title": "Add graph execution result ingestion",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Graph Execution Orchestration",
   "summary": "Ingest runtime execution results back into work graph state.",

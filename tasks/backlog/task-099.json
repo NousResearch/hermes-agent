@@ -1,7 +1,7 @@
 {
   "id": "task-099",
   "title": "Add dependency and blocked-work panels",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Work Graph Dashboards",
   "summary": "Create dashboard panel contracts for dependency status and blocked work.",

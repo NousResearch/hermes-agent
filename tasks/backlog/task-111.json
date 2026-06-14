@@ -1,7 +1,7 @@
 {
   "id": "task-111",
   "title": "Add evidence quality and validation nodes",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Market Research Work Graph Expansion",
   "summary": "Add generic market-research evidence quality and validation nodes to the work graph model.",

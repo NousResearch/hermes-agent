@@ -1,7 +1,7 @@
 {
   "id": "task-082",
   "title": "Add validation and execution result schemas",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Work Graph Schema",
   "summary": "Define execution and validation result records for graph-aware orchestration.",

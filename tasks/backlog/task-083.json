@@ -1,7 +1,7 @@
 {
   "id": "task-083",
   "title": "Add work graph JSON serialization contract",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Work Graph Schema",
   "summary": "Define deterministic `workgraph.json` serialization and validation behavior.",

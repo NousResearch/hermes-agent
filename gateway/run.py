@@ -8740,13 +8740,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
+            try:
+                from gateway.response_filters import is_intentional_silence_agent_result
+                _intentional_silence = is_intentional_silence_agent_result(
+                    agent_result, response,
+                )
+            except Exception:
+                _intentional_silence = False
 
             # Convert the agent's internal "(empty)" sentinel into a
             # user-friendly message.  "(empty)" means the model failed to
             # produce visible content after exhausting all retries (nudge,
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)":
+            if response == "(empty)" and not _intentional_silence:
                 response = (
                     "⚠️ The model returned no response after processing tool "
                     "results. This can happen with some models — try again or "
@@ -8782,10 +8789,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
-            response = _normalize_empty_agent_response(
-                agent_result, response, history_len=len(history),
-            )
-            response = _sanitize_gateway_final_response(source.platform, response)
+            if not _intentional_silence:
+                response = _normalize_empty_agent_response(
+                    agent_result, response, history_len=len(history),
+                )
+                response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -8809,7 +8817,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
+            if _show_reasoning_effective and response and not _intentional_silence:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
@@ -8839,7 +8847,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent"):
+            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -9072,6 +9080,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            # Intentional silence is a delivery decision, not a transcript
+            # mutation.  The agent's [SILENT]/NO_REPLY assistant turn above is
+            # still persisted in session history so later turns keep normal
+            # user/assistant alternation; only the outbound chat delivery is
+            # suppressed.
+            if _intentional_silence:
+                logger.info(
+                    "Suppressing intentional silence marker for session %s",
+                    session_entry.session_id,
+                )
+                response = ""
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))

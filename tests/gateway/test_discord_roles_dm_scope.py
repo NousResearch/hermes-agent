@@ -264,6 +264,54 @@ def test_empty_allowlists_deny_without_opt_in():
     )
 
 
+def test_channel_allowlist_requires_channel_context(monkeypatch):
+    """DISCORD_ALLOWED_CHANNELS must not authorize guild traffic without
+    validated channel ids — e.g. voice utterances call _is_allowed_user
+    with guild/is_dm only."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
+    adapter = _make_adapter(guilds=[guild])
+
+    assert (
+        adapter._is_allowed_user("42", author=None, guild=guild, is_dm=False)
+        is False
+    )
+
+
+def test_channel_allowlist_authorizes_with_matching_channel_context(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
+    adapter = _make_adapter(guilds=[guild])
+
+    assert (
+        adapter._is_allowed_user(
+            "42",
+            author=None,
+            guild=guild,
+            is_dm=False,
+            channel_ids={"999"},
+        )
+        is True
+    )
+
+
+def test_channel_allowlist_rejects_non_matching_channel_context(monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "999")
+    guild = SimpleNamespace(id=111111, get_member=lambda uid: None)
+    adapter = _make_adapter(guilds=[guild])
+
+    assert (
+        adapter._is_allowed_user(
+            "42",
+            author=None,
+            guild=guild,
+            is_dm=False,
+            channel_ids={"1111"},
+        )
+        is False
+    )
+
+
 # ---------------------------------------------------------------------------
 # Slash-surface sibling site: _evaluate_slash_authorization must pass
 # guild/is_dm through so the cross-guild bypass can't land via slash either.

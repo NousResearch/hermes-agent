@@ -72,7 +72,12 @@ from acp_adapter.events import (
 )
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
-from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
+from acp_adapter.session import (
+    SessionManager,
+    SessionState,
+    _expand_acp_enabled_toolsets,
+    _normalize_acp_toolsets,
+)
 from acp_adapter.tools import build_tool_complete, build_tool_start
 
 logger = logging.getLogger(__name__)
@@ -514,9 +519,15 @@ class HermesACPAgent(acp.Agent):
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
     }
 
-    def __init__(self, session_manager: SessionManager | None = None):
+    def __init__(
+        self,
+        session_manager: SessionManager | None = None,
+        default_toolsets: list[str] | None = None,
+    ):
         super().__init__()
-        self.session_manager = session_manager or SessionManager()
+        self.session_manager = session_manager or SessionManager(
+            default_toolsets=default_toolsets
+        )
         self._conn: Optional[acp.Client] = None
 
     # ---- Connection lifecycle -----------------------------------------------
@@ -1106,13 +1117,28 @@ class HermesACPAgent(acp.Agent):
                     if plan_update is not None and not await _send(plan_update):
                         return
 
+    @staticmethod
+    def _toolsets_from_new_session_params(params: dict) -> list[str] | None:
+        """Pull an optional per-session toolset override from ``session/new``.
+
+        Accepts a top-level ``toolsets`` field or one nested under the ACP
+        ``_meta`` map, as a JSON array or a comma/space-delimited string.
+        """
+        value = params.get("toolsets")
+        if value is None:
+            meta = params.get("_meta") or params.get("meta")
+            if isinstance(meta, dict):
+                value = meta.get("toolsets")
+        return _normalize_acp_toolsets(value)
+
     async def new_session(
         self,
         cwd: str,
         mcp_servers: list | None = None,
         **kwargs: Any,
     ) -> NewSessionResponse:
-        state = self.session_manager.create_session(cwd=cwd)
+        toolsets = self._toolsets_from_new_session_params(kwargs)
+        state = self.session_manager.create_session(cwd=cwd, toolsets=toolsets)
         await self._register_session_mcp_servers(state, mcp_servers)
         logger.info("New session %s (cwd=%s)", state.session_id, cwd)
         self._schedule_available_commands_update(state.session_id)

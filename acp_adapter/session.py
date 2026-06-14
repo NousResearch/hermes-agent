@@ -155,6 +155,26 @@ def _expand_acp_enabled_toolsets(
     return expanded
 
 
+def _normalize_acp_toolsets(value: object) -> List[str] | None:
+    """Coerce a toolset spec (list, comma/space-delimited string, or ``None``)
+    into a clean list of names.
+
+    Returns ``None`` when nothing usable is provided so callers fall back to the
+    historical ``["hermes-acp"]`` default.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [part.strip() for part in value.replace(",", " ").split()]
+    else:
+        try:
+            items = [str(part).strip() for part in value]
+        except TypeError:
+            return None
+    items = [item for item in items if item]
+    return items or None
+
+
 def _clear_task_cwd(task_id: str) -> None:
     """Remove task-specific cwd overrides for an ACP session."""
     if not task_id:
@@ -191,7 +211,7 @@ class SessionManager:
     via ``session_search``.
     """
 
-    def __init__(self, agent_factory=None, db=None):
+    def __init__(self, agent_factory=None, db=None, default_toolsets=None):
         """
         Args:
             agent_factory: Optional callable that creates an AIAgent-like object.
@@ -199,21 +219,31 @@ class SessionManager:
                            using the current Hermes runtime provider configuration.
             db:            Optional SessionDB instance. When omitted, the default
                            SessionDB (``~/.hermes/state.db``) is lazily created.
+            default_toolsets: Optional process-wide default toolset list applied
+                           to every ACP session that does not request its own
+                           (e.g. from ``hermes acp --toolsets``). Accepts a list
+                           or a comma/space-delimited string; ``None`` keeps the
+                           historical ``["hermes-acp"]`` default.
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
+        self._default_toolsets = _normalize_acp_toolsets(default_toolsets)
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", toolsets=None) -> SessionState:
+        """Create a new session with a unique ID and a fresh AIAgent.
+
+        ``toolsets`` overrides the manager default for this session only; when
+        ``None`` the session uses the manager default (or ``["hermes-acp"]``).
+        """
         import threading
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        agent = self._make_agent(session_id=session_id, cwd=cwd, toolsets=toolsets)
         state = SessionState(
             session_id=session_id,
             agent=agent,
@@ -555,6 +585,11 @@ class SessionManager:
 
     # ---- internal -----------------------------------------------------------
 
+    def _resolved_toolsets(self, toolsets=None) -> List[str]:
+        """Effective toolset list for a session: the per-session override, else
+        the manager default, else the historical ``["hermes-acp"]``."""
+        return _normalize_acp_toolsets(toolsets) or self._default_toolsets or ["hermes-acp"]
+
     def _make_agent(
         self,
         *,
@@ -564,6 +599,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        toolsets: List[str] | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -591,7 +627,7 @@ class SessionManager:
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": _expand_acp_enabled_toolsets(
-                ["hermes-acp"],
+                self._resolved_toolsets(toolsets),
                 mcp_server_names=configured_mcp_servers,
             ),
             "quiet_mode": True,

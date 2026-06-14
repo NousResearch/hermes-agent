@@ -888,6 +888,13 @@ class ProcessRegistry:
                 "exit_code": session.exit_code,
                 "output": output_tail,
             })
+        if was_running and str(session.task_id or "").startswith("codex_"):
+            try:
+                from hermes_cli import codex_learning
+
+                codex_learning.handle_process_completed(session)
+            except Exception:
+                logger.debug("Codex learning harvester failed for %s", session.id, exc_info=True)
 
     # ----- Query Methods -----
 
@@ -1529,6 +1536,9 @@ def format_process_notification(evt: dict) -> "str | None":
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"
         return text
+
+    if evt_type == "codex_learning_staged":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")

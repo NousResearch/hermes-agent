@@ -243,18 +243,21 @@ def test_new_skill_without_last_used_not_immediately_archived(curator_env):
     # Bump nothing — record doesn't exist yet. Curator should create it
     # and fall back to created_at which is ~now.
     counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 1
+    assert counts["seeded"] == 1
     assert counts["archived"] == 0
     assert counts["marked_stale"] == 0
     assert (skills_dir / "fresh").exists()
+    assert isinstance(u.load_usage().get("fresh"), dict)
 
 
-def test_manual_skill_is_not_auto_archived(curator_env):
-    """Manual skills can have usage records, but without the agent-created
-    marker they must stay out of curator transitions."""
+def test_manual_skill_is_ignored_in_legacy_agent_created_scope(curator_env, monkeypatch):
+    """Legacy scope preserves the old generated-only curation behavior."""
     c = curator_env["curator"]
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
     skill_dir = _write_skill(skills_dir, "manual")
+    monkeypatch.setattr(u, "curator_scope", lambda: u.SCOPE_AGENT_CREATED)
 
     super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
     data = u.load_usage()
@@ -267,6 +270,25 @@ def test_manual_skill_is_not_auto_archived(curator_env):
     assert counts["checked"] == 0
     assert counts["archived"] == 0
     assert skill_dir.exists()
+
+
+def test_external_skill_first_sight_is_seeded_not_archived(curator_env, monkeypatch, tmp_path):
+    """Broad all_usable scope must not mass-archive old untracked external skills."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    external = tmp_path / "external-skills"
+    external.mkdir()
+    external_skill = _write_skill(external, "external-old")
+    monkeypatch.setattr(u, "get_all_skills_dirs", lambda: [skills_dir, external])
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["checked"] == 1
+    assert counts["seeded"] == 1
+    assert counts["archived"] == 0
+    assert external_skill.exists()
+    assert isinstance(u.load_usage().get("external-old"), dict)
 
 
 def test_bundled_skill_not_touched_by_transitions(curator_env):
@@ -689,7 +711,8 @@ def test_curator_review_prompt_has_invariants():
     """Core invariants must be in the review prompt text."""
     from agent.curator import CURATOR_REVIEW_PROMPT
     assert "MUST NOT" in CURATOR_REVIEW_PROMPT or "DO NOT" in CURATOR_REVIEW_PROMPT
-    assert "bundled" in CURATOR_REVIEW_PROMPT.lower()
+    assert "hub-installed" in CURATOR_REVIEW_PROMPT.lower()
+    assert "protected built-ins" in CURATOR_REVIEW_PROMPT.lower()
     assert "delete" in CURATOR_REVIEW_PROMPT.lower()
     assert "pinned" in CURATOR_REVIEW_PROMPT.lower()
     # Must describe the actions the reviewer can take. The exact vocabulary

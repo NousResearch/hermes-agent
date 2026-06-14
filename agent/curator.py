@@ -1,19 +1,20 @@
 """Curator — background skill maintenance orchestrator.
 
-The curator is an auxiliary-model task that periodically reviews agent-created
-skills and maintains the collection. It runs inactivity-triggered (no cron
-daemon): when the agent is idle and the last curator run was longer than
+The curator is an auxiliary-model task that periodically reviews
+curator-managed skills and maintains the collection. It runs
+inactivity-triggered (no cron daemon): when the agent is idle and the last
+curator run was longer than
 ``interval_hours`` ago, ``maybe_run_curator()`` spawns a forked AIAgent to do
 the review.
 
 Responsibilities:
   - Auto-transition lifecycle states based on derived skill activity timestamps
   - Spawn a background review agent that can pin / archive / consolidate /
-    patch agent-created skills via skill_manage
+    patch curator-managed skills via skill_manage
   - Persist curator state (last_run_at, paused, etc.) in .curator_state
 
 Strict invariants:
-  - Only touches agent-created skills (see tools/skill_usage.is_agent_created)
+  - Only touches scope-filtered skills from tools.skill_usage
   - Never auto-deletes — only archives. Archive is recoverable.
   - Pinned skills bypass all auto-transitions
   - Uses the auxiliary client; never touches the main session's prompt cache
@@ -170,11 +171,15 @@ def get_archive_after_days() -> int:
         return DEFAULT_ARCHIVE_AFTER_DAYS
 
 
+def get_scope() -> str:
+    return skill_usage.curator_scope()
+
+
 def get_prune_builtins() -> bool:
     """Whether the curator may prune (archive) bundled built-in skills too.
 
     ON by default. When on, built-ins become curation candidates and are
-    archived after the same inactivity period as agent-created skills, with a
+    archived after the same inactivity period as other managed skills, with a
     suppression list keeping them archived across `hermes update` re-seeds.
     Hub-installed skills are never pruned regardless of this flag.
     """
@@ -356,8 +361,8 @@ CURATOR_REVIEW_PROMPT = (
     "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
     "session-specific detail — not one-session-one-skill micro-entries.\n\n"
     "Hard rules — do not violate:\n"
-    "1. DO NOT touch bundled or hub-installed skills. The candidate list "
-    "below is already filtered to agent-created skills only.\n"
+    "1. DO NOT touch hub-installed skills. The candidate list below is "
+    "already filtered to curator-managed candidates only.\n"
     "2. DO NOT delete any skill. Archiving (moving the skill's directory "
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
@@ -1211,7 +1216,7 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     counts = p.get("counts") or {}
     lines.append(
         f"Model: `{model}` via `{prov}`  ·  Duration: {dur_label}  ·  "
-        f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} "
+        f"Curator-managed skills: {counts.get('before', 0)} → {counts.get('after', 0)} "
         f"({counts.get('delta', 0):+d})\n"
     )
 
@@ -1385,11 +1390,11 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
+    """Human/agent-readable list of curator-managed skills with usage stats."""
     rows = skill_usage.agent_created_report()
     if not rows:
-        return "No agent-created skills to review."
-    lines = [f"Agent-created skills ({len(rows)}):\n"]
+        return "No curator-managed skills to review."
+    lines = [f"Curator-managed skills ({len(rows)}; scope={get_scope()}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
@@ -1413,7 +1418,7 @@ def run_curator_review(
 
     Steps:
       1. Apply automatic state transitions (pure, no LLM).
-      2. If there are agent-created skills, spawn a forked AIAgent that runs
+      2. If there are curator-managed skills, spawn a forked AIAgent that runs
          the LLM review prompt against the current candidate list.
       3. Update .curator_state with last_run_at and a one-line summary.
       4. Invoke *on_summary* with a user-visible description.
@@ -1492,7 +1497,7 @@ def run_curator_review(
         llm_meta: Dict[str, Any] = {}
         try:
             candidate_list = _render_candidate_list()
-            if "No agent-created skills" in candidate_list:
+            if "No curator-managed skills" in candidate_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {
                     "final": "",
@@ -1512,10 +1517,9 @@ def run_curator_review(
                     builtins_note = (
                         "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
                         "ARE included in the candidate list below and MAY be "
-                        "archived for staleness/irrelevance, overriding hard "
-                        "rule #1 for bundled skills ONLY. Hub-installed skills "
-                        "remain strictly off-limits. Treat a stale built-in the "
-                        "same as a stale agent-created skill: archive it (never "
+                        "archived for staleness/irrelevance. Hub-installed "
+                        "skills remain strictly off-limits. Treat a stale built-in the "
+                        "same as a stale managed skill: archive it (never "
                         "delete). It will be restored on `hermes update` only if "
                         "the user explicitly restores it."
                     )

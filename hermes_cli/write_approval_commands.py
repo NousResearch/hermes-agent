@@ -37,7 +37,7 @@ def _fmt_pending_list(subsystem: str) -> str:
     lines = [f"Pending {subsystem} writes ({len(records)}):"]
     for r in records:
         origin = r.get("origin", "foreground")
-        tag = " [auto]" if origin == "background_review" else ""
+        tag = " [auto]" if origin in {"background_review", "codex_learning"} else ""
         lines.append(f"  {r['id']}{tag}  {r.get('summary', '')}")
     where = "/{s} approve <id>".format(s=subsystem)
     lines.append("")
@@ -140,7 +140,15 @@ def _approve(subsystem: str, rest: List[str], memory_store) -> str:
 
 def _apply_one(subsystem: str, rec, memory_store):
     payload = rec.get("payload", {})
+    origin = str(rec.get("origin") or "foreground")
+    token = None
     try:
+        from tools.skill_provenance import (
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+
+        token = set_current_write_origin(origin)
         if subsystem == wa.MEMORY:
             if memory_store is None:
                 return False, "memory store unavailable"
@@ -153,6 +161,12 @@ def _apply_one(subsystem: str, rec, memory_store):
             return bool(result.get("success")), result.get("error", "")
     except Exception as e:
         return False, str(e)
+    finally:
+        if token is not None:
+            try:
+                reset_current_write_origin(token)
+            except Exception:
+                pass
 
 
 def _reject(subsystem: str, rest: List[str]) -> str:

@@ -30,6 +30,14 @@ DEFAULT_READOUT = {
 }
 
 DEFAULT_CONTEXT_HELPER = {
+    "enabled": False,
+    "harvest_launches": True,
+    "review_model": "",
+    "max_output_chars": 8000,
+    "auto_promote_memory": True,
+    "auto_promote_skills": True,
+    "min_confidence": 0.75,
+    "notify_on_stage": True,
     "propose_memory": True,
     "propose_skills": True,
     "auto_promote": False,
@@ -135,6 +143,7 @@ def render_help() -> str:
             "`/codex last` - show the latest assistant reply for this session",
             "`/codex checks` - summarize recent validation-looking background processes",
             "`/codex context` - show pending memory/skill promotions",
+            "`/codex learn status|pending|apply|discard` - review Codex learning proposals",
             "`/codex launch <repo> <prompt>` - start Codex in a clean worktree",
         ]
     )
@@ -190,6 +199,9 @@ def render_status(
 
     mem_count, skill_count = _pending_context_counts()
     lines.append(f"- Pending context: {mem_count} memory, {skill_count} skill")
+    learning_count = _pending_learning_count()
+    if learning_count:
+        lines.append(f"- Pending Codex learning: {learning_count}")
 
     last = latest_assistant_text(transcript or [])
     if last:
@@ -258,6 +270,27 @@ def render_context() -> str:
             )
     lines.append("Promote or discard staged items with the existing `/memory` and skill review flows.")
     return "\n".join(lines)
+
+
+def render_learn(tokens: tuple[str, ...], config: Mapping[str, Any] | None) -> str:
+    """Render or apply `/codex learn ...` commands."""
+    from hermes_cli import codex_learning
+
+    action = (tokens[0].lower() if tokens else "status")
+    if action == "status":
+        return codex_learning.render_learn_status(config)
+    if action == "pending":
+        return codex_learning.render_learn_pending()
+    if action == "apply":
+        target = tokens[1] if len(tokens) > 1 else ""
+        return codex_learning.apply_learning(target, config)
+    if action in {"discard", "reject", "drop"}:
+        target = tokens[1] if len(tokens) > 1 else ""
+        return codex_learning.discard_learning(target)
+    return (
+        "Unknown `/codex learn` action. Use: "
+        "`/codex learn status|pending|apply <id|all>|discard <id|all>`."
+    )
 
 
 def prepare_launch(
@@ -499,6 +532,15 @@ def _pending_context_records() -> tuple[list[dict[str, Any]], list[dict[str, Any
         )
     except Exception:
         return [], []
+
+
+def _pending_learning_count() -> int:
+    try:
+        from hermes_cli import codex_learning
+
+        return codex_learning.count_pending_proposals()
+    except Exception:
+        return 0
 
 
 def _path_allowed(path: str, allowlist: tuple[str, ...]) -> bool:

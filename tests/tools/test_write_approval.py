@@ -48,6 +48,28 @@ def test_invalid_subsystem_is_off(hermes_home):
     assert wa.write_approval_enabled("bogus") is False
 
 
+def test_force_write_approval_is_scoped(hermes_home):
+    from tools import write_approval as wa
+
+    assert wa.write_approval_enabled("memory") is False
+    assert wa.write_approval_enabled("skills") is False
+    with wa.force_write_approval(wa.MEMORY):
+        assert wa.write_approval_enabled("memory") is True
+        assert wa.write_approval_enabled("skills") is False
+    assert wa.write_approval_enabled("memory") is False
+
+
+def test_codex_learning_origin_is_background_for_approval(hermes_home):
+    from tools import write_approval as wa
+    from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
+    token = set_current_write_origin("codex_learning")
+    try:
+        assert wa.is_background() is True
+    finally:
+        reset_current_write_origin(token)
+
+
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
     # Real bools pass through.
@@ -152,6 +174,38 @@ def test_skill_gate_on_then_apply_writes_file(hermes_home):
     res = json.loads(smt.apply_skill_pending(rec["payload"]))
     assert res["success"] is True
     assert smt._find_skill("applied-skill") is not None
+
+
+def test_skill_approval_replays_codex_origin_for_curator_usage(hermes_home):
+    import importlib
+    import tools.skill_manager_tool as smt
+    import tools.skill_usage as skill_usage
+    importlib.reload(smt)
+    importlib.reload(skill_usage)
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+
+    content = (
+        "---\n"
+        "name: codex-origin-skill\n"
+        "description: Created from Codex learning\n"
+        "version: 1.0.0\n"
+        "---\n"
+        "# Codex Origin Skill\n"
+    )
+    rec = wa.stage_write(
+        wa.SKILLS,
+        {"action": "create", "name": "codex-origin-skill", "content": content},
+        summary="create codex-origin-skill",
+        origin="codex_learning",
+    )
+
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", rec["id"]])
+
+    assert "Approved 1" in out
+    assert wa.get_pending(wa.SKILLS, rec["id"]) is None
+    assert smt._find_skill("codex-origin-skill") is not None
+    assert skill_usage.get_record("codex-origin-skill")["created_by"] == "agent"
 
 
 def test_skill_create_diff_is_full_content(hermes_home):

@@ -474,15 +474,83 @@ def test_agent_created_report_includes_marked_skills_with_defaults(skills_home):
     assert by_name["b"]["state"] == "active"
 
 
-def test_manual_skill_with_usage_is_not_curator_managed(skills_home):
+def test_manual_skill_is_curator_managed_by_default(skills_home):
     from tools.skill_usage import agent_created_report, bump_view, list_agent_created_skill_names
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "manual-skill")
 
     bump_view("manual-skill")
 
-    assert "manual-skill" not in list_agent_created_skill_names()
-    assert "manual-skill" not in {r["name"] for r in agent_created_report()}
+    assert "manual-skill" in list_agent_created_skill_names()
+    assert "manual-skill" in {r["name"] for r in agent_created_report()}
+
+
+def test_agent_created_scope_excludes_unmarked_manual_skill(skills_home, monkeypatch):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "manual-skill")
+    skill_usage.bump_view("manual-skill")
+    monkeypatch.setattr(skill_usage, "curator_scope", lambda: skill_usage.SCOPE_AGENT_CREATED)
+
+    assert "manual-skill" not in skill_usage.list_agent_created_skill_names()
+    assert "manual-skill" not in {r["name"] for r in skill_usage.agent_created_report()}
+
+
+def test_all_usable_scope_includes_external_skills(skills_home):
+    from agent.skill_utils import _external_dirs_cache_clear
+    from tools.skill_usage import list_agent_created_skill_names
+
+    external = skills_home / "external-skills"
+    external.mkdir()
+    _write_skill(external, "external-skill")
+    _write_skill(skills_home / "skills", "local-skill")
+    (skills_home / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external}\n",
+        encoding="utf-8",
+    )
+    _external_dirs_cache_clear()
+
+    names = list_agent_created_skill_names()
+    assert "local-skill" in names
+    assert "external-skill" in names
+
+
+def test_all_usable_scope_excludes_disabled_skills(skills_home):
+    from tools.skill_usage import list_agent_created_skill_names
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "enabled-skill")
+    _write_skill(skills_dir, "disabled-skill")
+    (skills_home / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - disabled-skill\n",
+        encoding="utf-8",
+    )
+
+    names = list_agent_created_skill_names()
+    assert "enabled-skill" in names
+    assert "disabled-skill" not in names
+
+
+def test_all_usable_scope_excludes_protected_and_hub(skills_home):
+    import tools.skill_usage as skill_usage
+
+    skills_dir = skills_home / "skills"
+    protected = next(iter(skill_usage.PROTECTED_BUILTIN_SKILLS))
+    _write_skill(skills_dir, protected)
+    _write_skill(skills_dir, "hub-skill")
+    _write_skill(skills_dir, "manual-skill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir()
+    (hub_dir / "lock.json").write_text(
+        json.dumps({"version": 1, "installed": {"hub-skill": {"source": "taps/main"}}}),
+        encoding="utf-8",
+    )
+
+    names = skill_usage.list_agent_created_skill_names()
+    assert "manual-skill" in names
+    assert protected not in names
+    assert "hub-skill" not in names
 
 
 def test_agent_created_report_excludes_bundled_and_hub(skills_home):

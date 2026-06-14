@@ -5573,8 +5573,8 @@ def _print_curator_first_run_notice() -> None:
     print("ℹ Skill curator")
     print(
         f"  Background skill maintenance is enabled. First pass is deferred "
-        f"~{days}d after installation; only agent-created skills are in "
-        f"scope and nothing is ever auto-deleted (archive is recoverable)."
+        f"~{days}d after installation; curator-managed skills are in scope "
+        f"and nothing is ever auto-deleted (archive is recoverable)."
     )
     print("  Preview now:  hermes curator run --dry-run")
     print("  Pause it:     hermes curator pause")
@@ -11802,9 +11802,9 @@ def main():
         help="Background skill maintenance (curator) — status, run, pause, pin",
         description=(
             "The curator is an auxiliary-model background task that "
-            "periodically reviews agent-created skills, prunes stale ones, "
+            "periodically reviews curator-managed skills, prunes stale ones, "
             "consolidates overlaps, and archives obsolete skills. "
-            "Bundled and hub-installed skills are never touched. "
+            "Hub-installed and protected skills are never touched. "
             "Archives are recoverable; auto-deletion never happens."
         ),
     )

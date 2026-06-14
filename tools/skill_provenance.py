@@ -1,8 +1,9 @@
-"""Skill write-origin provenance — ContextVar for distinguishing agent-sediment skill writes from foreground user-directed writes.
+"""Skill write-origin provenance — ContextVar for generated skill writes.
 
-The curator only consolidates/prunes skills it autonomously created via the
-background self-improvement review fork. Skills a user asks a foreground
-agent to write belong to the user and must never be auto-curated.
+The curator treats generated skills as system-managed sediment. Skills a user
+asks a foreground agent to write still belong to the user, but automated
+review loops such as background review and Codex learning need durable origin
+provenance so generated skills can be audited and curated.
 
 This module exposes a ContextVar that run_agent.py sets before each tool
 loop so tool handlers (e.g. skill_manage create) can check whether they
@@ -27,7 +28,7 @@ Usage:
         reset_current_write_origin(token)
 
     # inside a tool:
-    if get_current_write_origin() == "background_review":
+    if is_curator_managed_origin():
         mark_agent_created(skill_name)
 """
 
@@ -43,6 +44,8 @@ _write_origin: contextvars.ContextVar[str] = contextvars.ContextVar(
 # run_agent.py's AIAgent._memory_write_origin override in
 # _spawn_background_review().
 BACKGROUND_REVIEW = "background_review"
+CODEX_LEARNING = "codex_learning"
+CURATOR_MANAGED_ORIGINS = frozenset({BACKGROUND_REVIEW, CODEX_LEARNING})
 
 
 def set_current_write_origin(origin: str) -> contextvars.Token[str]:
@@ -65,9 +68,11 @@ def get_current_write_origin() -> str:
     Default: "foreground" — any tool call made by a regular (non-review)
     agent, from the CLI, the gateway, cron, or a subagent.
 
-    "background_review" — the self-improvement review fork; only skills
-    created under this origin should be marked agent-created for curator
-    management.
+    "background_review" — the self-improvement review fork.
+    "codex_learning" — the automated Codex completion learning reviewer.
+
+    Skills created under generated origins should be marked for curator
+    management and audit provenance.
     """
     return _write_origin.get()
 
@@ -76,3 +81,8 @@ def is_background_review() -> bool:
     """Convenience: True iff the current write origin is the background
     review fork."""
     return get_current_write_origin() == BACKGROUND_REVIEW
+
+
+def is_curator_managed_origin() -> bool:
+    """True when the active write origin is an automated learning/review loop."""
+    return get_current_write_origin() in CURATOR_MANAGED_ORIGINS

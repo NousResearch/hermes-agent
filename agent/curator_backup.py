@@ -1,12 +1,13 @@
 """Curator snapshot + rollback.
 
-A pre-run snapshot of ``~/.hermes/skills/`` (excluding ``.curator_backups/``
-itself) is taken before any mutating curator pass. Snapshots are tar.gz
-files under ``~/.hermes/skills/.curator_backups/<utc-iso>/`` with a
-companion ``manifest.json`` describing the snapshot (reason, time, size,
-counted skill files). Rollback picks a snapshot, moves the current
-``skills/`` tree aside into another snapshot so even the rollback itself
-is undoable, then extracts the chosen snapshot into place.
+A pre-run snapshot of every managed skills root (``~/.hermes/skills/`` plus
+configured ``skills.external_dirs``) is taken before any mutating curator pass.
+Snapshots are tar.gz files under
+``~/.hermes/skills/.curator_backups/<utc-iso>/`` with a companion
+``manifest.json`` describing the roots, reason, time, size, and counted skill
+files. Rollback picks a snapshot, takes a safety snapshot of current roots so
+even the rollback itself is undoable, then extracts each root archive back
+into the same configured root.
 
 The snapshot does NOT include:
   - ``.curator_backups/`` (would recurse)
@@ -49,7 +50,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,22 @@ def _backups_dir() -> Path:
 
 def _skills_dir() -> Path:
     return get_hermes_home() / "skills"
+
+
+def _skill_roots() -> List[Path]:
+    """Return existing managed skill roots in runtime resolution order."""
+    roots: List[Path] = []
+    seen = set()
+    for root in get_all_skills_dirs():
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if resolved in seen or not root.exists() or not root.is_dir():
+            continue
+        seen.add(resolved)
+        roots.append(root)
+    return roots
 
 
 def _cron_jobs_file() -> Path:
@@ -185,15 +202,27 @@ def _count_skill_files(base: Path) -> int:
 
 def _write_manifest(dest: Path, reason: str, archive_path: Path,
                     skills_counted: int,
-                    cron_info: Optional[Dict[str, Any]] = None) -> None:
+                    cron_info: Optional[Dict[str, Any]] = None,
+                    skill_roots: Optional[List[Dict[str, Any]]] = None) -> None:
+    archive_bytes = 0
+    if skill_roots:
+        for root_info in skill_roots:
+            try:
+                archive_bytes += int(root_info.get("archive_bytes") or 0)
+            except (TypeError, ValueError):
+                continue
+    else:
+        archive_bytes = archive_path.stat().st_size
     manifest = {
         "id": dest.name,
         "reason": reason,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "archive": archive_path.name,
-        "archive_bytes": archive_path.stat().st_size,
+        "archive_bytes": archive_bytes,
         "skill_files": skills_counted,
     }
+    if skill_roots is not None:
+        manifest["skill_roots"] = skill_roots
     if cron_info is not None:
         manifest["cron_jobs"] = {
             "backed_up": bool(cron_info.get("backed_up", False)),
@@ -249,23 +278,41 @@ def snapshot_skills(reason: str = "manual") -> Optional[Path]:
         logger.debug("Failed to create snapshot dir %s: %s", dest, e)
         return None
 
-    archive = dest / "skills.tar.gz"
+    roots = _skill_roots()
+    if not roots:
+        logger.debug("No managed skills directories — nothing to back up")
+        return None
+
+    primary_archive = dest / "skills.tar.gz"
     try:
-        # Stream into the tarball — no tempdir copy needed.
-        with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
-            for entry in sorted(skills.iterdir()):
-                if entry.name in _EXCLUDE_TOP_LEVEL:
-                    continue
-                # arcname: store paths relative to skills/ so extraction
-                # drops cleanly back into the skills dir.
-                tf.add(str(entry), arcname=entry.name, recursive=True)
+        skill_roots: List[Dict[str, Any]] = []
+        for idx, root in enumerate(roots):
+            root_id = "local" if idx == 0 else f"external-{idx}"
+            archive_name = "skills.tar.gz" if idx == 0 else f"skills-{root_id}.tar.gz"
+            archive = dest / archive_name
+            # Stream into the tarball — no tempdir copy needed.
+            with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
+                for entry in sorted(root.iterdir()):
+                    if entry.name in _EXCLUDE_TOP_LEVEL:
+                        continue
+                    # arcname: store paths relative to the root so extraction
+                    # drops cleanly back into that same skills dir.
+                    tf.add(str(entry), arcname=entry.name, recursive=True)
+            skill_roots.append({
+                "id": root_id,
+                "path": str(root),
+                "archive": archive.name,
+                "archive_bytes": archive.stat().st_size,
+                "skill_files": _count_skill_files(root),
+            })
         # Capture cron/jobs.json alongside the tarball. Never fails the
         # snapshot — the skills side is the core guarantee; cron is
         # additive. We still record in the manifest whether it was
         # captured so rollback can surface "no cron data in this snapshot".
         cron_info = _backup_cron_jobs_into(dest)
-        _write_manifest(dest, reason, archive,
-                        _count_skill_files(skills),
+        _write_manifest(dest, reason, primary_archive,
+                        sum(int(r.get("skill_files") or 0) for r in skill_roots),
+                        skill_roots=skill_roots,
                         cron_info=cron_info)
     except (OSError, tarfile.TarError) as e:
         logger.debug("Curator snapshot failed: %s", e, exc_info=True)
@@ -381,6 +428,114 @@ def _resolve_backup(backup_id: Optional[str]) -> Optional[Path]:
         if c.is_dir() and _ID_RE.match(c.name) and (c / "skills.tar.gz").exists()
     ]
     return candidates[0] if candidates else None
+
+
+def _configured_root_map() -> Dict[str, Path]:
+    roots: Dict[str, Path] = {}
+    for root in _skill_roots():
+        try:
+            roots[str(root.resolve())] = root
+        except OSError:
+            roots[str(root)] = root
+    return roots
+
+
+def _manifest_root_specs(target: Path, manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = manifest.get("skill_roots")
+    if isinstance(raw, list) and raw:
+        specs: List[Dict[str, Any]] = []
+        for idx, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            archive_name = str(item.get("archive") or "").strip()
+            root_path = str(item.get("path") or "").strip()
+            if not archive_name or not root_path:
+                continue
+            specs.append({
+                "id": str(item.get("id") or f"root-{idx}"),
+                "path": root_path,
+                "archive": archive_name,
+            })
+        if specs:
+            return specs
+    # Backward compatibility for snapshots created before multi-root support.
+    return [{
+        "id": "local",
+        "path": str(_skills_dir()),
+        "archive": str(manifest.get("archive") or "skills.tar.gz"),
+    }]
+
+
+def _resolve_root_specs(target: Path, manifest: Dict[str, Any]) -> Tuple[bool, str, List[Dict[str, Any]]]:
+    configured = _configured_root_map()
+    resolved_specs: List[Dict[str, Any]] = []
+    for spec in _manifest_root_specs(target, manifest):
+        root_path = Path(spec["path"])
+        try:
+            root_key = str(root_path.resolve())
+        except OSError:
+            root_key = str(root_path)
+        root = configured.get(root_key)
+        if root is None:
+            return (
+                False,
+                f"snapshot root {root_path} is no longer configured as a skills root",
+                [],
+            )
+        archive = target / spec["archive"]
+        if not archive.exists():
+            return False, f"snapshot {target.name} is missing {archive.name}", []
+        resolved_specs.append({
+            "id": spec["id"],
+            "root": root,
+            "archive": archive,
+        })
+    if not resolved_specs:
+        return False, f"snapshot {target.name} has no restorable skill roots", []
+    return True, "", resolved_specs
+
+
+def _safe_extract_archive(archive: Path, dest: Path) -> None:
+    with tarfile.open(archive, "r:gz") as tf:
+        # Python 3.12+ supports filter='data' for safer extraction.
+        # Fall back to the unfiltered call for older interpreters but still
+        # reject absolute paths and .. components defensively.
+        for member in tf.getmembers():
+            name = member.name
+            if name.startswith("/") or ".." in Path(name).parts:
+                raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+        try:
+            tf.extractall(str(dest), filter="data")  # type: ignore[call-arg]
+        except TypeError:
+            # Python < 3.12 — no filter kwarg
+            tf.extractall(str(dest))
+
+
+def _restore_moved(moved: List[Tuple[Path, Path]]) -> None:
+    for orig, staged in reversed(moved):
+        try:
+            if orig.exists():
+                continue
+            shutil.move(str(staged), str(orig))
+        except OSError:
+            pass
+
+
+def _clear_restorable_entries(root_specs: List[Dict[str, Any]]) -> None:
+    for spec in root_specs:
+        root: Path = spec["root"]
+        if not root.exists():
+            continue
+        for entry in list(root.iterdir()):
+            if entry.name in _EXCLUDE_TOP_LEVEL:
+                continue
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            except OSError:
+                pass
 
 
 def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
@@ -527,16 +682,16 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
 
 
 def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]]:
-    """Restore ``~/.hermes/skills/`` from a snapshot.
+    """Restore managed skill roots from a snapshot.
 
     Strategy:
       1. Resolve the target snapshot (explicit id or newest regular).
       2. Take a safety snapshot of the CURRENT skills tree under
          ``.curator_backups/pre-rollback-<ts>/`` so the rollback itself is
          undoable.
-      3. Move all current top-level entries (except ``.curator_backups``
+      3. Move each current root's top-level entries (except ``.curator_backups``
          and ``.hub``) into a tempdir.
-      4. Extract the chosen snapshot into ``~/.hermes/skills/``.
+      4. Extract each chosen root snapshot back into that same root.
       5. On failure during 4, move the tempdir contents back (best-effort)
          and return failure.
 
@@ -551,9 +706,10 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
             + " (use `hermes curator rollback --list` to see available snapshots)",
             None,
         )
-    archive = target / "skills.tar.gz"
-    if not archive.exists():
-        return (False, f"snapshot {target.name} has no skills.tar.gz — corrupted?", None)
+    manifest = _read_manifest(target)
+    ok, msg, root_specs = _resolve_root_specs(target, manifest)
+    if not ok:
+        return (False, msg, None)
 
     skills = _skills_dir()
     skills.mkdir(parents=True, exist_ok=True)
@@ -580,49 +736,34 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
 
     moved: List[Tuple[Path, Path]] = []
     try:
-        for entry in list(skills.iterdir()):
-            if entry.name in _EXCLUDE_TOP_LEVEL:
-                continue
-            dest = staged / entry.name
-            shutil.move(str(entry), str(dest))
-            moved.append((entry, dest))
+        for spec in root_specs:
+            root: Path = spec["root"]
+            root.mkdir(parents=True, exist_ok=True)
+            stage_root = staged / str(spec["id"]).replace("/", "_")
+            stage_root.mkdir(parents=True, exist_ok=True)
+            for entry in list(root.iterdir()):
+                if entry.name in _EXCLUDE_TOP_LEVEL:
+                    continue
+                dest = stage_root / entry.name
+                shutil.move(str(entry), str(dest))
+                moved.append((entry, dest))
     except OSError as e:
         # Best-effort rollback of the move
-        for orig, dest in moved:
-            try:
-                shutil.move(str(dest), str(orig))
-            except OSError:
-                pass
+        _restore_moved(moved)
         try:
             shutil.rmtree(staged, ignore_errors=True)
         except OSError:
             pass
         return (False, f"failed to stage current skills: {e}", None)
 
-    # Step 4: extract the snapshot into skills/
+    # Step 4: extract each root snapshot into its configured root.
     try:
-        with tarfile.open(archive, "r:gz") as tf:
-            # Python 3.12+ supports filter='data' for safer extraction.
-            # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
-            for member in tf.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(
-                        f"refusing to extract unsafe path: {name!r}"
-                    )
-            try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
-            except TypeError:
-                # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+        for spec in root_specs:
+            _safe_extract_archive(spec["archive"], spec["root"])
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
-        for orig, dest in moved:
-            try:
-                shutil.move(str(dest), str(orig))
-            except OSError:
-                pass
+        _clear_restorable_entries(root_specs)
+        _restore_moved(moved)
         try:
             shutil.rmtree(staged, ignore_errors=True)
         except OSError:

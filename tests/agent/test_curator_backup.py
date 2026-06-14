@@ -89,6 +89,28 @@ def test_snapshot_excludes_hub_dir(backup_env):
     assert not any(n.startswith(".hub") for n in names)
 
 
+def test_snapshot_includes_external_skill_roots(backup_env, monkeypatch, tmp_path):
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    external = tmp_path / "external-skills"
+    external.mkdir()
+    _write_skill(skills, "alpha")
+    _write_skill(external, "external-alpha")
+    monkeypatch.setattr(cb, "get_all_skills_dirs", lambda: [skills, external])
+
+    snap = cb.snapshot_skills(reason="multi-root")
+
+    assert snap is not None
+    manifest = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["skill_files"] == 2
+    roots = manifest["skill_roots"]
+    assert [r["id"] for r in roots] == ["local", "external-1"]
+    assert (snap / roots[1]["archive"]).exists()
+    with tarfile.open(snap / roots[1]["archive"]) as tf:
+        names = tf.getnames()
+    assert "external-alpha/SKILL.md" in names
+
+
 def test_snapshot_disabled_returns_none(backup_env, monkeypatch):
     cb = backup_env["cb"]
     monkeypatch.setattr(cb, "is_enabled", lambda: False)
@@ -257,6 +279,30 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     ok, msg, _ = cb.rollback()
     assert not ok
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
+
+
+def test_rollback_restores_external_skill_root(backup_env, monkeypatch, tmp_path):
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    external = tmp_path / "external-skills"
+    external.mkdir()
+    _write_skill(skills, "local-skill", body="local v1")
+    external_skill = _write_skill(external, "external-skill", body="external v1")
+    monkeypatch.setattr(cb, "get_all_skills_dirs", lambda: [skills, external])
+    snap = cb.snapshot_skills(reason="pre-external-change")
+    assert snap is not None
+
+    import shutil as _sh
+    _sh.rmtree(external_skill)
+    _write_skill(external, "new-external", body="new state")
+
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+
+    assert ok, msg
+    assert (external / "external-skill" / "SKILL.md").exists()
+    assert "external v1" in (external / "external-skill" / "SKILL.md").read_text()
+    assert not (external / "new-external").exists()
+    assert (skills / "local-skill" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------

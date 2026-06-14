@@ -124,3 +124,16 @@ async def test_codex_launch_spawns_background_process(monkeypatch):
     assert spawned["cwd"] == plan.repo_root
     assert spawned["task_id"] == plan.task_id
     assert spawned["use_pty"] is True
+
+
+@pytest.mark.asyncio
+async def test_codex_learn_dispatches_to_cockpit(monkeypatch):
+    from hermes_cli import codex_cockpit as cc
+
+    runner = _make_runner()
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"codex_cockpit": {}})
+    monkeypatch.setattr(cc, "render_learn", lambda tokens, cfg: f"learn:{tokens[0]}")
+
+    result = await runner._handle_codex_command(_make_event("/codex learn pending"))
+
+    assert result == "learn:pending"

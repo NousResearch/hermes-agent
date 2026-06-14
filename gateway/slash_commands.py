@@ -1502,6 +1502,8 @@ class GatewaySlashCommandsMixin:
             return cockpit.render_checks(process_sessions)
         if parsed.action == "context":
             return cockpit.render_context()
+        if parsed.action == "learn":
+            return cockpit.render_learn(parsed.tokens, cfg)
         if parsed.action == "launch":
             plan, error = cockpit.prepare_launch(raw_args, cfg, cwd=cwd)
             if error:

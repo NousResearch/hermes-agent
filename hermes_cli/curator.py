@@ -75,12 +75,13 @@ def _cmd_status(args) -> int:
         else f"{_ih}h"
     )
     print(f"  interval:       every {_interval_label}")
+    print(f"  scope:          {curator.get_scope()}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
 
     rows = skill_usage.agent_created_report()
     if not rows:
-        print("\nno agent-created skills")
+        print("\nno curator-managed skills")
         return 0
 
     by_state = {"active": [], "stale": [], "archived": []}
@@ -91,7 +92,7 @@ def _cmd_status(args) -> int:
         if r.get("pinned"):
             pinned.append(r["name"])
 
-    print(f"\nagent-created skills: {len(rows)} total")
+    print(f"\ncurator-managed skills: {len(rows)} total")
     for state_name in ("active", "stale", "archived"):
         bucket = by_state.get(state_name, [])
         print(f"  {state_name:10s} {len(bucket)}")
@@ -233,10 +234,10 @@ def _cmd_resume(args) -> int:
 
 def _cmd_pin(args) -> int:
     from tools import skill_usage
-    if not skill_usage.is_agent_created(args.skill):
+    if not skill_usage.is_curation_eligible(args.skill):
         print(
-            f"curator: '{args.skill}' is bundled or hub-installed — cannot pin "
-            "(only agent-created skills participate in curation)"
+            f"curator: '{args.skill}' is hub-installed, protected, or otherwise "
+            "outside curator scope — cannot pin"
         )
         return 1
     skill_usage.set_pinned(args.skill, True)
@@ -246,10 +247,10 @@ def _cmd_pin(args) -> int:
 
 def _cmd_unpin(args) -> int:
     from tools import skill_usage
-    if not skill_usage.is_agent_created(args.skill):
+    if not skill_usage.is_curation_eligible(args.skill):
         print(
-            f"curator: '{args.skill}' is bundled or hub-installed — "
-            "there's nothing to unpin (curator only tracks agent-created skills)"
+            f"curator: '{args.skill}' is hub-installed, protected, or otherwise "
+            "outside curator scope — there's nothing to unpin"
         )
         return 1
     skill_usage.set_pinned(args.skill, False)
@@ -265,7 +266,7 @@ def _cmd_restore(args) -> int:
 
 
 def _cmd_archive(args) -> int:
-    """Manually archive an agent-created skill. Refuses if pinned.
+    """Manually archive a curator-managed skill. Refuses if pinned.
 
     The auto-curator archives stale skills on its own schedule; this verb is
     for the user who wants to archive *now* without waiting for a run.
@@ -302,7 +303,7 @@ def _idle_days(record: dict) -> Optional[int]:
 
 
 def _cmd_prune(args) -> int:
-    """Bulk-archive agent-created skills idle for >= N days.
+    """Bulk-archive curator-managed skills idle for >= N days.
 
     Pinned skills are exempt. Already-archived skills are skipped. Default
     ``--days 90`` matches a conservative read of the curator's own archive
@@ -535,7 +536,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
     p_prune = subs.add_parser(
         "prune",
-        help="Bulk-archive agent-created skills idle for >= N days (default 90)",
+        help="Bulk-archive curator-managed skills idle for >= N days (default 90)",
     )
     p_prune.add_argument(
         "--days", type=int, default=90,

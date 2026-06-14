@@ -11,6 +11,10 @@ def test_load_cockpit_config_defaults_to_home_code_allowlist():
     assert cfg.default_model == "gpt-5.5"
     assert cfg.branch_prefix == "codex/"
     assert cfg.repo_allowlist
+    assert cfg.context_helper["enabled"] is False
+    assert cfg.context_helper["harvest_launches"] is True
+    assert cfg.context_helper["auto_promote_memory"] is True
+    assert cfg.context_helper["auto_promote_skills"] is True
 
 
 def test_load_cockpit_config_normalizes_user_values(tmp_path):
@@ -25,7 +29,7 @@ def test_load_cockpit_config_normalizes_user_values(tmp_path):
                 "branch_prefix": "ai",
                 "repo_allowlist": [str(allowed)],
                 "readout": {"include_git_status": False},
-                "context_helper": {"auto_promote": True},
+                "context_helper": {"enabled": True, "auto_promote_memory": True},
             }
         }
     )
@@ -36,7 +40,8 @@ def test_load_cockpit_config_normalizes_user_values(tmp_path):
     assert cfg.branch_prefix == "ai"
     assert cfg.repo_allowlist == (str(allowed.resolve()),)
     assert cfg.readout["include_git_status"] is False
-    assert cfg.context_helper["auto_promote"] is True
+    assert cfg.context_helper["enabled"] is True
+    assert cfg.context_helper["auto_promote_memory"] is True
 
 
 def test_prepare_launch_builds_safe_worktree_command(monkeypatch, tmp_path):
@@ -155,3 +160,25 @@ def test_render_status_includes_recent_tool_events(monkeypatch):
 
     assert "- Recent tools: `write_file`, `terminal`" in rendered
     assert "read_file" not in rendered
+
+
+def test_render_status_includes_pending_learning(monkeypatch):
+    monkeypatch.setattr(cc, "_codex_binary_status", lambda: (True, "test"))
+    monkeypatch.setattr(cc, "_codex_auth_line", lambda: "logged in (test)")
+    monkeypatch.setattr(cc, "_pending_context_counts", lambda: (0, 0))
+    monkeypatch.setattr(cc, "_pending_learning_count", lambda: 2)
+
+    rendered = cc.render_status(
+        {"codex_cockpit": {"readout": {"include_git_status": False}}},
+        transcript=[],
+    )
+
+    assert "- Pending Codex learning: 2" in rendered
+
+
+def test_render_learn_dispatches_status(monkeypatch):
+    from hermes_cli import codex_learning
+
+    monkeypatch.setattr(codex_learning, "render_learn_status", lambda _cfg: "learn status")
+
+    assert cc.render_learn(("status",), {}) == "learn status"

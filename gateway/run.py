@@ -1921,6 +1921,9 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "codex_learning_staged":
+        return f"[IMPORTANT: {evt.get('message', '')}]"
+
     return None
 
 
@@ -9010,7 +9013,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
-                    if evt_type in {"watch_match", "watch_disabled"}:
+                    if evt_type in {"watch_match", "watch_disabled", "codex_learning_staged"}:
                         _watch_events.append(evt)
                     # else: completion events are handled by the watcher task
                 for evt in _watch_events:

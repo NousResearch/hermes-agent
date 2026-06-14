@@ -59,7 +59,7 @@ def test_status_uses_last_activity_not_only_last_used(monkeypatch, capsys):
 
 @pytest.fixture
 def curator_status_env(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with real agent-created skills on disk."""
+    """Isolated HERMES_HOME with real curator-managed skills on disk."""
     home = tmp_path / ".hermes"
     skills = home / "skills"
     skills.mkdir(parents=True)
@@ -171,7 +171,7 @@ def test_status_hides_most_active_when_all_zero(curator_status_env):
 def test_status_no_skills_produces_clean_empty_output(curator_status_env):
     env = curator_status_env
     out = _capture_status(env["curator_cli"])
-    assert "no agent-created skills" in out
+    assert "no curator-managed skills" in out
     # None of the ranking sections render
     assert "most active" not in out
     assert "least active" not in out

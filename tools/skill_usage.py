@@ -11,9 +11,9 @@ Design notes:
   - Atomic writes via tempfile + os.replace (same pattern as .bundled_manifest).
   - All counter bumps are best-effort: failures log at DEBUG and return silently.
     A broken sidecar never breaks the underlying tool call.
-  - Provenance filter: curator-managed skills are explicitly marked when
-    created through skill_manage. Bundled / hub-installed skills stay
-    off-limits, and manually authored skills are not inferred from location.
+  - Scope filter: by default the curator manages every usable local skill
+    (profile skills + external_dirs) while hub-installed/protected skills stay
+    off-limits. The legacy agent-created-only scope remains config-selectable.
 
 Lifecycle states:
     active    -> default
@@ -34,7 +34,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import (
+    get_all_skills_dirs,
+    get_disabled_skill_names,
+    is_excluded_skill_path,
+    iter_skill_index_files,
+    parse_frontmatter,
+    skill_matches_environment,
+    skill_matches_platform,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +62,9 @@ STATE_ACTIVE = "active"
 STATE_STALE = "stale"
 STATE_ARCHIVED = "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
+SCOPE_AGENT_CREATED = "agent_created"
+SCOPE_ALL_USABLE = "all_usable"
+_VALID_SCOPES = {SCOPE_AGENT_CREATED, SCOPE_ALL_USABLE}
 
 # Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
 # regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
@@ -122,8 +133,8 @@ def _usage_file_lock():
         fd.close()
 
 
-def _archive_dir() -> Path:
-    return _skills_dir() / ".archive"
+def _archive_dir(root: Optional[Path] = None) -> Path:
+    return (root or _skills_dir()) / ".archive"
 
 
 def _now_iso() -> str:
@@ -175,7 +186,7 @@ def activity_count(record: Dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Provenance — which skills are agent-created (and thus eligible for curation)
+# Provenance + eligibility filters for curator-managed skills.
 # ---------------------------------------------------------------------------
 
 def _read_bundled_manifest_names() -> Set[str]:
@@ -260,6 +271,28 @@ def _prune_builtins_enabled() -> bool:
     return True
 
 
+def curator_scope() -> str:
+    """Return the configured curator scope.
+
+    ``all_usable`` is the new default: any skill Hermes can load from the local
+    profile skills dir or configured external_dirs is eligible, subject to the
+    existing hub/protected/bundled fences. ``agent_created`` preserves the older
+    explicit-provenance behavior for users who opt back into it.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        cur = cfg.get("curator") if isinstance(cfg, dict) else None
+        if isinstance(cur, dict):
+            scope = str(cur.get("scope") or SCOPE_ALL_USABLE).strip().lower()
+            if scope in _VALID_SCOPES:
+                return scope
+    except Exception as e:  # pragma: no cover - best-effort config read
+        logger.debug("Failed to read curator.scope: %s", e)
+    return SCOPE_ALL_USABLE
+
+
 def _suppressed_file() -> Path:
     return _skills_dir() / ".curator_suppressed"
 
@@ -330,32 +363,20 @@ def remove_suppressed_name(skill_name: str) -> None:
 def list_agent_created_skill_names() -> List[str]:
     """Enumerate skills the curator may manage.
 
-    Always includes agent-authored skills (those marked in ``.usage.json`` via
-    ``skill_manage(action="create")``). When ``curator.prune_builtins`` is
-    enabled, bundled built-in skills are ALSO included even though they have no
-    agent-created usage record — their inactivity clock is anchored on first
-    sight (see ``apply_automatic_transitions``). Hub-installed skills are never
-    included; manually authored skills are not inferred from filesystem
-    location.
+    In the default ``all_usable`` scope, this is every loadable local/external
+    skill after the normal skill-scan exclusions, minus hub-installed and
+    protected skills. In legacy ``agent_created`` scope, non-bundled skills must
+    still opt in via their usage record.
     """
-    base = _skills_dir()
-    if not base.exists():
-        return []
     hub = _read_hub_installed_names()
     bundled = _read_bundled_manifest_names()
     prune_builtins = _prune_builtins_enabled()
+    scope = curator_scope()
     usage = load_usage()
 
     names: List[str] = []
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
-    for skill_md in base.rglob("SKILL.md"):
-        # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
-        if is_excluded_skill_path(skill_md):
-            continue
-        try:
-            skill_md.relative_to(base)
-        except ValueError:
-            continue
+    for _root, skill_md in _iter_skill_files():
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         # Hub-installed skills are always off-limits.
         if name in hub:
@@ -371,24 +392,26 @@ def list_agent_created_skill_names() -> List[str]:
                 continue
             names.append(name)
             continue
-        # Agent-authored (or local-manual) skills must opt in via their record.
-        if not _is_curator_managed_record(usage.get(name)):
+        if scope == SCOPE_AGENT_CREATED and not _is_curator_managed_record(usage.get(name)):
             continue
         names.append(name)
     return sorted(set(names))
 
 
 def list_archived_skill_names() -> List[str]:
-    """Enumerate skills in ``~/.hermes/skills/.archive/``.
+    """Enumerate skills in every managed root's ``.archive/`` directory.
 
-    Archive layout is flat (``.archive/<skill>/``) as set by ``archive_skill``,
-    so the directory name is the skill name. Used by ``hermes curator
-    list-archived`` to help users pass a name to ``hermes curator restore``.
+    Archive layout is flat (``<root>/.archive/<skill>/``) as set by
+    ``archive_skill``, so the directory name is the skill name. Used by
+    ``hermes curator list-archived`` to help users pass a name to
+    ``hermes curator restore``.
     """
-    archive_root = _archive_dir()
-    if not archive_root.exists():
-        return []
-    return sorted({p.name for p in archive_root.iterdir() if p.is_dir()})
+    names: set[str] = set()
+    for root in _skill_roots():
+        archive_root = _archive_dir(root)
+        if archive_root.exists():
+            names.update({p.name for p in archive_root.iterdir() if p.is_dir()})
+    return sorted(names)
 
 
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
@@ -431,11 +454,11 @@ def is_bundled(skill_name: str) -> bool:
 def is_curation_eligible(skill_name: str) -> bool:
     """Whether the curator may track/archive *skill_name*.
 
-    Agent-created skills are always eligible. Bundled built-ins become eligible
-    only when ``curator.prune_builtins`` is enabled. Hub-installed skills are
-    NEVER eligible — they have an external upstream owner. Protected built-ins
-    (``PROTECTED_BUILTIN_SKILLS``) are NEVER eligible regardless of any flag —
-    they back load-bearing UX and must never be archived or consolidated.
+    In ``all_usable`` scope, manual and foreground-created local skills are
+    eligible too. Bundled built-ins become eligible only when
+    ``curator.prune_builtins`` is enabled. Hub-installed skills are NEVER
+    eligible — they have an external upstream owner. Protected built-ins are
+    NEVER eligible regardless of any flag.
     """
     if is_protected_builtin(skill_name):
         return False
@@ -556,7 +579,7 @@ def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False
     """Load, apply *mutator(record)* in place, save. Best-effort.
 
     By default this records telemetry for ANY skill — bundled, hub-installed,
-    or agent-created — because usage tracking is pure observability and is
+    or generated — because usage tracking is pure observability and is
     orthogonal to whether a skill is ever curated. Lifecycle mutators
     (``set_state``, ``set_pinned``, ``mark_agent_created``) pass
     ``require_curation_eligible=True`` so they never write meaningless state
@@ -620,10 +643,11 @@ def bump_patch(skill_name: str) -> None:
 
 
 def mark_agent_created(skill_name: str) -> None:
-    """Opt a skill created by skill_manage into curator management.
+    """Mark a skill created by an automated loop for audit/curator provenance.
 
-    Viewing or invoking a manually authored skill may still create telemetry,
-    but only this explicit marker makes it eligible for automatic curation.
+    In the default all_usable scope, manual skills are also eligible for
+    curation; this marker is still preserved so generated skills remain
+    distinguishable in reports and audit trails.
     """
     def _apply(rec: Dict[str, Any]) -> None:
         rec["created_by"] = "agent"
@@ -670,7 +694,7 @@ def forget(skill_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def archive_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move a curator-eligible skill directory to ~/.hermes/skills/.archive/.
+    """Move a curator-eligible skill directory to its root's ``.archive/``.
 
     Returns (ok, message). Never archives hub-installed skills. Bundled
     built-ins are only archivable when ``curator.prune_builtins`` is enabled;
@@ -690,11 +714,13 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
             "curator.prune_builtins to allow pruning it"
         )
 
-    skill_dir = _find_skill_dir(skill_name)
-    if skill_dir is None:
+    found = _find_skill_info(skill_name)
+    if found is None:
         return False, f"skill '{skill_name}' not found"
+    skill_dir = found["path"]
+    root = found["root"]
 
-    archive_root = _archive_dir()
+    archive_root = _archive_dir(root)
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -725,8 +751,10 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def restore_skill(skill_name: str) -> Tuple[bool, str]:
-    """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
-    top-level layout; original category nesting is NOT reconstructed.
+    """Move an archived skill back to the same skill root it was archived from.
+
+    Restores to that root's flat top-level layout; original category nesting is
+    NOT reconstructed.
 
     Refuses to restore under a name that now collides with a hub-installed
     skill — that would shadow the upstream version. Also refuses to restore
@@ -748,25 +776,34 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
             f"skill '{skill_name}' is now bundled; "
             "restore would shadow the upstream version"
         )
-    archive_root = _archive_dir()
-    if not archive_root.exists():
-        return False, "no archive directory"
-
     # Try exact name match first, then any prefix match (for timestamped dupes).
     # Recursive walk handles nested archive layouts (e.g. .archive/<category>/<skill>/)
     # left behind by older archive paths or external imports.
-    candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
-    if not candidates:
-        candidates = sorted(
-            [p for p in archive_root.rglob("*")
-             if p.is_dir() and p.name.startswith(f"{skill_name}-")],
-            reverse=True,
+    candidates: List[Tuple[Path, Path]] = []
+    for root in _skill_roots():
+        archive_root = _archive_dir(root)
+        if not archive_root.exists():
+            continue
+        exact = [(root, p) for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
+        if exact:
+            candidates.extend(exact)
+            continue
+        candidates.extend(
+            sorted(
+                [
+                    (root, p)
+                    for p in archive_root.rglob("*")
+                    if p.is_dir() and p.name.startswith(f"{skill_name}-")
+                ],
+                key=lambda item: str(item[1]),
+                reverse=True,
+            )
         )
     if not candidates:
         return False, f"skill '{skill_name}' not found in archive"
 
-    src = candidates[0]
-    dest = _skills_dir() / skill_name
+    root, src = candidates[0]
+    dest = root / skill_name
     if dest.exists():
         return False, f"destination already exists: {dest}"
 
@@ -786,21 +823,70 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     return True, f"restored to {dest}"
 
 
-def _find_skill_dir(skill_name: str) -> Optional[Path]:
+def _find_skill_info(skill_name: str) -> Optional[Dict[str, Path]]:
     """Locate the directory for a skill by its frontmatter `name:` field.
 
-    Handles both flat (~/.hermes/skills/<skill>/SKILL.md) and category-nested
-    (~/.hermes/skills/<category>/<skill>/SKILL.md) layouts.
+    Handles both flat (``<root>/<skill>/SKILL.md``) and category-nested
+    (``<root>/<category>/<skill>/SKILL.md``) layouts across local and external
+    skill roots. Root order mirrors runtime skill resolution: local first.
     """
-    base = _skills_dir()
-    if not base.exists():
-        return None
-    for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
-            continue
+    for root, skill_md in _iter_skill_files():
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
-            return skill_md.parent
+            return {"path": skill_md.parent, "root": root}
     return None
+
+
+def _find_skill_dir(skill_name: str) -> Optional[Path]:
+    found = _find_skill_info(skill_name)
+    return found["path"] if found else None
+
+
+def _skill_roots() -> List[Path]:
+    """Return existing skill roots in runtime resolution order."""
+    roots: List[Path] = []
+    seen: Set[Path] = set()
+    for root in get_all_skills_dirs():
+        try:
+            resolved = root.resolve()
+        except OSError:
+            resolved = root
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+    return roots
+
+
+def _iter_skill_files() -> List[Tuple[Path, Path]]:
+    """Return ``(root, SKILL.md)`` pairs for loadable local/external skills."""
+    files: List[Tuple[Path, Path]] = []
+    disabled = get_disabled_skill_names()
+    seen_names: Set[str] = set()
+    for root in _skill_roots():
+        for skill_md in iter_skill_index_files(root, "SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                skill_md.relative_to(root)
+            except ValueError:
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+                frontmatter, _body = parse_frontmatter(content)
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if not skill_matches_environment(frontmatter):
+                    continue
+                name = str(frontmatter.get("name") or skill_md.parent.name)
+            except Exception:
+                name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
+            if name in disabled:
+                continue
+            if name in seen_names:
+                continue
+            seen_names.add(name)
+            files.append((root, skill_md))
+    return files
 
 
 # ---------------------------------------------------------------------------
@@ -856,15 +942,10 @@ def usage_report() -> List[Dict[str, Any]]:
     ``provenance`` field ('agent' | 'bundled' | 'hub') and ``_persisted``
     (whether a real ``.usage.json`` record backs the row).
     """
-    base = _skills_dir()
-    if not base.exists():
-        return []
     data = load_usage()
     rows: List[Dict[str, Any]] = []
     seen: set = set()
-    for skill_md in base.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
-            continue
+    for root, skill_md in _iter_skill_files():
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         if name in seen:
             continue
@@ -879,6 +960,7 @@ def usage_report() -> List[Dict[str, Any]]:
             "name": name,
             **rec,
             "provenance": provenance(name),
+            "root": str(root),
             "_persisted": persisted,
         }
         row["last_activity_at"] = latest_activity_at(row)

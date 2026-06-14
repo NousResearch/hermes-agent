@@ -14,6 +14,8 @@ Both stores are written from two origins:
   * **background_review** — the self-improvement review fork that runs after a
     turn and autonomously decides what to save (the source of the
     "wrong assumptions" users complained about)
+  * **codex_learning** — the automated reviewer that learns from completed
+    `/codex launch` work
 
 This module lets the user gate those writes per-subsystem with a boolean
 ``write_approval``:
@@ -47,8 +49,10 @@ import logging
 import os
 import time
 import uuid
+import contextlib
+import contextvars
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -65,6 +69,10 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # "block all writes" state — to disable a subsystem entirely use its own
 # enable flag (e.g. ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
+_forced_approval_subsystems: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+    "forced_write_approval_subsystems",
+    default=frozenset(),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +88,8 @@ def write_approval_enabled(subsystem: str) -> bool:
     """
     if subsystem not in _SUBSYSTEMS:
         return False
+    if subsystem in _forced_approval_subsystems.get():
+        return True
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
@@ -103,6 +113,27 @@ def _normalize_enabled(value: Any) -> bool:
     return False
 
 
+@contextlib.contextmanager
+def force_write_approval(*subsystems: str) -> Iterator[None]:
+    """Temporarily require approval for selected durable-write subsystems.
+
+    This is for autonomous review loops that must stage proposed writes even
+    when the user's global memory/skills gate is off. It affects only the
+    current ContextVar context, so normal foreground writes keep their config
+    semantics.
+    """
+    selected = {s for s in subsystems if s in _SUBSYSTEMS}
+    if not selected:
+        yield
+        return
+    current = set(_forced_approval_subsystems.get())
+    token = _forced_approval_subsystems.set(frozenset(current | selected))
+    try:
+        yield
+    finally:
+        _forced_approval_subsystems.reset(token)
+
+
 # ---------------------------------------------------------------------------
 # Pending store (file-backed)
 # ---------------------------------------------------------------------------
@@ -123,7 +154,8 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
         summary: a one-line human-readable description shown in pending lists.
             For skills this is the LLM/heuristic gist; for memory it can be the
             entry text itself.
-        origin: ``foreground`` or ``background_review`` — recorded for audit.
+        origin: ``foreground``, ``background_review``, or ``codex_learning`` —
+            recorded for audit.
 
     Returns a dict with ``id`` and metadata. Best-effort: on disk failure it
     logs and still returns a record (the write is simply lost, which is the
@@ -205,7 +237,7 @@ def pending_count(subsystem: str) -> int:
 # ---------------------------------------------------------------------------
 
 def current_origin() -> str:
-    """Return the active write origin: ``foreground`` or ``background_review``.
+    """Return the active write origin.
 
     Reuses the skill-provenance ContextVar, which the background review fork
     already sets (see ``agent.background_review`` /
@@ -220,7 +252,7 @@ def current_origin() -> str:
 
 
 def is_background() -> bool:
-    return current_origin() == "background_review"
+    return current_origin() in {"background_review", "codex_learning"}
 
 
 # ---------------------------------------------------------------------------

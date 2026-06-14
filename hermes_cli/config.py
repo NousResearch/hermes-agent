@@ -825,6 +825,14 @@ DEFAULT_CONFIG = {
             "max_events": 25,
         },
         "context_helper": {
+            "enabled": False,
+            "harvest_launches": True,
+            "review_model": "",
+            "max_output_chars": 8000,
+            "auto_promote_memory": True,
+            "auto_promote_skills": True,
+            "min_confidence": 0.75,
+            "notify_on_stage": True,
             "propose_memory": True,
             "propose_skills": True,
             "auto_promote": False,
@@ -1877,16 +1885,20 @@ DEFAULT_CONFIG = {
 
     # Curator — background skill maintenance.
     #
-    # Periodically reviews AGENT-CREATED skills (never bundled or
-    # hub-installed) and keeps the collection tidy: marks long-unused skills
-    # as stale, archives genuinely obsolete ones (archive only, never
-    # deletes), and spawns a forked aux-model agent to consolidate overlaps
-    # and patch drift. Runs inactivity-triggered from session start — no
-    # cron daemon.
+    # Periodically reviews curator-managed skills and keeps the collection
+    # tidy: marks long-unused skills as stale, archives genuinely obsolete
+    # ones (archive only, never deletes), and spawns a forked aux-model agent
+    # to consolidate overlaps and patch drift. Runs inactivity-triggered from
+    # session start — no cron daemon.
     #
     # See `hermes curator status` for the last run summary.
     "curator": {
         "enabled": True,
+        # all_usable = manage every loadable local/external skill except hub
+        # installs, hidden/quarantined paths, and protected built-ins.
+        # agent_created = legacy mode; only generated skills explicitly marked
+        # in usage telemetry participate.
+        "scope": "all_usable",
         # How long to wait between curator runs (hours).  Default: 7 days.
         "interval_hours": 24 * 7,
         # Only run when the agent has been idle at least this long (hours).
@@ -1897,7 +1909,8 @@ DEFAULT_CONFIG = {
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
         # Also prune (archive) bundled built-in skills after the inactivity
-        # period, not just agent-created ones. ON by default. Built-ins are
+        # period, not just generated/manual profile skills. ON by default.
+        # Built-ins are
         # normally restored on every `hermes update`, so pruning them only
         # sticks because a suppression list tells the re-seeder to leave them
         # archived. Hub-installed skills are NEVER pruned here — they have an
@@ -1908,9 +1921,10 @@ DEFAULT_CONFIG = {
         # to keep all bundled built-ins permanently.
         "prune_builtins": True,
         # Pre-run backup: before every real curator pass (dry-run is
-        # skipped), snapshot ~/.hermes/skills/ into
-        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
-        # user can roll back with `hermes curator rollback`.
+        # skipped), snapshot ~/.hermes/skills/ and configured
+        # skills.external_dirs roots into
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/ so the user can roll
+        # back with `hermes curator rollback`.
         "backup": {
             "enabled": True,
             "keep": 5,  # retain last N regular snapshots

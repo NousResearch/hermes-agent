@@ -41,3 +41,20 @@ class TestStreamingConfigNested:
         })
         assert cfg.streaming.enabled is True
         assert cfg.streaming.transport == "edit"
+
+
+class TestSessionStoreMaxAgeConfig:
+    def test_top_level_session_store_max_age_days(self):
+        cfg = _load_with_yaml_dict({"session_store_max_age_days": 3})
+        assert cfg.session_store_max_age_days == 3
+
+    def test_nested_gateway_session_store_max_age_days(self):
+        cfg = _load_with_yaml_dict({"gateway": {"session_store_max_age_days": 4}})
+        assert cfg.session_store_max_age_days == 4
+
+    def test_top_level_session_store_max_age_takes_precedence(self):
+        cfg = _load_with_yaml_dict({
+            "session_store_max_age_days": 3,
+            "gateway": {"session_store_max_age_days": 30},
+        })
+        assert cfg.session_store_max_age_days == 3

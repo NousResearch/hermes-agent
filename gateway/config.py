@@ -822,6 +822,16 @@ def load_gateway_config() -> GatewayConfig:
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
 
+            if isinstance(gateway_section, dict) and "session_store_max_age_days" in gateway_section:
+                gw_data["session_store_max_age_days"] = gateway_section[
+                    "session_store_max_age_days"
+                ]
+
+            if "session_store_max_age_days" in yaml_cfg:
+                gw_data["session_store_max_age_days"] = yaml_cfg[
+                    "session_store_max_age_days"
+                ]
+
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
                 # Fall back to nested gateway.streaming written by

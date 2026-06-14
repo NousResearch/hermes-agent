@@ -13,9 +13,15 @@ import re
 
 from . import firecrawl_client
 
-_REGION_URL = 'https://trends24.in/{region}/'
+_BASE_URL = 'https://trends24.in/'
 
-_HEADING_RE = re.compile(r'^###\s+(?:\d+\s+(?:minute|hour)s?\s+ago|now)\s*$', re.IGNORECASE)
+# trends24.in serves worldwide trends from the site root, all other regions
+# from a slug path (e.g. /australia/, /united-states/).
+_WORLDWIDE_REGION = 'worldwide'
+
+_HEADING_RE = re.compile(
+    r'^###\s+(?:(?:a\s+few|few|\d+)\s+(?:minute|hour)s?\s+ago|now)\s*$', re.IGNORECASE
+)
 _ITEM_RE = re.compile(r'^\d+\.\s+\[(?P<term>.+?)\]\(https://twitter\.com/search')
 
 
@@ -43,7 +49,8 @@ def fetch_trends(regions: list[str], top_n: int = 10) -> dict[str, list[str]]:
     """Fetch current trending terms for each region from trends24.in."""
     trends = {}
     for region in regions:
-        markdown = firecrawl_client.scrape(_REGION_URL.format(region=region))
+        url = _BASE_URL if region == _WORLDWIDE_REGION else f'{_BASE_URL}{region}/'
+        markdown = firecrawl_client.scrape(url)
         if markdown:
             trends[region] = _parse_trends24(markdown, top_n)
     return trends

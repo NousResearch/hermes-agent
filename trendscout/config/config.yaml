@@ -18,6 +18,8 @@ social_trends:
   enabled: true
   regions:
     - australia
+    - worldwide
+    - united-states
   top_n: 10
 
 # Term-frequency emergence detection

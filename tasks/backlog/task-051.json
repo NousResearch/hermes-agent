@@ -1,0 +1,14 @@
+{
+  "id": "task-051",
+  "title": "Implement architect review CLI entrypoint",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Architect CLI Implementation",
+  "summary": "Turn the architecture review contract into a real `hermes architect review <project>` command entrypoint.",
+  "acceptanceCriteria": [
+    "CLI accepts a project name or path",
+    "CLI invokes the architecture review contract",
+    "CLI returns a review report for known projects",
+    "Command ownership does not conflict with `hermes-agent` runtime"
+  ]
+}

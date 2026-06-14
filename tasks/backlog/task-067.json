@@ -1,0 +1,14 @@
+{
+  "id": "task-067",
+  "title": "Add premature coding block behavior",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Execution Gates",
+  "summary": "Block coding implementation tasks when architecture prerequisites are missing.",
+  "acceptanceCriteria": [
+    "Coding task types require approved architecture review",
+    "Blocked response includes missing documents and stages",
+    "Non-coding research tasks can remain available when safe",
+    "Behavior is documented and tested"
+  ]
+}

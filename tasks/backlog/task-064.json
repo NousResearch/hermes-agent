@@ -1,0 +1,14 @@
+{
+  "id": "task-064",
+  "title": "Add approvals and blocked-execution panels",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Architecture Dashboard",
+  "summary": "Expose human approvals, override decisions, and blocked premature-coding attempts in the dashboard.",
+  "acceptanceCriteria": [
+    "Panel shows pending and resolved approvals",
+    "Panel shows blocked execution attempts",
+    "Panel links approvals to tasks and review reports",
+    "Panel supports audit trail display"
+  ]
+}

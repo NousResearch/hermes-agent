@@ -1,0 +1,14 @@
+{
+  "id": "task-066",
+  "title": "Connect architecture readiness gate to task execution",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Execution Gates",
+  "summary": "Check architecture readiness before a task can execute through Hermes OS or Official Hermes Agent.",
+  "acceptanceCriteria": [
+    "Task execution evaluates architecture readiness",
+    "Missing prerequisites are returned in blocked result",
+    "Dry-run mode can evaluate without executing",
+    "Gate is covered by tests"
+  ]
+}

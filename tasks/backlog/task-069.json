@@ -1,0 +1,14 @@
+{
+  "id": "task-069",
+  "title": "Add task-generation traceability enforcement",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Execution Gates",
+  "summary": "Ensure generated tasks trace back to approved specifications and review artifacts.",
+  "acceptanceCriteria": [
+    "Generated tasks require specification reference",
+    "Generated tasks require review or approval reference",
+    "Untraceable tasks are rejected or flagged",
+    "Traceability is included in dashboard data"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-055",
+  "title": "Build documentation coverage scanner",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Project Scanners",
+  "summary": "Detect which required architecture-first documents exist for a project.",
+  "acceptanceCriteria": [
+    "Scanner checks all required project documents",
+    "Scanner supports docs directory and root-level layouts",
+    "Missing documents feed architect review reports",
+    "Scanner has focused tests"
+  ]
+}

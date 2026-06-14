@@ -1,0 +1,14 @@
+{
+  "id": "task-052",
+  "title": "Add architect CLI JSON and text output modes",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Architect CLI Implementation",
+  "summary": "Support machine-readable JSON and human-readable architecture review output.",
+  "acceptanceCriteria": [
+    "`--json` emits valid structured review output",
+    "Default output is readable in terminal",
+    "Output includes score, gaps, missing docs, missing schemas, and roadmap",
+    "Output is covered by tests"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-078",
+  "title": "Add runtime timeout retry and failure policy",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Real Runtime Invocation",
+  "summary": "Define live runtime timeout, retry, and failure behavior for Official Hermes Agent delegation.",
+  "acceptanceCriteria": [
+    "Timeouts produce retryable runtime errors",
+    "Retry limits are configurable",
+    "Failure results are persisted and visible to dashboard",
+    "Policy has tests"
+  ]
+}

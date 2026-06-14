@@ -351,3 +351,53 @@ Examples:
 - `task-048`: Review Kalshi VC architecture readiness.
 - `task-049`: Review Investment System architecture readiness.
 - `task-050`: Review Media Engine and Rinseables architecture readiness.
+
+### Phase 20 - Architect CLI Implementation
+
+- `task-051`: Implement `hermes architect review <project>` CLI entrypoint.
+- `task-052`: Add architect CLI JSON and human-readable output modes.
+- `task-053`: Add architect CLI exit-code handling and blocked-review behavior.
+
+### Phase 21 - Project Scanners
+
+- `task-054`: Build project discovery scanner.
+- `task-055`: Build documentation coverage scanner.
+- `task-056`: Build domain/workflow/dashboard/approval scanner.
+- `task-057`: Add workspace project profiles for Kalshi VC, Investment System, Media Engine, and Rinseables.
+
+### Phase 22 - Review-Generated Documentation
+
+- `task-058`: Generate missing architecture docs from review output.
+- `task-059`: Add safe document write and overwrite policy.
+- `task-060`: Add review-to-roadmap generation.
+- `task-061`: Add per-project architecture review artifacts.
+
+### Phase 23 - Architecture Dashboard
+
+- `task-062`: Design architecture dashboard data model.
+- `task-063`: Add architecture score and gap panels.
+- `task-064`: Add approvals and blocked-execution panels.
+- `task-065`: Add runtime delegation status panel.
+
+### Phase 24 - Execution Gates
+
+- `task-066`: Connect architecture readiness gate to task execution.
+- `task-067`: Add premature coding block behavior.
+- `task-068`: Add human override and approval audit trail.
+- `task-069`: Add task-generation traceability enforcement.
+
+### Phase 25 - Persistence
+
+- `task-070`: Add persistence model for review reports.
+- `task-071`: Add persistence model for grill-me sessions.
+- `task-072`: Add persistence model for decisions and approvals.
+- `task-073`: Add persistence model for validated agent artifacts.
+- `task-074`: Add storage repository interface and local implementation.
+
+### Phase 26 - Real Runtime Invocation
+
+- `task-075`: Replace help-command wrapper behavior with real oneshot invocation.
+- `task-076`: Add Official Hermes Agent prompt/context assembly.
+- `task-077`: Add runtime artifact capture and ingestion.
+- `task-078`: Add runtime timeout, retry, and failure policy.
+- `task-079`: Add live delegation integration tests with dry-run fallback.

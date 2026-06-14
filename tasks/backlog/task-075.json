@@ -1,0 +1,14 @@
+{
+  "id": "task-075",
+  "title": "Replace wrapper help behavior with real oneshot invocation",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Real Runtime Invocation",
+  "summary": "Invoke Official Hermes Agent with `--oneshot` for real delegated work instead of using help output as a runtime smoke path.",
+  "acceptanceCriteria": [
+    "Wrapper builds a real `hermes-agent --oneshot` command",
+    "Dry-run mode still avoids live runtime execution",
+    "Runtime stdout and stderr are captured",
+    "Wrapper tests cover command assembly"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-070",
+  "title": "Add review report persistence model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Persistence",
+  "summary": "Persist architecture review reports as source-of-truth Hermes OS records.",
+  "acceptanceCriteria": [
+    "Model stores score, gaps, missing docs, recommendations, and roadmap",
+    "Model stores project ID and timestamp",
+    "Model supports latest and historical review queries",
+    "Persistence has tests"
+  ]
+}

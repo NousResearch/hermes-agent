@@ -1,0 +1,14 @@
+{
+  "id": "task-063",
+  "title": "Add architecture score and gap panels",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Architecture Dashboard",
+  "summary": "Build dashboard panel contracts for architecture score and critical gaps.",
+  "acceptanceCriteria": [
+    "Panels show score trend and current score",
+    "Panels group gaps by category and severity",
+    "Panels link gaps to roadmap tasks",
+    "Panel data can be generated from persisted review reports"
+  ]
+}

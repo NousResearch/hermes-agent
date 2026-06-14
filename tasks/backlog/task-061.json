@@ -1,0 +1,14 @@
+{
+  "id": "task-061",
+  "title": "Add per-project architecture review artifacts",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Review-Generated Documentation",
+  "summary": "Store architecture reviews as durable project artifacts under a predictable path.",
+  "acceptanceCriteria": [
+    "Review artifacts include timestamp, score, gaps, and roadmap",
+    "Artifacts are written under a project-local Hermes path",
+    "Artifact paths are returned by review command",
+    "Artifact writes respect safe write policy"
+  ]
+}

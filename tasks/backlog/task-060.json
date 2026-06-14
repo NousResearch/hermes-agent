@@ -1,0 +1,14 @@
+{
+  "id": "task-060",
+  "title": "Add review-to-roadmap generation",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Review-Generated Documentation",
+  "summary": "Turn critical architecture gaps into prioritized roadmap items.",
+  "acceptanceCriteria": [
+    "Roadmap items map to review gaps",
+    "Roadmap includes priority and dependency notes",
+    "Generated roadmap can update ROADMAP.md safely",
+    "Roadmap output is tested"
+  ]
+}

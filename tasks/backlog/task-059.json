@@ -1,0 +1,14 @@
+{
+  "id": "task-059",
+  "title": "Add safe document write policy",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Review-Generated Documentation",
+  "summary": "Protect existing project documentation from accidental overwrite when generating missing architecture docs.",
+  "acceptanceCriteria": [
+    "Existing docs are not overwritten by default",
+    "Overwrite requires explicit approval flag",
+    "Writes are reported before and after generation",
+    "Policy handles root docs and docs directory layouts"
+  ]
+}

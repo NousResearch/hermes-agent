@@ -1,0 +1,14 @@
+{
+  "id": "task-074",
+  "title": "Add storage repository interface and local implementation",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Persistence",
+  "summary": "Create a repository abstraction and local file-backed storage for review reports, sessions, decisions, approvals, and artifacts.",
+  "acceptanceCriteria": [
+    "Repository interface supports save, get, list, and latest operations",
+    "Local implementation writes deterministic JSON artifacts",
+    "Storage paths are project-safe",
+    "Repository is covered by tests"
+  ]
+}

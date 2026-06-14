@@ -1,0 +1,14 @@
+{
+  "id": "task-073",
+  "title": "Add validated agent artifact persistence model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Persistence",
+  "summary": "Persist validated artifacts produced by Official Hermes Agent or other worker runtimes.",
+  "acceptanceCriteria": [
+    "Model stores artifact schema, content reference, agent ID, and task ID",
+    "Invalid artifacts are rejected or quarantined",
+    "Artifacts link to dashboard feedback loops",
+    "Persistence has tests"
+  ]
+}

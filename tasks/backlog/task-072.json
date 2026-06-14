@@ -1,0 +1,14 @@
+{
+  "id": "task-072",
+  "title": "Add decision and approval persistence model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Persistence",
+  "summary": "Persist decisions, approvals, overrides, approvers, reasons, and timestamps.",
+  "acceptanceCriteria": [
+    "Model distinguishes decisions, approvals, and overrides",
+    "Model supports audit trail queries",
+    "Model links records to tasks and reviews",
+    "Persistence has tests"
+  ]
+}

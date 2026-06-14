@@ -1,0 +1,14 @@
+{
+  "id": "task-058",
+  "title": "Generate missing architecture docs from review output",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Review-Generated Documentation",
+  "summary": "Generate missing PROJECT, DOMAIN, WORKFLOWS, DASHBOARD, METRICS, APPROVALS, AGENTS, TASKS, DECISIONS, ROADMAP, and ARCHITECTURE docs from architecture review results.",
+  "acceptanceCriteria": [
+    "Generator creates only missing documents by default",
+    "Generated docs include project-specific review findings",
+    "Generated docs preserve traceability to review report",
+    "Generator has tests using temporary project directories"
+  ]
+}

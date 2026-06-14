@@ -1,0 +1,14 @@
+{
+  "id": "task-057",
+  "title": "Add workspace project profiles",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Project Scanners",
+  "summary": "Add project profiles for Kalshi VC, Investment System, Media Engine, and Rinseables.",
+  "acceptanceCriteria": [
+    "Profiles include canonical project names and aliases",
+    "Profiles include expected dashboard metrics",
+    "Profiles include domain-specific review hints",
+    "Profiles are used by scanner and review output"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-062",
+  "title": "Design architecture dashboard data model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Architecture Dashboard",
+  "summary": "Define dashboard data structures for architecture score, gaps, approvals, blocked executions, and runtime delegation.",
+  "acceptanceCriteria": [
+    "Data model includes project-level architecture score",
+    "Data model includes gap severity and category",
+    "Data model includes approvals and blocked executions",
+    "Data model includes runtime delegation health"
+  ]
+}

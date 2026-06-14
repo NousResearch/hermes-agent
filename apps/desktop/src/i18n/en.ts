@@ -131,6 +131,18 @@ export const en: Translations = {
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable'
+    },
+    native: {
+      approvalTitle: 'Approval needed',
+      approveAction: 'Approve',
+      rejectAction: 'Reject',
+      inputTitle: 'Input needed',
+      inputBody: 'Hermes is waiting for your response.',
+      turnDoneTitle: 'Hermes finished',
+      turnDoneBody: 'The response is ready.',
+      turnErrorTitle: 'Turn failed',
+      backgroundDoneTitle: 'Background task finished',
+      backgroundFailedTitle: 'Background task failed'
     }
   },
 
@@ -263,7 +275,43 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
-      about: 'About'
+      about: 'About',
+      notifications: 'Notifications'
+    },
+    notifications: {
+      title: 'Notifications',
+      intro:
+        'Native desktop notifications, separate from in-app toasts. These are device-local — each computer keeps its own settings.',
+      enableAll: 'Enable notifications',
+      enableAllDesc: 'Master switch. Turn this off to silence every notification below.',
+      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
+      kinds: {
+        approval: {
+          label: 'Approval needed',
+          description: 'A command is waiting for you to approve or reject it.'
+        },
+        input: {
+          label: 'Input needed',
+          description: 'Hermes asked a question or needs a password or secret.'
+        },
+        turnDone: {
+          label: 'Response ready',
+          description: 'A turn finished while Hermes was in the background.'
+        },
+        turnError: {
+          label: 'Turn failed',
+          description: 'A turn ended with an error.'
+        },
+        backgroundDone: {
+          label: 'Background task finished',
+          description: 'A backgrounded terminal command completed.'
+        }
+      },
+      test: 'Send test notification',
+      testTitle: 'Hermes',
+      testBody: 'Notifications are working.',
+      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
+      testUnsupported: 'This system does not support native notifications.'
     },
     sections: {
       model: 'Model',

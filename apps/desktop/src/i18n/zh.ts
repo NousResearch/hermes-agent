@@ -127,6 +127,18 @@ export const zh: Translations = {
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用'
+    },
+    native: {
+      approvalTitle: '需要批准',
+      approveAction: '批准',
+      rejectAction: '拒绝',
+      inputTitle: '需要输入',
+      inputBody: 'Hermes 正在等待你的回应。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回复已就绪。',
+      turnErrorTitle: '本轮失败',
+      backgroundDoneTitle: '后台任务已完成',
+      backgroundFailedTitle: '后台任务失败'
     }
   },
 
@@ -259,7 +271,42 @@ export const zh: Translations = {
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
-      about: '关于'
+      about: '关于',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
+      enableAll: '启用通知',
+      enableAllDesc: '总开关。关闭后将静音下方所有通知。',
+      focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
+      kinds: {
+        approval: {
+          label: '需要批准',
+          description: '有命令正在等待你批准或拒绝。'
+        },
+        input: {
+          label: '需要输入',
+          description: 'Hermes 提出了问题，或需要密码或密钥。'
+        },
+        turnDone: {
+          label: '回复就绪',
+          description: 'Hermes 在后台时完成了一轮对话。'
+        },
+        turnError: {
+          label: '本轮失败',
+          description: '本轮以错误结束。'
+        },
+        backgroundDone: {
+          label: '后台任务完成',
+          description: '后台终端命令已完成。'
+        }
+      },
+      test: '发送测试通知',
+      testTitle: 'Hermes',
+      testBody: '通知工作正常。',
+      testSent: '测试已发送。如果没有出现，请检查系统通知权限和专注模式／勿扰模式。',
+      testUnsupported: '此系统不支持原生通知。'
     },
     sections: {
       model: '模型',

@@ -37,6 +37,7 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
+import { respondToApprovalAction } from '../store/native-notifications'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -267,6 +268,26 @@ export function DesktopController() {
       unsubscribe?.()
       stopUpdatePoller()
     }
+  }, [])
+
+  // Notification click: the main process already focused the window; jump to its session.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
+      if (sessionId) {
+        navigate(sessionRoute(sessionId))
+      }
+    })
+
+    return () => unsubscribe?.()
+  }, [navigate])
+
+  // Notification action button (Approve/Reject) — resolve in place, no navigation.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {
+      void respondToApprovalAction(sessionId ?? null, actionId)
+    })
+
+    return () => unsubscribe?.()
   }, [])
 
   // hermes:// deep links (e.g. a docs "Send to App" button for an automation blueprint).

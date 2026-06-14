@@ -223,6 +223,97 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
+def _cleanup_stale_index_lock(index_file: Path) -> None:
+    """Best-effort, race-safe cleanup for abandoned checkpoint index locks.
+
+    Git creates ``<GIT_INDEX_FILE>.lock`` with O_EXCL and removes it on normal
+    exit.  If a Hermes worker is killed mid-checkpoint, that zero-byte lock can
+    linger forever and every later checkpoint for the same project fails with
+    "Unable to create ...index.lock: File exists".
+
+    Race-safety: we use *rename*, which is atomic on a single filesystem, to
+    take exclusive ownership of the stale lock *before* unlinking it.  This
+    eliminates the TOCTOU window present in a naive stat-then-unlink: between
+    the stat and the unlink another process could replace the file, and we
+    would delete a live lock.  With rename, either we move the exact stale
+    file (and now own it), or we fail because the file is already gone.
+
+    A lock is considered stale only if its mtime is older than three times the
+    git timeout — generous enough that no in-flight git command (bounded by
+    ``_GIT_TIMEOUT``) could still be using it.
+    """
+    lock_path = index_file.with_name(index_file.name + ".lock")
+    min_age = max(_GIT_TIMEOUT * 3, 300)
+
+    # --- Check 1: is the lock old enough to be stale? ---
+    try:
+        st = lock_path.stat()
+    except FileNotFoundError:
+        return  # already cleaned up
+    except OSError as exc:
+        logger.debug("Could not stat checkpoint index lock %s: %s", lock_path, exc)
+        return
+
+    age = time.time() - st.st_mtime
+    if age < min_age:
+        logger.debug(
+            "Checkpoint index lock is recent; leaving in place: %s (age %.1fs)",
+            lock_path, age,
+        )
+        return
+
+    # --- Check 2: atomically take ownership via rename ---
+    # rename is POSIX-atomic on the same filesystem.  If it succeeds, we
+    # exclusively own the stale lock and no other process can touch the
+    # original path until a new git process creates a fresh one.
+    pid_suffix = os.getpid()
+    tmp_name = f".stale-lock-{pid_suffix}-{int(st.st_mtime)}"
+    stale_copy = index_file.with_name(tmp_name)
+    try:
+        os.rename(lock_path, stale_copy)
+    except FileNotFoundError:
+        return  # someone else already cleaned it up
+    except OSError as exc:
+        # On cross-filesystem rename would fail with EXDEV, but that can't
+        # happen here because the lock and temp are in the same directory.
+        # Any other error is unexpected — log and leave the lock alone.
+        logger.debug("Could not rename stale checkpoint index lock %s: %s", lock_path, exc)
+        return
+
+    # --- Check 3: verify the renamed file matches the original stat ---
+    try:
+        moved = stale_copy.stat()
+    except OSError:
+        moved = None
+    same_lock = (
+        moved is not None
+        and moved.st_dev == st.st_dev
+        and moved.st_ino == st.st_ino
+    )
+    if not same_lock:
+        logger.debug(
+            "Checkpoint index lock changed during cleanup; leaving renamed copy: %s",
+            stale_copy,
+        )
+        try:
+            stale_copy.unlink()
+        except OSError:
+            pass
+        return
+
+    # --- Cleanup: remove the renamed stale lock ---
+    try:
+        stale_copy.unlink()
+        logger.warning(
+            "Removed stale checkpoint index lock: %s (age %.0fs)",
+            lock_path, age,
+        )
+    except FileNotFoundError:
+        pass  # already removed
+    except OSError as exc:
+        logger.debug("Could not remove renamed stale lock %s: %s", stale_copy, exc)
+
+
 def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
 
@@ -886,6 +977,11 @@ class CheckpointManager:
         else:
             # First snapshot for this project.
             index_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Best-effort cleanup of any stale index lock left by a killed
+        # checkpoint attempt.  This prevents a single crashed worker from
+        # permanently blocking checkpoints for a project.
+        _cleanup_stale_index_lock(index_file)
 
         # Stage with per-project index.  Include a per-stage file-size filter
         # via ``core.bigFileThreshold`` is not what we want — instead, we

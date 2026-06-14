@@ -1049,3 +1049,63 @@ class TestClearFunctions:
         result = clear_all()
         assert result["deleted"] is False
         assert result["bytes_freed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Race-safe stale index lock cleanup
+# ---------------------------------------------------------------------------
+
+class TestStaleIndexLockCleanup:
+    """Tests for _cleanup_stale_index_lock — the race-safe stale lock remover."""
+
+    def test_no_lock_no_error(self, tmp_path):
+        """When no lock exists, cleanup is a silent no-op."""
+        from tools.checkpoint_manager import _cleanup_stale_index_lock
+        index_file = tmp_path / "index"
+        # Must not raise
+        _cleanup_stale_index_lock(index_file)
+
+    def test_removes_old_stale_lock(self, tmp_path):
+        """A lock file older than the threshold is removed."""
+        from tools.checkpoint_manager import _cleanup_stale_index_lock
+        index_file = tmp_path / "index"
+        lock_file = tmp_path / "index.lock"
+        lock_file.touch()
+        # Set mtime to 1 hour ago — well beyond the staleness threshold
+        old_time = time.time() - 3600
+        os.utime(lock_file, (old_time, old_time))
+        _cleanup_stale_index_lock(index_file)
+        assert not lock_file.exists(), "stale lock should have been removed"
+
+    def test_leaves_recent_lock_alone(self, tmp_path):
+        """A recently-created lock must not be removed."""
+        from tools.checkpoint_manager import _cleanup_stale_index_lock
+        index_file = tmp_path / "index"
+        lock_file = tmp_path / "index.lock"
+        lock_file.touch()
+        # mtime is now — too recent
+        _cleanup_stale_index_lock(index_file)
+        assert lock_file.exists(), "recent lock should be left alone"
+
+    def test_no_temp_file_left_behind(self, tmp_path):
+        """After cleanup, no temporary renamed file should remain."""
+        from tools.checkpoint_manager import _cleanup_stale_index_lock
+        index_file = tmp_path / "index"
+        lock_file = tmp_path / "index.lock"
+        lock_file.touch()
+        old_time = time.time() - 3600
+        os.utime(lock_file, (old_time, old_time))
+        _cleanup_stale_index_lock(index_file)
+        temps = list(tmp_path.glob(".stale-lock-*"))
+        assert temps == [], f"temp files left behind: {temps}"
+
+    def test_lock_removed_atomically(self, tmp_path):
+        """Verify the rename-based approach: original lock path disappears."""
+        from tools.checkpoint_manager import _cleanup_stale_index_lock
+        index_file = tmp_path / "index"
+        lock_file = tmp_path / "index.lock"
+        lock_file.write_bytes(b"")  # zero-byte like git
+        old_time = time.time() - 600
+        os.utime(lock_file, (old_time, old_time))
+        _cleanup_stale_index_lock(index_file)
+        assert not lock_file.exists()

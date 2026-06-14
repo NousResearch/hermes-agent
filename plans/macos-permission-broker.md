@@ -1,6 +1,6 @@
 # macOS Permission Broker for Hermes
 
-Status: design + native helper scaffold + packaged-app embedding + initial Desktop IPC handlers.  
+Status: design + native helper scaffold + packaged-app embedding + initial Desktop IPC handlers + authenticated daemon route for `permission.status`.  
 Owner area: Desktop + gateway + macOS service management.  
 Goal: stable Hermes-owned macOS permission identity without granting broad TCC access to generic Python or Node runtimes.
 
@@ -103,9 +103,15 @@ Packaging behavior:
 
 - `apps/desktop/scripts/after-pack.cjs` stages the helper into `Hermes.app/Contents/Library/LoginItems/HermesMacBroker.app` for darwin builds.
 - `npm run build:mac-broker` compiles a standalone helper bundle for local verification.
-- Electron main exposes low-risk IPC handlers for broker status and opening settings panes:
+- Electron main exposes low-risk IPC handlers for broker status, service registration, and opening settings panes:
   - `hermes:mac-broker:status`
+  - `hermes:mac-broker:service-status`
+  - `hermes:mac-broker:register`
+  - `hermes:mac-broker:unregister`
   - `hermes:mac-broker:open-settings`
+- The helper can run an authenticated Unix-socket daemon with `--serve --socket <path> --token <token>`.
+- `hermes_cli/macos_permission_broker.py` provides the first Python client route.
+- `hermes mac-broker status` exercises the safe `permission.status` method through the broker IPC path.
 
 Goal:
 

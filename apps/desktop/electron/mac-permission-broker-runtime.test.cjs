@@ -7,9 +7,12 @@ const {
   brokerAvailable,
   brokerExecutableForAppBundle,
   brokerExecutableFromProcess,
+  brokerServiceStatus,
   brokerStatus,
   openBrokerSettings,
-  parseBrokerJson
+  parseBrokerJson,
+  registerBrokerLoginItem,
+  unregisterBrokerLoginItem
 } = require('./mac-permission-broker-runtime.cjs')
 
 test('brokerExecutableForAppBundle points at LoginItems helper executable', () => {
@@ -55,9 +58,15 @@ test('brokerStatus and openBrokerSettings call the expected helper commands', ()
   const fsImpl = { existsSync: () => true }
 
   assert.deepEqual(brokerStatus('/broker', { execFileSync, fsImpl }), { ok: true })
+  assert.deepEqual(brokerServiceStatus('/broker', { execFileSync, fsImpl }), { ok: true })
+  assert.deepEqual(registerBrokerLoginItem('/broker', { execFileSync, fsImpl }), { ok: true })
+  assert.deepEqual(unregisterBrokerLoginItem('/broker', { execFileSync, fsImpl }), { ok: true })
   assert.deepEqual(openBrokerSettings('/broker', 'accessibility', { execFileSync, fsImpl }), { ok: true })
   assert.deepEqual(calls, [
     ['/broker', ['--status-json']],
+    ['/broker', ['--service-status']],
+    ['/broker', ['--register-login-item']],
+    ['/broker', ['--unregister-login-item']],
     ['/broker', ['--open-settings', 'accessibility']]
   ])
 })

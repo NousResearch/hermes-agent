@@ -2,16 +2,28 @@ import AppKit
 import ApplicationServices
 import AVFoundation
 import CoreGraphics
+import CryptoKit
+import Darwin
 import Foundation
+import ServiceManagement
 import UserNotifications
 
 let brokerBundleIdentifier = "com.nousresearch.hermes.macbroker"
-let brokerVersion = "0.1.0"
+let brokerVersion = "0.2.0"
+let maxRequestBytes = 1_048_576
+
+func jsonData(_ value: Any) -> Data? {
+    guard JSONSerialization.isValidJSONObject(value) else { return nil }
+    return try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+}
+
+func jsonString(_ value: Any) -> String? {
+    guard let data = jsonData(value) else { return nil }
+    return String(data: data, encoding: .utf8)
+}
 
 func jsonPrint(_ value: Any) {
-    if JSONSerialization.isValidJSONObject(value),
-       let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-       let text = String(data: data, encoding: .utf8) {
+    if let text = jsonString(value) {
         print(text)
     } else {
         print("{\"ok\":false,\"error\":\"invalid-json\"}")
@@ -122,14 +134,243 @@ func sendNotification(title: String, body: String) {
     CFRunLoopRun()
 }
 
+@available(macOS 13.0, *)
+func serviceStatusName(_ status: SMAppService.Status) -> String {
+    switch status {
+    case .enabled:
+        return "enabled"
+    case .notRegistered:
+        return "notRegistered"
+    case .notFound:
+        return "notFound"
+    case .requiresApproval:
+        return "requiresApproval"
+    @unknown default:
+        return "unknown"
+    }
+}
+
+func serviceStatusPayload() -> [String: Any] {
+    if #available(macOS 13.0, *) {
+        let service = SMAppService.loginItem(identifier: brokerBundleIdentifier)
+        return ["ok": true, "bundleId": brokerBundleIdentifier, "status": serviceStatusName(service.status)]
+    }
+    return ["ok": false, "error": "SMAppService requires macOS 13+"]
+}
+
+func registerLoginItem() -> [String: Any] {
+    if #available(macOS 13.0, *) {
+        do {
+            try SMAppService.loginItem(identifier: brokerBundleIdentifier).register()
+            return serviceStatusPayload()
+        } catch {
+            return ["ok": false, "error": error.localizedDescription, "bundleId": brokerBundleIdentifier]
+        }
+    }
+    return ["ok": false, "error": "SMAppService requires macOS 13+"]
+}
+
+func unregisterLoginItem() -> [String: Any] {
+    if #available(macOS 13.0, *) {
+        do {
+            try SMAppService.loginItem(identifier: brokerBundleIdentifier).unregister()
+            return serviceStatusPayload()
+        } catch {
+            return ["ok": false, "error": error.localizedDescription, "bundleId": brokerBundleIdentifier]
+        }
+    }
+    return ["ok": false, "error": "SMAppService requires macOS 13+"]
+}
+
+func jsonEscapedString(_ string: String) -> String {
+    if let data = try? JSONSerialization.data(withJSONObject: [string], options: []),
+       let text = String(data: data, encoding: .utf8),
+       text.count >= 2 {
+        return String(text.dropFirst().dropLast())
+    }
+    return "\"\(string.replacingOccurrences(of: "\"", with: "\\\""))\""
+}
+
+func canonicalJson(_ value: Any) -> String {
+    guard JSONSerialization.isValidJSONObject(value),
+          let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes]),
+          let text = String(data: data, encoding: .utf8) else {
+        return "null"
+    }
+    return text
+}
+
+func hmacHex(payload: String, token: String) -> String {
+    let key = SymmetricKey(data: Data(token.utf8))
+    let code = HMAC<SHA256>.authenticationCode(for: Data(payload.utf8), using: key)
+    return code.map { String(format: "%02x", $0) }.joined()
+}
+
+func timingSafeEqual(_ left: String, _ right: String) -> Bool {
+    let l = Array(left.utf8)
+    let r = Array(right.utf8)
+    var diff = UInt8(l.count ^ r.count)
+    for index in 0..<max(l.count, r.count) {
+        diff |= (index < l.count ? l[index] : 0) ^ (index < r.count ? r[index] : 0)
+    }
+    return diff == 0
+}
+
+func verifyBrokerEnvelope(_ request: [String: Any], token: String) -> (ok: Bool, method: String?, params: [String: Any], error: String?) {
+    guard token.count >= 32 else {
+        return (false, nil, [:], "broker token must be at least 32 characters")
+    }
+    guard let method = request["method"] as? String else {
+        return (false, nil, [:], "missing method")
+    }
+    guard method == "permission.status" else {
+        return (false, nil, [:], "unsupported broker method: \(method)")
+    }
+    guard let signature = request["signature"] as? String, !signature.isEmpty else {
+        return (false, nil, [:], "missing signature")
+    }
+    guard let issuedAt = request["issuedAt"] as? NSNumber else {
+        return (false, nil, [:], "missing issuedAt")
+    }
+    let ttlMs = (request["ttlMs"] as? NSNumber)?.doubleValue ?? 30_000
+    let nowMs = Date().timeIntervalSince1970 * 1000
+    if issuedAt.doubleValue - 5_000 > nowMs {
+        return (false, nil, [:], "request issuedAt is in the future")
+    }
+    if issuedAt.doubleValue + ttlMs + 5_000 < nowMs {
+        return (false, nil, [:], "request expired")
+    }
+    var unsigned = request
+    unsigned.removeValue(forKey: "signature")
+    let expected = hmacHex(payload: canonicalJson(unsigned), token: token)
+    guard timingSafeEqual(expected, signature) else {
+        return (false, nil, [:], "signature mismatch")
+    }
+    return (true, method, request["params"] as? [String: Any] ?? [:], nil)
+}
+
+func brokerResponse(_ request: [String: Any], token: String) -> [String: Any] {
+    let verification = verifyBrokerEnvelope(request, token: token)
+    guard verification.ok, let method = verification.method else {
+        return ["ok": false, "id": request["id"] ?? NSNull(), "error": verification.error ?? "invalid request"]
+    }
+    switch method {
+    case "permission.status":
+        var payload = permissionStatusPayload()
+        payload["id"] = request["id"] ?? NSNull()
+        payload["method"] = method
+        return payload
+    default:
+        return ["ok": false, "id": request["id"] ?? NSNull(), "error": "unsupported broker method: \(method)"]
+    }
+}
+
+func writeJsonLine(_ value: Any, to fd: Int32) {
+    let text = (jsonString(value) ?? "{\"ok\":false,\"error\":\"invalid-json\"}") + "\n"
+    let bytes = Array(text.utf8)
+    bytes.withUnsafeBytes { raw in
+        _ = Darwin.write(fd, raw.baseAddress, raw.count)
+    }
+}
+
+func readRequestLine(from fd: Int32) -> Data? {
+    var result = Data()
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while result.count < maxRequestBytes {
+        let count = buffer.withUnsafeMutableBytes { raw in
+            Darwin.read(fd, raw.baseAddress, raw.count)
+        }
+        if count <= 0 { break }
+        if let newline = buffer[..<count].firstIndex(of: UInt8(ascii: "\n")) {
+            result.append(contentsOf: buffer[..<newline])
+            break
+        }
+        result.append(contentsOf: buffer[..<count])
+    }
+    return result.isEmpty ? nil : result
+}
+
+func handleClient(fd: Int32, token: String) {
+    defer { Darwin.close(fd) }
+    guard let data = readRequestLine(from: fd) else {
+        writeJsonLine(["ok": false, "error": "empty request"], to: fd)
+        return
+    }
+    do {
+        guard let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            writeJsonLine(["ok": false, "error": "request must be a JSON object"], to: fd)
+            return
+        }
+        writeJsonLine(brokerResponse(request, token: token), to: fd)
+    } catch {
+        writeJsonLine(["ok": false, "error": "invalid JSON: \(error.localizedDescription)"], to: fd)
+    }
+}
+
+func serve(socketPath: String, token: String) -> Never {
+    let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else {
+        jsonPrint(["ok": false, "error": "socket failed: \(String(cString: strerror(errno)))"])
+        exit(1)
+    }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(socketPath.utf8CString)
+    let maxPath = MemoryLayout.size(ofValue: addr.sun_path)
+    guard pathBytes.count <= maxPath else {
+        jsonPrint(["ok": false, "error": "socket path too long"])
+        exit(1)
+    }
+    _ = socketPath.withCString { path in unlink(path) }
+    withUnsafeMutablePointer(to: &addr.sun_path) { pointer in
+        pointer.withMemoryRebound(to: CChar.self, capacity: maxPath) { chars in
+            for index in 0..<pathBytes.count {
+                chars[index] = pathBytes[index]
+            }
+        }
+    }
+    let len = socklen_t(MemoryLayout<sockaddr_un>.offset(of: \.sun_path)! + pathBytes.count)
+    let bindResult = withUnsafePointer(to: &addr) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            Darwin.bind(fd, sockaddrPointer, len)
+        }
+    }
+    guard bindResult == 0 else {
+        jsonPrint(["ok": false, "error": "bind failed: \(String(cString: strerror(errno)))", "socket": socketPath])
+        exit(1)
+    }
+    chmod(socketPath, 0o600)
+    guard Darwin.listen(fd, 16) == 0 else {
+        jsonPrint(["ok": false, "error": "listen failed: \(String(cString: strerror(errno)))"])
+        exit(1)
+    }
+    jsonPrint(["ok": true, "event": "listening", "socket": socketPath, "bundleId": brokerBundleIdentifier, "version": brokerVersion])
+    fflush(stdout)
+    while true {
+        let client = Darwin.accept(fd, nil, nil)
+        if client >= 0 {
+            handleClient(fd: client, token: token)
+        }
+    }
+}
+
+func argValue(_ args: [String], _ name: String) -> String? {
+    guard let index = args.firstIndex(of: name), index + 1 < args.count else { return nil }
+    return args[index + 1]
+}
+
 func usage() {
     jsonPrint([
         "ok": false,
         "error": "usage",
         "commands": [
             "--status-json",
+            "--service-status",
+            "--register-login-item",
+            "--unregister-login-item",
             "--open-settings <accessibility|screenCapture|microphone|notifications|automation>",
-            "--notify <title> <body>"
+            "--notify <title> <body>",
+            "--serve --socket <path> --token <token>"
         ]
     ])
 }
@@ -139,6 +380,12 @@ let args = Array(CommandLine.arguments.dropFirst())
 switch args.first {
 case "--status-json":
     jsonPrint(permissionStatusPayload())
+case "--service-status":
+    jsonPrint(serviceStatusPayload())
+case "--register-login-item":
+    jsonPrint(registerLoginItem())
+case "--unregister-login-item":
+    jsonPrint(unregisterLoginItem())
 case "--open-settings":
     guard args.count >= 2 else {
         usage()
@@ -152,6 +399,12 @@ case "--notify":
         exit(2)
     }
     sendNotification(title: args[1], body: args[2])
+case "--serve":
+    guard let socketPath = argValue(args, "--socket"), let token = argValue(args, "--token") else {
+        usage()
+        exit(2)
+    }
+    serve(socketPath: socketPath, token: token)
 case "--help", "-h", nil:
     usage()
 default:

@@ -75,6 +75,18 @@ function brokerStatus(executable, options = {}) {
   return runBrokerCommand(executable, ['--status-json'], options)
 }
 
+function brokerServiceStatus(executable, options = {}) {
+  return runBrokerCommand(executable, ['--service-status'], options)
+}
+
+function registerBrokerLoginItem(executable, options = {}) {
+  return runBrokerCommand(executable, ['--register-login-item'], options)
+}
+
+function unregisterBrokerLoginItem(executable, options = {}) {
+  return runBrokerCommand(executable, ['--unregister-login-item'], options)
+}
+
 function openBrokerSettings(executable, pane, options = {}) {
   return runBrokerCommand(executable, ['--open-settings', pane], options)
 }
@@ -85,8 +97,11 @@ module.exports = {
   brokerAvailable,
   brokerExecutableForAppBundle,
   brokerExecutableFromProcess,
+  brokerServiceStatus,
   brokerStatus,
   openBrokerSettings,
   parseBrokerJson,
-  runBrokerCommand
+  registerBrokerLoginItem,
+  runBrokerCommand,
+  unregisterBrokerLoginItem
 }

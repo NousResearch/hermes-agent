@@ -8,7 +8,7 @@ const path = require('node:path')
 const BROKER_BUNDLE_ID = 'com.nousresearch.hermes.macbroker'
 const BROKER_APP_NAME = 'HermesMacBroker.app'
 const BROKER_EXECUTABLE_NAME = 'HermesMacBroker'
-const BROKER_VERSION = '0.1.0'
+const BROKER_VERSION = '0.2.0'
 
 function xmlEscape(value) {
   return String(value)
@@ -86,6 +86,10 @@ function swiftcArgs({ source, output }) {
     'AVFoundation',
     '-framework',
     'CoreGraphics',
+    '-framework',
+    'CryptoKit',
+    '-framework',
+    'ServiceManagement',
     '-framework',
     'UserNotifications'
   ]

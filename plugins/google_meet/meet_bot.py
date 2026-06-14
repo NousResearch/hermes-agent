@@ -271,6 +271,7 @@ _CAPTION_OBSERVER_JS = r"""
   window.__hermesMeetLastSpeaker = '';
   window.__hermesMeetLastSpeakerAt = 0;
   window.__hermesMeetLastFallbackText = '';
+  window.__hermesMeetKnownSpeakers = [];
 
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
@@ -314,9 +315,21 @@ _CAPTION_OBSERVER_JS = r"""
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  function rememberSpeaker(raw) {
+    const speaker = cleanSpeakerName(raw);
+    if (!speaker) return '';
+    if (!window.__hermesMeetKnownSpeakers.includes(speaker)) {
+      window.__hermesMeetKnownSpeakers.push(speaker);
+      window.__hermesMeetKnownSpeakers = window.__hermesMeetKnownSpeakers.slice(-30);
+    }
+    window.__hermesMeetLastSpeaker = speaker;
+    window.__hermesMeetLastSpeakerAt = Date.now();
+    return speaker;
+  }
+
   function inferParticipantNames() {
     const text = document.body ? document.body.innerText || '' : '';
-    const names = new Set();
+    const names = new Set(window.__hermesMeetKnownSpeakers || []);
     const patterns = [
       /Pin\s+(.+?)\s+to your main screen/g,
       /More options for\s+(.+?)(?:\n|$)/g,
@@ -327,6 +340,11 @@ _CAPTION_OBSERVER_JS = r"""
         const speaker = cleanSpeakerName(match[1]);
         if (speaker) names.add(speaker);
       }
+    }
+    const labelNodes = Array.from(document.querySelectorAll('span.NWpY1d, .NWpY1d, div.KcIKyf')).slice(0, 80);
+    for (const node of labelNodes) {
+      const speaker = cleanSpeakerName(node.innerText);
+      if (speaker) names.add(speaker);
     }
     return Array.from(names).sort((a, b) => b.length - a.length);
   }
@@ -391,8 +409,7 @@ _CAPTION_OBSERVER_JS = r"""
     const candidates = collectSpeakerCandidates();
     for (const candidate of candidates) {
       if (candidate.clean && !candidate.diagnosticOnly) {
-        window.__hermesMeetLastSpeaker = candidate.clean;
-        window.__hermesMeetLastSpeakerAt = Date.now();
+        rememberSpeaker(candidate.clean);
         return {
           speaker: candidate.clean,
           source: candidate.selector,
@@ -486,9 +503,41 @@ _CAPTION_OBSERVER_JS = r"""
     return emitted;
   }
 
+  function textAfterSpeaker(rawText, speaker) {
+    let text = (rawText || '').replace(/\s+/g, ' ').trim();
+    if (!text || !speaker) return '';
+    if (text === speaker) return '';
+    const idx = text.indexOf(speaker);
+    if (idx < 0) return '';
+    text = text.slice(idx + speaker.length).trim();
+    return trimCaptionChrome(text);
+  }
+
+  function scanVisibleSpeakerLabels(root) {
+    const labels = Array.from(root.querySelectorAll('span.NWpY1d, .NWpY1d')).slice(0, 40);
+    let emitted = false;
+    for (const label of labels) {
+      const speaker = cleanSpeakerName(label.innerText);
+      if (!speaker) continue;
+
+      let node = label;
+      for (let depth = 0; node && depth < 7; depth += 1) {
+        const text = textAfterSpeaker(node.innerText || '', speaker);
+        if (text) {
+          pushEntry(speaker, text);
+          emitted = true;
+          break;
+        }
+        node = node.parentElement;
+      }
+    }
+    return emitted;
+  }
+
   function pushEntry(speaker, text) {
     if (!text || !text.trim()) return;
     const rowSpeaker = cleanSpeakerName(speaker);
+    if (rowSpeaker) rememberSpeaker(rowSpeaker);
     const inferred = rowSpeaker
       ? { speaker: rowSpeaker, source: 'captionRow', candidates: [] }
       : inferActiveSpeaker();
@@ -516,6 +565,7 @@ _CAPTION_OBSERVER_JS = r"""
       });
       return;
     }
+    if (scanVisibleSpeakerLabels(root)) return;
     // Fallback: split participant-prefixed live caption history before
     // treating the whole region's innerText as one anonymous line.
     if (pushSpeakerSegments(root.innerText || '')) return;

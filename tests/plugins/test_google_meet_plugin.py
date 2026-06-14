@@ -198,7 +198,13 @@ def test_caption_observer_strips_meet_controls_from_body_fallback():
     assert "trimCaptionChrome(text)" in _CAPTION_OBSERVER_JS
 
 
-def _run_caption_observer_js(*, body_text: str, caption_text: str, speaking_label: str):
+def _run_caption_observer_js(
+    *,
+    body_text: str,
+    caption_text: str,
+    speaking_label: str,
+    caption_label_rows: list[tuple[str, str]] | None = None,
+):
     node = shutil.which("node")
     if not node:
         pytest.skip("node is required to execute caption observer JavaScript")
@@ -216,23 +222,70 @@ global.MutationObserver = class {{
 const bodyText = {json.dumps(body_text)};
 const captionText = {json.dumps(caption_text)};
 const speakingLabel = {json.dumps(speaking_label)};
+const captionLabelRows = {json.dumps(caption_label_rows or [])};
 
 function makeNode(attrs, innerText = '') {{
-  return {{
+  const node = {{
     innerText,
+    parentElement: null,
+    children: [],
     getAttribute: (name) => attrs[name] || '',
     querySelectorAll: () => [],
     querySelector: () => null,
+    closest: () => null,
+  }};
+  return node;
+}}
+
+function makeCaptionLabelRow(speaker, text) {{
+  const row = makeNode({{}}, `${{speaker}}\\n${{text}}`);
+  const labelDiv = makeNode({{}}, speaker);
+  const labelSpan = makeNode({{}}, speaker);
+  const textDiv = makeNode({{}}, text);
+  labelSpan.parentElement = labelDiv;
+  labelDiv.parentElement = row;
+  textDiv.parentElement = row;
+  labelDiv.children = [labelSpan];
+  row.children = [labelDiv, textDiv];
+  labelSpan.closest = () => row;
+  labelDiv.closest = () => row;
+  row.querySelectorAll = (selector) => {{
+    if (selector.includes('span.NWpY1d') || selector.includes('.NWpY1d')) {{
+      return [labelSpan];
+    }}
+    return [];
+  }};
+  row.querySelector = (selector) => row.querySelectorAll(selector)[0] || null;
+  return {{
+    row,
+    labelSpan,
+    labelDiv,
+    textDiv,
   }};
 }}
 
-const captionRoot = captionText
+const labelRows = captionLabelRows.map(([speaker, text]) => makeCaptionLabelRow(speaker, text));
+const captionRoot = captionText || labelRows.length
   ? {{
-      innerText: captionText,
-      querySelectorAll: () => [],
-      querySelector: () => null,
+      innerText: captionText || labelRows.map(({{ row }}) => row.innerText).join('\\n'),
+      querySelectorAll: (selector) => {{
+        if (selector.includes('div[jsname="dsyhDe"]') || selector.includes('div.CNusmb') || selector.includes('div.TBMuR')) {{
+          return [];
+        }}
+        if (selector.includes('span.NWpY1d') || selector.includes('.NWpY1d')) {{
+          return labelRows.map(({{ labelSpan }}) => labelSpan);
+        }}
+        return [];
+      }},
+      querySelector: (selector) => {{
+        const matches = captionRoot.querySelectorAll(selector);
+        return matches[0] || null;
+      }},
     }}
   : null;
+if (captionRoot) {{
+  for (const item of labelRows) item.row.parentElement = captionRoot;
+}}
 
 global.window = {{}};
 global.document = {{
@@ -254,6 +307,9 @@ global.document = {{
     }}
     if (selector === '[aria-label]' && speakingLabel) {{
       return [makeNode({{ 'aria-label': speakingLabel }})];
+    }}
+    if (selector.includes('span.NWpY1d') || selector.includes('.NWpY1d')) {{
+      return labelRows.map(({{ labelSpan }}) => labelSpan);
     }}
     return [];
   }},
@@ -375,6 +431,25 @@ def test_caption_observer_region_fallback_splits_multiple_live_speakers():
         ("Alex Rivera", "Hello, is this thing working?"),
         ("Jordan Lee", "Hello, is this thing working?"),
         ("Alex Rivera", "How's it going, everyone?"),
+    ]
+    assert all(entry["speakerSource"] == "captionRow" for entry in entries)
+
+
+def test_caption_observer_scans_live_visible_speaker_labels_without_old_row_class():
+    entries = _run_caption_observer_js(
+        body_text="",
+        caption_text="",
+        speaking_label="",
+        caption_label_rows=[
+            ("Alex Rivera", "Testing the first caption."),
+            ("Jordan Lee", "Testing the second caption."),
+        ],
+    )
+
+    simplified = [(entry["speaker"], entry["text"]) for entry in entries]
+    assert simplified == [
+        ("Alex Rivera", "Testing the first caption."),
+        ("Jordan Lee", "Testing the second caption."),
     ]
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 

@@ -1171,6 +1171,20 @@ function Install-Repository {
                 # agent-created dirs (e.g. tinker-atropos/) survive too.
                 $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
                 if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    # A previously interrupted update can leave the index with
+                    # unmerged entries. In that state `git stash` aborts with
+                    # "could not write index" and the following `git checkout`
+                    # aborts with "you need to resolve your current index first"
+                    # -- the GUI "git checkout main failed (exit 1)" install
+                    # failure. Clear the conflict markers with `git reset` first:
+                    # working-tree changes are kept (and stashed just below); only
+                    # the index conflict state is dropped. Mirrors the `hermes
+                    # update` path (#4735).
+                    $unmergedOut = git -c windows.appendAtomically=false ls-files --unmerged 2>$null
+                    if (-not [string]::IsNullOrWhiteSpace(($unmergedOut -join "`n"))) {
+                        Write-Info "Clearing unmerged index entries from a previous conflict..."
+                        git -c windows.appendAtomically=false reset -q 2>$null
+                    }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"

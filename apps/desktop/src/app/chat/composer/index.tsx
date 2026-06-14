@@ -85,6 +85,8 @@ import {
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
+  deleteSelectionInEditor,
+  insertPlainTextAtCaret,
   normalizeComposerEditorDom,
   placeCaretEnd,
   refChipElement,
@@ -134,6 +136,12 @@ function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
 
   return 'command'
 }
+
+/** A `/` query is at its arg stage once it's past the command name. */
+const slashArgStage = (query: string) => query.includes(' ')
+
+/** The `/command` token of a slash query (`personality x` → `/personality`). */
+const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
 
 interface QueueEditState {
   attachments: ComposerAttachment[]
@@ -532,48 +540,6 @@ export function ChatBar({
     })
   }, [])
 
-  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
-    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
-
-    if (imageBlobs.length > 0) {
-      event.preventDefault()
-
-      if (onAttachImageBlob) {
-        triggerHaptic('selection')
-
-        for (const blob of imageBlobs) {
-          void onAttachImageBlob(blob)
-        }
-      }
-
-      return
-    }
-
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = event.clipboardData.getData('text').trim()
-
-    if (!pastedText) {
-      event.preventDefault()
-
-      return
-    }
-
-    if (DATA_IMAGE_URL_RE.test(pastedText)) {
-      event.preventDefault()
-
-      return
-    }
-
-    event.preventDefault()
-    document.execCommand('insertText', false, pastedText)
-    const nextDraft = composerPlainText(event.currentTarget)
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
-  }
-
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
   const [triggerItems, setTriggerItems] = useState<readonly Unstable_TriggerItem[]>([])
@@ -610,7 +576,15 @@ export function ChatBar({
     }
 
     const before = textBeforeCaret(editor)
-    const detected = detectTrigger(before ?? composerPlainText(editor))
+    const found = detectTrigger(before ?? composerPlainText(editor))
+
+    // The arg-stage popover is only useful for commands with an options screen.
+    // For a no-arg command it would dead-end on "No matches", so drop it — the
+    // directive is already complete.
+    const detected =
+      found?.kind === '/' && slashArgStage(found.query) && !desktopSlashCommandTakesArgs(slashCommandToken(found.query))
+        ? null
+        : found
 
     setTrigger(detected)
 
@@ -650,6 +624,46 @@ export function ChatBar({
     flushEditorToDraft(event.currentTarget)
   }
 
+  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
+
+    if (imageBlobs.length > 0) {
+      event.preventDefault()
+
+      if (onAttachImageBlob) {
+        triggerHaptic('selection')
+
+        for (const blob of imageBlobs) {
+          void onAttachImageBlob(blob)
+        }
+      }
+
+      return
+    }
+
+    // Trim surrounding whitespace so a copy that dragged along leading/trailing
+    // blank lines (common when selecting from terminals, code blocks, web pages)
+    // doesn't dump multiline padding into the composer. Internal newlines are
+    // preserved — only the edges are cleaned up.
+    const pastedText = event.clipboardData.getData('text').trim()
+
+    if (!pastedText) {
+      event.preventDefault()
+
+      return
+    }
+
+    if (DATA_IMAGE_URL_RE.test(pastedText)) {
+      event.preventDefault()
+
+      return
+    }
+
+    event.preventDefault()
+    insertPlainTextAtCaret(event.currentTarget, pastedText)
+    flushEditorToDraft(event.currentTarget)
+  }
+
   const triggerAdapter: Unstable_TriggerAdapter | null =
     trigger?.kind === '@' ? at.adapter : trigger?.kind === '/' ? slash.adapter : null
 
@@ -665,6 +679,12 @@ export function ChatBar({
 
   const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
 
+  // Suppress the "No matches" empty state once a slash command is past its name:
+  // a no-arg command has nothing to offer, and a fully-typed arg commits on
+  // Space/Tab — neither should dead-end on a popover.
+  const argStageEmpty =
+    trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
+
   const closeTrigger = () => {
     setTrigger(null)
     setTriggerItems([])
@@ -674,6 +694,25 @@ export function ChatBar({
   useEffect(() => {
     setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
   }, [triggerItems.length])
+
+  // Commit the literally-typed `/command arg` as a directive chip — used when
+  // the completion list is empty because the arg is already fully typed (the
+  // backend completer drops exact matches). Reuses the chip path via a
+  // synthetic item whose serialized form is the verbatim text.
+  const commitTypedSlashDirective = () => {
+    if (trigger?.kind !== '/') {
+      return
+    }
+
+    const text = `/${trigger.query.trimEnd()}`
+
+    replaceTriggerWithChip({
+      id: text,
+      type: 'slash',
+      label: text.slice(1),
+      metadata: { command: slashCommandToken(trigger.query), display: text, meta: '', group: '', action: '', rawText: text }
+    })
+  }
 
   const replaceTriggerWithChip = (item: Unstable_TriggerItem) => {
     const editor = editorRef.current
@@ -793,6 +832,18 @@ export function ChatBar({
       return
     }
 
+    // Non-collapsed Backspace/Delete: native selection-delete is ~O(n²) on large
+    // drafts (Ctrl+A → Delete froze ~1.3s). Collapsed carets fall through.
+    if (
+      (event.key === 'Backspace' || event.key === 'Delete') &&
+      deleteSelectionInEditor(event.currentTarget)
+    ) {
+      event.preventDefault()
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
     // Cmd/Ctrl+Shift+K drains the next queued message. Plain Cmd/Ctrl+K is
     // reserved for the global command palette.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'k') {
@@ -822,7 +873,15 @@ export function ChatBar({
         return
       }
 
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      // Enter / Tab / Space all accept the highlighted item: a no-arg command
+      // commits its directive chip, an arg-taking command expands to its
+      // options step, and an arg option commits the full `/cmd arg` chip. Space
+      // is slash-only (an `@` mention takes a literal space) and gated to a
+      // non-empty query so a bare `/ ` still types a space.
+      const acceptOnSpace = event.key === ' ' && trigger.kind === '/' && Boolean(trigger.query.trim())
+      const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
+
+      if (accept) {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
@@ -841,6 +900,24 @@ export function ChatBar({
 
         return
       }
+    }
+
+    // Arg stage with nothing left to suggest — a fully-typed arg the backend
+    // completer no longer echoes (it drops the exact match), e.g.
+    // `/personality creative`. Space/Tab still commit what's typed as a single
+    // directive chip; Enter falls through to submit (send it as-is).
+    if (
+      trigger?.kind === '/' &&
+      !triggerItems.length &&
+      (event.key === ' ' || event.key === 'Tab') &&
+      slashArgStage(trigger.query) &&
+      trigger.query.trim()
+    ) {
+      event.preventDefault()
+      triggerKeyConsumedRef.current = true
+      commitTypedSlashDirective()
+
+      return
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
@@ -1765,7 +1842,7 @@ export function ChatBar({
           ref={composerRef}
         >
           {showHelpHint && <HelpHint />}
-          {trigger && (
+          {trigger && !argStageEmpty && (
             <ComposerTriggerPopover
               activeIndex={triggerActive}
               items={triggerItems}

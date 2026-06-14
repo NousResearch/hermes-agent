@@ -337,6 +337,53 @@ def test_xai_oauth_listed_as_loopback_flow():
     assert "grok" in providers["xai-oauth"]["name"].lower()
 
 
+def test_oauth_catalog_marks_external_providers_not_disconnectable():
+    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    assert providers["qwen-oauth"]["flow"] == "external"
+    assert providers["qwen-oauth"]["disconnectable"] is False
+    assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
+
+    assert providers["claude-code"]["flow"] == "external"
+    assert providers["claude-code"]["disconnectable"] is False
+    assert "provider's CLI" in providers["claude-code"]["disconnect_hint"]
+
+
+def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
+    """DELETE must not pretend to remove credentials owned by another CLI."""
+    from hermes_cli import auth as auth_mod
+
+    def fail_clear_provider_auth(provider_id=None):
+        raise AssertionError("external providers must not reach clear_provider_auth")
+
+    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear_provider_auth)
+
+    resp = client.delete("/api/providers/oauth/qwen-oauth", headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert "cannot be disconnected automatically" in resp.text
+    assert "provider's CLI" in resp.text
+
+
+def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
+    """An env/.env-backed Anthropic API key is removed from Keys, not OAuth Accounts."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    assert providers["anthropic"]["status"]["source"] == "env_var"
+    assert providers["anthropic"]["disconnectable"] is False
+    assert providers["anthropic"]["disconnect_hint"] == "Remove the API key from Settings → Keys instead."
+
+    delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
+    assert delete_resp.status_code == 400, delete_resp.text
+    assert "Settings" in delete_resp.text
+
+
 def test_xai_loopback_start_returns_authorize_url(monkeypatch):
     """Start MUST bind the loopback listener and hand back an xAI authorize URL."""
     from hermes_cli import auth as auth_mod

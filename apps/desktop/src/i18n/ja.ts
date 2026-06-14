@@ -132,6 +132,18 @@ export const ja = defineLocale({
       transcriptionUnavailable: '音声文字起こしはまだ利用できません。',
       tryRecordingAgain: 'もう一度録音してください。',
       unavailable: '音声は利用できません'
+    },
+    native: {
+      approvalTitle: '承認が必要です',
+      approveAction: '承認',
+      rejectAction: '拒否',
+      inputTitle: '入力が必要です',
+      inputBody: 'Hermes が応答を待っています。',
+      turnDoneTitle: 'Hermes が完了しました',
+      turnDoneBody: '応答の準備ができました。',
+      turnErrorTitle: 'ターンが失敗しました',
+      backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
+      backgroundFailedTitle: 'バックグラウンドタスクが失敗しました'
     }
   },
 
@@ -177,7 +189,44 @@ export const ja = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
-      about: '情報'
+      about: '情報',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro:
+        'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      enableAll: '通知を有効にする',
+      enableAllDesc: 'マスタースイッチ。オフにすると以下のすべての通知を無効にします。',
+      focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
+      kinds: {
+        approval: {
+          label: '承認が必要',
+          description: 'コマンドが承認または拒否を待っています。'
+        },
+        input: {
+          label: '入力が必要',
+          description: 'Hermes が質問したか、パスワードやシークレットを必要としています。'
+        },
+        turnDone: {
+          label: '応答完了',
+          description: 'Hermes がバックグラウンドのときにターンが完了しました。'
+        },
+        turnError: {
+          label: 'ターン失敗',
+          description: 'ターンがエラーで終了しました。'
+        },
+        backgroundDone: {
+          label: 'バックグラウンドタスク完了',
+          description: 'バックグラウンドのターミナルコマンドが完了しました。'
+        }
+      },
+      test: 'テスト通知を送信',
+      testTitle: 'Hermes',
+      testBody: '通知は正常に動作しています。',
+      testSent:
+        'テストを送信しました。表示されない場合は、OS の通知許可と集中モード／おやすみモードを確認してください。',
+      testUnsupported: 'このシステムはネイティブ通知に対応していません。'
     },
     sections: {
       model: 'モデル',

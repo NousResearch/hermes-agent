@@ -127,12 +127,18 @@ def test_background_review_installs_thread_local_whitelist():
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist
     assert "skills_list" in whitelist
+    # read-only file tools must be allowed (issue #45877)
+    assert "read_file" in whitelist
+    assert "search_files" in whitelist
     # dangerous tools must NOT be in the whitelist
     assert "terminal" not in whitelist
     assert "send_message" not in whitelist
     assert "delegate_task" not in whitelist
     assert "web_search" not in whitelist
     assert "execute_code" not in whitelist
+    # write file tools must NOT be in the whitelist
+    assert "write_file" not in whitelist
+    assert "patch" not in whitelist
 
 
 def test_background_review_agent_tools_are_limited():

@@ -474,19 +474,21 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # Allow read-only file tools for cron background review (issue #45877)
+            review_whitelist.update({"read_file", "search_files"})
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only memory/skill/read-only-file tools are allowed."
                 ),
             )
             try:
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
+                        + "\n\nYou can only call memory, skill management, and read-only file "
+                        "tools (read_file, search_files). Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=messages_snapshot,

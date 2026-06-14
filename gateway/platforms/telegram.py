@@ -2147,6 +2147,24 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
+            # Clean up any partially-built Application so a failed connect()
+            # doesn't orphan httpx pools / sockets (they'd sit in CLOSE_WAIT
+            # until the process dies, eventually exhausting the fd limit).
+            if self._app is not None:
+                try:
+                    if self._app.updater and self._app.updater.running:
+                        await self._app.updater.stop()
+                    if self._app.running:
+                        await self._app.stop()
+                    await self._app.shutdown()
+                except Exception as cleanup_err:
+                    logger.warning(
+                        "[%s] Cleanup after failed Telegram connect raised: %s",
+                        self.name, cleanup_err, exc_info=True,
+                    )
+                finally:
+                    self._app = None
+                    self._bot = None
             self._release_platform_lock()
             message = f"Telegram startup failed: {e}"
             self._set_fatal_error("telegram_connect_error", message, retryable=True)

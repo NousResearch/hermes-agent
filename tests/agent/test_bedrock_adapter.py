@@ -1303,6 +1303,15 @@ class TestIsAnthropicBedrockModel:
         from agent.bedrock_adapter import is_anthropic_bedrock_model
         assert is_anthropic_bedrock_model("eu.anthropic.claude-sonnet-4-6") is True
 
+    def test_au_inference_profile(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("au.anthropic.claude-haiku-4-5-20251001-v1:0") is True
+        assert is_anthropic_bedrock_model("au.anthropic.claude-sonnet-4-6") is True
+
+    def test_apac_inference_profile(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        assert is_anthropic_bedrock_model("apac.anthropic.claude-sonnet-4-6") is True
+
 
 class TestEmptyTextBlockFix:
     """Test that empty text blocks are replaced with space placeholders."""

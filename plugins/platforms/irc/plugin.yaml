@@ -52,3 +52,15 @@ optional_env:
     description: "Channel for cron / notification delivery (defaults to IRC_CHANNEL)"
     prompt: "Home channel (or empty)"
     password: false
+  - name: IRC_IRCV3
+    description: "Enable IRCv3 capability negotiation (default: true)"
+    prompt: "Enable IRCv3? (true/false)"
+    password: false
+  - name: IRC_IRCV3_CAPS
+    description: "Comma-separated IRCv3 capabilities to request (default: message-tags, server-time, batch, invite-notify, echo-message)"
+    prompt: "IRCv3 capabilities (or empty for default)"
+    password: false
+  - name: IRC_REACTIONS
+    description: "Send IRCv3 draft reactions for processing status when supported (default: true)"
+    prompt: "Enable IRCv3 reactions? (true/false)"
+    password: false

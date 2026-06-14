@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict
 
@@ -175,6 +176,149 @@ _RE_INLINE_CODE = re.compile(r"`(.+?)`")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _RE_LINK = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
 _RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
+_RE_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_RE_LINK_WITH_URL = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_RE_AUTOLINK = re.compile(r"<((?:https?|mailto):[^>\s]+)>")
+_RE_STRIKE = re.compile(r"~~(.+?)~~", re.DOTALL)
+_RE_BULLET = re.compile(r"^[ \t]*[-*+]\s+", re.MULTILINE)
+_RE_ORDERED_LIST = re.compile(r"^[ \t]*\d+[.)]\s+", re.MULTILINE)
+
+
+class _MarkdownPlainTextExtractor(HTMLParser):
+    """Extract readable plain text from Markdown-generated HTML."""
+
+    _BLOCK_TAGS = {
+        "address", "article", "aside", "blockquote", "br", "div", "dl",
+        "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2",
+        "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol",
+        "p", "pre", "section", "table", "tbody", "td", "tfoot", "th", "thead",
+        "tr", "ul",
+    }
+    _PARAGRAPH_TAGS = {"p", "pre"}
+
+    def __init__(self, *, preserve_urls: bool = False):
+        super().__init__(convert_charrefs=True)
+        self.preserve_urls = preserve_urls
+        self._parts: list[str] = []
+        self._skip_depth = 0
+        self._anchor_href: str | None = None
+        self._anchor_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        tag = tag.lower()
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+
+        attrs_dict = {str(k).lower(): str(v) for k, v in attrs if v is not None}
+        if tag in self._BLOCK_TAGS:
+            self._newline()
+        if tag == "li":
+            self._append("• ")
+        elif tag == "a":
+            self._anchor_href = attrs_dict.get("href")
+            self._anchor_text = []
+        elif tag == "img":
+            src = attrs_dict.get("src", "")
+            alt = attrs_dict.get("alt", "")
+            if self.preserve_urls and src:
+                self._append(src)
+            elif alt:
+                self._append(alt)
+
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in {"script", "style"} and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if self._skip_depth:
+            return
+
+        if tag == "a":
+            href = self._anchor_href
+            label = "".join(self._anchor_text).strip()
+            if (
+                self.preserve_urls
+                and href
+                and label
+                and href.strip() != label
+            ):
+                self._append(f" ({href.strip()})")
+            self._anchor_href = None
+            self._anchor_text = []
+        if tag in self._PARAGRAPH_TAGS:
+            self._newline(blank=True)
+        elif tag in self._BLOCK_TAGS:
+            self._newline()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        if not data.strip() and "\n" in data:
+            return
+        self._append(data)
+        if self._anchor_href is not None:
+            self._anchor_text.append(data)
+
+    def text(self) -> str:
+        text = "".join(self._parts)
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n[ \t]+", "\n", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = _RE_MULTI_NEWLINE.sub("\n\n", text)
+        return text.strip()
+
+    def _append(self, text: str) -> None:
+        if text:
+            self._parts.append(text)
+
+    def _newline(self, *, blank: bool = False) -> None:
+        if not self._parts:
+            return
+        current = "".join(self._parts)
+        if blank:
+            if current.endswith("\n\n"):
+                return
+            if current.endswith("\n"):
+                self._parts.append("\n")
+            else:
+                self._parts.append("\n\n")
+            return
+        if current.endswith("\n"):
+            return
+        self._parts.append("\n")
+
+
+def _regex_strip_markdown(text: str, *, preserve_urls: bool = False) -> str:
+    """Regex fallback for environments where Python-Markdown is unavailable."""
+    text = re.sub(
+        r"```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```",
+        lambda m: m.group(1).rstrip("\n"),
+        text,
+    )
+    text = _RE_INLINE_CODE.sub(r"\1", text)
+    text = _RE_AUTOLINK.sub(r"\1", text)
+    if preserve_urls:
+        text = _RE_IMAGE.sub(lambda m: m.group(2), text)
+        text = _RE_LINK_WITH_URL.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    else:
+        text = _RE_IMAGE.sub(lambda m: m.group(1) or m.group(2), text)
+        text = _RE_LINK_WITH_URL.sub(r"\1", text)
+    text = _RE_BOLD.sub(r"\1", text)
+    text = _RE_ITALIC_STAR.sub(r"\1", text)
+    text = _RE_BOLD_UNDER.sub(r"\1", text)
+    text = _RE_ITALIC_UNDER.sub(r"\1", text)
+    text = _RE_STRIKE.sub(r"\1", text)
+    text = _RE_HEADING.sub("", text)
+    text = _RE_BULLET.sub("• ", text)
+    text = _RE_ORDERED_LIST.sub("", text)
+    text = _RE_MULTI_NEWLINE.sub("\n\n", text)
+    return text.strip()
 
 
 def strip_markdown(text: str) -> str:
@@ -183,16 +327,36 @@ def strip_markdown(text: str) -> str:
     Replaces the identical ``_strip_markdown()`` functions previously
     duplicated in sms.py, bluebubbles.py, and feishu.py.
     """
-    text = _RE_BOLD.sub(r"\1", text)
-    text = _RE_ITALIC_STAR.sub(r"\1", text)
-    text = _RE_BOLD_UNDER.sub(r"\1", text)
-    text = _RE_ITALIC_UNDER.sub(r"\1", text)
-    text = _RE_CODE_BLOCK.sub("", text)
-    text = _RE_INLINE_CODE.sub(r"\1", text)
-    text = _RE_HEADING.sub("", text)
-    text = _RE_LINK.sub(r"\1", text)
-    text = _RE_MULTI_NEWLINE.sub("\n\n", text)
-    return text.strip()
+    return strip_markdown_preserving_urls(text, preserve_urls=False)
+
+
+def strip_markdown_preserving_urls(text: str, *, preserve_urls: bool = True) -> str:
+    """Convert Markdown to readable plain text.
+
+    Uses Python-Markdown plus a small HTML text extractor when available, so
+    fenced code blocks, tables, inline HTML, nested emphasis, images, and
+    links are handled by a real Markdown parser.  The regex path is only a
+    fallback for unusual runtime environments.
+    """
+    if not text:
+        return text
+
+    try:
+        import markdown as _markdown
+
+        text = _RE_STRIKE.sub(r"\1", text)
+        html = _markdown.markdown(
+            text,
+            extensions=["fenced_code", "sane_lists", "tables"],
+            output_format="html",
+        )
+        parser = _MarkdownPlainTextExtractor(preserve_urls=preserve_urls)
+        parser.feed(html)
+        parser.close()
+        return parser.text()
+    except Exception:
+        logger.debug("Markdown parser unavailable; using regex fallback", exc_info=True)
+        return _regex_strip_markdown(text, preserve_urls=preserve_urls)
 
 
 # ─── Thread Participation Tracking ───────────────────────────────────────────

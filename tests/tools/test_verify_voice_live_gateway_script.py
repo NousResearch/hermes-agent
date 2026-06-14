@@ -42,12 +42,87 @@ def _write_voice_native_root(root: Path) -> None:
                 "calling_sidecar_url",
                 "voice.webrtc_sidecar",
                 "_send_calling_sidecar_tts_stream_command",
+                "_clear_calling_sidecar_audio",
                 "-application",
                 "voip",
             ]
         ),
         encoding="utf-8",
     )
+
+
+def _voice_sidecar_contract() -> dict:
+    audio = {
+        "sample_rate": 48_000,
+        "channels": 1,
+        "frame_ms": 20,
+        "encoding": "pcm_s16le",
+        "bytes_per_sample": 2,
+        "samples_per_frame": 960,
+        "frame_bytes": 1_920,
+    }
+    return {
+        "contract": "voice.webrtc_sidecar",
+        "version": 1,
+        "status": "experimental",
+        "summary": "Local HTTP/WebRTC bridge contract.",
+        "audio": audio,
+        "voice_surfaces": {
+            "completed_voice_note": {
+                "command": 'voice say --format ogg-opus --output reply.ogg "hello"',
+                "output": "audio/ogg; codecs=opus",
+                "transport": "completed_file",
+            },
+            "streamed_voice_note": {
+                "command": 'voice stream --output reply.ogg --format ogg-opus "hello"',
+                "output": "audio/ogg; codecs=opus",
+                "transport": "daemon_stream_encoded_file",
+            },
+            "raw_outbound_pcm": {
+                "command": 'voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "hello"',
+                "output": "pcm_s16le",
+                "transport": "stdout_pcm_frames",
+                "frame_bytes": audio["frame_bytes"],
+            },
+            "raw_inbound_pcm": {
+                "command": "voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20",
+                "input": "pcm_s16le",
+                "transport": "stdin_pcm_frames",
+                "frame_bytes": audio["frame_bytes"],
+            },
+            "file_transcription_smoke": {
+                "command": "voice stream-transcribe recording.ogg",
+                "input": "audio_file",
+                "transport": "decoded_file_to_daemon_frames",
+            },
+        },
+        "endpoints": {
+            "contract": {"method": "GET", "path": "/contract"},
+            "health": {"method": "GET", "path": "/health"},
+            "offer": {"method": "POST", "path": "/offer"},
+            "call_status": {"method": "GET", "path": "/calls/{call_id}"},
+            "receive_audio": {"method": "GET", "path": "/calls/{call_id}/audio"},
+            "send_audio": {"method": "POST", "path": "/calls/{call_id}/audio"},
+            "clear_audio": {
+                "method": "POST",
+                "path": "/calls/{call_id}/audio/clear",
+            },
+            "close_call": {"method": "POST", "path": "/calls/{call_id}/close"},
+        },
+        "payloads": {
+            "offer_request": {"sdp": "required"},
+            "offer_response": {"sdp": "answer"},
+            "call_state": {"queued_tx_bytes": "bytes"},
+            "call_status_response": "call_state",
+            "close_call_response": {"closed": True},
+            "send_audio_request": {"pcm_s16le_base64": "required"},
+            "send_audio_response": {"accepted_bytes": "bytes"},
+            "clear_audio_response": {"dropped_tx_bytes": "bytes"},
+            "receive_audio_response": {"pcm_s16le_base64": "data"},
+            "audio_shape": {"sample_rate": "audio.sample_rate"},
+            "error_response": {"error": "message"},
+        },
+    }
 
 
 def test_parse_systemctl_show_keeps_key_values():
@@ -285,22 +360,13 @@ def test_validate_sidecar_service_state_rejects_wrong_bind_port(tmp_path: Path):
 
 def test_validate_calling_sidecar_contract_requires_voice_pcm_shape():
     script = _load_script_module()
-    contract = {
-        "contract": "voice.webrtc_sidecar",
-        "version": 1,
-        "audio": {
-            "sample_rate": 48_000,
-            "channels": 1,
-            "frame_ms": 20,
-            "encoding": "pcm_s16le",
-            "frame_bytes": 1_920,
-        },
-    }
+    contract = _voice_sidecar_contract()
 
     result = script.validate_calling_sidecar_contract(contract)
 
     assert result["contract"] == "voice.webrtc_sidecar"
     assert result["audio"]["frame_bytes"] == 1_920
+    assert result["required_sections"]["endpoints"] == list(script.REQUIRED_ENDPOINTS)
 
     bad = {**contract, "contract": "other"}
     with pytest.raises(SystemExit, match="contract id"):
@@ -313,19 +379,47 @@ def test_validate_calling_sidecar_contract_requires_voice_pcm_shape():
         script.validate_calling_sidecar_contract(drifted)
 
 
-def test_load_voice_stream_contract_runs_voice_binary(monkeypatch):
+def test_validate_calling_sidecar_contract_requires_named_surfaces_and_endpoints():
     script = _load_script_module()
-    contract = {
-        "contract": "voice.webrtc_sidecar",
-        "version": 1,
-        "audio": {
-            "sample_rate": 48_000,
-            "channels": 1,
-            "frame_ms": 20,
-            "encoding": "pcm_s16le",
-            "frame_bytes": 1_920,
+    contract = _voice_sidecar_contract()
+
+    missing_surface = {
+        **contract,
+        "voice_surfaces": {
+            key: value
+            for key, value in contract["voice_surfaces"].items()
+            if key != "raw_inbound_pcm"
         },
     }
+    with pytest.raises(SystemExit, match="voice_surfaces missing keys"):
+        script.validate_calling_sidecar_contract(missing_surface)
+
+    missing_clear = {
+        **contract,
+        "endpoints": {
+            key: value
+            for key, value in contract["endpoints"].items()
+            if key != "clear_audio"
+        },
+    }
+    with pytest.raises(SystemExit, match="endpoints missing keys"):
+        script.validate_calling_sidecar_contract(missing_clear)
+
+    missing_clear_payload = {
+        **contract,
+        "payloads": {
+            key: value
+            for key, value in contract["payloads"].items()
+            if key != "clear_audio_response"
+        },
+    }
+    with pytest.raises(SystemExit, match="payloads missing keys"):
+        script.validate_calling_sidecar_contract(missing_clear_payload)
+
+
+def test_load_voice_stream_contract_runs_voice_binary(monkeypatch):
+    script = _load_script_module()
+    contract = _voice_sidecar_contract()
     calls = []
 
     def fake_run(command, *, timeout):
@@ -347,22 +441,7 @@ def test_load_voice_stream_contract_runs_voice_binary(monkeypatch):
 
 def test_compare_voice_and_sidecar_contracts_requires_exact_machine_contract():
     script = _load_script_module()
-    contract = {
-        "contract": "voice.webrtc_sidecar",
-        "version": 1,
-        "status": "experimental",
-        "summary": "summary",
-        "audio": {
-            "sample_rate": 48_000,
-            "channels": 1,
-            "frame_ms": 20,
-            "encoding": "pcm_s16le",
-            "frame_bytes": 1_920,
-        },
-        "voice_surfaces": {"raw_outbound_pcm": {"frame_bytes": 1_920}},
-        "endpoints": {"offer": {"path": "/offer"}},
-        "payloads": {"offer_request": {"sdp": "required"}},
-    }
+    contract = _voice_sidecar_contract()
 
     result = script.compare_voice_and_sidecar_contracts(
         voice_contract=contract,
@@ -371,6 +450,7 @@ def test_compare_voice_and_sidecar_contracts_requires_exact_machine_contract():
 
     assert result["success"] is True
     assert result["matched_keys"] == list(script.CONTRACT_COMPARE_KEYS)
+    assert result["required_sections"]["payloads"] == list(script.REQUIRED_PAYLOADS)
 
     drifted = {
         **contract,
@@ -390,17 +470,7 @@ def test_get_calling_sidecar_status_fetches_contract_and_health(monkeypatch):
     def fake_json_url(target, *, timeout):
         calls.append((target, timeout))
         if target.endswith("/contract"):
-            return {
-                "contract": "voice.webrtc_sidecar",
-                "version": 1,
-                "audio": {
-                    "sample_rate": 48_000,
-                    "channels": 1,
-                    "frame_ms": 20,
-                    "encoding": "pcm_s16le",
-                    "frame_bytes": 1_920,
-                },
-            }
+            return _voice_sidecar_contract()
         return {"ok": True, "sessions": 0, "call_ids": []}
 
     monkeypatch.setattr(script, "get_json_url", fake_json_url)

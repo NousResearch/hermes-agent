@@ -48,6 +48,51 @@ CONTRACT_COMPARE_KEYS = (
     "endpoints",
     "payloads",
 )
+REQUIRED_VOICE_SURFACES = {
+    "completed_voice_note": {
+        "output": "audio/ogg; codecs=opus",
+        "transport": "completed_file",
+    },
+    "streamed_voice_note": {
+        "output": "audio/ogg; codecs=opus",
+        "transport": "daemon_stream_encoded_file",
+    },
+    "raw_outbound_pcm": {
+        "output": "pcm_s16le",
+        "transport": "stdout_pcm_frames",
+    },
+    "raw_inbound_pcm": {
+        "input": "pcm_s16le",
+        "transport": "stdin_pcm_frames",
+    },
+    "file_transcription_smoke": {
+        "input": "audio_file",
+        "transport": "decoded_file_to_daemon_frames",
+    },
+}
+REQUIRED_ENDPOINTS = {
+    "contract": ("GET", "/contract"),
+    "health": ("GET", "/health"),
+    "offer": ("POST", "/offer"),
+    "call_status": ("GET", "/calls/{call_id}"),
+    "receive_audio": ("GET", "/calls/{call_id}/audio"),
+    "send_audio": ("POST", "/calls/{call_id}/audio"),
+    "clear_audio": ("POST", "/calls/{call_id}/audio/clear"),
+    "close_call": ("POST", "/calls/{call_id}/close"),
+}
+REQUIRED_PAYLOADS = (
+    "offer_request",
+    "offer_response",
+    "call_state",
+    "call_status_response",
+    "close_call_response",
+    "send_audio_request",
+    "send_audio_response",
+    "clear_audio_response",
+    "receive_audio_response",
+    "audio_shape",
+    "error_response",
+)
 IMPORT_MODULES = (
     "hermes_cli.main",
     "tools.tts_tool",
@@ -432,11 +477,107 @@ def validate_calling_sidecar_contract(contract: dict[str, Any]) -> dict[str, Any
             "calling sidecar audio contract does not match Hermes WebRTC PCM "
             f"shape: {mismatches}"
         )
+    required_sections = validate_required_contract_sections(contract, audio=audio)
     return {
         "contract": str(contract.get("contract")),
         "version": contract.get("version"),
         "audio": {key: audio.get(key) for key in expected_audio},
+        "required_sections": required_sections,
     }
+
+
+def required_mapping(contract: dict[str, Any], section: str) -> dict[str, Any]:
+    value = contract.get(section)
+    if not isinstance(value, dict):
+        raise SystemExit(f"calling sidecar contract missing {section} object")
+    return value
+
+
+def validate_required_contract_sections(
+    contract: dict[str, Any],
+    *,
+    audio: dict[str, Any],
+) -> dict[str, list[str]]:
+    surfaces = required_mapping(contract, "voice_surfaces")
+    endpoints = required_mapping(contract, "endpoints")
+    payloads = required_mapping(contract, "payloads")
+
+    validate_voice_surface_contracts(surfaces, audio=audio)
+    validate_endpoint_contracts(endpoints)
+    missing_payloads = [name for name in REQUIRED_PAYLOADS if name not in payloads]
+    if missing_payloads:
+        raise SystemExit(
+            "calling sidecar contract payloads missing keys: "
+            + ", ".join(missing_payloads)
+        )
+
+    return {
+        "voice_surfaces": list(REQUIRED_VOICE_SURFACES),
+        "endpoints": list(REQUIRED_ENDPOINTS),
+        "payloads": list(REQUIRED_PAYLOADS),
+    }
+
+
+def validate_voice_surface_contracts(
+    surfaces: dict[str, Any],
+    *,
+    audio: dict[str, Any],
+) -> None:
+    missing = [name for name in REQUIRED_VOICE_SURFACES if name not in surfaces]
+    if missing:
+        raise SystemExit(
+            "calling sidecar contract voice_surfaces missing keys: "
+            + ", ".join(missing)
+        )
+
+    for name, expected in REQUIRED_VOICE_SURFACES.items():
+        surface = surfaces.get(name)
+        if not isinstance(surface, dict):
+            raise SystemExit(
+                f"calling sidecar contract voice_surfaces.{name} must be an object"
+            )
+        for field, expected_value in expected.items():
+            if surface.get(field) != expected_value:
+                raise SystemExit(
+                    "calling sidecar contract voice_surfaces."
+                    f"{name}.{field} must be {expected_value!r}: "
+                    f"{surface.get(field)!r}"
+                )
+        command = str(surface.get("command") or "")
+        if not command:
+            raise SystemExit(
+                f"calling sidecar contract voice_surfaces.{name}.command is empty"
+            )
+
+    raw_frame_bytes = audio.get("frame_bytes")
+    for name in ("raw_outbound_pcm", "raw_inbound_pcm"):
+        surface = surfaces[name]
+        if surface.get("frame_bytes") != raw_frame_bytes:
+            raise SystemExit(
+                f"calling sidecar contract voice_surfaces.{name}.frame_bytes "
+                f"must match audio.frame_bytes: {surface.get('frame_bytes')!r}"
+            )
+
+
+def validate_endpoint_contracts(endpoints: dict[str, Any]) -> None:
+    missing = [name for name in REQUIRED_ENDPOINTS if name not in endpoints]
+    if missing:
+        raise SystemExit(
+            "calling sidecar contract endpoints missing keys: "
+            + ", ".join(missing)
+        )
+
+    for name, (method, path) in REQUIRED_ENDPOINTS.items():
+        endpoint = endpoints.get(name)
+        if not isinstance(endpoint, dict):
+            raise SystemExit(
+                f"calling sidecar contract endpoints.{name} must be an object"
+            )
+        if endpoint.get("method") != method or endpoint.get("path") != path:
+            raise SystemExit(
+                f"calling sidecar contract endpoints.{name} must be "
+                f"{method} {path}: {endpoint!r}"
+            )
 
 
 def get_calling_sidecar_status(url: str, *, timeout: float) -> dict[str, Any]:
@@ -494,6 +635,7 @@ def compare_voice_and_sidecar_contracts(
         "version": validated["version"],
         "audio": validated["audio"],
         "matched_keys": list(CONTRACT_COMPARE_KEYS),
+        "required_sections": validated["required_sections"],
     }
 
 

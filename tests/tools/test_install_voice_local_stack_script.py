@@ -119,6 +119,31 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     ]
     assert plan["tts_provider"]["output_format"] == "ogg"
     assert plan["tts_provider"]["voice_compatible"] is True
+    local_stack = plan["verify_commands"]["local_stack"]
+    assert local_stack[:2] == [
+        sys.executable,
+        str(script.repo_root() / "scripts" / "verify_voice_local_stack.py"),
+    ]
+    assert "--voice-bin" in local_stack
+    assert sys.executable in local_stack
+    assert "--voice-repo" in local_stack
+    assert str(voice_repo.resolve()) in local_stack
+    assert "--webrtc-python-bin" in local_stack
+    assert "--live-hermes-root" in local_stack
+    assert str(live_root.resolve()) in local_stack
+    live_gateway = plan["verify_commands"]["live_gateway"]
+    assert live_gateway[:2] == [
+        sys.executable,
+        str(script.repo_root() / "scripts" / "verify_voice_live_gateway.py"),
+    ]
+    assert "--calling-sidecar-url" in live_gateway
+    assert "http://127.0.0.1:8787" in live_gateway
+    assert "--voice-bin" in live_gateway
+    assert "--run-tts-smoke" in live_gateway
+    assert "--skip-bridge-health" not in live_gateway
+    assert plan["verify_commands"]["live_gateway_cloud_only"][-1] == (
+        "--skip-bridge-health"
+    )
 
 
 def test_configure_tts_provider_writes_voice_compatible_ogg_provider(tmp_path: Path):

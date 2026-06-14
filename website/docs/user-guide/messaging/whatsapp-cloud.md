@@ -432,6 +432,12 @@ That writes `~/.config/systemd/user/voice-webrtc-sidecar.service`, writes
 `voice say --format ogg-opus`, reloads systemd, starts the sidecar, and restarts
 `hermes-gateway.service`.
 
+The JSON plan also includes `verify_commands.local_stack`,
+`verify_commands.live_gateway`, and `verify_commands.live_gateway_cloud_only`.
+Run the emitted `local_stack` command before changing the live service, then
+run `live_gateway` after restart. Use the `cloud_only` variant when this host
+does not run the local Baileys bridge.
+
 The generated service files should look like this:
 
 ```ini

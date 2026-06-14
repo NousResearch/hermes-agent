@@ -217,6 +217,49 @@ def build_tts_provider(
     }
 
 
+def build_verify_commands(
+    *,
+    verifier_python_bin: str,
+    live_hermes_root: Path,
+    hermes_home: Path,
+    voice_repo: Path,
+    voice_bin: str,
+    webrtc_python_bin: str,
+    sidecar_url: str,
+) -> dict[str, list[str]]:
+    live_gateway_command = [
+        verifier_python_bin,
+        str(repo_root() / "scripts" / "verify_voice_live_gateway.py"),
+        "--live-hermes-root",
+        str(live_hermes_root),
+        "--python-bin",
+        str(hermes_home / "hermes-agent" / "venv" / "bin" / "python"),
+        "--hermes-home",
+        str(hermes_home),
+        "--calling-sidecar-url",
+        sidecar_url,
+        "--voice-bin",
+        voice_bin,
+        "--run-tts-smoke",
+    ]
+    return {
+        "local_stack": [
+            verifier_python_bin,
+            str(repo_root() / "scripts" / "verify_voice_local_stack.py"),
+            "--voice-bin",
+            voice_bin,
+            "--voice-repo",
+            str(voice_repo),
+            "--webrtc-python-bin",
+            webrtc_python_bin,
+            "--live-hermes-root",
+            str(live_hermes_root),
+        ],
+        "live_gateway": live_gateway_command,
+        "live_gateway_cloud_only": [*live_gateway_command, "--skip-bridge-health"],
+    }
+
+
 def configure_tts_provider(
     *,
     config_path: Path,
@@ -404,6 +447,15 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         },
         "files": files,
         "tts_provider": tts_provider,
+        "verify_commands": build_verify_commands(
+            verifier_python_bin=sys.executable,
+            live_hermes_root=live_hermes_root,
+            hermes_home=hermes_home,
+            voice_repo=voice_repo,
+            voice_bin=voice_bin,
+            webrtc_python_bin=webrtc_python_bin,
+            sidecar_url=args.sidecar_url.rstrip("/"),
+        ),
     }
 
 

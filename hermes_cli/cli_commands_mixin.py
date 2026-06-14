@@ -354,6 +354,84 @@ class CLICommandsMixin:
         elif _is_termux_environment():
             _cprint(f"  {_DIM}Tip: type your next message, or run hermes chat -q --image {_termux_example_image_path(image_path.name)} \"What do you see?\"{_RST}")
 
+    def _handle_images_command(self, cmd_original: str) -> None:
+        """Handle /images — list, remove, or clear pending image attachments."""
+        from cli import _DIM, _RST, _cprint
+        import shlex
+
+        def _usage() -> None:
+            _cprint(f"  {_DIM}Usage: /images [list|remove <index|path>|clear]{_RST}")
+
+        def _list_images() -> None:
+            if not self._attached_images:
+                _cprint(f"  {_DIM}No images attached. Use /image <path> to attach one.{_RST}")
+                return
+            _cprint("  Attached images:")
+            for index, image_path in enumerate(self._attached_images, start=1):
+                try:
+                    size = image_path.stat().st_size
+                except OSError:
+                    size_label = "missing"
+                else:
+                    size_label = f"{size / 1024:.1f} KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f} MB"
+                _cprint(f"    {index}. {image_path.name} ({size_label}) - {image_path}")
+
+        raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
+        if not raw_args:
+            _list_images()
+            return
+
+        try:
+            args = shlex.split(raw_args)
+        except ValueError as exc:
+            _cprint(f"  {_DIM}Could not parse /images arguments: {exc}{_RST}")
+            _usage()
+            return
+
+        if not args or args[0].lower() == "list":
+            _list_images()
+            return
+
+        action = args[0].lower()
+        if action == "clear":
+            count = len(self._attached_images)
+            self._attached_images.clear()
+            _cprint(f"  Cleared {count} attached image(s).")
+            return
+
+        if action != "remove":
+            _usage()
+            return
+
+        if len(args) < 2:
+            _usage()
+            return
+
+        selector = " ".join(args[1:])
+        selected_index: int | None = None
+        if selector.isdigit():
+            index = int(selector)
+            if 1 <= index <= len(self._attached_images):
+                selected_index = index - 1
+            else:
+                _cprint(f"  {_DIM}Invalid image number. Use 1-{len(self._attached_images)}.{_RST}")
+                return
+        else:
+            matches = [
+                index for index, image_path in enumerate(self._attached_images)
+                if str(image_path) == selector or image_path.name == selector
+            ]
+            if not matches:
+                _cprint(f"  {_DIM}No attached image matches: {selector}{_RST}")
+                return
+            if len(matches) > 1:
+                _cprint(f"  {_DIM}Multiple attached images match {selector!r}. Use the image number instead.{_RST}")
+                return
+            selected_index = matches[0]
+
+        removed = self._attached_images.pop(selected_index)
+        _cprint(f"  Removed attached image: {removed.name}")
+
     def _handle_tools_command(self, cmd: str):
         """Handle /tools [list|disable|enable] slash commands.
 

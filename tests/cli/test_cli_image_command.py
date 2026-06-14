@@ -53,6 +53,69 @@ class TestImageCommand:
         assert "Not a supported image file" in rendered
 
 
+class TestImagesCommand:
+    def test_images_command_lists_attached_images(self, tmp_path):
+        img1 = _make_image(tmp_path / "one.png")
+        img2 = _make_image(tmp_path / "two.jpg")
+        cli_obj = _make_cli()
+        cli_obj._attached_images = [img1, img2]
+
+        with patch("cli._cprint") as mock_print:
+            cli_obj._handle_images_command("/images")
+
+        rendered = "\n".join(str(arg) for call in mock_print.call_args_list for arg in call.args)
+        assert "Attached images" in rendered
+        assert "1. one.png" in rendered
+        assert "2. two.jpg" in rendered
+
+    def test_images_command_removes_by_one_based_index(self, tmp_path):
+        img1 = _make_image(tmp_path / "one.png")
+        img2 = _make_image(tmp_path / "two.png")
+        cli_obj = _make_cli()
+        cli_obj._attached_images = [img1, img2]
+
+        with patch("cli._cprint") as mock_print:
+            cli_obj._handle_images_command("/images remove 1")
+
+        assert cli_obj._attached_images == [img2]
+        rendered = " ".join(str(arg) for call in mock_print.call_args_list for arg in call.args)
+        assert "Removed attached image: one.png" in rendered
+
+    def test_images_command_removes_by_full_path(self, tmp_path):
+        img1 = _make_image(tmp_path / "one.png")
+        img2 = _make_image(tmp_path / "nested" / "two.png")
+        cli_obj = _make_cli()
+        cli_obj._attached_images = [img1, img2]
+
+        with patch("cli._cprint"):
+            cli_obj._handle_images_command(f"/images remove {img2}")
+
+        assert cli_obj._attached_images == [img1]
+
+    def test_images_command_rejects_ambiguous_filename(self, tmp_path):
+        img1 = _make_image(tmp_path / "left" / "same.png")
+        img2 = _make_image(tmp_path / "right" / "same.png")
+        cli_obj = _make_cli()
+        cli_obj._attached_images = [img1, img2]
+
+        with patch("cli._cprint") as mock_print:
+            cli_obj._handle_images_command("/images remove same.png")
+
+        assert cli_obj._attached_images == [img1, img2]
+        rendered = " ".join(str(arg) for call in mock_print.call_args_list for arg in call.args)
+        assert "Multiple attached images match" in rendered
+
+    def test_images_command_clears_attachments(self, tmp_path):
+        img = _make_image(tmp_path / "one.png")
+        cli_obj = _make_cli()
+        cli_obj._attached_images = [img]
+
+        with patch("cli._cprint"):
+            cli_obj._handle_images_command("/images clear")
+
+        assert cli_obj._attached_images == []
+
+
 class TestCollectQueryImages:
     def test_collect_query_images_accepts_explicit_image_arg(self, tmp_path):
         img = _make_image(tmp_path / "diagram.png")

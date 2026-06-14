@@ -7512,6 +7512,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_paste_command()
         elif canonical == "image":
             self._handle_image_command(cmd_original)
+        elif canonical == "images":
+            self._handle_images_command(cmd_original)
         elif canonical == "reload":
             from hermes_cli.config import reload_env
             count = reload_env()

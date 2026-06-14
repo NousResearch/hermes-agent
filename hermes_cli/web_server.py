@@ -7109,7 +7109,11 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
 
     try:
         with _profile_scope(body.profile or profile):
-            _save_mcp_server(name, server_config)
+            if not _save_mcp_server(name, server_config):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Server '{name}' rejected: suspicious command/args configuration",
+                )
     except HTTPException:
         raise
     except Exception as exc:
@@ -8707,6 +8711,7 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
     Returns the number of servers written.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.mcp_config import _validate_mcp_server_entry
 
     written = 0
     token = set_hermes_home_override(str(profile_dir))
@@ -8731,6 +8736,10 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
             if not entry:
                 # Nothing usable to write (neither url nor command) — skip
                 # rather than persist an empty, unusable server stanza.
+                continue
+            issues = _validate_mcp_server_entry(name, entry)
+            if issues:
+                _log.warning("Profile-create: skipping MCP server '%s': %s", name, "; ".join(issues))
                 continue
             mcp[name] = entry
             written += 1

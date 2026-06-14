@@ -84,11 +84,18 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
-def _save_mcp_server(name: str, server_config: dict):
-    """Add or update a server entry in config.yaml."""
+def _save_mcp_server(name: str, server_config: dict) -> bool:
+    """Add or update a server entry in config.yaml. Returns False if rejected."""
+    issues = _validate_mcp_server_entry(name, server_config)
+    if issues:
+        for issue in issues:
+            _warning(issue)
+        _warning(f"Server '{name}' was NOT saved due to suspicious configuration.")
+        return False
     config = load_config()
     config.setdefault("mcp_servers", {})[name] = server_config
     save_config(config)
+    return True
 
 
 def _remove_mcp_server(name: str) -> bool:
@@ -102,6 +109,38 @@ def _remove_mcp_server(name: str) -> bool:
         config.pop("mcp_servers", None)
     save_config(config)
     return True
+
+
+_SHELL_INTERPRETERS = frozenset({
+    "bash", "sh", "zsh", "dash", "fish",
+    "cmd", "cmd.exe",
+    "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+})
+_EGRESS_PATTERN = re.compile(
+    r"curl|wget|nc\b|ncat|socat|/dev/tcp"
+    r"|Invoke-WebRequest|Invoke-RestMethod|System\.Net\.WebClient",
+    re.IGNORECASE,
+)
+
+
+def _validate_mcp_server_entry(name: str, entry: dict) -> list:
+    """Return warning strings for suspicious MCP server config. Empty = clean."""
+    warnings = []
+    cmd = entry.get("command", "")
+    args = entry.get("args", [])
+    cmd_basename = os.path.basename(str(cmd)).lower()
+    if cmd_basename in _SHELL_INTERPRETERS:
+        inline_script = " ".join(str(a) for a in args)
+        if _EGRESS_PATTERN.search(inline_script):
+            warnings.append(
+                f"MCP server '{name}' uses shell interpreter '{cmd}' "
+                f"with network egress in args"
+            )
+        if "|" in inline_script:
+            warnings.append(
+                f"MCP server '{name}' uses shell pipe chains in args"
+            )
+    return warnings
 
 
 def _env_key_for_server(name: str) -> str:
@@ -403,16 +442,16 @@ def cmd_mcp_add(args):
         _error(f"Failed to connect: {exc}")
         if _confirm("Save config anyway (you can test later)?", default=False):
             server_config["enabled"] = False
-            _save_mcp_server(name, server_config)
-            _success(f"Saved '{name}' to config (disabled)")
-            _info("Fix the issue, then: hermes mcp test " + name)
+            if _save_mcp_server(name, server_config):
+                _success(f"Saved '{name}' to config (disabled)")
+                _info("Fix the issue, then: hermes mcp test " + name)
         return
 
     if not tools:
         _warning("Server connected but reported no tools.")
         if _confirm("Save config anyway?", default=True):
-            _save_mcp_server(name, server_config)
-            _success(f"Saved '{name}' to config")
+            if _save_mcp_server(name, server_config):
+                _success(f"Saved '{name}' to config")
         return
 
     # ── Tool selection ────────────────────────────────────────────────
@@ -469,11 +508,10 @@ def cmd_mcp_add(args):
     # ── Save ──────────────────────────────────────────────────────────
 
     server_config["enabled"] = True
-    _save_mcp_server(name, server_config)
-
-    print()
-    _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
-    _info("Start a new session to use these tools.")
+    if _save_mcp_server(name, server_config):
+        print()
+        _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
+        _info("Start a new session to use these tools.")
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────

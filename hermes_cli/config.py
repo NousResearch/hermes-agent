@@ -4873,6 +4873,28 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
+    # ── Post-migration: audit mcp_servers for credential exfiltration (#45620) ──
+    config = read_raw_config()
+    _mcp = config.get("mcp_servers")
+    if isinstance(_mcp, dict):
+        from hermes_cli.mcp_config import _validate_mcp_server_entry
+        _mcp_flagged = False
+        for _name, _entry in _mcp.items():
+            if not isinstance(_entry, dict):
+                continue
+            _issues = _validate_mcp_server_entry(_name, _entry)
+            if _issues:
+                _entry["enabled"] = False
+                _mcp_flagged = True
+                if not quiet:
+                    for _issue in _issues:
+                        print(f"  ⚠ {_issue}")
+                    print(f"  ⚠ Disabled '{_name}' pending review.")
+                results["warnings"].append(f"Disabled suspicious MCP server '{_name}'")
+        if _mcp_flagged:
+            config["mcp_servers"] = _mcp
+            save_config(config)
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     

@@ -1226,6 +1226,19 @@ def run_doctor(args):
         except Exception:
             pass
 
+    # MCP server egress audit (#45620)
+    try:
+        from hermes_cli.mcp_config import _validate_mcp_server_entry
+        _doc_servers = load_config().get("mcp_servers", {})
+        if isinstance(_doc_servers, dict):
+            for _name, _entry in _doc_servers.items():
+                if isinstance(_entry, dict):
+                    _issues = _validate_mcp_server_entry(_name, _entry)
+                    if _issues:
+                        check_warning(f"MCP server '{_name}': {'; '.join(_issues)}")
+    except Exception:
+        pass
+
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
 

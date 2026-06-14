@@ -190,11 +190,7 @@ class TestDDGSBackendWiring:
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         assert web_tools._get_backend() == "exa"
 
-    def test_auto_detect_prefers_keyless_parallel_over_ddgs(self, monkeypatch):
-        # With no credentials, keyless Parallel is the auto-detect default even
-        # when the ddgs package is installed — ddgs is search-only (can't
-        # extract), so Parallel is preferred so both search and extract work.
-        # ddgs remains reachable via an explicit web.backend=ddgs.
+    def test_auto_detect_picks_ddgs_as_last_resort(self, monkeypatch):
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
@@ -202,7 +198,7 @@ class TestDDGSBackendWiring:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
-        assert web_tools._get_backend() == "parallel"
+        assert web_tools._get_backend() == "ddgs"
 
     def test_check_web_api_key_true_when_ddgs_configured(self, monkeypatch):
         from tools import web_tools

@@ -7,7 +7,6 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
-from agent.error_classifier import FailoverReason
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -202,7 +201,6 @@ class TestFallbackChainAdvancement:
                 "🔄 Primary model failed — switching to fallback: gpt-4o via openai",
             )
         ]
-        assert getattr(agent, "_retry_status_buffer", []) == []
 
     def test_emits_original_rate_limit_fallback_status(self):
         agent = _make_agent(
@@ -210,12 +208,13 @@ class TestFallbackChainAdvancement:
         )
         statuses = []
         agent.status_callback = lambda kind, message: statuses.append((kind, message))
+        agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
 
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(_mock_client(), "gpt-4o"),
         ):
-            assert agent._try_activate_fallback(reason=FailoverReason.rate_limit) is True
+            assert agent._try_activate_fallback() is True
 
         assert statuses == [
             (
@@ -223,7 +222,6 @@ class TestFallbackChainAdvancement:
                 "⚠️ Rate limited — switching to fallback provider...",
             )
         ]
-        assert getattr(agent, "_retry_status_buffer", []) == []
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

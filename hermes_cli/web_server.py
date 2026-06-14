@@ -3105,7 +3105,10 @@ def get_model_options(profile: Optional[str] = None):
         with _profile_scope(profile):
             return build_models_payload(
                 load_picker_context(),
-                max_models=50,
+                # Desktop model pickers need the full authenticated catalog;
+                # providers such as NVIDIA expose far more than 50 usable
+                # models. Compact CLI/slash contexts still pass an integer.
+                max_models=None,
                 include_unconfigured=True,
                 picker_hints=True,
                 canonical_order=True,
@@ -3180,7 +3183,7 @@ def get_recommended_default_model(provider: str = ""):
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        payload = build_models_payload(load_picker_context(), max_models=50)
+        payload = build_models_payload(load_picker_context(), max_models=None)
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = row.get("models") or []

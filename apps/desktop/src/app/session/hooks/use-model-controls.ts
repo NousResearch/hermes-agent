@@ -28,6 +28,7 @@ interface ModelControlsOptions {
 export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
@@ -82,10 +83,16 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       try {
         if (activeSessionId) {
-          await requestGateway('slash.exec', {
+          const result = await requestGateway<{ value?: string }>('config.set', {
+            confirm_expensive_model: true,
+            key: 'model',
             session_id: activeSessionId,
-            command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
+            value: `${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
           })
+
+          if (!result?.value) {
+            throw new Error('invalid response: model switch')
+          }
 
           if (selection.persistGlobal) {
             void refreshCurrentModel()

@@ -38,6 +38,7 @@ import {
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
+import { SmartMedia } from './smart-media'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -272,16 +273,15 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   )
 }
 
-function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+function MarkdownImage({ className, src, alt, ...props }: ComponentProps<"img">) {
   return (
-    <ZoomableImage
+    <SmartMedia
       alt={alt}
       className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-[min(100%,var(--image-preview-max-width))] rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+        "m-0 block h-auto w-auto max-h-(--image-preview-height) max-w-[min(100%,var(--image-preview-max-width))] rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]",
         className
       )}
       containerClassName="my-2 block w-fit max-w-full"
-      slot="aui_markdown-image"
       src={src}
       {...props}
     />

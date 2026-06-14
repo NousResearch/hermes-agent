@@ -2651,6 +2651,37 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     result["error"],
                 )
                 _stub_finish_reason = FINISH_REASON_LENGTH
+            # In anthropic_messages mode the validator and normalizer read
+            # ``response.content`` (a list of blocks), not OpenAI ``choices``.
+            # An OpenAI-shaped stub here fails AnthropicTransport.validate_response
+            # ("response.content invalid"), so the loop classifies it as a
+            # retryable invalid response and retries the unrecoverable stream up
+            # to 10x. Return an Anthropic-shaped recovery message instead so the
+            # loop can continue from the recovered text exactly as it does for
+            # chat_completions. See #45908.
+            if agent.api_mode == "anthropic_messages":
+                if _partial_text:
+                    # ``max_tokens`` maps to finish_reason "length", firing the
+                    # loop's length-continuation — the Anthropic analog of the
+                    # FINISH_REASON_LENGTH stub used on the OpenAI path below.
+                    _anthropic_content = [
+                        SimpleNamespace(type="text", text=_partial_text)
+                    ]
+                    _anthropic_stop_reason = "max_tokens"
+                else:
+                    # Nothing recovered: an empty content list only passes
+                    # validation with stop_reason "end_turn", which ends the
+                    # turn cleanly instead of looping on an empty stub.
+                    _anthropic_content = []
+                    _anthropic_stop_reason = "end_turn"
+                return SimpleNamespace(
+                    id=PARTIAL_STREAM_STUB_ID,
+                    model=getattr(agent, "model", "unknown"),
+                    content=_anthropic_content,
+                    stop_reason=_anthropic_stop_reason,
+                    usage=None,
+                    _dropped_tool_names=_partial_names or None,
+                )
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,

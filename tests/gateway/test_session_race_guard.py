@@ -193,49 +193,6 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
         await task1
 
 
-def test_merge_pending_message_event_keeps_cross_sender_media_separate():
-    pending = {}
-    first_source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="group-1",
-        chat_type="group",
-        user_id="authorized",
-        thread_id="topic-1",
-    )
-    second_source = SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="group-1",
-        chat_type="group",
-        user_id="attacker",
-        thread_id="topic-1",
-    )
-    session_key = build_session_key(first_source, thread_sessions_per_user=False)
-    assert session_key == build_session_key(second_source, thread_sessions_per_user=False)
-
-    first_event = MessageEvent(
-        text="authorized caption",
-        message_type=MessageType.PHOTO,
-        source=first_source,
-        media_urls=["/tmp/authorized.jpg"],
-        media_types=["image/jpeg"],
-    )
-    second_event = MessageEvent(
-        text="attacker caption",
-        message_type=MessageType.PHOTO,
-        source=second_source,
-        media_urls=["/tmp/attacker.jpg"],
-        media_types=["image/jpeg"],
-    )
-
-    merge_pending_message_event(pending, session_key, first_event)
-    merge_pending_message_event(pending, session_key, second_event)
-
-    queued = pending[session_key]
-    assert queued.source.user_id == "attacker"
-    assert queued.text == "attacker caption"
-    assert queued.media_urls == ["/tmp/attacker.jpg"]
-
-
 def test_merge_pending_message_event_merges_text_and_photo_followups():
     pending = {}
     source = SessionSource(

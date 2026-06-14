@@ -83,6 +83,25 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     return plugin_dir
 
 
+def _make_entrypoint_package(site_packages: Path, name: str = "nix_ep_plugin") -> Path:
+    """Create a minimal entry-point package in a fake site-packages dir."""
+    site_packages.mkdir(parents=True, exist_ok=True)
+    package_dir = site_packages / name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text(
+        "def register(ctx):\n"
+        "    ctx.manager_marker = 'loaded'\n"
+    )
+
+    dist_info = site_packages / f"{name}-0.1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(f"Name: {name}\nVersion: 0.1.0\n")
+    (dist_info / "entry_points.txt").write_text(
+        f"[{ENTRY_POINTS_GROUP}]\n{name} = {name}\n"
+    )
+    return site_packages
+
+
 # ── TestPluginDiscovery ────────────────────────────────────────────────────
 
 
@@ -185,6 +204,49 @@ class TestPluginDiscovery:
             mgr.discover_and_load()
 
         assert "ep_plugin" in mgr._plugins
+
+    def test_nix_entrypoint_paths_do_not_use_startup_pythonpath(
+        self, tmp_path, monkeypatch
+    ):
+        """Nix entry-point packages are discovered without adding them to sys.path."""
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": []}})
+        )
+        site_packages = _make_entrypoint_package(tmp_path / "site-packages")
+        (site_packages / "sitecustomize.py").write_text(
+            "raise RuntimeError('must not run during plugin discovery')\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_PLUGIN_PYTHONPATH", str(site_packages))
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "nix_ep_plugin" in mgr._plugins
+        assert not mgr._plugins["nix_ep_plugin"].enabled
+        assert str(site_packages) not in sys.path
+
+    def test_enabled_nix_entrypoint_path_is_importable(self, tmp_path, monkeypatch):
+        """An enabled Nix entry-point plugin is added to sys.path at load time."""
+        hermes_home = tmp_path / "hermes_test"
+        (hermes_home / "config.yaml").parent.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["nix_ep_plugin"]}})
+        )
+        site_packages = _make_entrypoint_package(tmp_path / "site-packages")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_PLUGIN_PYTHONPATH", str(site_packages))
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "nix_ep_plugin" in mgr._plugins
+        assert mgr._plugins["nix_ep_plugin"].enabled
+        assert str(site_packages) in sys.path
 
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────
@@ -992,8 +1054,12 @@ class TestPluginCommands:
 
         with patch.object(plugins_mod, "_plugin_manager", None):
             engine = plugins_mod.get_plugin_context_engine()
+            second = plugins_mod.get_plugin_context_engine()
             assert engine is not None
+            assert second is not None
             assert engine.name == "stub-engine"
+            assert second.name == "stub-engine"
+            assert engine is not second
 
     def test_commands_tracked_on_loaded_plugin(self, tmp_path, monkeypatch):
         """Commands registered during discover_and_load() are tracked on LoadedPlugin."""

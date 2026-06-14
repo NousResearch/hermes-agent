@@ -142,7 +142,7 @@ class TestStdioPidTracking:
         mock_kill.assert_any_call(fake_pid, signal.SIGTERM)
         mock_kill.assert_any_call(fake_pid, fake_sigkill)
         assert mock_kill.call_count == 2
-        assert any(call.args == (2,) for call in mock_sleep.call_args_list)
+        mock_sleep.assert_called_once_with(2)
 
         with _lock:
             assert fake_pid not in _orphan_stdio_pids

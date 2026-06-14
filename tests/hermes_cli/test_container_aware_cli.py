@@ -30,7 +30,6 @@ def container_env(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_DEV", raising=False)
 
     container_mode = hermes_home / ".container-mode"
-    monkeypatch.setenv("HERMES_CONTAINER_MODE_FILE", str(container_mode))
     container_mode.write_text(
         "# Written by NixOS activation script. Do not edit manually.\n"
         "backend=podman\n"
@@ -66,9 +65,6 @@ def test_get_container_exec_info_none_without_file(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv(
-        "HERMES_CONTAINER_MODE_FILE", str(hermes_home / ".container-mode")
-    )
     monkeypatch.delenv("HERMES_DEV", raising=False)
 
     with patch("hermes_constants.is_container", return_value=False):
@@ -109,15 +105,8 @@ def test_get_container_exec_info_defaults():
         )
 
         with patch("hermes_constants.is_container", return_value=False), \
-             patch.dict(
-                 get_container_exec_info.__globals__,
-                 {"get_hermes_home": lambda: hermes_home},
-             ), \
-             patch.dict(
-                 os.environ,
-                 {"HERMES_CONTAINER_MODE_FILE": str(hermes_home / ".container-mode")},
-                 clear=False,
-             ):
+             patch.dict(get_container_exec_info.__globals__, {"get_hermes_home": lambda: hermes_home}), \
+             patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_DEV", None)
             info = get_container_exec_info()
 
@@ -144,58 +133,6 @@ def test_get_container_exec_info_docker_backend(container_env):
     assert info["container_name"] == "hermes-custom"
     assert info["exec_user"] == "myuser"
     assert info["hermes_bin"] == "/opt/hermes/bin/hermes"
-
-
-def test_get_container_exec_info_rejects_untrusted_backend(container_env):
-    """Rejects path-like backend values before host-side execution."""
-    (container_env / ".container-mode").write_text(
-        "backend=/tmp/attacker-runtime\n"
-        "container_name=hermes-agent\n"
-    )
-
-    with patch("hermes_constants.is_container", return_value=False), \
-         pytest.raises(ValueError, match="Invalid container backend"):
-        get_container_exec_info()
-
-
-def test_get_container_exec_info_accepts_absolute_runtime_path(container_env, tmp_path):
-    """Reads trusted Nix runtime_path while keeping backend as an enum."""
-    runtime = tmp_path / "podman"
-    runtime.write_text("#!/bin/sh\n")
-    runtime.chmod(0o755)
-    (container_env / ".container-mode").write_text(
-        "backend=podman\n"
-        f"runtime_path={runtime}\n"
-        "container_name=hermes-agent\n"
-    )
-
-    with patch("hermes_constants.is_container", return_value=False):
-        info = get_container_exec_info()
-
-    assert info["backend"] == "podman"
-    assert info["runtime_path"] == str(runtime)
-
-
-def test_get_container_exec_info_ignores_legacy_runtime_path(tmp_path, monkeypatch):
-    """Legacy agent-writable metadata cannot select a host executable path."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("HERMES_CONTAINER_MODE_FILE", raising=False)
-    monkeypatch.delenv("HERMES_DEV", raising=False)
-    (hermes_home / ".container-mode").write_text(
-        "backend=docker\n"
-        "runtime_path=/tmp/attacker-runtime\n"
-    )
-
-    with patch("hermes_constants.is_container", return_value=False), patch.dict(
-        get_container_exec_info.__globals__,
-        {"_CONTAINER_MODE_SYSTEM_FILE": tmp_path / "missing"},
-    ):
-        info = get_container_exec_info()
-
-    assert info["backend"] == "docker"
-    assert "runtime_path" not in info
 
 
 def test_get_container_exec_info_crashes_on_permission_error(container_env):
@@ -229,50 +166,6 @@ def podman_container_info():
         "exec_user": "hermes",
         "hermes_bin": "/data/current-package/bin/hermes",
     }
-
-
-def test_exec_in_container_rejects_path_backend():
-    """Untrusted backend paths are never resolved or executed on the host."""
-    from hermes_cli.main import _exec_in_container
-
-    container_info = {
-        "backend": "/tmp/attacker-runtime",
-        "container_name": "hermes-agent",
-        "exec_user": "hermes",
-        "hermes_bin": "/data/current-package/bin/hermes",
-    }
-    with patch("shutil.which") as mock_which, \
-         patch("subprocess.run") as mock_run, \
-         patch("os.execvp") as mock_execvp, \
-         pytest.raises(SystemExit) as exc_info:
-        _exec_in_container(container_info, ["chat"])
-
-    mock_which.assert_not_called()
-    mock_run.assert_not_called()
-    mock_execvp.assert_not_called()
-    assert exc_info.value.code == 1
-
-
-def test_exec_in_container_uses_absolute_runtime_path(tmp_path, docker_container_info):
-    """Trusted root-owned metadata can pin the exact container runtime path."""
-    from hermes_cli.main import _exec_in_container
-
-    runtime = tmp_path / "docker"
-    runtime.write_text("#!/bin/sh\n")
-    runtime.chmod(0o755)
-    docker_container_info = dict(docker_container_info, runtime_path=str(runtime))
-
-    with patch("shutil.which") as mock_which, \
-         patch("subprocess.run") as mock_run, \
-         patch("sys.stdin") as mock_stdin, \
-         patch("os.execvp") as mock_execvp:
-        mock_stdin.isatty.return_value = False
-        mock_run.return_value = MagicMock(returncode=0)
-
-        _exec_in_container(docker_container_info, ["chat"])
-
-    mock_which.assert_not_called()
-    assert mock_execvp.call_args[0][1][0] == str(runtime)
 
 
 def test_exec_in_container_calls_execvp(docker_container_info):

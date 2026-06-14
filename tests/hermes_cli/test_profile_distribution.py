@@ -10,7 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
-import shutil
+import os
 from pathlib import Path
 
 import pytest
@@ -472,44 +472,6 @@ class TestSecurity:
         # about is that the leaked content didn't land in the target.
         if (plan.target_dir / ".env").exists():
             assert "LEAKED" not in (plan.target_dir / ".env").read_text()
-
-    def test_install_rejects_source_file_symlink(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        outside = profile_env / "outside_secret.txt"
-        outside.write_text("TOP_SECRET_FROM_OUTSIDE_STAGE")
-        (staged / "SOUL.md").unlink()
-        (staged / "SOUL.md").symlink_to(outside)
-
-        with pytest.raises(DistributionError, match="symlink: SOUL.md"):
-            install_distribution(str(staged), name="reject_file_link")
-
-    def test_install_rejects_source_directory_symlink(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        outside = profile_env / "outside_skills"
-        outside.mkdir()
-        (outside / "SKILL.md").write_text("SECRET_IN_EXTERNAL_DIR")
-        shutil_target = staged / "skills"
-        shutil.rmtree(shutil_target)
-        shutil_target.symlink_to(outside, target_is_directory=True)
-
-        with pytest.raises(DistributionError, match="symlink: skills"):
-            install_distribution(str(staged), name="reject_dir_link")
-
-    def test_update_replaces_destination_symlink_without_following(self, profile_env):
-        staged = _make_staging_dir(profile_env, "src")
-        plan = install_distribution(str(staged), name="dest_link")
-        victim = profile_env / "victim.txt"
-        victim.write_text("DO_NOT_OVERWRITE")
-        soul = plan.target_dir / "SOUL.md"
-        soul.unlink()
-        soul.symlink_to(victim)
-        (staged / "SOUL.md").write_text("updated safely\n")
-
-        update_distribution("dest_link")
-
-        assert victim.read_text() == "DO_NOT_OVERWRITE"
-        assert not soul.is_symlink()
-        assert soul.read_text() == "updated safely\n"
 
 
 # ===========================================================================

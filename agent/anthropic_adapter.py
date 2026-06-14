@@ -15,8 +15,6 @@ import json
 import logging
 import os
 import platform
-import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -279,73 +277,28 @@ _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
 
-def _safe_executable_search_path() -> str:
-    """Return PATH entries safe for metadata lookup, excluding the current dir."""
-    cwd = Path.cwd().resolve()
-    entries = []
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if not entry:
-            continue
-        try:
-            if Path(entry).resolve() == cwd:
-                continue
-        except OSError:
-            continue
-        entries.append(entry)
-    return os.pathsep.join(entries)
-
-
-def _is_valid_claude_code_version(version: object) -> bool:
-    """Return True when a package version is safe to use in the user-agent."""
-    if not isinstance(version, str) or not version:
-        return False
-    return bool(re.fullmatch(r"[0-9][0-9A-Za-z.+-]{0,63}", version))
-
-
-def _claude_code_package_json_candidates(executable: str):
-    """Yield likely Claude Code package.json paths for an npm-installed binary."""
-    try:
-        exe_path = Path(executable).resolve()
-    except OSError:
-        return
-
-    for parent in (exe_path.parent, *exe_path.parents):
-        yield parent / "package.json"
-
-    for base in (exe_path.parent, exe_path.parent.parent):
-        yield base / "node_modules" / "@anthropic-ai" / "claude-code" / "package.json"
-        yield base / "lib" / "node_modules" / "@anthropic-ai" / "claude-code" / "package.json"
-
-
-def _read_claude_code_version_from_package(package_json: Path) -> Optional[str]:
-    """Read Claude Code's npm package version without executing the CLI."""
-    try:
-        package = json.loads(package_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    if package.get("name") != "@anthropic-ai/claude-code":
-        return None
-    version = package.get("version")
-    return version if _is_valid_claude_code_version(version) else None
-
-
 def _detect_claude_code_version() -> str:
-    """Detect the installed Claude Code version without executing PATH entries.
+    """Detect the installed Claude Code version, fall back to a static constant.
 
     Anthropic's OAuth infrastructure validates the user-agent version and may
-    reject requests with a version that's too old. Read npm package metadata
-    instead of invoking ``claude --version`` so a planted executable cannot run
-    with Hermes' privileges or inherited environment.
+    reject requests with a version that's too old.  Detecting dynamically means
+    users who keep Claude Code updated never hit stale-version 400s.
     """
-    search_path = _safe_executable_search_path()
+    import subprocess as _sp
+
     for cmd in ("claude", "claude-code"):
-        executable = shutil.which(cmd, path=search_path)
-        if not executable:
-            continue
-        for package_json in _claude_code_package_json_candidates(executable):
-            version = _read_claude_code_version_from_package(package_json)
-            if version:
-                return version
+        try:
+            result = _sp.run(
+                [cmd, "--version"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
+                version = result.stdout.strip().split()[0]
+                if version and version[0].isdigit():
+                    return version
+        except Exception:
+            pass
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 

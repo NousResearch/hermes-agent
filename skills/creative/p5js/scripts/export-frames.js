@@ -3,9 +3,6 @@
  * p5.js Skill — Headless Frame Export
  *
  * Captures frames from a p5.js sketch using Puppeteer (headless Chrome).
- * Serves the sketch from an isolated localhost server and blocks outbound
- * browser requests so generated sketch code cannot read or exfiltrate local
- * operator files through browser file URL privileges.
  * Uses noLoop() + redraw() for DETERMINISTIC frame-by-frame control.
  *
  * IMPORTANT: Your sketch must call noLoop() in setup() and set
@@ -44,87 +41,8 @@
  */
 
 const puppeteer = require('puppeteer');
-const http = require('http');
 const path = require('path');
 const fs = require('fs');
-
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.htm': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.webp': 'image/webp',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
-  '.ttf': 'font/ttf',
-  '.otf': 'font/otf',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.mp4': 'video/mp4',
-};
-
-function encodePathForUrl(relativePath) {
-  return relativePath.split(path.sep).map(encodeURIComponent).join('/');
-}
-
-function isPathInside(rootDir, candidatePath) {
-  const relative = path.relative(rootDir, candidatePath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-}
-
-function createSketchServer(rootDir) {
-  const server = http.createServer((req, res) => {
-    const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
-    const requestedPath = path.resolve(rootDir, `.${decodeURIComponent(pathname)}`);
-
-    if (!isPathInside(rootDir, requestedPath)) {
-      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('Forbidden');
-      return;
-    }
-
-    fs.readFile(requestedPath, (err, data) => {
-      if (err) {
-        res.writeHead(err.code === 'ENOENT' ? 404 : 500, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end(err.code === 'ENOENT' ? 'Not found' : 'Server error');
-        return;
-      }
-
-      res.writeHead(200, {
-        'Content-Type': MIME_TYPES[path.extname(requestedPath).toLowerCase()] || 'application/octet-stream',
-        'X-Content-Type-Options': 'nosniff',
-      });
-      res.end(data);
-    });
-  });
-
-  return new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve(server);
-    });
-  });
-}
-
-async function blockOutboundRequests(page, allowedOrigin) {
-  await page.setRequestInterception(true);
-  page.on('request', request => {
-    const requestUrl = new URL(request.url());
-    if (requestUrl.origin === allowedOrigin) {
-      request.continue();
-      return;
-    }
-    request.abort('blockedbyclient');
-  });
-}
 
 // Parse CLI arguments
 function parseArgs() {
@@ -177,95 +95,82 @@ async function main() {
   console.log(`Resolution: ${opts.width}x${opts.height}`);
   console.log(`Output: ${opts.output}/`);
 
-  const rootDir = path.dirname(inputPath);
-  const inputRelativePath = path.relative(rootDir, inputPath);
-  const server = await createSketchServer(rootDir);
-  const { port } = server.address();
-  const allowedOrigin = `http://127.0.0.1:${port}`;
-  const sketchUrl = `${allowedOrigin}/${encodePathForUrl(inputRelativePath)}`;
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-web-security',
+      '--allow-file-access-from-files',
+    ],
+  });
 
-  let browser;
+  const page = await browser.newPage();
+
+  await page.setViewport({
+    width: opts.width,
+    height: opts.height,
+    deviceScaleFactor: 1,
+  });
+
+  // Navigate to sketch
+  const fileUrl = `file://${inputPath}`;
+  await page.goto(fileUrl, { waitUntil: 'networkidle0', timeout: 30000 });
+
+  // Wait for canvas to appear
+  await page.waitForSelector(opts.selector, { timeout: 10000 });
+
+  // Detect capture mode: deterministic (noLoop+redraw) vs timed (fallback)
+  let deterministic = false;
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-      ],
-    });
+    await page.waitForFunction('window._p5Ready === true', { timeout: 5000 });
+    deterministic = true;
+    console.log(`Mode: deterministic (noLoop + redraw)`);
+  } catch {
+    console.log(`Mode: timed fallback (sketch does not set window._p5Ready)`);
+    console.log(`  For frame-perfect capture, add noLoop() and window._p5Ready=true to setup()`);
+    await new Promise(r => setTimeout(r, opts.wait));
+  }
 
-    const page = await browser.newPage();
-    await blockOutboundRequests(page, allowedOrigin);
+  const startTime = Date.now();
 
-    await page.setViewport({
-      width: opts.width,
-      height: opts.height,
-      deviceScaleFactor: 1,
-    });
-
-    // Navigate to the isolated localhost copy of the sketch.
-    await page.goto(sketchUrl, { waitUntil: 'networkidle0', timeout: 30000 });
-
-    // Wait for canvas to appear
-    await page.waitForSelector(opts.selector, { timeout: 10000 });
-
-    // Detect capture mode: deterministic (noLoop+redraw) vs timed (fallback)
-    let deterministic = false;
-    try {
-      await page.waitForFunction('window._p5Ready === true', { timeout: 5000 });
-      deterministic = true;
-      console.log(`Mode: deterministic (noLoop + redraw)`);
-    } catch {
-      console.log(`Mode: timed fallback (sketch does not set window._p5Ready)`);
-      console.log(`  For frame-perfect capture, add noLoop() and window._p5Ready=true to setup()`);
-      await new Promise(r => setTimeout(r, opts.wait));
+  for (let i = 0; i < opts.frames; i++) {
+    if (deterministic) {
+      // Advance exactly one frame
+      await page.evaluate(() => { redraw(); });
+      // Brief settle time for render to complete
+      await new Promise(r => setTimeout(r, 20));
     }
 
-    const startTime = Date.now();
+    const frameName = `frame-${String(i).padStart(4, '0')}.png`;
+    const framePath = path.join(opts.output, frameName);
 
-    for (let i = 0; i < opts.frames; i++) {
-      if (deterministic) {
-        // Advance exactly one frame
-        await page.evaluate(() => { redraw(); });
-        // Brief settle time for render to complete
-        await new Promise(r => setTimeout(r, 20));
-      }
-
-      const frameName = `frame-${String(i).padStart(4, '0')}.png`;
-      const framePath = path.join(opts.output, frameName);
-
-      // Capture the canvas element
-      const canvas = await page.$(opts.selector);
-      if (!canvas) {
-        console.error('Canvas element not found');
-        break;
-      }
-
-      await canvas.screenshot({ path: framePath, type: 'png' });
-
-      // Progress
-      if (i % 30 === 0 || i === opts.frames - 1) {
-        const pct = ((i + 1) / opts.frames * 100).toFixed(1);
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        process.stdout.write(`\r  Frame ${i + 1}/${opts.frames} (${pct}%) — ${elapsed}s`);
-      }
-
-      // In timed mode, wait between frames
-      if (!deterministic && i < opts.frames - 1) {
-        await new Promise(r => setTimeout(r, 1000 / opts.fps));
-      }
+    // Capture the canvas element
+    const canvas = await page.$(opts.selector);
+    if (!canvas) {
+      console.error('Canvas element not found');
+      break;
     }
 
-    console.log('\n  Done.');
-  } finally {
-    try {
-      if (browser) {
-        await browser.close();
-      }
-    } finally {
-      server.close();
+    await canvas.screenshot({ path: framePath, type: 'png' });
+
+    // Progress
+    if (i % 30 === 0 || i === opts.frames - 1) {
+      const pct = ((i + 1) / opts.frames * 100).toFixed(1);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      process.stdout.write(`\r  Frame ${i + 1}/${opts.frames} (${pct}%) — ${elapsed}s`);
+    }
+
+    // In timed mode, wait between frames
+    if (!deterministic && i < opts.frames - 1) {
+      await new Promise(r => setTimeout(r, 1000 / opts.fps));
     }
   }
+
+  console.log('\n  Done.');
+  await browser.close();
 }
 
 main().catch(err => {

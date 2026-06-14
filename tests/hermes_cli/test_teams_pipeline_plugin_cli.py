@@ -129,6 +129,7 @@ def test_subscriptions_lists_graph_subscriptions(monkeypatch, capsys):
 
 
 def test_subscribe_defaults_to_created_for_transcript_resources(monkeypatch, capsys):
+    monkeypatch.setenv("MSGRAPH_WEBHOOK_CLIENT_STATE", "state-from-env")
     captured = {}
 
     class FakeClient:
@@ -155,7 +156,37 @@ def test_subscribe_defaults_to_created_for_transcript_resources(monkeypatch, cap
     payload = json.loads(capsys.readouterr().out)
     assert captured["path"] == "/subscriptions"
     assert captured["json_body"]["changeType"] == "created"
+    assert captured["json_body"]["clientState"] == "state-from-env"
     assert payload["changeType"] == "created"
+
+
+def test_subscribe_requires_client_state(monkeypatch, capsys):
+    posted = False
+
+    class FakeClient:
+        async def post_json(self, path, json_body=None, headers=None):
+            nonlocal posted
+            posted = True
+            return {}
+
+    monkeypatch.delenv("MSGRAPH_WEBHOOK_CLIENT_STATE", raising=False)
+    monkeypatch.setattr("plugins.teams_pipeline.cli.build_graph_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        "plugins.teams_pipeline.cli.load_gateway_config",
+        lambda: SimpleNamespace(platforms={}),
+    )
+
+    result = teams_pipeline_command(
+        _make_args(
+            teams_pipeline_action="subscribe",
+            resource="communications/onlineMeetings",
+            notification_url="https://example.com/webhooks/msgraph",
+        )
+    )
+
+    assert result == 1
+    assert posted is False
+    assert "MSGRAPH_WEBHOOK_CLIENT_STATE" in capsys.readouterr().out
 
 
 def test_token_health_force_refresh(monkeypatch, capsys):
@@ -187,7 +218,9 @@ def test_validate_accepts_msgraph_credentials_for_graph_delivery(monkeypatch, ca
 
     gateway_config = SimpleNamespace(
         platforms={
-            Platform.MSGRAPH_WEBHOOK: PlatformConfig(enabled=True, extra={}),
+            Platform.MSGRAPH_WEBHOOK: PlatformConfig(
+                enabled=True, extra={"client_state": "expected-client-state"}
+            ),
             Platform("teams"): PlatformConfig(
                 enabled=True,
                 extra={
@@ -212,3 +245,49 @@ def test_validate_accepts_msgraph_credentials_for_graph_delivery(monkeypatch, ca
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert payload["issues"] == []
+
+
+def test_validate_loads_gateway_config_once(monkeypatch, capsys, tmp_path):
+    from gateway.config import Platform, PlatformConfig
+
+    monkeypatch.setenv("MSGRAPH_TENANT_ID", "tenant")
+    monkeypatch.setenv("MSGRAPH_CLIENT_ID", "client")
+    monkeypatch.setenv("MSGRAPH_CLIENT_SECRET", "secret")
+
+    gateway_config = SimpleNamespace(
+        platforms={
+            Platform.MSGRAPH_WEBHOOK: PlatformConfig(
+                enabled=True, extra={"client_state": "expected-client-state"}
+            ),
+            Platform("teams"): PlatformConfig(
+                enabled=True,
+                extra={
+                    "delivery_mode": "graph",
+                    "team_id": "team-1",
+                    "channel_id": "channel-1",
+                },
+            ),
+        }
+    )
+    calls = 0
+
+    def _load_gateway_config():
+        nonlocal calls
+        calls += 1
+        return gateway_config
+
+    monkeypatch.setattr(
+        "plugins.teams_pipeline.cli.load_gateway_config",
+        _load_gateway_config,
+    )
+
+    teams_pipeline_command(
+        _make_args(
+            teams_pipeline_action="validate",
+            store_path=str(tmp_path / "teams_pipeline_store.json"),
+        )
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert calls == 1

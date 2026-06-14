@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from xml.etree import ElementTree as ET
+import defusedxml.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _watermark import Watermark, format_items_as_markdown  # type: ignore

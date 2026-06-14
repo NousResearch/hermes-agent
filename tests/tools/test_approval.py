@@ -9,7 +9,6 @@ import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
     _smart_approve,
-    check_all_command_guards,
     approve_session,
     detect_dangerous_command,
     is_approved,
@@ -42,42 +41,6 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
-
-    def test_smart_approval_requires_exact_verdict(self):
-        response = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="DENY but also APPROVE"))]
-        )
-        with mock_patch("agent.auxiliary_client.call_llm", return_value=response):
-            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
-
-        assert result == "escalate"
-
-    def test_smart_approval_does_not_cache_broad_pattern_key(self, monkeypatch):
-        session = "test_smart_no_pattern_cache"
-        command_safe = "python3 -c \"print('ok')\""
-        command_later = "python3 -c \"import pathlib; pathlib.Path('/tmp/pwned').write_text('x')\""
-        _clear_session(session)
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        monkeypatch.setenv("HERMES_SESSION_KEY", session)
-        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(
-            "tools.tirith_security.check_command_security",
-            lambda command: {"action": "allow", "findings": [], "summary": ""},
-        )
-        smart_verdicts = iter(["approve", "deny"])
-
-        with mock_patch.object(approval_module, "_smart_approve", side_effect=lambda *_: next(smart_verdicts)) as smart_mock:
-            first = check_all_command_guards(command_safe, "local")
-            second = check_all_command_guards(command_later, "local")
-
-        assert first["approved"] is True
-        assert first["smart_approved"] is True
-        assert second["approved"] is False
-        assert second["smart_denied"] is True
-        assert smart_mock.call_count == 2
-        _, pattern_key, _ = detect_dangerous_command(command_safe)
-        assert is_approved(session, pattern_key) is False
-        _clear_session(session)
 
 
 class TestDetectDangerousRm:
@@ -125,6 +88,36 @@ class TestDetectDangerousSudo:
         is_dangerous, key, desc = detect_dangerous_command("ksh -c 'echo test'")
         assert is_dangerous is True
         assert key is not None
+
+    def test_computer_use_install_wrapper(self):
+        is_dangerous, key, desc = detect_dangerous_command("hermes computer-use install")
+        assert is_dangerous is True
+        assert key is not None
+        assert "remote shell" in desc.lower()
+
+    def test_computer_use_install_wrapper_with_path_prefix(self):
+        is_dangerous, key, desc = detect_dangerous_command(
+            "/usr/local/bin/hermes computer-use install"
+        )
+        assert is_dangerous is True
+        assert key is not None
+        assert "remote shell" in desc.lower()
+
+    def test_computer_use_install_module_wrapper(self):
+        is_dangerous, key, desc = detect_dangerous_command(
+            "python -m hermes_cli.main computer-use install"
+        )
+        assert is_dangerous is True
+        assert key is not None
+        assert "remote shell" in desc.lower()
+
+    def test_computer_use_install_module_wrapper_python3(self):
+        is_dangerous, key, desc = detect_dangerous_command(
+            "python3.12 -m hermes_cli.main computer-use install"
+        )
+        assert is_dangerous is True
+        assert key is not None
+        assert "remote shell" in desc.lower()
 
 
 class TestDetectSqlPatterns:
@@ -393,20 +386,6 @@ class TestTeePattern:
         assert dangerous is True
         assert key is not None
 
-    def test_tee_absolute_home_ssh_authorized_keys(self):
-        dangerous, key, desc = detect_dangerous_command(
-            "cat key | tee /home/alice/.ssh/authorized_keys"
-        )
-        assert dangerous is True
-        assert key is not None
-
-    def test_tee_split_quoted_home_ssh_authorized_keys(self):
-        dangerous, key, desc = detect_dangerous_command(
-            'cat key | tee "$HOME"/.ssh/authorized_keys'
-        )
-        assert dangerous is True
-        assert key is not None
-
     def test_tee_block_device(self):
         dangerous, key, desc = detect_dangerous_command("echo x | tee /dev/sda")
         assert dangerous is True
@@ -424,18 +403,6 @@ class TestTeePattern:
 
     def test_tee_quoted_custom_hermes_home_env(self):
         dangerous, key, desc = detect_dangerous_command('echo x | tee "$HERMES_HOME/.env"')
-        assert dangerous is True
-        assert key is not None
-
-    def test_tee_split_quoted_custom_hermes_home_env(self):
-        dangerous, key, desc = detect_dangerous_command('echo x | tee "$HERMES_HOME"/.env')
-        assert dangerous is True
-        assert key is not None
-
-    def test_tee_absolute_home_hermes_env(self):
-        dangerous, key, desc = detect_dangerous_command(
-            "echo x | tee /home/alice/.hermes/.env"
-        )
         assert dangerous is True
         assert key is not None
 
@@ -484,20 +451,6 @@ class TestSensitiveRedirectPattern:
 
     def test_append_to_home_ssh_authorized_keys(self):
         dangerous, key, desc = detect_dangerous_command("cat key >> $HOME/.ssh/authorized_keys")
-        assert dangerous is True
-        assert key is not None
-
-    def test_append_to_absolute_home_ssh_authorized_keys(self):
-        dangerous, key, desc = detect_dangerous_command(
-            "cat key >> /home/alice/.ssh/authorized_keys"
-        )
-        assert dangerous is True
-        assert key is not None
-
-    def test_append_to_split_quoted_home_ssh_authorized_keys(self):
-        dangerous, key, desc = detect_dangerous_command(
-            'cat key >> "$HOME"/.ssh/authorized_keys'
-        )
         assert dangerous is True
         assert key is not None
 

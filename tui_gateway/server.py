@@ -180,13 +180,6 @@ sys.stdout = sys.stderr
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
-def _trusted_python_src_root() -> str:
-    """Return the trusted Hermes root for internal ``python -m`` subprocesses."""
-    return os.environ.get("HERMES_PYTHON_SRC_ROOT") or str(
-        Path(__file__).resolve().parent.parent
-    )
-
-
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
@@ -213,7 +206,7 @@ class _SlashWorker:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=_trusted_python_src_root(),
+            cwd=os.getcwd(),
             env=os.environ.copy(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
@@ -3218,16 +3211,6 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
             else:
-                # If auto-compression fired inside run_conversation(), agent.session_id
-                # may have rotated. Sync session_key before downstream title/goal/finalize
-                # handling uses it. Preserve pending_title (user intent) so it can be
-                # applied to the continuation. Restart slash worker so subsequent
-                # worker-backed commands (/title etc.) target the live session.
-                # Fix for #20001.
-                _sync_session_key_after_compress(
-                    sid, session, clear_pending_title=False, restart_slash_worker=True,
-                )
-
                 raw = str(result)
                 status = "complete"
 
@@ -4472,12 +4455,15 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            from tools.environments.local import _sanitize_subprocess_env
+            sanitized_env = _sanitize_subprocess_env(os.environ.copy())
             r = subprocess.run(
                 qc.get("command", ""),
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=sanitized_env,
             )
             output = (
                 (r.stdout or "")
@@ -6555,8 +6541,10 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         pass
     try:
+        from tools.environments.local import _sanitize_subprocess_env
+        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(), env=sanitized_env
         )
         return _ok(
             rid,

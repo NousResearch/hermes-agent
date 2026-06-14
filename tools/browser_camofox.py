@@ -153,16 +153,6 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
         return session
 
 
-def _remember_page_state(session: Dict[str, Any], data: dict, fallback_url: str = "") -> str:
-    """Persist the latest page URL/title reported by Camofox."""
-    current_url = str(data.get("url") or fallback_url or "")
-    if current_url:
-        session["current_url"] = current_url
-    if "title" in data:
-        session["current_title"] = data.get("title") or ""
-    return current_url
-
-
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
     """Ensure a tab exists for the session, creating one if needed."""
     session = _get_session(task_id)
@@ -181,54 +171,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     resp.raise_for_status()
     data = resp.json()
     session["tab_id"] = data.get("tabId")
-    session["_last_tab_data"] = data
-    _remember_page_state(session, data, fallback_url=url)
     return session
-
-
-def _blocked_current_url_error(url: str) -> Optional[str]:
-    """Return an error message when a Camofox page URL must not be exposed."""
-    if not url:
-        return None
-
-    from urllib.parse import urlparse
-
-    scheme = (urlparse(url).scheme or "").lower()
-    if scheme not in {"http", "https"}:
-        return None
-
-    from tools.url_safety import is_always_blocked_url, is_safe_url
-
-    if is_always_blocked_url(url):
-        return "Blocked: redirect landed on a cloud metadata endpoint"
-    if not is_safe_url(url):
-        return "Blocked: redirect landed on a private/internal address"
-    return None
-
-
-def _navigate_blank_after_block(session: Dict[str, Any]) -> None:
-    """Move a blocked Camofox tab away from sensitive content."""
-    if not session.get("tab_id"):
-        return
-    try:
-        _post(
-            f"/tabs/{session['tab_id']}/navigate",
-            {"userId": session["user_id"], "url": "about:blank"},
-            timeout=10,
-        )
-        session["current_url"] = "about:blank"
-        session["current_title"] = ""
-    except Exception as exc:
-        logger.debug("Failed to clear blocked Camofox tab: %s", exc)
-
-
-def _blocked_page_response(session: Dict[str, Any], url: str) -> Optional[str]:
-    """Return a tool error JSON string if the current Camofox URL is unsafe."""
-    error = _blocked_current_url_error(url)
-    if not error:
-        return None
-    _navigate_blank_after_block(session)
-    return json.dumps({"success": False, "error": error})
 
 
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -301,7 +244,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             # Create tab with the target URL directly
             session = _ensure_tab(task_id, url)
-            data = session.get("_last_tab_data") or {"ok": True, "url": url}
+            data = {"ok": True, "url": url}
         else:
             # Navigate existing tab
             data = _post(
@@ -309,14 +252,9 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 {"userId": session["user_id"], "url": url},
                 timeout=60,
             )
-        final_url = _remember_page_state(session, data, fallback_url=url)
-        blocked = _blocked_page_response(session, final_url)
-        if blocked:
-            return blocked
-
         result = {
             "success": True,
-            "url": final_url or url,
+            "url": data.get("url", url),
             "title": data.get("title", ""),
         }
         vnc = get_vnc_url()
@@ -333,12 +271,6 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 f"/tabs/{session['tab_id']}/snapshot",
                 params={"userId": session["user_id"]},
             )
-            current_url = _remember_page_state(
-                session, snap_data, fallback_url=session.get("current_url", "")
-            )
-            blocked = _blocked_page_response(session, current_url)
-            if blocked:
-                return blocked
             snapshot_text = snap_data.get("snapshot", "")
             from tools.browser_tool import (
                 SNAPSHOT_SUMMARIZE_THRESHOLD,
@@ -377,12 +309,6 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
             f"/tabs/{session['tab_id']}/snapshot",
             params={"userId": session["user_id"]},
         )
-        current_url = _remember_page_state(
-            session, data, fallback_url=session.get("current_url", "")
-        )
-        blocked = _blocked_page_response(session, current_url)
-        if blocked:
-            return blocked
 
         snapshot = data.get("snapshot", "")
         refs_count = data.get("refsCount", 0)
@@ -423,12 +349,6 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/click",
             {"userId": session["user_id"], "ref": clean_ref},
         )
-        current_url = _remember_page_state(
-            session, data, fallback_url=session.get("current_url", "")
-        )
-        blocked = _blocked_page_response(session, current_url)
-        if blocked:
-            return blocked
         return json.dumps({
             "success": True,
             "clicked": clean_ref,
@@ -487,12 +407,6 @@ def camofox_back(task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/back",
             {"userId": session["user_id"]},
         )
-        current_url = _remember_page_state(
-            session, data, fallback_url=session.get("current_url", "")
-        )
-        blocked = _blocked_page_response(session, current_url)
-        if blocked:
-            return blocked
         return json.dumps({"success": True, "url": data.get("url", "")})
     except Exception as e:
         return tool_error(str(e), success=False)
@@ -546,12 +460,6 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/snapshot",
             params={"userId": session["user_id"]},
         )
-        current_url = _remember_page_state(
-            session, data, fallback_url=session.get("current_url", "")
-        )
-        blocked = _blocked_page_response(session, current_url)
-        if blocked:
-            return blocked
         snapshot = data.get("snapshot", "")
 
         # Parse img elements from the accessibility tree.
@@ -590,19 +498,6 @@ def camofox_vision(question: str, annotate: bool = False,
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
-        # If the server reports the current URL on snapshots, validate it before
-        # exposing screenshot pixels or accessibility text to the vision model.
-        snap_data = _get(
-            f"/tabs/{session['tab_id']}/snapshot",
-            params={"userId": session["user_id"]},
-        )
-        current_url = _remember_page_state(
-            session, snap_data, fallback_url=session.get("current_url", "")
-        )
-        blocked = _blocked_page_response(session, current_url)
-        if blocked:
-            return blocked
-
         # Get screenshot as binary PNG
         resp = _get_raw(
             f"/tabs/{session['tab_id']}/screenshot",
@@ -625,6 +520,10 @@ def camofox_vision(question: str, annotate: bool = False,
         annotation_context = ""
         if annotate:
             try:
+                snap_data = _get(
+                    f"/tabs/{session['tab_id']}/snapshot",
+                    params={"userId": session["user_id"]},
+                )
                 annotation_context = f"\n\nAccessibility tree (element refs for interaction):\n{snap_data.get('snapshot', '')[:3000]}"
             except Exception:
                 pass

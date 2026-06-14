@@ -16,7 +16,6 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
-from hermes_constants import get_hermes_dir
 
 
 class _MediaRoutingAdapter(BasePlatformAdapter):
@@ -68,19 +67,11 @@ def _event(thread_id=None):
     )
 
 
-def _trusted_audio_file(name: str) -> str:
-    path = get_hermes_dir("cache/audio", "audio_cache") / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"audio")
-    return str(path)
-
-
 @pytest.mark.asyncio
 async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
     adapter = _MediaRoutingAdapter()
     event = _event()
-    flac_path = _trusted_audio_file("speech.flac")
-    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{flac_path}")
+    adapter._message_handler = AsyncMock(return_value="MEDIA:/tmp/speech.flac")
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
 
@@ -88,7 +79,7 @@ async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path=flac_path,
+        file_path="/tmp/speech.flac",
         metadata=None,
     )
     adapter.send_voice.assert_not_awaited()
@@ -98,8 +89,7 @@ async def test_base_adapter_routes_telegram_flac_media_tag_to_document_sender():
 async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_sender():
     adapter = _MediaRoutingAdapter()
     event = _event()
-    ogg_path = _trusted_audio_file("speech.ogg")
-    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{ogg_path}")
+    adapter._message_handler = AsyncMock(return_value="MEDIA:/tmp/speech.ogg")
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
 
@@ -107,7 +97,7 @@ async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_
 
     adapter.send_document.assert_awaited_once_with(
         chat_id="chat-1",
-        file_path=ogg_path,
+        file_path="/tmp/speech.ogg",
         metadata=None,
     )
     adapter.send_voice.assert_not_awaited()
@@ -117,9 +107,8 @@ async def test_base_adapter_routes_non_voice_telegram_ogg_media_tag_to_document_
 async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_sender():
     adapter = _MediaRoutingAdapter()
     event = _event()
-    ogg_path = _trusted_audio_file("speech.ogg")
     adapter._message_handler = AsyncMock(
-        return_value=f"[[audio_as_voice]]\nMEDIA:{ogg_path}"
+        return_value="[[audio_as_voice]]\nMEDIA:/tmp/speech.ogg"
     )
     adapter.send_voice = AsyncMock(return_value=SendResult(success=True, message_id="voice"))
     adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
@@ -128,7 +117,7 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
 
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
-        audio_path=ogg_path,
+        audio_path="/tmp/speech.ogg",
         metadata=None,
     )
     adapter.send_document.assert_not_awaited()

@@ -51,7 +51,6 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
-from hermes_cli.auth import has_usable_secret
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +58,19 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+
+_UNRESOLVED_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+
+def _looks_unresolved_secret(secret: str) -> bool:
+    """True when ``secret`` is an unresolved ``${VAR}`` placeholder.
+
+    A misconfigured deployment may leave the literal ``${WEBHOOK_SECRET}``
+    string in config when the env var is missing. Treating that as a real
+    HMAC secret silently weakens auth — any attacker who can guess the
+    placeholder name can forge a valid signature. Reject it explicitly.
+    """
+    return bool(_UNRESOLVED_PLACEHOLDER_RE.fullmatch((secret or "").strip()))
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -142,7 +154,37 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
-            self._validate_route_config(name, route)
+            secret = route.get("secret", self._global_secret)
+            if not secret:
+                raise ValueError(
+                    f"[webhook] Route '{name}' has no HMAC secret. "
+                    f"Set 'secret' on the route or globally. "
+                    f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
+                )
+
+            # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a
+            # non-loopback bind. The escape hatch is for local testing only;
+            # serving an unauthenticated route on a public interface is a
+            # deployment-grade footgun we'd rather crash early than ship.
+            if secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
+                raise ValueError(
+                    f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
+                    f"but is bound to non-loopback host '{self._host}'. "
+                    f"INSECURE_NO_AUTH is for local testing only. "
+                    f"Refusing to start to prevent accidental exposure."
+                )
+            # deliver_only routes bypass the agent — the POST body becomes a
+            # direct push notification via the configured delivery target.
+            # Validate up-front so misconfiguration surfaces at startup rather
+            # than on the first webhook POST.
+            if route.get("deliver_only"):
+                deliver = route.get("deliver", "log")
+                if not deliver or deliver == "log":
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has deliver_only=true but "
+                        f"deliver is '{deliver}'. Direct delivery requires a "
+                        f"real target (telegram, discord, slack, github_comment, etc.)."
+                    )
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -260,63 +302,6 @@ class WebhookAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
-    def _validate_route_config(
-        self,
-        name: str,
-        route: Any,
-        *,
-        disallow_insecure_no_auth: bool = False,
-    ) -> None:
-        """Validate a webhook route before it can receive network requests."""
-        if not isinstance(route, dict):
-            raise ValueError(f"[webhook] Route '{name}' must be a mapping.")
-
-        secret = route.get("secret", self._global_secret)
-        if not secret:
-            raise ValueError(
-                f"[webhook] Route '{name}' has no HMAC secret. "
-                f"Set 'secret' on the route or globally. "
-                f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
-            )
-
-        if secret == _INSECURE_NO_AUTH:
-            if disallow_insecure_no_auth:
-                raise ValueError(
-                    f"[webhook] Dynamic route '{name}' uses INSECURE_NO_AUTH. "
-                    f"Dynamic subscriptions must use an HMAC secret."
-                )
-
-            # Safety rail: refuse to start if INSECURE_NO_AUTH is combined with a
-            # non-loopback bind. The escape hatch is for local testing only;
-            # serving an unauthenticated route on a public interface is a
-            # deployment-grade footgun we'd rather crash early than ship.
-            if not _is_loopback_host(self._host):
-                raise ValueError(
-                    f"[webhook] Route '{name}' uses INSECURE_NO_AUTH secret "
-                    f"but is bound to non-loopback host '{self._host}'. "
-                    f"INSECURE_NO_AUTH is for local testing only. "
-                    f"Refusing to start to prevent accidental exposure."
-                )
-        elif not has_usable_secret(secret, min_length=1):
-            raise ValueError(
-                f"[webhook] Route '{name}' has a placeholder HMAC secret. "
-                "Generate a real secret (e.g. `openssl rand -hex 32`) "
-                "before enabling the webhook gateway."
-            )
-
-        # deliver_only routes bypass the agent — the POST body becomes a
-        # direct push notification via the configured delivery target.
-        # Validate up-front so misconfiguration surfaces at startup rather
-        # than on the first webhook POST.
-        if route.get("deliver_only"):
-            deliver = route.get("deliver", "log")
-            if not deliver or deliver == "log":
-                raise ValueError(
-                    f"[webhook] Route '{name}' has deliver_only=true but "
-                    f"deliver is '{deliver}'. Direct delivery requires a "
-                    f"real target (telegram, discord, slack, github_comment, etc.)."
-                )
-
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
         from hermes_constants import get_hermes_home
@@ -335,25 +320,11 @@ class WebhookAdapter(BasePlatformAdapter):
             data = json.loads(subs_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
-            # Merge: static routes take precedence over dynamic ones.
-            # Dynamic routes are network-facing immediately after hot reload, so
-            # enforce the same auth invariants here before exposing them.
-            dynamic_routes = {}
-            for route_name, route in data.items():
-                if route_name in self._static_routes:
-                    continue
-                try:
-                    self._validate_route_config(
-                        route_name,
-                        route,
-                        disallow_insecure_no_auth=True,
-                    )
-                except ValueError as exc:
-                    logger.warning("[webhook] Skipping invalid dynamic route: %s", exc)
-                    continue
-                dynamic_routes[route_name] = route
-
-            self._dynamic_routes = dynamic_routes
+            # Merge: static routes take precedence over dynamic ones
+            self._dynamic_routes = {
+                k: v for k, v in data.items()
+                if k not in self._static_routes
+            }
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_mtime = mtime
             logger.info(
@@ -632,9 +603,9 @@ class WebhookAdapter(BasePlatformAdapter):
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
         """Validate webhook signature (GitHub, GitLab, generic HMAC-SHA256)."""
-        if not has_usable_secret(secret, min_length=1):
+        if _looks_unresolved_secret(secret):
             logger.warning(
-                "[webhook] Rejecting request: configured secret is a placeholder"
+                "[webhook] Unresolved placeholder secret configured (e.g. ${WEBHOOK_SECRET}) — rejecting"
             )
             return False
 

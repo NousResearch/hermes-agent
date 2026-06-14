@@ -1,0 +1,1 @@
+Recorded learnings: For testing ABC/base class default methods where an existing mock class overrides them, create a new minimal subclass that purposefully omits overrides. This allows direct coverage of the base method default implementations, such as the MemoryProvider.shutdown no-op.

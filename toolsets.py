@@ -134,18 +134,6 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-
-    "curator": {
-        "description": "Curator review tools for reading and managing Hermes skills only",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
-        "includes": []
-    },
-
-    "curator_readonly": {
-        "description": "Read-only curator review tools for dry-run reports",
-        "tools": ["skills_list", "skill_view"],
-        "includes": []
-    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",

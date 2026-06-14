@@ -1028,15 +1028,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    from gateway.session_context import get_terminal_cwd
-
-    cwd = get_terminal_cwd(default_cwd)
+    cwd = os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = get_terminal_cwd() or os.getcwd()
+        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)
@@ -1073,12 +1071,11 @@ def _get_env_config() -> Dict[str, Any]:
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
         "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
-        # Persistent shell: SSH defaults to the config-level persistent_shell
-        # setting (true by default for non-local backends); local is always opt-in.
-        # Per-backend env vars override if explicitly set.
+        # Persistent shell: explicit opt-in for SSH. Per-backend env vars
+        # override the config-level setting; local remains separately opt-in.
         "ssh_persistent": os.getenv(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            os.getenv("TERMINAL_PERSISTENT_SHELL", "false"),
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
@@ -1408,24 +1405,22 @@ def cleanup_all_environments():
 
 def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
-    container_task_id = _resolve_container_task_id(task_id)
-
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
     env = None
     with _env_lock:
-        env = _active_environments.pop(container_task_id, None)
-        _last_activity.pop(container_task_id, None)
+        env = _active_environments.pop(task_id, None)
+        _last_activity.pop(task_id, None)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
-        _creation_locks.pop(container_task_id, None)
+        _creation_locks.pop(task_id, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(container_task_id)
+        clear_file_ops_cache(task_id)
     except ImportError:
         pass
 
@@ -1440,14 +1435,14 @@ def cleanup_vm(task_id: str):
         elif hasattr(env, 'terminate'):
             env.terminate()
 
-        logger.info("Manually cleaned up environment for task: %s", container_task_id)
+        logger.info("Manually cleaned up environment for task: %s", task_id)
 
     except Exception as e:
         error_str = str(e)
         if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", container_task_id)
+            logger.info("Environment for task %s already cleaned up", task_id)
         else:
-            logger.warning("Error cleaning up environment for task %s: %s", container_task_id, e)
+            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
 
 
 def _atexit_cleanup():

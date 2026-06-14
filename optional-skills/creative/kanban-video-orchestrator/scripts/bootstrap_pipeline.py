@@ -58,11 +58,9 @@ function. A minimal example:
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
-import shlex
 import sys
 from pathlib import Path
 
@@ -75,25 +73,6 @@ def load_template(name: str) -> str:
 
 PROFILE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
-TENANT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
-PLAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.@/+:-]{0,127}$")
-
-
-def shell_quote(value: object) -> str:
-    """Return a shell-safe literal for generated setup scripts."""
-    return shlex.quote(str(value))
-
-
-def write_text_command(path_expr: str, content: str) -> str:
-    """Return a shell command that writes content without heredoc parsing."""
-    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    writer = (
-        "import base64, pathlib, sys; "
-        "pathlib.Path(sys.argv[1]).write_text("
-        "base64.b64decode(sys.argv[2]).decode(\"utf-8\"), encoding=\"utf-8\")"
-    )
-    return f"python3 -c {shell_quote(writer)} {path_expr} {shell_quote(encoded)}"
 
 
 def validate_plan(plan: dict) -> list[str]:
@@ -105,21 +84,6 @@ def validate_plan(plan: dict) -> list[str]:
     for k in required_top:
         if k not in plan:
             errors.append(f"missing required key: {k}")
-
-    if "tenant" in plan and not TENANT_RE.match(str(plan["tenant"])):
-        errors.append("tenant must match [a-z0-9][a-z0-9_-]{0,63}")
-
-    if "api_keys_required" in plan:
-        if not isinstance(plan["api_keys_required"], list):
-            errors.append(
-                "api_keys_required must be a list of environment variable names"
-            )
-        else:
-            for i, key in enumerate(plan["api_keys_required"]):
-                if not isinstance(key, str) or not ENV_VAR_RE.match(key):
-                    errors.append(
-                        f"api_keys_required[{i}] must be an uppercase environment variable name"
-                    )
 
     if "team" in plan:
         if not isinstance(plan["team"], list) or not plan["team"]:
@@ -148,22 +112,14 @@ def validate_plan(plan: dict) -> list[str]:
                         )
                     seen_profiles.add(t["profile"])
                 # Toolsets / skills must be lists, not strings.
-                for list_key in ["toolsets", "skills"]:
-                    if list_key in t:
-                        if not isinstance(t[list_key], list):
-                            errors.append(
-                                f"team[{i}].{list_key} must be a list of strings"
-                            )
-                            continue
-                        for j, item in enumerate(t[list_key]):
-                            if (
-                                not isinstance(item, str)
-                                or not PLAN_TOKEN_RE.match(item)
-                            ):
-                                errors.append(
-                                    f"team[{i}].{list_key}[{j}] "
-                                    "must be a safe identifier"
-                                )
+                if "toolsets" in t and not isinstance(t["toolsets"], list):
+                    errors.append(
+                        f"team[{i}].toolsets must be a list of strings"
+                    )
+                if "skills" in t and not isinstance(t["skills"], list):
+                    errors.append(
+                        f"team[{i}].skills must be a list of strings"
+                    )
 
     if "slug" in plan:
         if not SLUG_RE.match(plan["slug"]):
@@ -372,8 +328,7 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
     # API key checks
     key_checks = []
     for key in plan.get("api_keys_required", []):
-        key_arg = shell_quote(key)
-        key_checks.append(f"check_key {key_arg} hermes {key_arg} || exit 1")
+        key_checks.append(f'check_key {key} hermes {key} || exit 1')
     key_checks_str = "\n".join(key_checks) if key_checks else "# (no API keys required)"
 
     # Scene dirs
@@ -387,8 +342,7 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
     profile_creates = []
     for t in plan["team"]:
         profile_creates.append(
-            f"hermes profile create {shell_quote(t['profile'])} "
-            "--clone 2>/dev/null || true"
+            f'hermes profile create {t["profile"]} --clone 2>/dev/null || true'
         )
 
     # Profile config — emit JSON arrays so the bash function can pass them
@@ -397,18 +351,20 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
     for t in plan["team"]:
         ts_json = json.dumps(t["toolsets"])
         sk_json = json.dumps(t["skills"])
+        # Use single-quoted bash strings; JSON only contains "/[/], no single
+        # quotes, so this is safe.
         profile_configs.append(
-            "configure_profile "
-            f"{shell_quote(t['profile'])} {shell_quote(ts_json)} {shell_quote(sk_json)}"
+            f"configure_profile {t['profile']!r} {ts_json!r} {sk_json!r}"
         )
 
     # SOUL writes — uses heredocs per profile
     soul_writes = []
     for t in plan["team"]:
-        soul_path = f'"$HOME/.hermes/profiles/{t["profile"]}/SOUL.md"'
         soul_writes.append(
-            write_text_command(soul_path, render_soul_md(t, plan) + "\n")
-            + f"\necho {shell_quote('  ✓ SOUL.md for ' + t['profile'])}"
+            f'cat > "$HOME/.hermes/profiles/{t["profile"]}/SOUL.md" <<\'SOUL_EOF\'\n'
+            f"{render_soul_md(t, plan)}\n"
+            f"SOUL_EOF\n"
+            f'echo "  ✓ SOUL.md for {t["profile"]}"'
         )
 
     # Taste writes (placeholder; real content optional)
@@ -427,23 +383,17 @@ def render_setup_sh(plan: dict, brief_md: str, team_md: str) -> str:
     asset_copies = "# Add cp/rsync commands here for any provided assets"
 
     out = tmpl
-    out = out.replace(
-        "{{TITLE_ARG}}", shell_quote(f"Direct production of {plan['title']}")
-    )
-    out = out.replace("{{SLUG_SH}}", shell_quote(plan["slug"]))
-    out = out.replace("{{TENANT_SH}}", shell_quote(plan["tenant"]))
+    out = out.replace("{{TITLE}}", plan["title"])
+    out = out.replace("{{SLUG}}", plan["slug"])
+    out = out.replace("{{TENANT}}", plan["tenant"])
     out = out.replace("{{WORKSPACE}}", f"~/projects/video-pipeline/{plan['slug']}")
     out = out.replace("{{KEY_CHECKS}}", key_checks_str)
     out = out.replace("{{SCENE_DIRS}}", scene_dirs)
     out = out.replace("{{PROFILE_CREATE_COMMANDS}}", "\n".join(profile_creates))
     out = out.replace("{{PROFILE_CONFIG_COMMANDS}}", "\n".join(profile_configs))
     out = out.replace("{{SOUL_WRITES}}", "\n".join(soul_writes))
-    out = out.replace(
-        "{{BRIEF_WRITE}}", write_text_command('"$WORKSPACE/brief.md"', brief_md)
-    )
-    out = out.replace(
-        "{{TEAM_WRITE}}", write_text_command('"$WORKSPACE/TEAM.md"', team_md)
-    )
+    out = out.replace("{{BRIEF_CONTENTS}}", brief_md)
+    out = out.replace("{{TEAM_CONTENTS}}", team_md)
     out = out.replace("{{TASTE_WRITES}}", taste_writes)
     out = out.replace("{{ASSET_COPIES}}", asset_copies)
 

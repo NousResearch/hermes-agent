@@ -34,6 +34,7 @@ import re
 import traceback
 import uuid
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set
 
 try:
@@ -45,7 +46,24 @@ try:
 except ImportError:
     DINGTALK_STREAM_AVAILABLE = False
     dingtalk_stream = None  # type: ignore[assignment]
-    ChatbotMessage = None  # type: ignore[assignment]
+    class _FallbackChatbotMessage(SimpleNamespace):
+        @classmethod
+        def from_dict(cls, data):
+            data = data if isinstance(data, dict) else {}
+            return cls(
+                session_webhook=data.get("sessionWebhook") if data.get("sessionWebhook") is not None else data.get("session_webhook") if data.get("session_webhook") is not None else "",
+                message_id=data.get("messageId") if data.get("messageId") is not None else data.get("msgId") if data.get("msgId") is not None else data.get("message_id") if data.get("message_id") is not None else "",
+                conversation_id=data.get("conversationId") if data.get("conversationId") is not None else data.get("conversation_id") if data.get("conversation_id") is not None else "",
+                conversation_type=str(data.get("conversationType") if data.get("conversationType") is not None else data.get("conversation_type") if data.get("conversation_type") is not None else "1"),
+                sender_id=data.get("senderId") if data.get("senderId") is not None else data.get("sender_id") if data.get("sender_id") is not None else "",
+                sender_staff_id=data.get("senderStaffId") if data.get("senderStaffId") is not None else data.get("sender_staff_id") if data.get("sender_staff_id") is not None else "",
+                sender_nick=data.get("senderNick") if data.get("senderNick") is not None else data.get("sender_nick") if data.get("sender_nick") is not None else "",
+                text=data.get("text"),
+                rich_text=data.get("richText") if data.get("richText") is not None else data.get("rich_text"),
+                is_in_at_list=bool(data.get("isInAtList") if data.get("isInAtList") is not None else data.get("is_in_at_list")),
+            )
+
+    ChatbotMessage = _FallbackChatbotMessage  # type: ignore[assignment]
     CallbackMessage = None  # type: ignore[assignment]
     AckMessage = type(
         "AckMessage",
@@ -79,13 +97,45 @@ try:
 
     CARD_SDK_AVAILABLE = True
 except ImportError:
+    class _FallbackSDKModel:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    _card_model_names = [
+        "CreateCardRequest",
+        "CreateCardRequestCardData",
+        "CreateCardRequestImGroupOpenSpaceModel",
+        "CreateCardRequestImRobotOpenSpaceModel",
+        "CreateCardHeaders",
+        "DeliverCardRequest",
+        "DeliverCardRequestImGroupOpenDeliverModel",
+        "DeliverCardRequestImRobotOpenDeliverModel",
+        "DeliverCardHeaders",
+        "StreamingUpdateRequest",
+        "StreamingUpdateHeaders",
+    ]
+    _robot_model_names = [
+        "RobotRecallEmotionRequestTextEmotion",
+        "RobotRecallEmotionRequest",
+        "RobotRecallEmotionHeaders",
+        "RobotReplyEmotionRequestTextEmotion",
+        "RobotReplyEmotionRequest",
+        "RobotReplyEmotionHeaders",
+        "RobotMessageFileDownloadRequest",
+        "RobotMessageFileDownloadHeaders",
+    ]
+
     CARD_SDK_AVAILABLE = False
     dingtalk_card_client = None
-    dingtalk_card_models = None
+    dingtalk_card_models = SimpleNamespace(
+        **{name: _FallbackSDKModel for name in _card_model_names}
+    )
     dingtalk_robot_client = None
-    dingtalk_robot_models = None
+    dingtalk_robot_models = SimpleNamespace(
+        **{name: _FallbackSDKModel for name in _robot_model_names}
+    )
     open_api_models = None
-    tea_util_models = None
+    tea_util_models = SimpleNamespace(RuntimeOptions=_FallbackSDKModel)
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -143,7 +193,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         The gateway gates streaming cursor + edit behaviour on this flag,
         so we must reflect the actual adapter capability at runtime.
         """
-        return bool(self._card_template_id and self._card_sdk)
+        return bool(self._card_template_id and self._card_sdk_ready())
 
     @property
     def REQUIRES_EDIT_FINALIZE(self) -> bool:  # noqa: N802
@@ -152,7 +202,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         identical to the last streamed update.  Enabled only when cards
         are configured — webhook-only DingTalk doesn't need it.
         """
-        return bool(self._card_template_id and self._card_sdk)
+        return bool(self._card_template_id and self._card_sdk_ready())
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DINGTALK)
@@ -205,6 +255,32 @@ class DingTalkAdapter(BasePlatformAdapter):
         # Track fire-and-forget emoji/reaction coroutines so Python's GC
         # doesn't drop them mid-flight, and we can cancel them on disconnect.
         self._bg_tasks: Set[asyncio.Task] = set()
+
+
+    def _card_sdk_ready(self) -> bool:
+        """Return True only when the AI Card SDK and model modules are usable."""
+        return bool(
+            CARD_SDK_AVAILABLE
+            and self._card_sdk
+            and dingtalk_card_models
+            and tea_util_models
+        )
+
+    def _robot_sdk_ready(self) -> bool:
+        """Return True only when the DingTalk robot SDK and model modules are usable."""
+        return bool(
+            CARD_SDK_AVAILABLE
+            and self._robot_sdk
+            and dingtalk_robot_models
+            and tea_util_models
+        )
+
+    def _log_card_sdk_unavailable(self) -> None:
+        """Log the common card-SDK fallback reason at debug level."""
+        logger.debug(
+            "[%s] AI Card SDK unavailable, using webhook fallback",
+            self.name,
+        )
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -822,31 +898,34 @@ class DingTalkAdapter(BasePlatformAdapter):
         is_final_reply = reply_to is not None
 
         # Try AI Card first (using alibabacloud_dingtalk.card_1_0 SDK).
-        if self._card_template_id and current_message and self._card_sdk:
-            # Close any previously-open streaming cards for this chat
-            # before creating a new one (handles tool-progress → final-
-            # response handoff; also cleans up lingering commentary cards).
-            await self._close_streaming_siblings(chat_id)
+        if self._card_template_id and current_message:
+            if not self._card_sdk_ready():
+                self._log_card_sdk_unavailable()
+            else:
+                # Close any previously-open streaming cards for this chat
+                # before creating a new one (handles tool-progress → final-
+                # response handoff; also cleans up lingering commentary cards).
+                await self._close_streaming_siblings(chat_id)
 
-            result = await self._create_and_stream_card(
-                chat_id, current_message, content,
-                finalize=is_final_reply,
-            )
-            if result and result.success:
-                if is_final_reply:
-                    # Final reply: card closed, swap Thinking → Done.
-                    self._fire_done_reaction(chat_id)
-                else:
-                    # Intermediate (tool progress / commentary / streaming
-                    # first chunk): keep the card open and track it so the
-                    # next send() auto-closes it as a sibling, or
-                    # edit_message(finalize=True) closes it explicitly.
-                    self._streaming_cards.setdefault(chat_id, {})[
-                        result.message_id
-                    ] = content
-                return result
+                result = await self._create_and_stream_card(
+                    chat_id, current_message, content,
+                    finalize=is_final_reply,
+                )
+                if result and result.success:
+                    if is_final_reply:
+                        # Final reply: card closed, swap Thinking → Done.
+                        self._fire_done_reaction(chat_id)
+                    else:
+                        # Intermediate (tool progress / commentary / streaming
+                        # first chunk): keep the card open and track it so the
+                        # next send() auto-closes it as a sibling, or
+                        # edit_message(finalize=True) closes it explicitly.
+                        self._streaming_cards.setdefault(chat_id, {})[
+                            result.message_id
+                        ] = content
+                    return result
 
-            logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
+                logger.warning("[%s] AI Card send failed, falling back to webhook", self.name)
 
         logger.debug("[%s] Sending via webhook", self.name)
         # Normalize markdown for DingTalk
@@ -861,18 +940,30 @@ class DingTalkAdapter(BasePlatformAdapter):
             resp = await self._http_client.post(
                 session_webhook, json=payload, timeout=15.0
             )
-            if resp.status_code < 300:
+            status_code_raw = getattr(resp, "status_code", None)
+            if isinstance(status_code_raw, int):
+                status_code = status_code_raw
+            else:
+                status_code = 500
+            if status_code == 500 and status_code_raw not in (None, 500):
+                logger.debug(
+                    "[%s] Non-integer DingTalk webhook status_code %r; treating as 500",
+                    self.name,
+                    status_code_raw,
+                )
+
+            if status_code < 300:
                 # Webhook path: fire Done only for final replies, same as
                 # the card path.
                 if is_final_reply:
                     self._fire_done_reaction(chat_id)
                 return SendResult(success=True, message_id=uuid.uuid4().hex[:12])
-            body = resp.text
+            body = str(getattr(resp, "text", "") or "")
             logger.warning(
-                "[%s] Send failed HTTP %d: %s", self.name, resp.status_code, body[:200]
+                "[%s] Send failed HTTP %d: %s", self.name, status_code, body[:200]
             )
             return SendResult(
-                success=False, error=f"HTTP {resp.status_code}: {body[:200]}"
+                success=False, error=f"HTTP {status_code}: {body[:200]}"
             )
         except httpx.TimeoutException:
             return SendResult(
@@ -986,6 +1077,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         state, and we track that in ``_streaming_cards`` for sibling
         cleanup on the next send.
         """
+        if not self._card_sdk_ready():
+            self._log_card_sdk_unavailable()
+            return None
+
         try:
             token = await self._get_access_token()
             if not token:
@@ -1107,6 +1202,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         """
         if not message_id:
             return SendResult(success=False, error="message_id required")
+        if not self._card_sdk_ready():
+            self._log_card_sdk_unavailable()
+            return SendResult(success=False, error="AI Card SDK unavailable")
         token = await self._get_access_token()
         if not token:
             return SendResult(success=False, error="No access token")
@@ -1145,6 +1243,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         finalize: bool = False,
     ) -> None:
         """Stream content to an existing AI Card."""
+        if not self._card_sdk_ready():
+            logger.debug("[%s] AI Card SDK unavailable; skipping stream update", self.name)
+            return
+
         stream_request = dingtalk_card_models.StreamingUpdateRequest(
             out_track_id=out_track_id,
             guid=str(uuid.uuid4()),
@@ -1185,7 +1287,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         recall: bool = False,
     ) -> None:
         """Add or recall an emoji reaction on a message."""
-        if not self._robot_sdk or not open_msg_id or not open_conversation_id:
+        if not open_msg_id or not open_conversation_id:
+            return
+        if not self._robot_sdk_ready():
+            logger.debug("[%s] Robot SDK unavailable; skipping emotion", self.name)
             return
         action = "recall" if recall else "reply"
         try:
@@ -1290,9 +1395,9 @@ class DingTalkAdapter(BasePlatformAdapter):
         self, code: str, robot_code: str, token: str, obj, key: str
     ) -> None:
         """Fetch download URL for a single code using the robot SDK."""
-        if not self._robot_sdk:
-            logger.warning(
-                "[%s] Robot SDK not initialized, cannot resolve media code",
+        if not self._robot_sdk_ready():
+            logger.debug(
+                "[%s] Robot SDK unavailable, cannot resolve media code",
                 self.name,
             )
             return
@@ -1388,8 +1493,39 @@ class _IncomingHandler(
             if isinstance(data, str):
                 data = json.loads(data)
 
-            # Parse dict into ChatbotMessage using SDK's from_dict
-            chatbot_msg = ChatbotMessage.from_dict(data)
+            if ChatbotMessage is not None and hasattr(ChatbotMessage, "from_dict"):
+                # Parse dict into ChatbotMessage using SDK's from_dict
+                chatbot_msg = ChatbotMessage.from_dict(data)
+            else:
+                # Unit-test / no-SDK fallback: build a minimal message object
+                # with the attribute names the adapter expects.
+                chatbot_msg = SimpleNamespace()
+                if isinstance(data, dict):
+                    chatbot_msg.message_id = data.get("msgId") or data.get("msg_id") or ""
+                    chatbot_msg.conversation_id = (
+                        data.get("conversationId") or data.get("conversation_id") or ""
+                    )
+                    chatbot_msg.conversation_type = (
+                        data.get("conversationType") or data.get("conversation_type") or "1"
+                    )
+                    chatbot_msg.sender_id = data.get("senderId") or data.get("sender_id") or ""
+                    chatbot_msg.sender_staff_id = (
+                        data.get("senderStaffId") or data.get("sender_staff_id") or ""
+                    )
+                    chatbot_msg.sender_nick = data.get("senderNick") or data.get("sender_nick") or ""
+                    chatbot_msg.text = data.get("text") or ""
+                    chatbot_msg.rich_text = data.get("rich_text") or None
+                    chatbot_msg.session_webhook = (
+                        data.get("sessionWebhook") or data.get("session_webhook") or ""
+                    )
+                    chatbot_msg.session_webhook_expired_time = (
+                        data.get("sessionWebhookExpiredTime")
+                        or data.get("session_webhook_expired_time")
+                        or 0
+                    )
+                    chatbot_msg.is_in_at_list = bool(
+                        data.get("isInAtList") or data.get("is_in_at_list") or False
+                    )
 
             # Ensure session_webhook is populated even if the SDK's
             # from_dict() did not map it (field name mismatch across

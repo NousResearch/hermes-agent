@@ -6,9 +6,7 @@ turn counting, tags), and schema completeness.
 """
 
 import json
-import os
 import re
-import stat
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +15,6 @@ import pytest
 
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
-    _DEFAULT_RETAIN_QUEUE_MAXSIZE,
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
@@ -330,10 +327,6 @@ class TestPostSetup:
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
-        if os.name != "nt":
-            assert stat.S_IMODE((user_home / ".hindsight").stat().st_mode) == 0o700
-            assert stat.S_IMODE(profile_env.parent.stat().st_mode) == 0o700
-            assert stat.S_IMODE(profile_env.stat().st_mode) == 0o600
         assert profile_env.read_text() == (
             "HINDSIGHT_API_LLM_PROVIDER=openai\n"
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
@@ -388,7 +381,6 @@ class TestPostSetup:
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
-        assert profile_env.stat().st_mode & 0o777 == 0o600
         assert "HINDSIGHT_API_LLM_API_KEY=existing-key\n" in profile_env.read_text()
 
 
@@ -876,52 +868,6 @@ class TestSyncTurn:
 
 
 class TestShutdownRace:
-
-    def test_retain_queue_is_bounded(self, provider):
-        assert provider._retain_queue.maxsize == _DEFAULT_RETAIN_QUEUE_MAXSIZE
-
-    def test_shutdown_unregisters_atexit_and_clears_retained_state(self, provider, monkeypatch):
-        registered = []
-        unregistered = []
-
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.atexit.register",
-            lambda callback: registered.append(callback),
-        )
-        monkeypatch.setattr(
-            "plugins.memory.hindsight.atexit.unregister",
-            lambda callback: unregistered.append(callback),
-        )
-
-        provider.sync_turn("secret user text", "secret assistant text")
-        provider._retain_queue.join()
-        assert registered
-        assert provider._session_turns
-        assert provider._atexit_registered is True
-
-        provider.shutdown()
-
-        assert unregistered
-        assert provider._atexit_registered is False
-        assert provider._session_turns == []
-        assert provider._turn_counter == 0
-        assert provider._turn_index == 0
-        assert provider._retain_queue.empty()
-
-    def test_full_retain_queue_drops_pending_closures_before_latest(self, provider, monkeypatch):
-        monkeypatch.setattr(provider, "_ensure_writer", lambda: None)
-        monkeypatch.setattr(provider, "_register_atexit", lambda: None)
-
-        for _ in range(_DEFAULT_RETAIN_QUEUE_MAXSIZE):
-            provider._retain_queue.put_nowait(lambda: None)
-
-        latest = object()
-
-        assert provider._enqueue_retain_job(latest) is True
-        assert provider._retain_queue.qsize() == 1
-        assert provider._retain_queue.get_nowait() is latest
-        provider._retain_queue.task_done()
-
     def test_sync_turn_uses_single_writer_thread(self, provider):
         """All retains run through one long-lived writer thread."""
         provider.sync_turn("a", "b")

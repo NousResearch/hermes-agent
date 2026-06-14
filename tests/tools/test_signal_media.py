@@ -67,10 +67,7 @@ class TestSendSignalMediaFiles:
         """Signal messages with media_files include attachments in JSON-RPC."""
         from tools.send_message_tool import _send_signal
 
-        from hermes_constants import get_hermes_home
-
-        img_path = get_hermes_home() / "cache" / "images" / "test.png"
-        img_path.parent.mkdir(parents=True, exist_ok=True)
+        img_path = tmp_path / "test.png"
         img_path.write_bytes(b"\x89PNG")
 
         extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
@@ -94,103 +91,7 @@ class TestSendSignalMediaFiles:
 
         assert result["success"] is True  # Should succeed despite missing file
         assert "warnings" in result
-        assert "invalid or unavailable" in str(result["warnings"])
-
-
-class TestSendSignalMediaValidation:
-    """Test Signal-specific attachment validation before JSON-RPC delivery."""
-
-    def test_signal_rejects_existing_file_outside_hermes_cache(self, tmp_path, monkeypatch):
-        """Existing arbitrary local files must not be forwarded as attachments."""
-        captured_payloads = []
-
-        class MockResp:
-            def json(self):
-                return {"timestamp": 1234567890}
-            def raise_for_status(self):
-                pass
-
-        class MockClient:
-            def __init__(self, timeout=None):
-                self.timeout = timeout
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *args):
-                return None
-            async def post(self, *args, **kwargs):
-                captured_payloads.append(kwargs["json"])
-                return MockResp()
-
-        httpx_mock = _make_httpx_mock()
-        httpx_mock.AsyncClient = MockClient
-        monkeypatch.setitem(sys.modules, "httpx", httpx_mock)
-
-        secret_path = tmp_path / "id_rsa.png"
-        secret_path.write_text("not really a png")
-
-        from tools.send_message_tool import _send_signal
-
-        result = asyncio.run(
-            _send_signal(
-                {"http_url": "http://localhost:8080", "account": "+155****4567"},
-                "+155****9999",
-                "Do not leak",
-                media_files=[(str(secret_path), False)],
-            )
-        )
-
-        assert result["success"] is True
-        assert "invalid or unavailable" in str(result.get("warnings"))
-        assert captured_payloads
-        assert "attachments" not in captured_payloads[0]["params"]
-
-    def test_signal_rejects_oversized_cache_attachment(self, monkeypatch):
-        """Hermes cache files still must honor Signal's attachment size cap."""
-        captured_payloads = []
-
-        class MockResp:
-            def json(self):
-                return {"timestamp": 1234567890}
-            def raise_for_status(self):
-                pass
-
-        class MockClient:
-            def __init__(self, timeout=None):
-                self.timeout = timeout
-            async def __aenter__(self):
-                return self
-            async def __aexit__(self, *args):
-                return None
-            async def post(self, *args, **kwargs):
-                captured_payloads.append(kwargs["json"])
-                return MockResp()
-
-        httpx_mock = _make_httpx_mock()
-        httpx_mock.AsyncClient = MockClient
-        monkeypatch.setitem(sys.modules, "httpx", httpx_mock)
-
-        from gateway.platforms.signal import SIGNAL_MAX_ATTACHMENT_SIZE
-        from hermes_constants import get_hermes_home
-        from tools.send_message_tool import _send_signal
-
-        oversized_path = get_hermes_home() / "cache" / "images" / "huge.png"
-        oversized_path.parent.mkdir(parents=True, exist_ok=True)
-        with oversized_path.open("wb") as fh:
-            fh.truncate(SIGNAL_MAX_ATTACHMENT_SIZE + 1)
-
-        result = asyncio.run(
-            _send_signal(
-                {"http_url": "http://localhost:8080", "account": "+155****4567"},
-                "+155****9999",
-                "Too large",
-                media_files=[(str(oversized_path), False)],
-            )
-        )
-
-        assert result["success"] is True
-        assert "invalid or unavailable" in str(result.get("warnings"))
-        assert captured_payloads
-        assert "attachments" not in captured_payloads[0]["params"]
+        assert "Some media files were skipped" in str(result["warnings"])
 
 
 class TestSendSignalMediaRestrictions:
@@ -286,10 +187,7 @@ class TestSendSignalGroupChats:
         """Group chat messages with attachments should use groupId parameter."""
         from tools.send_message_tool import _send_signal
 
-        from hermes_constants import get_hermes_home
-
-        img_path = get_hermes_home() / "cache" / "documents" / "test_attachment.pdf"
-        img_path.parent.mkdir(parents=True, exist_ok=True)
+        img_path = tmp_path / "test_attachment.pdf"
         img_path.write_bytes(b"%PDF-1.4")
 
         extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}

@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,57 @@ _FORM_BODY_RE = re.compile(
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
 )
+
+_URL_SECRET_DECODE_PASSES = 3
+
+
+def _decoded_url_variants(value: str) -> list[str]:
+    """Return raw and repeatedly URL-decoded variants for secret scanning."""
+    variants = [value]
+    seen = {value}
+    frontier = [value]
+    for _ in range(_URL_SECRET_DECODE_PASSES):
+        next_frontier = []
+        for candidate in frontier:
+            for decoded in (urllib.parse.unquote(candidate), urllib.parse.unquote_plus(candidate)):
+                if decoded not in seen:
+                    seen.add(decoded)
+                    variants.append(decoded)
+                    next_frontier.append(decoded)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    return variants
+
+
+def url_contains_secret(url: str) -> bool:
+    """Return True when a URL appears to contain a known secret token.
+
+    The browser/web tools use this before navigation or extraction. It checks
+    raw text, repeatedly percent-decoded text, and reconstructed URL component
+    values so attackers cannot hide token prefixes with reversible URL encoding
+    or simple query/path splitting.
+    """
+    if not url:
+        return False
+
+    scan_values: list[str] = []
+    for candidate in _decoded_url_variants(str(url)):
+        scan_values.append(candidate)
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+        except ValueError:
+            continue
+        component_values = [parsed.netloc, parsed.path, parsed.query, parsed.fragment]
+        if parsed.path:
+            component_values.append("".join(segment for segment in parsed.path.split("/") if segment))
+        if parsed.query:
+            query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            component_values.extend(value for _, value in query_pairs)
+            component_values.append("".join(value for _, value in query_pairs))
+        scan_values.extend(component_values)
+
+    return any(value and _PREFIX_RE.search(value) for value in scan_values)
 
 
 def mask_secret(

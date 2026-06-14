@@ -105,6 +105,27 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
     )
 
 
+def test_root_executed_entrypoint_is_not_hermes_writable(dockerfile_text):
+    """The root bootstrap script must not live in a hermes-writable path.
+
+    The image starts as root so the entrypoint can remap the runtime UID/GID
+    and fix volume ownership before dropping privileges.  If the hermes user
+    can replace that entrypoint or its containing directory, a compromised
+    runtime process can regain root on container restart.
+    """
+    assert "COPY --chown=hermes:hermes . ." in dockerfile_text
+    assert any(
+        "chown" in step
+        and "root:root" in step
+        and "/opt/hermes/docker" in step
+        for step in _run_steps(dockerfile_text)
+    ), "Dockerfile must restore root ownership of root-executed docker entrypoint files"
+    assert any(
+        "chmod" in step and "go-w" in step and "/opt/hermes/docker" in step
+        for step in _run_steps(dockerfile_text)
+    ), "Dockerfile must remove group/other write access from the entrypoint directory"
+
+
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     # The TUI workspace manifests must be present so ``npm install`` can
     # resolve dependencies. The bundled ``hermes-ink`` workspace package is

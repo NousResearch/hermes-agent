@@ -70,14 +70,13 @@ class TestFailoverReason:
 
 class TestClassifiedError:
     def test_is_auth_property(self):
-        e1 = ClassifiedError(reason=FailoverReason.auth)
-        assert e1.is_auth is True
+        for reason in FailoverReason:
 
-        e2 = ClassifiedError(reason=FailoverReason.auth_permanent)
-        assert e2.is_auth is True
-
-        e3 = ClassifiedError(reason=FailoverReason.billing)
-        assert e3.is_auth is False
+            e = ClassifiedError(reason=reason)
+            if reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
+                assert e.is_auth is True, f"Expected is_auth=True for {reason}"
+            else:
+                assert e.is_auth is False, f"Expected is_auth=False for {reason}"
 
     def test_defaults(self):
         e = ClassifiedError(reason=FailoverReason.unknown)

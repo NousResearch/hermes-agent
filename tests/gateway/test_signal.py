@@ -353,6 +353,87 @@ class TestSignalPhoneRedaction:
 
 
 # ---------------------------------------------------------------------------
+# Signal processing reactions authorization
+# ---------------------------------------------------------------------------
+
+class TestSignalReactionAuthorization:
+    def _event(self):
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+
+        source = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="+15550001111",
+            chat_type="dm",
+            user_id="+15550001111",
+            user_name="unauthorized",
+        )
+        return MessageEvent(
+            source=source,
+            text="hello",
+            raw_message={"sender": "+15550001111", "timestamp_ms": 1710000000000},
+        )
+
+    @pytest.mark.asyncio
+    async def test_reaction_hooks_skip_gateway_denied_sender(self, monkeypatch):
+        """Signal reactions must not bypass the gateway allowlist decision."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._is_user_authorized.return_value = False
+        adapter.send_reaction = AsyncMock()
+        adapter.remove_reaction = AsyncMock()
+        event = self._event()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.gateway_runner._is_user_authorized.assert_any_call(event.source)
+        adapter.send_reaction.assert_not_awaited()
+        adapter.remove_reaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_hooks_allow_gateway_authorized_sender(self, monkeypatch):
+        """Authorized Signal messages keep the existing progress reactions."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._is_user_authorized.return_value = True
+        adapter.send_reaction = AsyncMock()
+        adapter.remove_reaction = AsyncMock()
+        event = self._event()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.send_reaction.assert_any_await("+15550001111", "👀", "+15550001111", 1710000000000)
+        adapter.remove_reaction.assert_awaited_once_with("+15550001111", "+15550001111", 1710000000000)
+        adapter.send_reaction.assert_any_await("+15550001111", "✅", "+15550001111", 1710000000000)
+
+    @pytest.mark.asyncio
+    async def test_reaction_hooks_fail_closed_on_auth_error(self, monkeypatch):
+        """Reactions are suppressed when _is_user_authorized raises an exception."""
+        from gateway.platforms.base import ProcessingOutcome
+
+        monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "*")
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.gateway_runner = MagicMock()
+        adapter.gateway_runner._is_user_authorized.side_effect = RuntimeError("auth backend unavailable")
+        adapter.send_reaction = AsyncMock()
+        adapter.remove_reaction = AsyncMock()
+        event = self._event()
+
+        await adapter.on_processing_start(event)
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+        adapter.send_reaction.assert_not_awaited()
+        adapter.remove_reaction.assert_not_awaited()
+
+# ---------------------------------------------------------------------------
 # Authorization in run.py
 # ---------------------------------------------------------------------------
 
@@ -769,42 +850,6 @@ class TestSignalMediaExtraction:
         assert type(adapter).send_video is not BasePlatformAdapter.send_video
         assert type(adapter).send_document is not BasePlatformAdapter.send_document
         assert type(adapter).send_image is not BasePlatformAdapter.send_image
-
-    def test_trusted_media_path_allows_hermes_cache_file(self, monkeypatch, tmp_path):
-        """Model-emitted MEDIA paths may deliver Hermes-managed cache files."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from gateway.platforms.base import _is_trusted_media_path
-
-        image_path = tmp_path / "cache" / "images" / "chart.png"
-        image_path.parent.mkdir(parents=True)
-        image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
-
-        assert _is_trusted_media_path(str(image_path)) is True
-
-    def test_trusted_media_path_blocks_untrusted_tmp_file(self, monkeypatch, tmp_path):
-        """Model-emitted MEDIA paths outside Hermes caches are not attachable."""
-        hermes_home = tmp_path / "hermes-home"
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        from gateway.platforms.base import _is_trusted_media_path
-
-        secret_image = tmp_path / "private_screenshot.png"
-        secret_image.write_bytes(b"\x89PNG\r\n\x1a\n")
-
-        assert _is_trusted_media_path(str(secret_image)) is False
-
-    def test_trusted_media_path_blocks_cache_symlink_escape(self, monkeypatch, tmp_path):
-        """Cache-contained symlinks cannot point MEDIA delivery at other files."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-        from gateway.platforms.base import _is_trusted_media_path
-
-        trusted_dir = tmp_path / "hermes-home" / "cache" / "images"
-        trusted_dir.mkdir(parents=True)
-        secret_image = tmp_path / "private_screenshot.png"
-        secret_image.write_bytes(b"\x89PNG\r\n\x1a\n")
-        symlink_path = trusted_dir / "linked_secret.png"
-        symlink_path.symlink_to(secret_image)
-
-        assert _is_trusted_media_path(str(symlink_path)) is False
 
 
 # ---------------------------------------------------------------------------

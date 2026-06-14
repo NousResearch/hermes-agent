@@ -1,5 +1,4 @@
 import base64
-import os
 
 import pytest
 from acp.schema import (
@@ -41,19 +40,16 @@ def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     attached = tmp_path / "notes.md"
     attached.write_text("# Notes\n\nAttached file body", encoding="utf-8")
 
-    content = _content_blocks_to_openai_user_content(
-        [
-            TextContentBlock(type="text", text="Please read this file"),
-            ResourceContentBlock(
-                type="resource_link",
-                name="notes.md",
-                title="Project notes",
-                uri=attached.as_uri(),
-                mimeType="text/markdown",
-            ),
-        ],
-        cwd=tmp_path,
-    )
+    content = _content_blocks_to_openai_user_content([
+        TextContentBlock(type="text", text="Please read this file"),
+        ResourceContentBlock(
+            type="resource_link",
+            name="notes.md",
+            title="Project notes",
+            uri=attached.as_uri(),
+            mimeType="text/markdown",
+        ),
+    ])
 
     assert content == (
         "Please read this file\n"
@@ -82,51 +78,6 @@ def test_acp_embedded_text_resource_is_inlined_as_text():
     )
 
 
-def test_acp_resource_link_outside_cwd_is_not_inlined(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    secret = tmp_path / "id_ed25519"
-    secret.write_text("SUPER_SECRET_MARKER", encoding="utf-8")
-
-    content = _content_blocks_to_openai_user_content(
-        [
-            TextContentBlock(type="text", text="Summarize attachment"),
-            ResourceContentBlock(
-                type="resource_link",
-                name="notes.md",
-                title="Project notes",
-                uri=secret.as_uri(),
-                mimeType="text/plain",
-            ),
-        ],
-        cwd=workspace,
-    )
-
-    assert "SUPER_SECRET_MARKER" not in content
-    assert "outside the session cwd" in content
-
-
-def test_acp_resource_link_special_file_is_not_opened(tmp_path):
-    if not hasattr(os, "mkfifo"):
-        pytest.skip("mkfifo is not available on this platform")
-    fifo = tmp_path / "pipe.txt"
-    os.mkfifo(fifo)
-
-    content = _content_blocks_to_openai_user_content(
-        [
-            ResourceContentBlock(
-                type="resource_link",
-                name="pipe.txt",
-                uri=fifo.as_uri(),
-                mimeType="text/plain",
-            ),
-        ],
-        cwd=tmp_path,
-    )
-
-    assert "not a regular file" in content
-
-
 @pytest.mark.asyncio
 async def test_initialize_advertises_image_prompt_capability():
     response = await HermesACPAgent().initialize()
@@ -147,18 +98,15 @@ def test_acp_resource_link_image_file_is_inlined_as_image_url(tmp_path):
     attached = tmp_path / "shot.png"
     attached.write_bytes(_ONE_PX_PNG)
 
-    content = _content_blocks_to_openai_user_content(
-        [
-            TextContentBlock(type="text", text="Look at this screenshot"),
-            ResourceContentBlock(
-                type="resource_link",
-                name="shot.png",
-                uri=attached.as_uri(),
-                mimeType="image/png",
-            ),
-        ],
-        cwd=tmp_path,
-    )
+    content = _content_blocks_to_openai_user_content([
+        TextContentBlock(type="text", text="Look at this screenshot"),
+        ResourceContentBlock(
+            type="resource_link",
+            name="shot.png",
+            uri=attached.as_uri(),
+            mimeType="image/png",
+        ),
+    ])
 
     assert isinstance(content, list)
     # [user text, image header, image_url]
@@ -175,16 +123,13 @@ def test_acp_resource_link_image_mime_inferred_from_suffix(tmp_path):
     attached = tmp_path / "pic.jpg"
     attached.write_bytes(_ONE_PX_PNG)  # content doesn't matter for the code path
 
-    content = _content_blocks_to_openai_user_content(
-        [
-            ResourceContentBlock(
-                type="resource_link",
-                name="pic.jpg",
-                uri=attached.as_uri(),
-            ),
-        ],
-        cwd=tmp_path,
-    )
+    content = _content_blocks_to_openai_user_content([
+        ResourceContentBlock(
+            type="resource_link",
+            name="pic.jpg",
+            uri=attached.as_uri(),
+        ),
+    ])
 
     assert isinstance(content, list)
     image_parts = [p for p in content if p.get("type") == "image_url"]

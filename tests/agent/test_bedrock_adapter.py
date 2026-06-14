@@ -120,7 +120,10 @@ class TestResolveBedrocRegion:
         from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
-        with patch("botocore.session.get_session", return_value=mock_session):
+        # Mock botocore at sys.modules level to handle missing package
+        mock_botocore = MagicMock()
+        mock_botocore.session.get_session.return_value = mock_session
+        with patch.dict("sys.modules", {"botocore": mock_botocore, "botocore.session": mock_botocore.session}):
             assert resolve_bedrock_region({}) == "us-east-1"
 
     def test_falls_back_to_botocore_profile_region(self):
@@ -128,13 +131,19 @@ class TestResolveBedrocRegion:
         from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        with patch("botocore.session.get_session", return_value=mock_session):
+        # Mock botocore at sys.modules level to handle missing package
+        mock_botocore = MagicMock()
+        mock_botocore.session.get_session.return_value = mock_session
+        with patch.dict("sys.modules", {"botocore": mock_botocore, "botocore.session": mock_botocore.session}):
             assert resolve_bedrock_region({}) == "eu-central-1"
 
     def test_botocore_failure_falls_back_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch
-        with patch("botocore.session.get_session", side_effect=Exception("no botocore")):
+        from unittest.mock import patch, MagicMock
+        # Mock botocore at sys.modules level to handle missing package
+        mock_botocore = MagicMock()
+        mock_botocore.session.get_session.side_effect = Exception("no botocore")
+        with patch.dict("sys.modules", {"botocore": mock_botocore, "botocore.session": mock_botocore.session}):
             assert resolve_bedrock_region({}) == "us-east-1"
 
 

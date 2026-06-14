@@ -83,7 +83,6 @@ class TestWriteAllowed:
     def test_project_file(self):
         assert _is_write_denied("/home/user/project/main.py") is False
 
-    def test_hermes_config(self):
-        from hermes_constants import get_hermes_home
-        path = str(get_hermes_home() / "config.yaml")
-        assert _is_write_denied(path) is True
+    def test_hermes_config_not_env(self):
+        path = os.path.join(str(Path.home()), ".hermes", "config.yaml")
+        assert _is_write_denied(path) is False

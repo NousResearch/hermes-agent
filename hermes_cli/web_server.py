@@ -341,7 +341,6 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "network": "agent",
     "checkpoints": "agent",
     "approvals": "security",
-    "acp": "security",
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
@@ -1689,8 +1688,8 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         "refreshToken": refresh_token,
         "expiresAt": expires_at_ms,
     }
-    _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _HERMES_OAUTH_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    from hermes_cli.secure_files import write_sensitive_json
+    write_sensitive_json(_HERMES_OAUTH_FILE, payload)
     # Best-effort credential-pool insert. Failure here doesn't invalidate
     # the file write — pool registration only matters for the rotation
     # strategy, not for runtime credential resolution.
@@ -2592,21 +2591,11 @@ async def get_profile_setup_command(name: str):
 
 @app.post("/api/profiles/{name}/open-terminal")
 async def open_profile_terminal_endpoint(name: str):
-    from tools.environments.local import _sanitize_subprocess_env
-
     try:
         command = _profile_setup_command(name)
-        profile_dir = _resolve_profile_dir(name)
-        sanitized_env = _sanitize_subprocess_env(os.environ.copy())
-        sanitized_env["HERMES_HOME"] = str(profile_dir)
-
-        # Ensure HOME isolation matches the target profile, not the server's profile.
-        profile_home = profile_dir / "home"
-        if profile_home.is_dir():
-            sanitized_env["HOME"] = str(profile_home)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command], env=sanitized_env)
+            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
         elif sys.platform == "darwin":
             escaped = command.replace("\\", "\\\\").replace('"', '\\"')
             applescript = (
@@ -2615,7 +2604,7 @@ async def open_profile_terminal_endpoint(name: str):
                 f'do script "{escaped}"\n'
                 "end tell"
             )
-            subprocess.Popen(["osascript", "-e", applescript], env=sanitized_env)
+            subprocess.Popen(["osascript", "-e", applescript])
         else:
             terminal_commands = [
                 ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
@@ -2635,7 +2624,7 @@ async def open_profile_terminal_endpoint(name: str):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 ) == 0:
-                    subprocess.Popen(popen_args, env=sanitized_env)
+                    subprocess.Popen(popen_args)
                     break
             else:
                 raise HTTPException(
@@ -3012,13 +3001,19 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _is_public_bind() -> bool:
+    """True when bound to all-interfaces (operator used --insecure)."""
+    return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
+
+
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
-    WebSocket endpoints expose interactive chat/control surfaces and use the
-    same session token that the unauthenticated SPA HTML needs to bootstrap.
-    Keep them loopback-only even when the HTTP dashboard is publicly bound.
+    Allows loopback always; allows any IP when bound to all-interfaces
+    (--insecure mode, guarded by session token auth).
     """
+    if _is_public_bind():
+        return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
@@ -3337,17 +3332,13 @@ async def events_ws(ws: WebSocket) -> None:
                     _event_channels.pop(channel, None)
 
 
-_PREFIX_ALLOWED_CHARS: frozenset = frozenset(
-    "/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-"
-)
-
-
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
     Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. The value is injected into
-    HTML and JavaScript, so keep it to a relative URL path prefix only.
+    no prefix is set / the header is malformed. We deliberately reject
+    anything containing ``..`` or non-printable bytes so a hostile proxy
+    can't inject HTML via the prefix.
     """
     if not raw:
         return ""
@@ -3357,11 +3348,9 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     if not p.startswith("/"):
         p = "/" + p
     p = p.rstrip("/")
-    if not p:
+    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
         return ""
     if len(p) > 64:
-        return ""
-    if "//" in p or ".." in p or any(c not in _PREFIX_ALLOWED_CHARS for c in p):
         return ""
     return p
 
@@ -3391,16 +3380,25 @@ def mount_spa(application: FastAPI):
 
     _index_path = WEB_DIST / "index.html"
 
-    def _serve_index(prefix: str = ""):
-        """Return index.html with the session token + base-path injected.
+    def _serve_index(request: Request, prefix: str = ""):
+        """Return index.html with runtime dashboard settings injected.
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
-        or empty string when served at root.
+        or empty string when served at root. Public binds require the session
+        token in the launch URL before exposing it to the SPA.
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
+        require_spa_token = bool(getattr(app.state, "require_spa_token", False))
+        launch_token = request.query_params.get("token", "")
+        can_inject_token = (
+            not require_spa_token
+            or hmac.compare_digest(launch_token.encode(), _SESSION_TOKEN.encode())
+            or _has_valid_session_token(request)
+        )
+        session_token = _SESSION_TOKEN if can_inject_token else ""
         token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+            f'<script>window.__HERMES_SESSION_TOKEN__="{session_token}";'
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
         )
@@ -3456,7 +3454,7 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return _serve_index(prefix)
+        return _serve_index(request, prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -3762,28 +3760,8 @@ async def set_dashboard_theme(body: ThemeSetBody):
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
-
-def _dashboard_plugin_is_enabled(name: str, directory_name: str) -> bool:
-    """Return whether a dashboard plugin is allowed to load.
-
-    Dashboard extensions can execute Python through their ``api`` file, so
-    they must honor the same explicit opt-in gate as general plugins.
-    """
-    try:
-        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
-
-        disabled = _get_disabled_plugins()
-        if name in disabled or directory_name in disabled:
-            return False
-
-        enabled = _get_enabled_plugins()
-        return enabled is not None and (name in enabled or directory_name in enabled)
-    except Exception:
-        return False
-
-
 def _discover_dashboard_plugins() -> list:
-    """Scan enabled plugins/*/dashboard/manifest.json for dashboard extensions.
+    """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
     Checks three plugin sources (same as hermes_cli.plugins):
     1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
@@ -3815,8 +3793,6 @@ def _discover_dashboard_plugins() -> list:
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
-                if not _dashboard_plugin_is_enabled(str(name), child.name):
-                    continue
                 if name in seen_names:
                     continue
                 seen_names.add(name)
@@ -4277,13 +4253,17 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.require_spa_token = bool(allow_public)
 
     if open_browser:
         import webbrowser
 
         def _open():
             time.sleep(1.0)
-            webbrowser.open(f"http://{host}:{port}")
+            url = f"http://{host}:{port}"
+            if allow_public:
+                url = f"{url}/?token={_SESSION_TOKEN}"
+            webbrowser.open(url)
 
         threading.Thread(target=_open, daemon=True).start()
 

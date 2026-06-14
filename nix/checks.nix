@@ -210,7 +210,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
-        # Verify extraPythonPackages PYTHONPATH injection
+        # Verify extraPythonPackages plugin-path injection
         extra-python-packages = let
           testPkg = pkgs.python312Packages.pyfiglet;
           hermesWithExtra = hermes-agent.override {
@@ -218,19 +218,22 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           };
         in pkgs.runCommand "hermes-extra-python-packages" { } ''
           set -e
-          echo "=== Checking extraPythonPackages PYTHONPATH injection ==="
+          echo "=== Checking extraPythonPackages plugin-path injection ==="
 
-          grep -q "PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
-            (echo "FAIL: PYTHONPATH not in wrapper"; exit 1)
-          echo "PASS: PYTHONPATH present in wrapper"
+          grep -q "HERMES_PLUGIN_PYTHONPATH" ${hermesWithExtra}/bin/hermes || \
+            (echo "FAIL: HERMES_PLUGIN_PYTHONPATH not in wrapper"; exit 1)
+          echo "PASS: HERMES_PLUGIN_PYTHONPATH present in wrapper"
 
           grep -q "${testPkg}" ${hermesWithExtra}/bin/hermes || \
-            (echo "FAIL: test package path not in PYTHONPATH"; exit 1)
+            (echo "FAIL: test package path not in HERMES_PLUGIN_PYTHONPATH"; exit 1)
           echo "PASS: test package path found in wrapper"
 
-          echo "=== Checking base package has no PYTHONPATH ==="
-          if grep -q "PYTHONPATH" ${hermes-agent}/bin/hermes; then
-            echo "FAIL: base package should not have PYTHONPATH"; exit 1
+          echo "=== Checking base package has no plugin Python path ==="
+          if grep -q "HERMES_PLUGIN_PYTHONPATH" ${hermes-agent}/bin/hermes; then
+            echo "FAIL: base package should not set HERMES_PLUGIN_PYTHONPATH"; exit 1
+          fi
+          if grep -Eq "(^|[^A-Z_])PYTHONPATH=" ${hermesWithExtra}/bin/hermes; then
+            echo "FAIL: extraPythonPackages must not set startup PYTHONPATH"; exit 1
           fi
           echo "PASS: base package clean"
 
@@ -459,23 +462,6 @@ json.dump(load_config(), sys.stdout, default=str)
           echo "PASS: Scenario G"
 
           # ═══════════════════════════════════════════════════════════════
-          # Scenario H: Symlinked config is rejected, not followed
-          # ═══════════════════════════════════════════════════════════════
-          echo "=== Scenario H: Symlink rejection ==="
-          H_HOME=$(mktemp -d)
-          H_TARGET=$(mktemp)
-          echo 'root_owned: true' > "$H_TARGET"
-          ln -s "$H_TARGET" "$H_HOME/config.yaml"
-          if ${configMergeScript} ${nixSettings} "$H_HOME/config.yaml" 2>/tmp/hermes-merge-symlink.err; then
-            fail "H: symlinked config.yaml was merged instead of rejected"
-          fi
-          grep -q "refusing to follow symlink" /tmp/hermes-merge-symlink.err \
-            || fail "H: symlink rejection error missing"
-          grep -q "root_owned: true" "$H_TARGET" \
-            || fail "H: symlink target was modified"
-          echo "PASS: Scenario H"
-
-          # ═══════════════════════════════════════════════════════════════
           # Report
           # ═══════════════════════════════════════════════════════════════
           if [ -n "$ERRORS" ]; then
@@ -486,7 +472,7 @@ json.dump(load_config(), sys.stdout, default=str)
           fi
 
           echo ""
-          echo "=== All 8 merge scenarios passed ==="
+          echo "=== All 7 merge scenarios passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

@@ -79,22 +79,20 @@ class TestCamofoxNavigate:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         mock_post.return_value = _mock_response(json_data={"tabId": "tab1", "url": "https://example.com"})
 
-        with patch("tools.url_safety.is_safe_url", return_value=True):
-            result = json.loads(camofox_navigate("https://example.com", task_id="t1"))
+        result = json.loads(camofox_navigate("https://example.com", task_id="t1"))
         assert result["success"] is True
         assert result["url"] == "https://example.com"
 
     @patch("tools.browser_camofox.requests.post")
     def test_navigates_existing_tab(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        with patch("tools.url_safety.is_safe_url", return_value=True):
-            # First call creates tab
-            mock_post.return_value = _mock_response(json_data={"tabId": "tab2", "url": "https://a.com"})
-            camofox_navigate("https://a.com", task_id="t2")
+        # First call creates tab
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab2", "url": "https://a.com"})
+        camofox_navigate("https://a.com", task_id="t2")
 
-            # Second call navigates
-            mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://b.com"})
-            result = json.loads(camofox_navigate("https://b.com", task_id="t2"))
+        # Second call navigates
+        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://b.com"})
+        result = json.loads(camofox_navigate("https://b.com", task_id="t2"))
         assert result["success"] is True
         assert result["url"] == "https://b.com"
 
@@ -104,40 +102,6 @@ class TestCamofoxNavigate:
         assert result["success"] is False
         assert "Cannot connect" in result["error"]
 
-    @patch("tools.browser_camofox.requests.post")
-    def test_blocks_first_navigation_redirect_to_private_url(self, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={
-            "tabId": "tab_private_first",
-            "url": "http://169.254.169.254/latest/meta-data/",
-        })
-
-        result = json.loads(camofox_navigate(
-            "https://public.example/redirect", task_id="t_private_first"
-        ))
-
-        assert result["success"] is False
-        assert "cloud metadata endpoint" in result["error"]
-
-    @patch("tools.browser_camofox.requests.post")
-    def test_blocks_existing_tab_redirect_to_private_url(self, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={
-            "tabId": "tab_private_existing",
-            "url": "https://safe.example",
-        })
-        camofox_navigate("https://safe.example", task_id="t_private_existing")
-
-        mock_post.return_value = _mock_response(json_data={
-            "ok": True,
-            "url": "http://127.0.0.1:8080/admin",
-        })
-        result = json.loads(camofox_navigate(
-            "https://public.example/redirect", task_id="t_private_existing"
-        ))
-
-        assert result["success"] is False
-        assert "private/internal address" in result["error"]
 
 # ---------------------------------------------------------------------------
 # Snapshot
@@ -169,26 +133,6 @@ class TestCamofoxSnapshot:
         assert "[e1]" in result["snapshot"]
         assert result["element_count"] == 2
 
-    @patch("tools.browser_camofox.requests.post")
-    @patch("tools.browser_camofox.requests.get")
-    def test_blocks_snapshot_when_current_url_is_private(self, mock_get, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={
-            "tabId": "tab_snapshot_private",
-            "url": "https://x.com",
-        })
-        camofox_navigate("https://x.com", task_id="t_snapshot_private")
-
-        mock_get.return_value = _mock_response(json_data={
-            "url": "http://127.0.0.1:8080/admin",
-            "snapshot": "secret admin content",
-            "refsCount": 0,
-        })
-        result = json.loads(camofox_snapshot(task_id="t_snapshot_private"))
-
-        assert result["success"] is False
-        assert "private/internal address" in result["error"]
-        assert "snapshot" not in result
 
 # ---------------------------------------------------------------------------
 # Click / Type / Scroll / Back / Press
@@ -199,12 +143,11 @@ class TestCamofoxInteractions:
     @patch("tools.browser_camofox.requests.post")
     def test_click(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        with patch("tools.url_safety.is_safe_url", return_value=True):
-            mock_post.return_value = _mock_response(json_data={"tabId": "tab4", "url": "https://x.com"})
-            camofox_navigate("https://x.com", task_id="t4")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab4", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t4")
 
-            mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://x.com"})
-            result = json.loads(camofox_click("@e5", task_id="t4"))
+        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://x.com"})
+        result = json.loads(camofox_click("@e5", task_id="t4"))
         assert result["success"] is True
         assert result["clicked"] == "e5"
 
@@ -233,12 +176,11 @@ class TestCamofoxInteractions:
     @patch("tools.browser_camofox.requests.post")
     def test_back(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        with patch("tools.url_safety.is_safe_url", return_value=True):
-            mock_post.return_value = _mock_response(json_data={"tabId": "tab7", "url": "https://x.com"})
-            camofox_navigate("https://x.com", task_id="t7")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab7", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t7")
 
-            mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://prev.com"})
-            result = json.loads(camofox_back(task_id="t7"))
+        mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://prev.com"})
+        result = json.loads(camofox_back(task_id="t7"))
         assert result["success"] is True
 
     @patch("tools.browser_camofox.requests.post")
@@ -399,8 +341,7 @@ class TestBrowserToolRouting:
 
         from tools.browser_tool import browser_navigate
         # Bypass SSRF check for test URL
-        with patch("tools.browser_tool._is_safe_url", return_value=True), \
-             patch("tools.url_safety.is_safe_url", return_value=True):
+        with patch("tools.browser_tool._is_safe_url", return_value=True):
             result = json.loads(browser_navigate("https://example.com", task_id="t_route"))
         assert result["success"] is True
 

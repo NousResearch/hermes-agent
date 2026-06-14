@@ -210,20 +210,6 @@ def forget(path_str: str) -> int:
 # Dry run
 # ---------------------------------------------------------------------------
 
-def _tracked_path(item: Dict[str, Any]) -> Optional[Path]:
-    """Return a resolved, safe tracked path or None for tampered state."""
-    try:
-        path = Path(item["path"]).resolve()
-    except (KeyError, OSError, RuntimeError) as exc:
-        _log(f"REJECT: malformed tracked entry ({exc})")
-        return None
-
-    if not is_safe_path(path):
-        _log(f"REJECT: {path} (outside HERMES_HOME)")
-        return None
-    return path
-
-
 def dry_run() -> Tuple[List[Dict], List[Dict]]:
     """Return (auto_delete_list, needs_prompt_list) without touching files."""
     tracked = load_tracked()
@@ -233,8 +219,8 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     prompt: List[Dict] = []
 
     for item in tracked:
-        p = _tracked_path(item)
-        if p is None or not p.exists():
+        p = Path(item["path"])
+        if not p.exists():
             continue
         age = (now - datetime.fromisoformat(item["timestamp"])).days
         cat = item["category"]
@@ -274,9 +260,7 @@ def quick() -> Dict[str, Any]:
     errors: List[str] = []
 
     for item in tracked:
-        p = _tracked_path(item)
-        if p is None:
-            continue
+        p = Path(item["path"])
         cat = item["category"]
 
         if not p.exists():
@@ -377,8 +361,8 @@ def deep(
     research, chrome, large = [], [], []
 
     for item in tracked:
-        p = _tracked_path(item)
-        if p is None or not p.exists():
+        p = Path(item["path"])
+        if not p.exists():
             continue
         age = (now - datetime.fromisoformat(item["timestamp"])).days
         cat = item["category"]
@@ -400,9 +384,7 @@ def deep(
         for item in group:
             if confirm(item):
                 try:
-                    p = _tracked_path(item)
-                    if p is None:
-                        continue
+                    p = Path(item["path"])
                     if p.is_file():
                         p.unlink()
                     elif p.is_dir():

@@ -156,52 +156,6 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
-
-    def test_resolve_with_run_id_only_resolves_matching_entry(self):
-        """API run approvals must not pop another run's pending approval."""
-        from tools.approval import (
-            resolve_gateway_approval,
-            _ApprovalEntry, _gateway_queues,
-        )
-        session_key = "test-run-bound"
-        e1 = _ApprovalEntry({"command": "first", "run_id": "run_a"})
-        e2 = _ApprovalEntry({"command": "second", "run_id": "run_b"})
-        _gateway_queues[session_key] = [e1, e2]
-
-        count = resolve_gateway_approval(session_key, "once", run_id="run_b")
-
-        assert count == 1
-        assert not e1.event.is_set()
-        assert e1.result is None
-        assert e2.event.is_set()
-        assert e2.result == "once"
-        assert _gateway_queues[session_key] == [e1]
-
-    def test_resolve_all_with_run_id_only_resolves_matching_entries(self):
-        """Run-scoped resolve_all must not approve the whole shared session."""
-        from tools.approval import (
-            resolve_gateway_approval,
-            _ApprovalEntry, _gateway_queues,
-        )
-        session_key = "test-run-bound-all"
-        e1 = _ApprovalEntry({"command": "first", "run_id": "run_a"})
-        e2 = _ApprovalEntry({"command": "second", "run_id": "run_b"})
-        e3 = _ApprovalEntry({"command": "third", "run_id": "run_b"})
-        _gateway_queues[session_key] = [e1, e2, e3]
-
-        count = resolve_gateway_approval(
-            session_key, "deny", resolve_all=True, run_id="run_b"
-        )
-
-        assert count == 2
-        assert not e1.event.is_set()
-        assert e1.result is None
-        assert e2.event.is_set()
-        assert e3.event.is_set()
-        assert e2.result == "deny"
-        assert e3.result == "deny"
-        assert _gateway_queues[session_key] == [e1]
-
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

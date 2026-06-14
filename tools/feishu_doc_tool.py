@@ -16,14 +16,27 @@ logger = logging.getLogger(__name__)
 _local = threading.local()
 
 
-def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
+def set_client(client, allowed_file_type: str = "", allowed_file_token: str = ""):
+    """Store a lark client and optional document scope for the current thread."""
     _local.client = client
+    if client is None:
+        _local.allowed_file_type = ""
+        _local.allowed_file_token = ""
+        return
+    _local.allowed_file_type = (allowed_file_type or "").strip()
+    _local.allowed_file_token = (allowed_file_token or "").strip()
 
 
 def get_client():
     """Return the lark client for the current thread, or None."""
     return getattr(_local, "client", None)
+
+
+def _authorize_doc_token(doc_token: str) -> str:
+    allowed_token = getattr(_local, "allowed_file_token", "")
+    if allowed_token and doc_token != allowed_token:
+        return tool_error("Feishu document token is outside the authorized comment document")
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +87,10 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     client = get_client()
     if client is None:
         return tool_error("Feishu client not available (not in a Feishu comment context)")
+
+    auth_error = _authorize_doc_token(doc_token)
+    if auth_error:
+        return auth_error
 
     try:
         from lark_oapi import AccessTokenType

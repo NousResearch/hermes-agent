@@ -100,7 +100,7 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
     conversations = entry.get("conversations", [])
     if not conversations:
         return entry, 0
-    
+
     total = 0
     for turn in conversations:
         value = turn.get("value", "")
@@ -110,7 +110,7 @@ def _count_tokens_for_entry(entry: Dict) -> Tuple[Dict, int]:
             except Exception:
                 # Fallback to character estimate
                 total += len(value) // 4
-    
+
     return entry, total
 
 

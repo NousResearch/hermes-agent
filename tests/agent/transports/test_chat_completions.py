@@ -923,8 +923,10 @@ class TestChatCompletionsNormalize:
         assert nr.content is None
 
     def test_refusal_does_not_clobber_existing_content(self, transport):
-        """If the model emitted partial text *and* a refusal, keep the visible
-        text as content but still flag the refusal via content_filter."""
+        """If the model emitted real text *and* a refusal note, the turn is a
+        normal usable response: keep the visible text, record the refusal in
+        provider_data, and do NOT promote to a terminal content_filter (which
+        would discard the model's actual work by reframing it as a failure)."""
         r = SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(
@@ -937,7 +939,32 @@ class TestChatCompletionsNormalize:
         )
         nr = transport.normalize_response(r)
         assert nr.content == "partial answer"
-        assert nr.finish_reason == "content_filter"
+        assert nr.finish_reason == "stop"
+        assert nr.provider_data == {"refusal": "cannot continue"}
+
+    def test_refusal_with_tool_calls_is_not_promoted(self, transport):
+        """A response that carries tool calls alongside a refusal note is a
+        usable tool turn — record the refusal but keep the tool calls and do
+        NOT terminate it as a content_filter refusal."""
+        tc = SimpleNamespace(
+            id="call_1", type="function",
+            function=SimpleNamespace(name="do_thing", arguments="{}"),
+        )
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=[tc],
+                    reasoning_content=None, refusal="cannot continue",
+                ),
+                finish_reason="tool_calls",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        # Tool calls survive; finish reason is untouched; content not clobbered.
+        assert nr.tool_calls and nr.tool_calls[0].name == "do_thing"
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content in (None, "")
         assert nr.provider_data == {"refusal": "cannot continue"}
 
 

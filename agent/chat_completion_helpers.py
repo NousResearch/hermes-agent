@@ -1287,14 +1287,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
-        _reason_text = {
-            FailoverReason.rate_limit: "Rate limited",
-            FailoverReason.billing: "Billing or credits exhausted",
-            FailoverReason.content_policy_blocked: "Provider safety filter blocked the request",
-        }.get(reason, "Primary model failed")
-        agent._emit_status(
-            f"🔄 {_reason_text} — switching to fallback: {fb_model} via {fb_provider}"
+        _status_message = {
+            FailoverReason.rate_limit: "⚠️ Rate limited — switching to fallback provider...",
+            FailoverReason.billing: "⚠️ Billing or credits exhausted — switching to fallback provider...",
+            FailoverReason.content_policy_blocked: "⚠️ Provider safety filter blocked this request — trying fallback...",
+        }.get(
+            reason,
+            f"🔄 Primary model failed — switching to fallback: {fb_model} via {fb_provider}",
         )
+        agent._emit_status(_status_message)
         logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,

@@ -17,9 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 logger = logging.getLogger(__name__)
+
 
 def _default_server_exe() -> str:
     override = os.getenv("HERMES_LLAMA_SERVER_EXE", "").strip()
@@ -41,6 +43,9 @@ DEFAULT_SERVER_EXE = _default_server_exe()
 DEFAULT_MODEL_PATH = ""
 DEFAULT_PORT = 8080
 DEFAULT_HOST = "127.0.0.1"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_LOCAL_SECRETARY_PORTS = {8080, 8081, 8082}
+_EXTERNAL_LOCAL_SECRETARY_LAUNCHERS = {"external", "none", "disabled", "ollama"}
 
 _KV_PROFILES = {
     "f16v_turbo4": ("f16", "turbo4"),
@@ -67,6 +72,8 @@ class LlamaFallbackSettings:
     kv_profile: str
     spec_type: str
     wait_seconds: int
+    launcher: str = "gguf"
+    model_id: str = ""
 
 
 def _env_flag(name: str, default: str = "auto") -> str:
@@ -98,6 +105,112 @@ def _load_config() -> dict[str, Any]:
         return {}
 
 
+def _as_url(value: Any):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = f"http://{text}"
+    try:
+        return urlparse(text)
+    except ValueError:
+        return None
+
+
+def _is_loopback_base_url(value: Any) -> bool:
+    parsed = _as_url(value)
+    if parsed is None:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    return host in _LOOPBACK_HOSTS
+
+
+def _port_from_base_url(value: Any) -> int | None:
+    parsed = _as_url(value)
+    if parsed is None:
+        return None
+    try:
+        return parsed.port
+    except ValueError:
+        return None
+
+
+def _is_llama_provider(provider: Any) -> bool:
+    value = str(provider or "").strip().lower()
+    return value in {"llama-cpp", "llama_cpp", "llama"}
+
+
+def _is_custom_provider(provider: Any) -> bool:
+    value = str(provider or "").strip().lower()
+    return value == "custom" or value.startswith("custom:")
+
+
+def _iter_custom_providers(cfg: dict[str, Any]):
+    providers = cfg.get("custom_providers") or []
+    if isinstance(providers, dict):
+        for name, entry in providers.items():
+            if isinstance(entry, dict):
+                merged = dict(entry)
+                merged.setdefault("name", name)
+                yield merged
+        return
+    if isinstance(providers, list):
+        for entry in providers:
+            if isinstance(entry, dict):
+                yield entry
+
+
+def _entry_is_local_custom(entry: dict[str, Any]) -> bool:
+    return _is_custom_provider(entry.get("provider")) and _is_loopback_base_url(
+        entry.get("base_url")
+    )
+
+
+def _entry_is_local_secretary_endpoint(entry: dict[str, Any]) -> bool:
+    if not _entry_is_local_custom(entry):
+        return False
+    port = _port_from_base_url(entry.get("base_url"))
+    return port in _LOCAL_SECRETARY_PORTS
+
+
+def _local_secretary_uses_external_launcher(cfg: dict[str, Any]) -> bool:
+    local_secretary = cfg.get("local_secretary") or {}
+    if not isinstance(local_secretary, dict):
+        return False
+    launcher = str(local_secretary.get("launcher") or "").strip().lower()
+    return launcher in _EXTERNAL_LOCAL_SECRETARY_LAUNCHERS
+
+
+def _local_secretary_configured(cfg: dict[str, Any]) -> bool:
+    if _local_secretary_uses_external_launcher(cfg):
+        return False
+
+    if isinstance(cfg.get("local_secretary"), dict):
+        return True
+
+    model = cfg.get("model") or {}
+    if isinstance(model, dict) and _entry_is_local_secretary_endpoint(model):
+        return True
+
+    for entry in cfg.get("fallback_providers") or []:
+        if isinstance(entry, dict) and _entry_is_local_secretary_endpoint(entry):
+            return True
+
+    return any(
+        _entry_is_local_secretary_endpoint(entry)
+        for entry in _iter_custom_providers(cfg)
+    )
+
+
+def _default_gpu_profile(cfg: dict[str, Any]) -> str:
+    local_secretary = cfg.get("local_secretary") or {}
+    if isinstance(local_secretary, dict):
+        profile = str(local_secretary.get("profile") or "").strip().lower()
+        if profile in _GPU_CONTEXT_DEFAULTS:
+            return profile
+    return "rtx3080"
+
+
 def _llama_cpp_configured(cfg: dict[str, Any]) -> bool:
     providers = cfg.get("providers") or {}
     if isinstance(providers, dict) and "llama-cpp" in providers:
@@ -106,10 +219,9 @@ def _llama_cpp_configured(cfg: dict[str, Any]) -> bool:
     for entry in cfg.get("fallback_providers") or []:
         if not isinstance(entry, dict):
             continue
-        provider = str(entry.get("provider") or "").strip().lower()
-        if provider in {"llama-cpp", "llama_cpp", "llama"}:
+        if _is_llama_provider(entry.get("provider")):
             return True
-    return False
+    return _local_secretary_configured(cfg)
 
 
 def _resolve_model_from_config(cfg: dict[str, Any]) -> str | None:
@@ -125,31 +237,84 @@ def _resolve_model_from_config(cfg: dict[str, Any]) -> str | None:
     for entry in cfg.get("fallback_providers") or []:
         if not isinstance(entry, dict):
             continue
-        provider = str(entry.get("provider") or "").strip().lower()
-        if provider not in {"llama-cpp", "llama_cpp", "llama"}:
+        if not _is_llama_provider(entry.get("provider")):
             continue
         model = entry.get("model")
         if isinstance(model, str) and model.strip():
             return model.strip()
+
+    model = cfg.get("model") or {}
+    if isinstance(model, dict) and _entry_is_local_secretary_endpoint(model):
+        for key in ("default", "model"):
+            value = model.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    for entry in cfg.get("fallback_providers") or []:
+        if isinstance(entry, dict) and _entry_is_local_secretary_endpoint(entry):
+            model = entry.get("model")
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+
+    for entry in _iter_custom_providers(cfg):
+        if _entry_is_local_secretary_endpoint(entry):
+            for key in ("model", "default", "name"):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return None
+
+
+def _resolve_model_path_from_config(cfg: dict[str, Any]) -> str | None:
+    local_secretary = cfg.get("local_secretary") or {}
+    if isinstance(local_secretary, dict):
+        for key in ("model_path", "gguf_path"):
+            value = local_secretary.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    for entry in _iter_custom_providers(cfg):
+        value = entry.get("model_path") or entry.get("gguf_path")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return None
 
 
 def _resolve_port_from_config(cfg: dict[str, Any]) -> int | None:
     providers = cfg.get("providers") or {}
-    if not isinstance(providers, dict):
-        return None
-    llama = providers.get("llama-cpp") or providers.get("llama_cpp")
-    if not isinstance(llama, dict):
-        return None
-    api = str(llama.get("api") or llama.get("base_url") or "").strip()
-    if ":8080" in api:
-        return 8080
+    if isinstance(providers, dict):
+        llama = providers.get("llama-cpp") or providers.get("llama_cpp")
+        if isinstance(llama, dict):
+            port = _port_from_base_url(llama.get("api") or llama.get("base_url"))
+            if port:
+                return port
+
+    model = cfg.get("model") or {}
+    if isinstance(model, dict) and _entry_is_local_secretary_endpoint(model):
+        port = _port_from_base_url(model.get("base_url"))
+        if port:
+            return port
+
+    for entry in cfg.get("fallback_providers") or []:
+        if not isinstance(entry, dict):
+            continue
+        if _is_llama_provider(entry.get("provider")) or _entry_is_local_secretary_endpoint(entry):
+            port = _port_from_base_url(entry.get("api") or entry.get("base_url"))
+            if port:
+                return port
+
+    for entry in _iter_custom_providers(cfg):
+        if _entry_is_local_secretary_endpoint(entry):
+            port = _port_from_base_url(entry.get("base_url"))
+            if port:
+                return port
     return None
 
 
 def _resolve_model_path(cfg: dict[str, Any]) -> str:
     configured = (
         os.getenv("HERMES_LLAMA_MODEL_PATH", "").strip()
+        or _resolve_model_path_from_config(cfg)
         or _resolve_model_from_config(cfg)
         or DEFAULT_MODEL_PATH
     ).strip()
@@ -180,7 +345,10 @@ def resolve_llama_fallback_settings(cfg: dict[str, Any] | None = None) -> LlamaF
         autostart == "auto" and configured
     )
 
-    gpu_profile = os.getenv("HERMES_LLAMA_GPU_PROFILE", "rtx3080").strip().lower() or "rtx3080"
+    gpu_profile = (
+        os.getenv("HERMES_LLAMA_GPU_PROFILE", _default_gpu_profile(cfg)).strip().lower()
+        or "rtx3080"
+    )
     if gpu_profile not in _GPU_CONTEXT_DEFAULTS:
         gpu_profile = "rtx3080"
 
@@ -194,6 +362,12 @@ def resolve_llama_fallback_settings(cfg: dict[str, Any] | None = None) -> LlamaF
 
     server_exe = _default_server_exe()
     model_path = _resolve_model_path(cfg)
+    launcher = (
+        "local_secretary"
+        if _local_secretary_configured(cfg) and not Path(model_path).is_file()
+        else "gguf"
+    )
+    model_id = _resolve_model_from_config(cfg) or ""
     host = os.getenv("HERMES_LLAMA_HOST", DEFAULT_HOST).strip() or DEFAULT_HOST
     port = _env_int("HERMES_LLAMA_PORT", _resolve_port_from_config(cfg) or DEFAULT_PORT)
     context_size = _env_int(
@@ -213,6 +387,8 @@ def resolve_llama_fallback_settings(cfg: dict[str, Any] | None = None) -> LlamaF
         kv_profile=kv_profile,
         spec_type=spec_type,
         wait_seconds=wait_seconds,
+        launcher=launcher,
+        model_id=model_id,
     )
 
 
@@ -290,6 +466,45 @@ def _build_server_args(settings: LlamaFallbackSettings) -> list[str]:
 
 
 def _start_via_powershell(settings: LlamaFallbackSettings) -> None:
+    if settings.launcher == "local_secretary":
+        script_name = (
+            "start-llama-secretary-fallback.ps1"
+            if settings.port == 8081
+            else "start-llama-secretary.ps1"
+        )
+        script_path = _project_root() / "scripts" / "windows" / script_name
+        if not script_path.exists():
+            raise FileNotFoundError(f"local secretary launcher not found: {script_path}")
+
+        env = os.environ.copy()
+        env.setdefault("HERMES_LLAMA_SERVER_EXE", settings.server_exe)
+        if settings.port == 8081:
+            env.setdefault("HERMES_LLAMA_FALLBACK_PORT", str(settings.port))
+            if settings.model_id:
+                env.setdefault("HERMES_LLAMA_FALLBACK_ALIAS", settings.model_id)
+        else:
+            env.setdefault("HERMES_LLAMA_PORT", str(settings.port))
+            if settings.model_id:
+                env.setdefault("HERMES_LLAMA_ALIAS", settings.model_id)
+
+        cmd = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-WaitSeconds",
+            str(settings.wait_seconds),
+        ]
+        completed = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, env=env
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            raise RuntimeError(detail or f"powershell launcher exited {completed.returncode}")
+        return
+
     script_name = (
         "start-hermes-llama-fallback-rtx3080.ps1"
         if settings.gpu_profile == "rtx3080"
@@ -367,7 +582,7 @@ def ensure_llama_fallback_server(
             print(f"WARNING llama_fallback: {msg}")
         return False
 
-    if not Path(settings.model_path).exists():
+    if settings.launcher != "local_secretary" and not Path(settings.model_path).exists():
         msg = f"fallback GGUF missing: {settings.model_path}"
         if quiet:
             logger.warning(msg)
@@ -387,6 +602,14 @@ def ensure_llama_fallback_server(
             "Starting llama.cpp fallback server "
             f"({settings.gpu_profile}, kv={settings.kv_profile}, spec={settings.spec_type})..."
         )
+
+    if settings.launcher == "local_secretary" and sys.platform != "win32":
+        msg = "local secretary autostart currently requires the Windows launcher"
+        if quiet:
+            logger.warning(msg)
+        else:
+            print(f"WARNING llama_fallback: {msg}")
+        return False
 
     if sys.platform == "win32":
         _start_via_powershell(settings)

@@ -123,7 +123,15 @@ if (-not $AgentRoot) {
 if (-not $WebUiRoot) {
     $WebUiRoot = $env:HERMES_WEBUI_ROOT
     if (-not $WebUiRoot) {
-        $WebUiRoot = Join-Path $env:USERPROFILE "Desktop\hermes-webui"
+        $sibling = Join-Path (Split-Path -Parent $AgentRoot) "hermes-WebUI"
+        $legacyDesktop = Join-Path $env:USERPROFILE "Desktop\hermes-webui"
+        if (Test-Path -LiteralPath $sibling) {
+            $WebUiRoot = (Resolve-Path -LiteralPath $sibling).Path
+        } elseif (Test-Path -LiteralPath $legacyDesktop) {
+            $WebUiRoot = (Resolve-Path -LiteralPath $legacyDesktop).Path
+        } else {
+            $WebUiRoot = $sibling
+        }
     }
 }
 

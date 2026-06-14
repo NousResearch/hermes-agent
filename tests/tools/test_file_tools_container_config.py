@@ -21,6 +21,7 @@ def _make_env_config(**overrides):
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": True,
         "docker_forward_env": ["MY_SECRET", "API_KEY"],
+        "docker_network_mode": "",
     }
     base.update(overrides)
     return base
@@ -63,3 +64,8 @@ class TestFileToolsContainerConfig:
         del cfg["docker_forward_env"]
         cc = self._run(cfg, "t4")
         assert cc.get("docker_forward_env") == []
+
+    def test_docker_network_mode_passed(self):
+        """docker_network_mode is forwarded to container_config."""
+        cc = self._run(_make_env_config(docker_network_mode="none"), "t5")
+        assert cc.get("docker_network_mode") == "none"

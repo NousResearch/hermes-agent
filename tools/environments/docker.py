@@ -90,6 +90,39 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     return normalized
 
 
+def _normalize_network_mode(mode: str | None) -> str:
+    """Canonicalize Docker network modes for reuse comparisons."""
+    normalized = (mode or "").strip().lower()
+    if normalized in {"", "default", "bridge"}:
+        return "default"
+    return normalized
+
+
+def _extract_network_mode_from_extra_args(extra_args: list | None) -> Optional[str]:
+    """Return the last ``--network`` / ``--net`` mode requested in extra args."""
+    requested: Optional[str] = None
+    take_next_value = False
+
+    for arg in extra_args or []:
+        if take_next_value:
+            take_next_value = False
+            if isinstance(arg, str):
+                requested = arg
+            continue
+        if not isinstance(arg, str):
+            continue
+        if arg in {"--network", "--net"}:
+            take_next_value = True
+            continue
+        if arg.startswith("--network="):
+            requested = arg.split("=", 1)[1]
+            continue
+        if arg.startswith("--net="):
+            requested = arg.split("=", 1)[1]
+
+    return requested
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -528,6 +561,7 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        network_mode: str | None = None,
         run_as_host_user: bool = False,
         extra_args: list = None,
         persist_across_processes: bool = True,
@@ -546,6 +580,21 @@ class DockerEnvironment(BaseEnvironment):
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
+        raw_network_mode = (network_mode or "").strip()
+        explicit_network_mode = raw_network_mode if raw_network_mode else None
+        if not network:
+            self._requested_network_mode = "none"
+            self._configured_network_mode = "none"
+        elif explicit_network_mode is not None:
+            self._requested_network_mode = _normalize_network_mode(explicit_network_mode)
+            self._configured_network_mode = (
+                None if self._requested_network_mode == "default" else explicit_network_mode
+            )
+        else:
+            requested_from_extra_args = _extract_network_mode_from_extra_args(extra_args)
+            self._requested_network_mode = _normalize_network_mode(requested_from_extra_args)
+            self._configured_network_mode = None
+        self._network_mode_overrides_extra_args = (not network) or (explicit_network_mode is not None)
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -569,8 +618,8 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker storage driver does not support per-container disk limits "
                     "(requires overlay2 on XFS with pquota). Container will run without disk quota."
                 )
-        if not network:
-            resource_args.append("--network=none")
+        if self._configured_network_mode is not None:
+            resource_args.extend(["--network", self._configured_network_mode])
 
         # Persistent workspace via bind mounts from a configurable host directory
         # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
@@ -767,9 +816,22 @@ class DockerEnvironment(BaseEnvironment):
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
         # Appended last so they can override defaults if needed.
         validated_extra = []
+        strip_network_overrides = self._network_mode_overrides_extra_args
+        skip_network_value = False
         for arg in (extra_args or []):
+            if skip_network_value:
+                skip_network_value = False
+                logger.warning("Ignoring docker_extra_args network value %r; network mode is configured elsewhere", arg)
+                continue
             if not isinstance(arg, str):
                 logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+                continue
+            if strip_network_overrides and arg in {"--network", "--net"}:
+                skip_network_value = True
+                logger.warning("Ignoring docker_extra_args flag %r; network mode is configured elsewhere", arg)
+                continue
+            if strip_network_overrides and (arg.startswith("--network=") or arg.startswith("--net=")):
+                logger.warning("Ignoring docker_extra_args flag %r; network mode is configured elsewhere", arg)
                 continue
             validated_extra.append(arg)
 
@@ -1119,6 +1181,32 @@ class DockerEnvironment(BaseEnvironment):
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
 
+    def _inspect_container_network_mode(self, container_id: str) -> Optional[str]:
+        """Return the container's Docker network mode, or ``None`` on failure."""
+        try:
+            result = subprocess.run(
+                [
+                    self._docker_exe, "inspect",
+                    "--format", "{{.HostConfig.NetworkMode}}",
+                    container_id,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except (subprocess.TimeoutExpired, OSError) as e:
+            logger.debug("docker inspect network probe failed for %s: %s", container_id[:12], e)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker inspect network probe returned %d for %s: %s",
+                result.returncode, container_id[:12], result.stderr.strip(),
+            )
+            return None
+        return _normalize_network_mode(result.stdout.strip())
+
     def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).
 
@@ -1130,7 +1218,10 @@ class DockerEnvironment(BaseEnvironment):
 
         Restricted to the docker-stored label set this class creates; never
         matches containers that happened to be named ``hermes-*`` but were
-        started by some other tool.
+        started by some other tool. Reuse is also gated on the probed
+        container's current network mode matching this instance's requested
+        network mode so a network-mode change cannot silently adopt a stale
+        container.
         """
         try:
             result = subprocess.run(
@@ -1171,6 +1262,19 @@ class DockerEnvironment(BaseEnvironment):
             if len(parts) != 2:
                 continue
             cid, state = parts[0], parts[1].lower()
+            actual_network_mode = self._inspect_container_network_mode(cid)
+            if actual_network_mode is None:
+                logger.debug(
+                    "Skipping reusable container %s: could not determine network mode",
+                    cid[:12],
+                )
+                continue
+            if actual_network_mode != self._requested_network_mode:
+                logger.info(
+                    "Skipping reusable container %s: requested network mode %s but existing container is %s",
+                    cid[:12], self._requested_network_mode, actual_network_mode,
+                )
+                continue
             if first is None:
                 first = (cid, state)
             if state == "running" and running is None:

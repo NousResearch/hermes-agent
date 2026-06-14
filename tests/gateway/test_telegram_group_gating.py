@@ -1008,6 +1008,53 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
 
 
 # ---------------------------------------------------------------------------
+# Replied-to media caching
+# ---------------------------------------------------------------------------
+
+def test_text_reply_to_photo_caches_referenced_media(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(require_mention=False)
+        adapter.handle_message = AsyncMock()
+        cached_path = tmp_path / "reply_photo.png"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_image_from_bytes",
+            lambda _data, ext=".jpg": str(cached_path),
+        )
+        file_obj = SimpleNamespace(
+            file_path="photos/replied.png",
+            download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG\r\n\x1a\n reply")),
+        )
+        photo = SimpleNamespace(file_size=1234, get_file=AsyncMock(return_value=file_obj))
+        replied = SimpleNamespace(
+            message_id=51,
+            text=None,
+            caption=None,
+            photo=[photo],
+            video=None,
+            audio=None,
+            voice=None,
+            document=None,
+        )
+        msg = _group_message("what's in this image?", reply_to_bot=False)
+        msg.reply_to_message = replied
+        update = SimpleNamespace(update_id=3010, message=msg, effective_message=msg)
+
+        await adapter._handle_text_message(update, SimpleNamespace())
+        await asyncio.sleep(0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        await_args = adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.reply_to_message_id == "51"
+        assert event.media_urls == [str(cached_path)]
+        assert event.media_types == ["image/png"]
+        assert event.message_type == MessageType.PHOTO
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
 # Observed-media caching (unmentioned group attachments)
 # ---------------------------------------------------------------------------
 

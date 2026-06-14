@@ -24,6 +24,12 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 # Content exercising rich-only constructs: a heading, a real Markdown table,
 # and a task list. Pipes / brackets must survive untouched into the payload.
 RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- [x] table renders"
+DANGEROUS_DETAILS_MATH = (
+    "<details><summary>Complex proof</summary>\n\n"
+    "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$\n\n"
+    "And inline \\(\\alpha + \\beta\\)\n"
+    "</details>"
+)
 
 # PTB 22.6's real unknown-endpoint errors: do_api_request can raise
 # EndPointNotFound for Bot API 404s, and the request layer can wrap that same
@@ -103,6 +109,48 @@ async def test_rich_happy_path_sends_raw_markdown():
     assert "- [x] table renders" in api_kwargs["rich_message"]["markdown"]
     # Legacy path must not run on rich success.
     adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_details_with_math_skips_rich_send_to_avoid_tdesktop_crash():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", DANGEROUS_DETAILS_MATH)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_details_without_math_still_uses_rich_send():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        "<details><summary>Notes</summary>\nNo equations here.\n</details>",
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_math_outside_details_still_uses_rich_send():
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "Outside details: $$x^2 + y^2$$")
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -391,6 +439,20 @@ async def test_rich_gate_tolerates_minimal_bot_without_raw_endpoint():
 
 
 # ── Streaming drafts: sendRichMessageDraft ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_details_with_math_skips_rich_draft_to_avoid_tdesktop_crash():
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft("12345", draft_id=7, content=DANGEROUS_DETAILS_MATH)
+
+    assert result.success is True
+    bot.do_api_request.assert_not_called()
+    bot.send_message_draft.assert_awaited_once()
 
 
 @pytest.mark.asyncio

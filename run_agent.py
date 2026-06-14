@@ -1548,9 +1548,10 @@ class AIAgent:
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
-        Uses _last_flushed_db_idx to track which messages have already been
-        written, so repeated calls (from multiple exit paths) only write
-        truly new messages — preventing the duplicate-write bug (#860).
+        Uses per-session message identity tracking so repeated calls (from
+        multiple exit paths) only write truly new messages — preventing the
+        duplicate-write bug (#860) without relying on positional slices that
+        can drift after message-sequence repair.
         """
         if not self._session_db:
             return
@@ -1559,14 +1560,41 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
-            start_idx = len(conversation_history) if conversation_history else 0
-            # Guard against the flush cursor overshooting the message list.
-            # This can happen when repair_message_sequence compacts the list
-            # (merging consecutive users, dropping stray tools) after the
-            # cursor was set.  Fall back to start_idx so we don't skip
-            # persisting the assistant/tool chain (#44837).
-            flush_from = max(start_idx, min(self._last_flushed_db_idx, len(messages)))
-            for msg in messages[flush_from:]:
+            # Positional flushing used to slice at
+            # max(len(conversation_history), _last_flushed_db_idx). That
+            # assumes the live `messages` list is the original history plus a
+            # new tail. repair_message_sequence can shrink/merge the history
+            # copy before the final flush, making len(conversation_history)
+            # larger than len(messages); the slice is then empty and delivered
+            # assistant responses never reach state.db (#46053).
+            #
+            # Track object identities instead. `messages` is a shallow copy of
+            # `conversation_history`, so history dicts are skipped by identity,
+            # and new dicts appended during this turn are written once even if
+            # repair compacts the list around them.
+            current_session_id = getattr(self, "session_id", None)
+            flushed_session_id = getattr(self, "_flushed_db_message_session_id", None)
+            if flushed_session_id != current_session_id or self._last_flushed_db_idx == 0:
+                self._flushed_db_message_ids = set()
+                self._flushed_db_message_session_id = current_session_id
+            flushed_ids = getattr(self, "_flushed_db_message_ids", None)
+            if not isinstance(flushed_ids, set):
+                flushed_ids = set()
+                self._flushed_db_message_ids = flushed_ids
+            history_ids = {
+                id(item) for item in (conversation_history or [])
+                if isinstance(item, dict)
+            }
+
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                msg_id = id(msg)
+                if msg_id in flushed_ids:
+                    continue
+                if msg_id in history_ids:
+                    flushed_ids.add(msg_id)
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —
@@ -1605,6 +1633,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                 )
+                flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

@@ -22,6 +22,7 @@ Usage::
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -44,10 +45,10 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
-    # Per-profile HOME for subprocesses: isolates system tool configs (git,
-    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
-    # this also ensures tool configs land inside the persistent volume.
-    # See hermes_constants.get_subprocess_home() and issue #4426.
+    # Back-compat/Docker HOME for tool subprocesses. Host subprocesses keep
+    # the user's real HOME by default so normal CLI credentials remain visible;
+    # containers still use this directory for persistent HOME state.
+    # See hermes_constants.get_subprocess_home().
     "home",
 ]
 
@@ -421,7 +422,8 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     else:
         wrapper_path = wrapper_dir / canon
         try:
-            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
+            hermes_exe = shutil.which("hermes") or "hermes"
+            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n')
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:

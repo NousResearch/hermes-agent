@@ -4837,15 +4837,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     raw_mcp_servers = config.get("mcp_servers")
     if isinstance(raw_mcp_servers, dict):
         try:
-            from hermes_cli.mcp_security import validate_mcp_server_entry
+            from hermes_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
         except Exception:
-            validate_mcp_server_entry = None
-        if validate_mcp_server_entry:
+            _validate_mcp_server_entry = None
+        if _validate_mcp_server_entry:
             mcp_touched = False
             for server_name, entry in raw_mcp_servers.items():
                 if not isinstance(entry, dict):
                     continue
-                issues = validate_mcp_server_entry(server_name, entry)
+                issues = _validate_mcp_server_entry(server_name, entry)
                 if not issues:
                     continue
                 entry["enabled"] = False

@@ -324,8 +324,12 @@ scripts/verify_voice_local_stack.py \
 
 That aggregate check starts the local Hermes CLI, verifies command-provider
 Ogg/Opus output, verifies the raw `voice stream` PCM contract, and then runs
-the full-duplex sidecar smoke from the `voice` checkout. Pass
-`--skip-full-duplex` when the WebRTC sidecar dependencies are not installed yet.
+the WhatsApp Calling control-plane smoke plus the full-duplex sidecar smoke
+from the `voice` checkout. The control-plane smoke is synthetic and local: it
+feeds Hermes a representative Meta `calls` webhook and verifies the sidecar
+offer, Graph `pre_accept`, Graph `accept`, drain startup, and terminate cleanup
+without contacting Meta. Pass `--skip-calling-control-plane` or
+`--skip-full-duplex` when you only want part of the preflight.
 
 After installing a local gateway service, verify the running process is using
 the expected voice-native checkout:
@@ -414,6 +418,18 @@ drains the decoded PCM through `voice stream-transcribe`, and simultaneously
 queues outbound `voice stream` PCM back to the same peer. A passing run proves
 the sidecar, PCM contract, inbound STT bridge, and outbound TTS bridge agree
 before a real WhatsApp call is attempted.
+
+To validate just the Cloud Calling control plane without sidecar media
+dependencies, run:
+
+```bash
+scripts/verify_voice_whatsapp_calling_control_plane.py
+```
+
+That synthetic smoke proves Hermes turns a representative call offer into a
+sidecar SDP request, Graph `pre_accept`, Graph `accept`, and local sidecar close
+on termination. It does not contact Meta and does not prove RTP media flow; use
+the full-duplex sidecar smoke above for the media path.
 
 Supported stream-command placeholders:
 

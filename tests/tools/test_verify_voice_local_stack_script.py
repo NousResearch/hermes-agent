@@ -30,10 +30,12 @@ def _args(**overrides):
         "speed": "1.0",
         "tts_timeout": 180.0,
         "stream_timeout": 180.0,
+        "calling_control_plane_timeout": 10.0,
         "full_duplex_timeout": 90.0,
         "command_text": "command smoke",
         "stream_text": "stream smoke",
         "stream_command_template": None,
+        "skip_calling_control_plane": False,
         "skip_full_duplex": False,
         "voice_repo": Path("/voice"),
         "webrtc_python_bin": None,
@@ -98,6 +100,20 @@ def test_full_duplex_command_passes_voice_repo_and_python():
     assert "--python-bin" in command
     assert "/tmp/venv/bin/python" in command
     assert command[-2:] == ["--expect-word", "testing"]
+
+
+def test_calling_control_plane_command_uses_synthetic_verifier():
+    script = _load_script_module()
+
+    command = script.calling_control_plane_command(
+        _args(calling_control_plane_timeout=12.5)
+    )
+
+    assert command[:2] == [
+        sys.executable,
+        str(script.script_path("verify_voice_whatsapp_calling_control_plane.py")),
+    ]
+    assert command[-2:] == ["--timeout", "12.5"]
 
 
 def test_resolve_voice_repo_requires_full_duplex_checkout(tmp_path: Path):

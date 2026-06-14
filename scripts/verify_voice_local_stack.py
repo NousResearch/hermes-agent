@@ -6,7 +6,8 @@ This aggregate preflight runs the existing focused verifiers in a safe order:
 1. The local Hermes CLI entrypoint starts with an isolated HERMES_HOME.
 2. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
 3. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
-4. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
+4. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
+5. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
 
 By default the script creates a temporary Hermes home and removes it after a
 passing or failing run. Pass --keep-home to inspect the generated config.
@@ -296,6 +297,15 @@ def stream_tts_command(
     return command
 
 
+def calling_control_plane_command(args: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable,
+        str(script_path("verify_voice_whatsapp_calling_control_plane.py")),
+        "--timeout",
+        f"{args.calling_control_plane_timeout:g}",
+    ]
+
+
 def resolve_voice_repo_for_full_duplex(args: argparse.Namespace) -> Path | None:
     if args.skip_full_duplex:
         return None
@@ -353,6 +363,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--speed", default="1.0")
     parser.add_argument("--tts-timeout", type=float, default=180.0)
     parser.add_argument("--stream-timeout", type=float, default=180.0)
+    parser.add_argument("--calling-control-plane-timeout", type=float, default=10.0)
     parser.add_argument("--full-duplex-timeout", type=float, default=90.0)
     parser.add_argument("--cli-timeout", type=float, default=10.0)
     parser.add_argument("--command-text", default=DEFAULT_COMMAND_TEXT)
@@ -369,6 +380,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voice-repo", type=Path, default=default_voice_repo())
     parser.add_argument("--webrtc-python-bin", default=os.environ.get("VOICE_WEBRTC_PYTHON"))
+    parser.add_argument("--skip-calling-control-plane", action="store_true")
     parser.add_argument("--skip-full-duplex", action="store_true")
     parser.add_argument(
         "--full-duplex-inbound-text",
@@ -431,6 +443,19 @@ def main() -> int:
             timeout=args.stream_timeout + 30,
             env=env,
         )
+        if args.skip_calling_control_plane:
+            checks["calling_control_plane"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-calling-control-plane was provided",
+            }
+        else:
+            checks["calling_control_plane"] = run_json_step(
+                "WhatsApp Calling control-plane verifier",
+                calling_control_plane_command(args),
+                timeout=args.calling_control_plane_timeout + 5,
+                env=env,
+            )
         if voice_repo is None:
             checks["full_duplex_sidecar"] = {
                 "success": True,

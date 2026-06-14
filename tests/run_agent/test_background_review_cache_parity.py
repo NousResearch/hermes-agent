@@ -237,3 +237,69 @@ def test_review_fork_inherits_parent_toolset_config():
         f"disabled_toolsets mismatch: {captured.get('disabled_toolsets')!r} "
         f"vs expected {agent.disabled_toolsets!r}"
     )
+
+
+def test_background_review_whitelist_includes_read_only_file_tools():
+    """read_file and search_files must be allowed in background review (issue #45877).
+
+    These tools are read-only and side-effect-free — blocking them forces
+    cron agents to use terminal(cat/grep) workarounds or operate blindly.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    captured = {}
+
+    class _Recorder:
+        """Lightweight stand-in for AIAgent that avoids provider resolution."""
+
+        def __init__(self, *args, **kwargs):
+            self._cached_system_prompt = None
+            self._memory_write_origin = None
+            self._memory_write_context = None
+            self._memory_store = None
+            self._memory_enabled = None
+            self._user_profile_enabled = None
+            self._memory_nudge_interval = None
+            self._skill_nudge_interval = None
+            self.suppress_status_output = None
+            self.session_start = None
+            self.session_id = None
+            self.compression_enabled = True
+
+        def run_conversation(self, *args, **kwargs):
+            raise RuntimeError("stop after recording — don't actually call the API")
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    # Intercept set_thread_tool_whitelist to capture the whitelist set.
+    def _capturing_stwl(whitelist, **kwargs):
+        captured["whitelist"] = set(whitelist)
+
+    import hermes_cli.plugins as _plugins_mod
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread), \
+         patch.object(_plugins_mod, "set_thread_tool_whitelist", _capturing_stwl):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    assert "whitelist" in captured, (
+        "set_thread_tool_whitelist was never called — "
+        "review may have failed before reaching whitelist setup"
+    )
+    tools = captured["whitelist"]
+    assert "read_file" in tools, (
+        "read_file must be in the background review whitelist"
+    )
+    assert "search_files" in tools, (
+        "search_files must be in the background review whitelist"
+    )

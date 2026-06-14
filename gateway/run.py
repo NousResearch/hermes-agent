@@ -15720,6 +15720,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             interrupt_monitor.cancel()
             _notify_task.cancel()
 
+            # Eagerly stop typing indicator when _run_agent exits.
+            # The caller (_handle_message_with_agent) and the base adapter's
+            # finally block also call stop_typing, but if the agent took a long
+            # time failing (e.g. retries with backoff), the typing indicator
+            # was visible throughout.  Stopping here ensures we don't leave a
+            # phantom typing indicator while the caller does post-processing
+            # (stream consumer flush, delivery, hooks, etc.).
+            try:
+                _cleanup_adapter = self.adapters.get(source.platform)
+                if _cleanup_adapter and hasattr(_cleanup_adapter, "stop_typing"):
+                    await _cleanup_adapter.stop_typing(source.chat_id)
+            except Exception:
+                pass
+
             # Wait for stream consumer to finish its final edit
             if stream_task:
                 # If the agent never created a stream consumer (e.g. non-

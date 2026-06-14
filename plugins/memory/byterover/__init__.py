@@ -25,19 +25,110 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.request import Request, urlopen
+from urllib.error import URLError
+
+import yaml
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+
+import re
 
 logger = logging.getLogger(__name__)
 
 # Timeouts
 _QUERY_TIMEOUT = 10   # brv query — should be fast
 _CURATE_TIMEOUT = 120  # brv curate — may involve LLM processing
+_TRANSLATE_TIMEOUT = 5  # translation request timeout (seconds)
 
 # Minimum lengths to filter noise
 _MIN_QUERY_LEN = 10
 _MIN_OUTPUT_LEN = 20
+
+# Module-level cache for model config
+_model_config_cache = None
+
+
+def _has_chinese(text: str) -> bool:
+    """Detect if text contains Chinese characters (CJK Unified Ideographs)."""
+    return bool(re.search(r'[\u4e00-\u9fff]', text))
+
+
+def _get_model_config():
+    """Read model config from Hermes config.yaml (cached)."""
+    global _model_config_cache
+    if _model_config_cache is not None:
+        return _model_config_cache
+
+    from hermes_constants import get_hermes_home
+    config_path = get_hermes_home() / "config.yaml"
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+        model_cfg = config.get("model", {})
+        _model_config_cache = {
+            "base_url": model_cfg.get("base_url", ""),
+            "model": model_cfg.get("default", ""),
+            "api_key": model_cfg.get("api_key", ""),
+        }
+    except Exception as e:
+        logger.debug("Failed to read model config: %s", e)
+        _model_config_cache = None
+
+    return _model_config_cache
+
+
+def _translate_to_english(text: str) -> str:
+    """Translate Chinese query to English using local LLM for BM25 compatibility.
+
+    Returns the original text if translation fails.
+    """
+    cfg = _get_model_config()
+    if not cfg or not cfg.get("base_url"):
+        return text
+
+    url = cfg["base_url"].rstrip("/") + "/chat/completions"
+    payload = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "user", "content": f"Translate to English: {text}"}
+        ],
+        "max_tokens": 100,
+        "temperature": 0.1
+    }
+
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        if cfg.get("api_key"):
+            req.add_header("Authorization", f"Bearer {cfg['api_key']}")
+
+        with urlopen(req, timeout=_TRANSLATE_TIMEOUT) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            msg = result["choices"][0]["message"]
+            # Some models (e.g. Qwen with reasoning) return content in reasoning_content
+            translated = (msg.get("content") or msg.get("reasoning_content") or "").strip()
+            if translated:
+                logger.debug("Translated query: %s -> %s", text, translated)
+                return translated
+    except Exception as e:
+        logger.debug("Translation failed: %s", e)
+
+    return text
+
+
+def _translate_query_if_needed(query: str) -> str:
+    """Translate Chinese queries to English for BM25 compatibility.
+
+    ByteRover uses BM25 for Tier 2 retrieval which only matches exact text tokens.
+    Chinese queries fail BM25 and are incorrectly marked as out-of-domain before
+    reaching the LLM reasoning tiers (3-4) that could understand them.
+    """
+    if _has_chinese(query):
+        return _translate_to_english(query)
+    return query
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +312,8 @@ class ByteRoverMemoryProvider(MemoryProvider):
         """
         if not query or len(query.strip()) < _MIN_QUERY_LEN:
             return ""
+        # Translate Chinese queries for BM25 compatibility
+        query = _translate_query_if_needed(query)
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],
             timeout=_QUERY_TIMEOUT, cwd=self._cwd,
@@ -334,6 +427,9 @@ class ByteRoverMemoryProvider(MemoryProvider):
         query = args.get("query", "")
         if not query:
             return tool_error("query is required")
+
+        # Translate Chinese queries for BM25 compatibility
+        query = _translate_query_if_needed(query)
 
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],

@@ -987,10 +987,13 @@ def switch_model(
             # If resolution fell through to "custom" (e.g. named custom provider like
             # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
             # credentials. Otherwise use the resolved values (picks up credential rotation,
-            # base_url adjustments for OpenCode, etc.).
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
+            # base_url adjustments for OpenCode, etc.).  Empty resolved fields keep the
+            # current values — storing "" would later clobber the working credentials
+            # when the session override is applied, turning a same-model reselect into
+            # a silent dead session (#43866).
+            api_key = runtime.get("api_key", "") or api_key
+            base_url = runtime.get("base_url", "") or base_url
+            api_mode = runtime.get("api_mode", "") or api_mode
         except Exception:
             pass
 

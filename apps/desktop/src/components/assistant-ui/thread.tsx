@@ -315,14 +315,20 @@ const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
 
   const elapsed = useElapsedSeconds(stalled)
 
-  if (!stalled) {
-    return null
-  }
-
+  // Keep the StatusRow mounted to avoid aria-live re-announcement on
+  // every stall/unstall cycle (#46225).  Visually hide when not stalled;
+  // hide the timer from screen readers so its per-second ticks don't
+  // re-fire the polite announcer.
   return (
-    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
+    <StatusRow
+      className={cn('mt-1.5', !stalled && 'hidden')}
+      data-slot="aui_stream-stall"
+      label="Hermes is thinking"
+    >
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      <ActivityTimerText seconds={elapsed} />
+      <span aria-hidden="true">
+        <ActivityTimerText seconds={elapsed} />
+      </span>
     </StatusRow>
   )
 }

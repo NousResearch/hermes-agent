@@ -7,6 +7,8 @@ to download, cache, and optionally inject text from non-image/audio files.
 
 import os
 import sys
+import io
+import zipfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -113,11 +115,13 @@ def make_attachment(
     *,
     filename: str,
     content_type: Optional[str],
+    title: Optional[str] = None,
     size: int = 1024,
     url: str = "https://cdn.discordapp.com/attachments/fake/file",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         filename=filename,
+        title=title,
         content_type=content_type,
         size=size,
         url=url,
@@ -151,6 +155,21 @@ def _mock_aiohttp_download(raw_bytes: bytes):
     session.__aexit__ = AsyncMock(return_value=False)
 
     return patch("aiohttp.ClientSession", return_value=session)
+
+
+def _make_hwpx_bytes(text: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            "Contents/section0.xml",
+            (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<hp:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+                f"<hp:p><hp:run><hp:t>{text}</hp:t></hp:run></hp:p>"
+                "</hp:sec>"
+            ),
+        )
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +403,45 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_discord_title_preserves_unicode_document_name(self, adapter):
+        """Discord sends sanitized filename but preserves the original name in title."""
+        with _mock_aiohttp_download(b"%PDF-1.4 fake pdf"):
+            msg = make_message([
+                make_attachment(
+                    filename="PMS_FO21_06F_02.__v1.0.pdf",
+                    title="★PMS_FO21_06F_02.정산_환수금_v1.0",
+                    content_type="application/pdf",
+                )
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert "★PMS_FO21_06F_02.정산_환수금_v1.0.pdf" in event.media_urls[0]
+        assert event.media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
+    async def test_hwpx_attachment_extracts_text_when_content_type_missing(self, adapter):
+        """HWPX files should be cached and surfaced even when Discord omits content_type."""
+        with _mock_aiohttp_download(_make_hwpx_bytes("사업비 집행 매뉴얼 본문")):
+            msg = make_message([
+                make_attachment(
+                    filename="2026_.hwpx",
+                    title="2026년 창업중심대학 창업기업 사업비 집행 매뉴얼",
+                    content_type=None,
+                )
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert len(event.media_urls) == 1
+        assert "2026년 창업중심대학 창업기업 사업비 집행 매뉴얼.hwpx" in event.media_urls[0]
+        assert event.media_types == ["application/vnd.hancom.hwpx"]
+        assert "[Extracted text of 2026년 창업중심대학 창업기업 사업비 집행 매뉴얼.hwpx]:" in event.text
+        assert "사업비 집행 매뉴얼 본문" in event.text
 
 
 class TestAllowAnyAttachment:

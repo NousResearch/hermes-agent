@@ -17,6 +17,7 @@ from agent.auxiliary_client import (
     auxiliary_max_tokens_param,
     call_llm,
     async_call_llm,
+    get_auxiliary_extra_body,
     _build_call_kwargs,
     _read_codex_access_token,
     _get_provider_chain,
@@ -199,6 +200,22 @@ class TestNousTagsScoping:
         )
 
         assert "extra_body" not in kwargs
+
+    def test_extra_body_uses_resolved_client_over_stale_global(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
+        client = SimpleNamespace(base_url="https://api.venice.ai/api/v1")
+
+        assert get_auxiliary_extra_body(client=client) == {}
+
+    def test_extra_body_includes_tags_for_nous_client_when_global_false(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
+        client = SimpleNamespace(base_url="https://inference-api.nousresearch.com/v1")
+
+        assert get_auxiliary_extra_body(client=client)["tags"] == aux._nous_portal_tags()
 
 
 class TestNormalizeAuxProvider:

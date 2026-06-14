@@ -446,7 +446,7 @@ def judge_goal(
             temperature=0,
             max_tokens=_goal_judge_max_tokens(),
             timeout=timeout,
-            extra_body=get_auxiliary_extra_body() or None,
+            extra_body=get_auxiliary_extra_body(client=client) or None,
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)

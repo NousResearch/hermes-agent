@@ -4405,12 +4405,26 @@ def resolve_vision_provider_client(
     return requested, client, final_model
 
 
-def get_auxiliary_extra_body() -> dict:
+def get_auxiliary_extra_body(client: Any = None, provider: str = "") -> dict:
     """Return extra_body kwargs for auxiliary API calls.
-    
+
     Includes Nous Portal product tags when the auxiliary client is backed
     by Nous Portal. Returns empty dict otherwise.
+
+    Prefer passing the resolved client or provider. The legacy no-argument
+    path falls back to the process-global ``auxiliary_is_nous`` flag for
+    callers that have not yet been migrated.
     """
+    normalized = _normalize_aux_provider(provider) if provider else ""
+    if normalized == "nous":
+        return _nous_extra_body()
+
+    if client is not None:
+        base_url = str(getattr(client, "base_url", "") or "")
+        if base_url_host_matches(base_url, "inference-api.nousresearch.com"):
+            return _nous_extra_body()
+        return {}
+
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 

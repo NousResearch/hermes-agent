@@ -1848,7 +1848,13 @@ class MCPServerTask:
         connection drops unexpectedly (unless shutdown was requested).
         """
         self._config = config
-        self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        raw_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        try:
+            self.tool_timeout = float(raw_timeout)
+            if not math.isfinite(self.tool_timeout):
+                self.tool_timeout = float(_DEFAULT_TOOL_TIMEOUT)
+        except (TypeError, ValueError):
+            self.tool_timeout = float(_DEFAULT_TOOL_TIMEOUT)
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available

@@ -5205,6 +5205,14 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
   })
+  // Some Linux desktop stacks can complete the backend/renderer boot but still
+  // leave the BrowserWindow hidden if ready-to-show is delayed or the compositor
+  // misses the initial map. Do not let a successful launch look like a no-op.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      focusWindow(mainWindow)
+    }
+  }, 4000).unref?.()
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -6467,9 +6475,10 @@ if (!_gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
-    else if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+    else if (mainWindow && !mainWindow.isDestroyed()) {
+      focusWindow(mainWindow)
+    } else if (app.isReady()) {
+      createWindow()
     }
   })
 }

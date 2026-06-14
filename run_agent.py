@@ -966,9 +966,19 @@ class AIAgent:
         ``ValueError`` such as ``expected ident at line 1 column 149``.  That
         is provider wire-format trouble, not local request validation, so it
         should follow the same retry path as a truncated JSON body.
+
+        Additionally, non-contiguous ``content_block`` indices (e.g. blocks
+        started at 0, 1, 4 while the list only has 3 entries) cause the SDK's
+        accumulator to raise ``IndexError: list index out of range`` on
+        ``content_block_delta`` / ``content_block_stop``.  This is also an
+        upstream protocol violation, not a local bug.  See #45908.
         """
         if getattr(self, "api_mode", None) != "anthropic_messages":
             return False
+        # IndexError from non-contiguous content_block indices in the
+        # Anthropic SDK accumulator (issue #45908).
+        if isinstance(error, IndexError):
+            return True
         if not isinstance(error, ValueError):
             return False
         if isinstance(error, (UnicodeEncodeError, json.JSONDecodeError)):

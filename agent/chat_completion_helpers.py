@@ -2651,6 +2651,24 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     result["error"],
                 )
                 _stub_finish_reason = FINISH_REASON_LENGTH
+            # Return a partial-stub shaped to match the active api_mode so
+            # the conversation_loop validator accepts it on the first try.
+            # Previously the stub was always OpenAI-shaped (choices=[...]),
+            # which fails AnthropicTransport.validate_response() because it
+            # checks response.content — causing 10 useless retries.
+            # See issue #45908.
+            if getattr(agent, "api_mode", None) == "anthropic_messages":
+                _stub_content_block = SimpleNamespace(
+                    type="text", text=_partial_text or ""
+                )
+                return SimpleNamespace(
+                    id=PARTIAL_STREAM_STUB_ID,
+                    model=getattr(agent, "model", "unknown"),
+                    content=[_stub_content_block],
+                    stop_reason="max_tokens",
+                    usage=None,
+                    _dropped_tool_names=_partial_names or None,
+                )
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,

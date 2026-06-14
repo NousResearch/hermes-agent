@@ -385,8 +385,39 @@ WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND='voice stream --quiet --sample
 WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180
 ```
 
-For a local user-service deployment, run the sidecar on loopback and expose the
-same values to `hermes-gateway.service`:
+For a local Linux user-service deployment, let Hermes generate the sidecar unit
+and gateway drop-in first. The default is a dry run that prints the files and
+config it would write:
+
+```bash
+scripts/install_voice_local_stack.py \
+  --live-hermes-root /path/to/hermes-agent \
+  --voice-repo /path/to/voice \
+  --voice-bin /path/to/voice/target/release/voice \
+  --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python \
+  --configure-tts
+```
+
+When the JSON plan looks right, apply it and restart the gateway:
+
+```bash
+scripts/install_voice_local_stack.py \
+  --apply \
+  --configure-tts \
+  --restart-hermes \
+  --live-hermes-root /path/to/hermes-agent \
+  --voice-repo /path/to/voice \
+  --voice-bin /path/to/voice/target/release/voice \
+  --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python
+```
+
+That writes `~/.config/systemd/user/voice-webrtc-sidecar.service`, writes
+`~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf`, updates
+`~/.hermes/config.yaml` so the Kokoro command provider emits Ogg/Opus through
+`voice say --format ogg-opus`, reloads systemd, starts the sidecar, and restarts
+`hermes-gateway.service`.
+
+The generated service files should look like this:
 
 ```ini
 # ~/.config/systemd/user/voice-webrtc-sidecar.service
@@ -397,8 +428,8 @@ After=network.target voice-daemon.service
 [Service]
 Type=simple
 WorkingDirectory=/path/to/voice
-Environment="VOICE_BIN=/path/to/voice"
-ExecStart=/tmp/voice-webrtc-venv/bin/python /path/to/voice/examples/webrtc-sidecar/sidecar.py --host 127.0.0.1 --port 8787 --rx-pcm %h/.hermes/voice-webrtc-sidecar/inbound.s16le --log-level INFO
+Environment="VOICE_BIN=/path/to/voice/target/release/voice"
+ExecStart=/tmp/voice-webrtc-venv/bin/python /path/to/voice/examples/webrtc-sidecar/sidecar.py --host 127.0.0.1 --port 8787 --rx-pcm /home/you/.hermes/voice-webrtc-sidecar/inbound.s16le --log-level INFO
 Restart=on-failure
 RestartSec=2
 
@@ -409,17 +440,10 @@ WantedBy=default.target
 ```ini
 # ~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf
 [Service]
+Environment="PYTHONPATH=/path/to/hermes-agent"
 Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_URL=http://127.0.0.1:8787"
-Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND=/path/to/voice stream --quiet --sample-rate {sample_rate} --frame-ms {frame_ms} --raw-output - --input-file {input_path} --voice af_heart --speed 1.0"
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND=/path/to/voice/target/release/voice stream --quiet --sample-rate {sample_rate} --frame-ms {frame_ms} --raw-output - --input-file {input_path} --voice af_heart --speed 1.0"
 Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180"
-```
-
-Then reload and restart:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now voice-webrtc-sidecar.service
-systemctl --user restart hermes-gateway.service
 ```
 
 Validate the installed command shape before a live call:

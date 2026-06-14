@@ -224,8 +224,7 @@ AUTHOR_MAP = {
     "1078345+egilewski@users.noreply.github.com": "egilewski",  # co-author, PR #40663
     "peterhao@Peters-MacBook-Air.local": "pinguarmy",
     "joe.rinaldijohnson@shopify.com": "joerj123",
-    "adalsteinnhelgason@Aalsteinns-MacBook-Pro-3.local": "AIalliAI",
-    "adalsteinnhelgason@users.noreply.github.com": "AIalliAI",
+    "285906080+AIalliAI@users.noreply.github.com": "AIalliAI",
     "iamlukethedev@users.noreply.github.com": "iamlukethedev",
     "zhang.hz6666@gmail.com": "HaozheZhang6",
     "barronlroth@gmail.com": "barronlroth",

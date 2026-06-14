@@ -2127,3 +2127,19 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+class TestPromptsCommand:
+    """Contract tests for the /prompts slash command."""
+
+    def test_prompts_resolves(self):
+        cmd = resolve_command("prompts")
+        assert cmd is not None
+        assert cmd.name == "prompts"
+
+    def test_prompts_is_cli_only(self):
+        cmd = resolve_command("prompts")
+        assert cmd.cli_only is True
+
+    def test_prompts_not_in_gateway_known_commands(self):
+        assert "prompts" not in GATEWAY_KNOWN_COMMANDS

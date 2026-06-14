@@ -1088,6 +1088,200 @@ class TestMessageStorage:
         assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
 
 
+
+
+# =========================================================================
+# list_recent_user_messages
+# =========================================================================
+
+class TestListRecentUserMessages:
+    """Tests for SessionDB.list_recent_user_messages used by /prompts and /undo."""
+
+    def test_returns_active_user_rows_newest_first(self, db):
+        db.create_session("s1", "cli")
+        first_id = db.append_message("s1", role="user", content="first prompt")
+        db.append_message("s1", role="assistant", content="answer")
+        second_id = db.append_message("s1", role="user", content="second prompt")
+
+        rows = db.list_recent_user_messages("s1", limit=10)
+
+        assert len(rows) == 2
+        assert rows[0]["id"] == second_id
+        assert rows[1]["id"] == first_id
+        assert rows[0]["preview"] == "second prompt"
+        assert rows[1]["preview"] == "first prompt"
+
+    def test_excludes_assistant_and_tool_messages(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", role="user", content="prompt")
+        db.append_message("s1", role="assistant", content="answer")
+        db.append_message("s1", role="tool", content="result")
+        db.append_message("s1", role="user", content="prompt 2")
+
+        rows = db.list_recent_user_messages("s1", limit=10)
+
+        assert len(rows) == 2
+        assert all(r["preview"] in ("prompt", "prompt 2") for r in rows)
+
+    def test_excludes_other_sessions(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "cli")
+        db.append_message("s1", role="user", content="session 1 prompt")
+        db.append_message("s2", role="user", content="session 2 prompt")
+
+        rows = db.list_recent_user_messages("s1", limit=10)
+
+        assert len(rows) == 1
+        assert rows[0]["preview"] == "session 1 prompt"
+
+    def test_excludes_inactive_rows(self, db):
+        db.create_session("s1", "cli")
+        first_id = db.append_message("s1", role="user", content="inactive prompt")
+        db.append_message("s1", role="user", content="active prompt")
+
+        # Mark the first message as inactive (simulates /undo rewind)
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id = ?", (first_id,)
+            )
+            db._conn.commit()
+
+        rows = db.list_recent_user_messages("s1", limit=10)
+
+        assert len(rows) == 1
+        assert rows[0]["preview"] == "active prompt"
+
+    def test_respects_limit(self, db):
+        db.create_session("s1", "cli")
+        for i in range(15):
+            db.append_message("s1", role="user", content=f"prompt {i}")
+
+        rows = db.list_recent_user_messages("s1", limit=5)
+
+        assert len(rows) == 5
+        # Newest first
+        assert rows[0]["preview"] == "prompt 14"
+        assert rows[-1]["preview"] == "prompt 10"
+
+    def test_returns_empty_for_new_session(self, db):
+        db.create_session("s1", "cli")
+
+        rows = db.list_recent_user_messages("s1", limit=10)
+
+        assert rows == []
+
+    def test_preview_truncates_long_content(self, db):
+        db.create_session("s1", "cli")
+        long_content = "x" * 200
+        db.append_message("s1", role="user", content=long_content)
+
+        rows = db.list_recent_user_messages("s1", limit=10)
+
+        assert len(rows) == 1
+        # preview is first 80 chars with line breaks collapsed
+        assert len(rows[0]["preview"]) <= 80
+
+    def test_include_inactive_flag(self, db):
+        db.create_session("s1", "cli")
+        first_id = db.append_message("s1", role="user", content="old prompt")
+        db.append_message("s1", role="user", content="new prompt")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id = ?", (first_id,)
+            )
+            db._conn.commit()
+
+        rows = db.list_recent_user_messages("s1", limit=10, include_inactive=True)
+
+        assert len(rows) == 2
+
+
+class TestGetUserMessage:
+    """Tests for SessionDB.get_user_message used by /prompts selection."""
+
+    def test_returns_user_message_same_session(self, db):
+        db.create_session("s1", "cli")
+        msg_id = db.append_message("s1", role="user", content="my prompt")
+
+        result = db.get_user_message("s1", msg_id)
+
+        assert result is not None
+        assert result["id"] == msg_id
+        assert result["session_id"] == "s1"
+        assert result["role"] == "user"
+        assert result["content"] == "my prompt"
+        assert result["active"] is True
+
+    def test_returns_none_for_assistant_message(self, db):
+        db.create_session("s1", "cli")
+        msg_id = db.append_message("s1", role="assistant", content="answer")
+
+        result = db.get_user_message("s1", msg_id)
+
+        assert result is None
+
+    def test_returns_none_for_different_session(self, db):
+        db.create_session("s1", "cli")
+        db.create_session("s2", "cli")
+        msg_id = db.append_message("s2", role="user", content="other session")
+
+        result = db.get_user_message("s1", msg_id)
+
+        assert result is None
+
+    def test_returns_none_for_inactive_by_default(self, db):
+        db.create_session("s1", "cli")
+        msg_id = db.append_message("s1", role="user", content="inactive prompt")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id = ?", (msg_id,)
+            )
+            db._conn.commit()
+
+        result = db.get_user_message("s1", msg_id)
+
+        assert result is None
+
+    def test_returns_inactive_when_active_only_false(self, db):
+        db.create_session("s1", "cli")
+        msg_id = db.append_message("s1", role="user", content="inactive prompt")
+
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id = ?", (msg_id,)
+            )
+            db._conn.commit()
+
+        result = db.get_user_message("s1", msg_id, active_only=False)
+
+        assert result is not None
+        assert result["content"] == "inactive prompt"
+        assert result["active"] is False
+
+    def test_decodes_multimodal_content(self, db):
+        db.create_session("s1", "cli")
+        content = [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "file://img.png"}},
+            {"type": "text", "text": "world"},
+        ]
+        msg_id = db.append_message("s1", role="user", content=content)
+
+        result = db.get_user_message("s1", msg_id)
+
+        assert result is not None
+        assert result["content"] == content
+
+    def test_returns_none_for_nonexistent_id(self, db):
+        db.create_session("s1", "cli")
+
+        result = db.get_user_message("s1", 99999)
+
+        assert result is None
+
+
 # =========================================================================
 # FTS5 search
 # =========================================================================

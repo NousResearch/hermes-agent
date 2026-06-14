@@ -757,11 +757,16 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
         return
-    _emit(
-        "status.update",
-        sid,
-        {"kind": kind if text is not None else "status", "text": body},
-    )
+    out_kind = kind if text is not None else "status"
+    # Auto-compaction reaches us as a generic "lifecycle" status. Re-tag it so
+    # drivers (desktop app) can show an explicit "Summarizing…" indicator —
+    # otherwise a mid-turn compaction looks like the transcript reset itself.
+    if out_kind == "lifecycle":
+        from agent.conversation_compression import COMPACTION_STATUS_MARKER
+
+        if COMPACTION_STATUS_MARKER in body:
+            out_kind = "compacting"
+    _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
 def _estimate_image_tokens(width: int, height: int) -> int:
@@ -1223,12 +1228,12 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
     _register_session_cwd(session)
-    db = _get_db()
-    if db is not None:
-        try:
-            db.update_session_cwd(session.get("session_key", ""), resolved)
-        except Exception:
-            logger.debug("failed to persist session cwd", exc_info=True)
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.update_session_cwd(session.get("session_key", ""), resolved)
+            except Exception:
+                logger.debug("failed to persist session cwd", exc_info=True)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -1477,6 +1482,11 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
+# Bare billing buckets are not routable provider identities (kept in parity with the
+# provider gate in agent_init). Restoring one as a session provider override breaks resume.
+_BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Return runtime fields persisted with a stored session.
 
@@ -1503,12 +1513,18 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
 
     overrides: dict = {}
     model = str(row.get("model") or model_config.get("model") or "").strip()
-    provider = str(
-        model_config.get("provider")
-        or model_config.get("billing_provider")
-        or row.get("billing_provider")
-        or ""
+    # ``billing_provider`` is only the billing bucket — for a custom endpoint it is the
+    # bare class ``"custom"``, which agent_init treats as non-routable, so restoring it as
+    # the provider override makes ``session.resume`` fail with "No LLM provider configured".
+    # Only restore an explicit provider; otherwise leave it unset so resume falls back to
+    # the configured default, matching the working CLI path.
+    explicit_provider = str(model_config.get("provider") or "").strip()
+    billing_provider = str(
+        model_config.get("billing_provider") or row.get("billing_provider") or ""
     ).strip()
+    provider = explicit_provider
+    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
+        provider = billing_provider
     base_url = str(model_config.get("base_url") or "").strip()
     api_mode = str(model_config.get("api_mode") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
@@ -1548,6 +1564,25 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     if model:
         config["model"] = model
     if provider:
+        if provider == "custom" and base_url:
+            # ``agent.provider`` is the RESOLVED provider, and for any named
+            # ``providers:`` / ``custom_providers:`` entry that is the literal
+            # string "custom" — persisting it loses the entry identity, so a
+            # later resume/rebuild cannot re-resolve the entry's credentials
+            # (the api_key is deliberately never persisted; see
+            # _stored_session_runtime_overrides). Recover the canonical
+            # ``custom:<name>`` menu key from the endpoint URL so
+            # resolve_runtime_provider() can find the entry again.
+            try:
+                from hermes_cli.runtime_provider import (
+                    find_custom_provider_identity,
+                )
+
+                provider = find_custom_provider_identity(base_url) or provider
+            except Exception:
+                logger.debug(
+                    "custom provider identity lookup failed", exc_info=True
+                )
         config["provider"] = provider
     if base_url:
         config["base_url"] = base_url
@@ -3299,9 +3334,30 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
+        resolve_kwargs = {}
+        if (
+            override_base_url
+            and str(requested_provider or "").strip().lower() == "custom"
+        ):
+            # Session rows persisted before the custom-provider identity fix
+            # (see _runtime_model_config) stored the resolved provider
+            # "custom", which _get_named_custom_provider cannot match back to
+            # a named ``providers:`` / ``custom_providers:`` entry — the
+            # rebuild then either raised auth_unavailable or silently
+            # resolved placeholder credentials against the patched-back
+            # base_url. Recover the entry identity from the persisted
+            # base_url; failing that, hand the base_url to the direct-alias
+            # branch so pool/env credentials can still be resolved for it.
+            from hermes_cli.runtime_provider import find_custom_provider_identity
+
+            recovered = find_custom_provider_identity(override_base_url)
+            if recovered:
+                requested_provider = recovered
+            resolve_kwargs["explicit_base_url"] = override_base_url
         runtime = resolve_runtime_provider(
             requested=requested_provider,
             target_model=model or None,
+            **resolve_kwargs,
         )
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
@@ -3372,7 +3428,15 @@ def _make_agent(
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+def _init_session(
+    sid: str,
+    key: str,
+    agent,
+    history: list,
+    cols: int = 80,
+    cwd: str | None = None,
+    session_db=None,
+):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -3387,7 +3451,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             "running": False,
             "attached_images": [],
             "image_counter": 0,
-            "cwd": _completion_cwd(),
+            "cwd": cwd or _completion_cwd(),
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -3402,7 +3466,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
-    db = _get_db()
+    db = session_db if session_db is not None else _get_db()
     if db is not None:
         row = db.get_session(key)
         if row and row.get("cwd"):
@@ -3657,16 +3721,27 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             )
             continue
-        if not content_text.strip():
+        # An assistant turn may carry only reasoning/thinking content with no
+        # visible text (extended-thinking turns, thinking-only recovery
+        # responses). Such a turn is persisted with its reasoning fields and is
+        # recallable from the transcript, but dropping it here as "empty" makes
+        # it vanish from the resumed/reloaded session view while the desktop's
+        # reasoning disclosure has nothing to render. Keep it when it carries
+        # reasoning so the "Thinking…" block still shows. (#44022)
+        reasoning_keys = (
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "codex_reasoning_items",
+        )
+        has_reasoning = role == "assistant" and any(
+            m.get(key) for key in reasoning_keys
+        )
+        if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
         if role == "assistant":
-            for key in (
-                "reasoning",
-                "reasoning_content",
-                "reasoning_details",
-                "codex_reasoning_items",
-            ):
+            for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
         messages.append(msg)
@@ -4004,6 +4079,10 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
+        profile_home
+    )
+
     def _reuse_live_payload(sid: str, session: dict) -> dict:
         payload = _live_session_payload(
             sid,
@@ -4051,7 +4130,7 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         messages = _history_to_messages(history)
-        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
         now = time.time()
         # A delegated child mid-run emits no native session events of its own —
         # report its liveness from the relay registry so the window paints a
@@ -4194,7 +4273,24 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
-            _init_session(sid, target, agent, history, cols=cols)
+            init_home_token = (
+                set_hermes_home_override(str(profile_home))
+                if profile_home is not None
+                else None
+            )
+            try:
+                _init_session(
+                    sid,
+                    target,
+                    agent,
+                    history,
+                    cols=cols,
+                    cwd=profile_resume_cwd,
+                    session_db=db,
+                )
+            finally:
+                if init_home_token is not None:
+                    reset_hermes_home_override(init_home_token)
             if sid in _sessions:
                 if stored_runtime_overrides.get("model_override") is not None:
                     _sessions[sid]["model_override"] = stored_runtime_overrides[

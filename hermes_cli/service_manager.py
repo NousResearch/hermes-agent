@@ -585,15 +585,20 @@ class S6ServiceManager:
         would instead look up ``$HERMES_HOME/profiles/default/`` — a
         completely different (and almost always nonexistent) profile.
 
-        Port selection: the gateway picks its bind port from the
-        profile's ``config.yaml`` (``[gateway] port = ...``) — that
-        is the single source of truth. Previously this method took a
-        ``port`` parameter that was passed in but never substituted
-        into the rendered script (it was carried in for "API parity"
-        with a deterministic SHA-256 allocator in
-        ``hermes_cli.profiles._allocate_gateway_port``). PR #30136
-        review item I5 retired both the allocator and the parameter
-        because they were dead code through the entire stack.
+        Port selection: the gateway binds the port resolved by
+        ``gateway/config.py`` from the profile's own environment —
+        ``API_SERVER_PORT`` (or ``platforms.api_server.extra.port`` in
+        that profile's ``config.yaml``), defaulting to 8642. There is
+        no ``[gateway] port`` key and no Python-side allocator: because
+        each supervised profile gateway loads its own ``HERMES_HOME``,
+        two profiles that both leave the port unset will both try to
+        bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in
+        its ``.env``. Previously this method took a ``port`` parameter
+        that was passed in but never substituted into the rendered
+        script (carried for "API parity" with a deterministic SHA-256
+        allocator in ``hermes_cli.profiles._allocate_gateway_port``).
+        PR #30136 review item I5 retired both the allocator and the
+        parameter because they were dead code through the entire stack.
         """
         import shlex
         lines = [

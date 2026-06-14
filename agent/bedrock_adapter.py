@@ -935,11 +935,14 @@ def build_converse_kwargs(
     if system_prompt:
         kwargs["system"] = system_prompt
 
-    if temperature is not None:
-        kwargs["inferenceConfig"]["temperature"] = temperature
+    from agent.anthropic_adapter import _forbids_sampling_params
 
-    if top_p is not None:
-        kwargs["inferenceConfig"]["topP"] = top_p
+    if not _forbids_sampling_params(model):
+        if temperature is not None:
+            kwargs["inferenceConfig"]["temperature"] = temperature
+
+        if top_p is not None:
+            kwargs["inferenceConfig"]["topP"] = top_p
 
     if stop_sequences:
         kwargs["inferenceConfig"]["stopSequences"] = stop_sequences

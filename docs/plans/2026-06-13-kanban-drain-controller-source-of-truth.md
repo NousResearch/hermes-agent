@@ -142,17 +142,29 @@ Reviewer output must be structured and attached to the source card:
   "verdict": "PASS | FAIL",
   "reviewer": "profile-or-human",
   "evidence": {
-    "diff_path": "optional path or PR URL",
+    "diff_path": "path, branch, or PR URL reviewed",
     "tests_run": ["command strings"],
     "findings": []
   },
+  "authority_boundary": "no merge, deploy, production promotion, public action, credential action, or external side effect was performed unless separately authorized",
   "required_followups": []
 }
 ```
 
+Required minimum evidence:
+
+- source card ID
+- reviewer identity
+- PASS or FAIL verdict
+- diff, branch, PR, or workspace path reviewed
+- tests or checks inspected
+- findings list, even when empty
+- explicit authority-boundary statement
+
 PASS consumption:
 
 - Verify packet references the source task and has review evidence.
+- Verify the source card is still blocked for `review-required` and does not carry a human/credential/prod-risk hold.
 - Append audit comment with `drain_action_id`.
 - Mark the source card `done` without respawning the implementation worker.
 - Preserve review run metadata.
@@ -206,6 +218,70 @@ Report fields:
 7. Cap overrides: allow controller-specific reviewer/drain profiles to have configured burst caps, e.g. `kanban.drain.max_in_progress_per_profile_overrides`, while retaining global caps for normal workers.
 8. Dry-run by default: apply mode requires explicit `--apply` and emits the same report plus committed action IDs.
 
+## Drain wave order
+
+Drain waves optimize for safe throughput before raw count reduction:
+
+1. `review_required` blocked cards with clear handoff metadata and no human/credential/prod-risk hold.
+2. `changes_required` review failures with actionable findings and a safe owner route.
+3. stale worker, protocol, cron, or runtime failures with clear infrastructure evidence.
+4. no-block-reason cards only after classification.
+5. `todo` cards remain report-only while any parent is nonterminal.
+
+## Drain execution caps
+
+Drain execution uses conservative, profile-specific batches rather than broad swarm fan-out:
+
+- `factory-orchestrator` owns the dry-run report and mechanical drain actions.
+- `pr-reviewer` may run at most 2 concurrent review-drain cards.
+- `devops-engineer` may run at most 1 concurrent runtime/protocol classification lane.
+- `backend-engineer` and `frontend-engineer` receive no direct drain work until review FAIL or reslice produces a scoped follow-up slice.
+- `CEO`, `product-manager`, and `design-with-docs` receive report queues first and pull only the highest-value blockers.
+- The main-board drain should not create more than 4 total active subagent workers at once.
+
+## Classification debt
+
+Blocked cards without a current machine-readable block reason are classification debt, not runnable work. The first pass is read-only and assigns a classification owner:
+
+- `devops-engineer` for stale workers, protocol violations, missing tools, cron/runtime failures, and exhausted worker lifecycle.
+- `design-with-docs` for missing source-of-truth, unresolved domain terms, ADR gaps, and ambiguous authority.
+- `product-manager` for product scope, UX copy, acceptance criteria, dependency priority, and business decisions.
+- `CEO` for cross-project priority and "should we still do this?" decisions.
+- human/operator queue for GitHub credentials, private repo access, MFA, production approval, public posting, payments, secrets, and other explicit authority.
+
+Only classified cards may receive a `block_class` and then stay blocked, route to review, reslice, archive as superseded, or become ready.
+
+## Parent-first todo drain
+
+`todo` cards are parent-gated inventory while any parent is nonterminal. Draining `todo` means resolving upstream parent blockers, not promoting child work directly:
+
+- report parent chains that block the most children
+- prioritize parent cards with the largest downstream unlock count
+- ask `CEO` to rank parent epics or milestones when several unlock many children
+- ask `product-manager` or `design-with-docs` to resolve parent blockers when they are scope or source-of-truth issues
+- promote children only when the existing dependency gate proves all parents are terminal
+
+## Stale runtime retry policy
+
+Stale runtime failures are classified before retry. They must not be blindly unblocked:
+
+- `runtime_infra`: worker process, protocol, terminal/tool, gateway, session, cron, or runtime failure. `devops-engineer` owns diagnosis and the original card may receive one retry after the infrastructure cause is addressed.
+- `scope_too_large`: iteration budget exhaustion or broad work that exceeded the worker envelope. `product-manager` or `design-with-docs` owns reslicing into smaller child cards.
+- `authority_missing`: GitHub auth, private repo access, MFA, credentials, approval language, or other human authority is missing. The card stays human/operator-held with no automated retry.
+
+After one classified retry, a second failure must create a **Remediation Mirror**, reslice, or remain blocked with updated evidence; it must not loop.
+
+## Manual-first operation
+
+Drain starts as operator-triggered commands, not a scheduled autonomous loop:
+
+1. Manual dry-run reports only.
+2. Manual apply for `review_required` after the report is reviewed.
+3. Scheduled dry-run digest with no mutation.
+4. Scheduled apply only for narrow proven classes, starting with Review Packet PASS/FAIL consumption, with caps and audit markers.
+
+Broad scheduled drain is not allowed while no-block-reason cards and parent-gated `todo` inventory remain large.
+
 ## Minimal implementation slices
 
 ### Slice 1: classifier + dry-run report
@@ -228,6 +304,8 @@ Acceptance criteria:
 
 ### Slice 3: review-required auto routing
 
+Status: implemented in the local branch; focused tests cover structured and legacy review-required routing, refusal of explicit holds, CLI JSON apply, and idempotent reruns.
+
 Acceptance criteria:
 
 - A blocked `review_required` source card with handoff metadata moves to `review` exactly once.
@@ -236,6 +314,8 @@ Acceptance criteria:
 - Tests prove implementation worker is not respawned merely to mark review.
 
 ### Slice 4: Review Packet PASS/FAIL consumption
+
+Status: implemented in the local branch; focused tests cover valid packet evidence requirements, PASS no-rerun completion metadata, FAIL idempotent rework creation, explicit hold refusal, CLI dry-run JSON, and malformed packet no-op reporting.
 
 Acceptance criteria:
 
@@ -246,6 +326,8 @@ Acceptance criteria:
 
 ### Slice 5: timeout/gave-up reslicing
 
+Status: implemented in the local branch; focused tests cover structured timeout reslice, gave-up reslice, credential/auth blocker exclusion, idempotent duplicate apply, source failure counter preservation, and parent-linked child task creation.
+
 Acceptance criteria:
 
 - Safe timeout/gave-up rows can be resliced into child tasks with explicit scope and parent links.
@@ -254,6 +336,8 @@ Acceptance criteria:
 - Tests cover timeout reslice, gave-up safe reslice, auth blocker exclusion, and duplicate-run idempotency.
 
 ### Slice 6: superseded/archive handling + cap overrides
+
+Status: implemented in the local branch; focused tests cover canonical-evidence superseded archive, missing-evidence refusal, unique-acceptance refusal, idempotent archive apply, review-profile cap override visibility in dry-run, and unchanged cap behavior for ordinary ready rows.
 
 Acceptance criteria:
 

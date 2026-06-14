@@ -1099,6 +1099,12 @@ display:
   #     prompt_symbol: "⚔"                  # Prompt symbol (bare token; renderers add trailing space)
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
+  # Dashboard /chat tab surface (web dashboard only).
+  #   terminal: Embed hermes --tui via POSIX PTY (default). Same as hermes --tui.
+  #   rich:     Gateway-native React chat (transcript, attachments, session drill-down).
+  # Edit here or under Config → Display, then reload the Chat tab.
+  dashboard_chat_surface: terminal
+
   skin: default
 
 # =============================================================================

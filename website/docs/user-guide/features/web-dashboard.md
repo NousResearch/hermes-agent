@@ -90,7 +90,7 @@ The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
-The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
+The Chat tab is part of every `hermes dashboard` launch. By default it embeds the TUI over a POSIX PTY (see [Chat](#chat) below). You can opt into a gateway-native React chat surface from **Config → Display**.
 
 ## Pages
 
@@ -107,7 +107,18 @@ The status page auto-refreshes every 5 seconds.
 
 ### Chat
 
-The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
+The **Chat** tab supports two surfaces, selected by `display.dashboard_chat_surface` in `config.yaml` (also editable under **Config → Display**). **Reload the Chat tab** after changing the setting.
+
+| Value | What you get |
+|-------|----------------|
+| `terminal` (default) | Embedded `hermes --tui` over a POSIX PTY — identical to the Ink TUI |
+| `rich` | Gateway-native React chat — structured transcript, attachments, session drill-down, command palette |
+
+On **native Windows** (without WSL2), the terminal surface is unavailable because Python has no POSIX PTY. Use `rich` there, or run the dashboard under WSL2 to keep the embedded TUI.
+
+#### Terminal surface (`terminal`)
+
+The terminal surface embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
 
 **How it works:**
 
@@ -123,9 +134,32 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
 - `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
-- POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
+- POSIX kernel (Linux, macOS, or WSL2). The terminal pane needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard works but the terminal chat surface needs WSL2 or `rich`.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
+
+#### Rich surface (`rich`)
+
+The rich surface is a browser-native chat UI that talks to the same `tui_gateway` backend as `hermes --tui` over the dashboard WebSocket (`/api/ws`). It is **not** a second agent — slash commands, tool streaming, approvals, clarify/sudo prompts, and session resume all go through the existing gateway.
+
+**Highlights:**
+
+- Markdown transcript with tool-call cards
+- File and image attachments in the composer
+- Drill-down session list, rename/delete, and ⌘K command palette with full-text search
+- Fork a message into a new chat branch; copy message text
+- Message queue while the agent is busy (respects `display.busy_input_mode`)
+
+**Switching to rich chat:**
+
+```yaml
+display:
+  dashboard_chat_surface: rich
+```
+
+Or use **Config → Display → Dashboard chat surface**, then reload the Chat tab.
+
+Existing installs pick up `dashboard_chat_surface: terminal` automatically on `hermes update` or `hermes doctor` (config schema v30).
 
 To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
 

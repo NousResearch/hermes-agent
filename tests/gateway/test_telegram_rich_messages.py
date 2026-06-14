@@ -311,6 +311,56 @@ async def test_rich_edit_bad_request_falls_back_to_legacy_edit():
     adapter._bot.edit_message_text.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_rich_edit_capability_failure_falls_back_and_latches_off():
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=RuntimeError("Method not found"))
+
+    result = await adapter.edit_message("12345", "123", RICH_CONTENT)
+
+    assert result.success is True  # legacy edit delivered the frame
+    adapter._bot.edit_message_text.assert_awaited_once()
+    assert adapter._rich_send_disabled is True
+
+    # Subsequent edits skip the doomed rich endpoint entirely.
+    adapter._bot.do_api_request.reset_mock()
+    adapter._bot.edit_message_text.reset_mock()
+    result2 = await adapter.edit_message("12345", "123", RICH_CONTENT)
+    assert result2.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_transient_failure_does_not_latch_off():
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=TimedOut("timed out"))
+
+    result = await adapter.edit_message("12345", "123", RICH_CONTENT)
+
+    # A timeout may have reached Telegram, so do not immediately legacy-resend;
+    # importantly, transient errors must not disable rich edits for the adapter.
+    assert result.success is False
+    assert result.retryable is False
+    assert adapter._rich_send_disabled is False
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_edit_oversized_skips_rich_and_uses_legacy_split():
+    adapter = _make_adapter()
+    oversized = "a" * 40000
+    assert len(oversized.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
+
+    result = await adapter.edit_message("12345", "123", oversized)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    # Oversized rich content falls through to the existing legacy split path.
+    assert adapter._bot.edit_message_text.await_count >= 1
+    assert adapter._bot.send_message.await_count >= 1
+
+
 # ── Streaming drafts: sendRichMessageDraft ─────────────────────────────
 
 

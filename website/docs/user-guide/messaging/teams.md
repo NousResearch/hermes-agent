@@ -12,6 +12,10 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 
 > Run `hermes gateway setup` and pick **Microsoft Teams** for a guided walk-through.
 
+:::note Python requirement
+The Teams bot adapter depends on `microsoft-teams-apps`, which requires Python 3.12 or newer. If your Hermes environment uses Python 3.11, recreate it with Python 3.12+ before enabling Teams.
+:::
+
 ## How the Bot Responds
 
 | Context | Behavior |

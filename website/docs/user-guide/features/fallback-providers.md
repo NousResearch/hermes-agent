@@ -39,6 +39,32 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+Fallback entries may also override reasoning for that fallback only. Use the short
+`reasoning_effort` form for the standard levels (`none`, `minimal`, `low`,
+`medium`, `high`, `xhigh`):
+
+```yaml
+fallback_providers:
+  - provider: minimax
+    model: MiniMax-M2.7
+    reasoning_effort: high
+```
+
+For provider-specific reasoning options, use the full `reasoning` mapping:
+
+```yaml
+fallback_providers:
+  - provider: anthropic
+    model: claude-sonnet-4-5
+    reasoning:
+      enabled: true
+      effort: high
+```
+
+The override applies only while Hermes is running on that fallback. The next turn
+restores the primary model's normal reasoning configuration before trying the
+primary again.
+
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.
 :::

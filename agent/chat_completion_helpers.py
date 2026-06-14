@@ -28,7 +28,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from hermes_constants import FINISH_REASON_LENGTH, PARTIAL_STREAM_STUB_ID, parse_reasoning_effort
 from agent.error_classifier import (
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
@@ -2423,6 +2423,27 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+def _fallback_reasoning_config(fallback_entry: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Return a reasoning override declared on a fallback entry, if any.
+
+    Supports either the full mapping form::
+
+        {"reasoning": {"enabled": True, "effort": "high"}}
+
+    or the shortcut used elsewhere in config/CLI::
+
+        {"reasoning_effort": "high"}
+    """
+    reasoning = fallback_entry.get("reasoning")
+    if isinstance(reasoning, dict) and reasoning:
+        return dict(reasoning)
+
+    if "reasoning_effort" in fallback_entry:
+        effort = fallback_entry.get("reasoning_effort")
+        return parse_reasoning_effort(effort)
+
+    return None
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
@@ -2656,6 +2677,9 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # Read from the fallback entry so the flag travels with the active
         # provider; restore_primary_runtime will revert it from the snapshot.
         agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+        fb_reasoning_config = _fallback_reasoning_config(fb)
+        if fb_reasoning_config is not None:
+            agent.reasoning_config = fb_reasoning_config
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True

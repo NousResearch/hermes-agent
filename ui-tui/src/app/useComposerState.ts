@@ -207,7 +207,10 @@ export function useComposerState({
       setPasteSnips(prev => trimSnips([...prev, { label, text: cleanedText }]))
 
       void gw
-        .request<{ path?: string }>('paste.collapse', { text: cleanedText })
+        .request<{ path?: string }>('paste.collapse', {
+          session_id: getUiState().sid,
+          text: cleanedText
+        })
         .then(r => {
           const path = r?.path
 

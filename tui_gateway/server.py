@@ -1125,6 +1125,12 @@ def _session_cwd(session: dict | None) -> str:
     return _completion_cwd()
 
 
+def _session_home(session: dict | None) -> Path:
+    if session and session.get("profile_home"):
+        return Path(str(session["profile_home"]))
+    return _hermes_home
+
+
 def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
@@ -6154,7 +6160,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
     session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _hermes_home / "images"
+    img_dir = _session_home(session) / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
     img_path = (
         img_dir
@@ -6295,14 +6301,14 @@ def _allowed_image_extensions() -> frozenset[str]:
 
 
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
-    """Write image bytes into the gateway's images dir and queue them.
+    """Write image bytes into the session's images dir and queue them.
 
     Mirrors what ``image.attach`` does for a local path: appends to
     ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
     the existing native-image-attach pipeline. Returns the written path.
     """
     session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _hermes_home / "images"
+    img_dir = _session_home(session) / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
@@ -8387,10 +8393,15 @@ def _(rid, params: dict) -> dict:
     text = params.get("text", "")
     if not text:
         return _err(rid, 4004, "empty paste")
+    session = None
+    if params.get("session_id"):
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
 
     _paste_counter += 1
     line_count = text.count("\n") + 1
-    paste_dir = _hermes_home / "pastes"
+    paste_dir = _session_home(session) / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
 
     from datetime import datetime

@@ -6952,6 +6952,68 @@ def test_image_attach_bytes_writes_to_gateway_dir(monkeypatch, tmp_path):
     assert res["bytes"] > 0
 
 
+def test_image_attach_bytes_uses_session_profile_home(monkeypatch, tmp_path):
+    """Profile-bound sessions keep uploaded images in that profile's home."""
+    _attach_bytes_cli(monkeypatch)
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profile-home"
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._sessions["profile-img"] = _session(profile_home=str(profile_home))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach_bytes",
+            "params": {
+                "session_id": "profile-img",
+                "content_base64": _PNG_1X1_B64,
+                "filename": "shot.png",
+            },
+        }
+    )
+
+    res = resp["result"]
+    written = Path(res["path"])
+    assert written.is_file()
+    assert written.parent == profile_home / "images"
+    assert not (launch_home / "images").exists()
+    assert server._sessions["profile-img"]["attached_images"] == [str(written)]
+
+
+def test_clipboard_paste_uses_session_profile_home(monkeypatch, tmp_path):
+    """Clipboard image attach should not write into the launch profile."""
+    import base64 as _base64
+
+    fake_clipboard = types.ModuleType("hermes_cli.clipboard")
+
+    def save_clipboard_image(path):
+        path.write_bytes(_base64.b64decode(_PNG_1X1_B64))
+        return True
+
+    fake_clipboard.has_clipboard_image = lambda: True
+    fake_clipboard.save_clipboard_image = save_clipboard_image
+
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profile-home"
+    monkeypatch.setitem(sys.modules, "hermes_cli.clipboard", fake_clipboard)
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._sessions["profile-clip"] = _session(profile_home=str(profile_home))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "clipboard.paste",
+            "params": {"session_id": "profile-clip"},
+        }
+    )
+
+    res = resp["result"]
+    written = Path(res["path"])
+    assert res["attached"] is True
+    assert written.parent == profile_home / "images"
+    assert not (launch_home / "images").exists()
+
+
 def test_image_attach_bytes_accepts_data_url_prefix(monkeypatch, tmp_path):
     _attach_bytes_cli(monkeypatch)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -7043,6 +7105,27 @@ def test_image_attach_bytes_rejects_unsupported_extension(monkeypatch, tmp_path)
     )
     assert "error" in resp
     assert resp["error"]["code"] == 4016
+
+
+def test_paste_collapse_uses_session_profile_home(monkeypatch, tmp_path):
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profile-home"
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._sessions["profile-paste"] = _session(profile_home=str(profile_home))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "paste.collapse",
+            "params": {"session_id": "profile-paste", "text": "a\nb\nc"},
+        }
+    )
+
+    res = resp["result"]
+    written = Path(res["path"])
+    assert written.is_file()
+    assert written.parent == profile_home / "pastes"
+    assert not (launch_home / "pastes").exists()
 
 
 def test_pdf_attach_requires_poppler(monkeypatch, tmp_path):

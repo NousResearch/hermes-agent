@@ -1189,6 +1189,86 @@ async def test_auto_resume_skips_sessions_with_running_agent():
     adapter.handle_message.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_startup_restore_gate_queues_real_inbound_messages():
+    """Real inbound messages wait while startup restore is in progress."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+
+    result = await runner._handle_message(inbound)
+
+    assert result is None
+    assert runner._startup_restore_queue == [inbound]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_waits_for_resume_before_draining_inbound():
+    """Queued inbound turns replay only after startup resume tasks finish."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    source = make_restart_source(chat_id="restore-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:restore-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    resume_done = asyncio.Event()
+    seen: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        if event.internal:
+            seen.append("resume-start")
+            task = asyncio.create_task(resume_done.wait())
+            adapter._session_tasks[pending_entry.session_key] = task
+            return
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    assert await runner._handle_message(inbound) is None
+    assert scheduled == 1
+    assert seen == ["resume-start"]
+    assert runner._startup_restore_queue == [inbound]
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    await asyncio.sleep(0)
+    assert seen == ["resume-start"]
+
+    resume_done.set()
+    await finish_task
+
+    assert seen == ["resume-start", "inbound:hello"]
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
+
+
 # ---------------------------------------------------------------------------
 # Shutdown banner wording
 # ---------------------------------------------------------------------------

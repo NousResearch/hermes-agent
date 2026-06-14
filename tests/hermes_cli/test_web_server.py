@@ -1386,6 +1386,28 @@ class TestWebServerEndpoints:
         assert telegram["enabled"] is False
         assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
 
+    def test_weixin_messaging_metadata_describes_personal_ilink_setup(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        weixin = next(
+            platform
+            for platform in resp.json()["platforms"]
+            if platform["id"] == "weixin"
+        )
+        assert weixin["name"] == "Weixin / WeChat (Personal)"
+        assert "personal WeChat" in weixin["description"]
+        assert "Official Account" not in f"{weixin['name']} {weixin['description']}"
+        assert weixin["docs_url"] == (
+            "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/"
+        )
+
+        fields = {field["key"]: field for field in weixin["env_vars"]}
+        for key in ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"):
+            assert "iLink" in fields[key]["description"]
+            assert "QR login" in fields[key]["description"]
+            assert "Official Account" not in fields[key]["description"]
+
     def test_messaging_catalog_covers_gateway_platforms(self):
         """Catalog is derived from the Platform enum, so every built-in shows up."""
         from gateway.config import Platform

@@ -3856,9 +3856,9 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
     },
     "weixin": {
-        "name": "WeChat (Official Account)",
-        "description": "Connect a WeChat Official Account.",
-        "docs_url": "https://developers.weixin.qq.com/doc/offiaccount/Getting_Started/Overview.html",
+        "name": "Weixin / WeChat (Personal)",
+        "description": "Connect a personal WeChat account through Tencent's iLink Bot API.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
         "env_vars": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
         "required_env": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"),
     },
@@ -4029,17 +4029,17 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         "password": True,
     },
     "WEIXIN_ACCOUNT_ID": {
-        "description": "WeChat Official Account ID",
-        "prompt": "Account ID",
+        "description": "iLink Bot account ID obtained through QR login in hermes gateway setup",
+        "prompt": "iLink Bot account ID",
     },
     "WEIXIN_TOKEN": {
-        "description": "WeChat callback token",
-        "prompt": "Token",
+        "description": "iLink Bot token obtained through QR login in hermes gateway setup",
+        "prompt": "iLink Bot token",
         "password": True,
     },
     "WEIXIN_BASE_URL": {
-        "description": "WeChat platform base URL",
-        "prompt": "Base URL",
+        "description": "iLink API base URL saved by QR login (default: https://ilinkai.weixin.qq.com)",
+        "prompt": "iLink API base URL",
     },
     "FEISHU_APP_ID": {"description": "Feishu / Lark app ID", "prompt": "App ID"},
     "FEISHU_APP_SECRET": {

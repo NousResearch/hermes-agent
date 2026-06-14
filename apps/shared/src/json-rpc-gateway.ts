@@ -49,6 +49,7 @@ type PendingCall = {
 export interface GatewayClientOptions {
   closedErrorMessage?: string
   connectErrorMessage?: string
+  connectTimeoutMs?: number
   createRequestId?: (nextId: number) => GatewayRequestId
   requestIdPrefix?: string
   requestTimeoutMs?: number
@@ -58,6 +59,10 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// A reconnect after sleep/wake must not hang forever in 'connecting' (which
+// keeps the composer disabled and stuck on "Starting Hermes..."). If the open
+// handshake doesn't land in this window, fail to 'error' so callers can retry.
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
 export class JsonRpcGatewayClient {
   private nextId = 0
@@ -73,6 +78,7 @@ export class JsonRpcGatewayClient {
     this.options = {
       closedErrorMessage: options.closedErrorMessage ?? 'WebSocket closed',
       connectErrorMessage: options.connectErrorMessage ?? 'WebSocket connection failed',
+      connectTimeoutMs: options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       createRequestId:
         options.createRequestId ?? ((nextId: number) => `${options.requestIdPrefix ?? 'r'}${nextId}`),
       notConnectedErrorMessage: options.notConnectedErrorMessage ?? 'gateway not connected',
@@ -97,29 +103,84 @@ export class JsonRpcGatewayClient {
     this.socket = socket
 
     socket.addEventListener('message', message => {
+      if (this.socket !== socket) {
+        return
+      }
+
       this.handleMessage(message.data)
     })
 
     socket.addEventListener('close', () => {
+      if (this.socket !== socket) {
+        return
+      }
+
+      this.socket = null
       this.setState('closed')
       this.rejectAllPending(new Error(this.options.closedErrorMessage))
     })
 
     await new Promise<void>((resolve, reject) => {
-      const onOpen = () => {
+      let settled = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      const cleanup = () => {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+        }
+
+        socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
+      }
+
+      const onOpen = () => {
+        if (settled || this.socket !== socket) {
+          return
+        }
+
+        settled = true
+        cleanup()
         this.setState('open')
         resolve()
       }
 
       const onError = () => {
-        socket.removeEventListener('open', onOpen)
+        if (settled || this.socket !== socket) {
+          return
+        }
+
+        settled = true
+        cleanup()
         this.setState('error')
         reject(new Error(this.options.connectErrorMessage))
       }
 
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
+
+      if (this.options.connectTimeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (settled) {
+            return
+          }
+
+          settled = true
+          cleanup()
+          // Drop the half-open socket so the next connect() starts clean
+          // instead of short-circuiting on a zombie 'connecting' state.
+          if (this.socket === socket) {
+            try {
+              socket.close()
+            } catch {
+              // ignore
+            }
+
+            this.socket = null
+          }
+          this.setState('error')
+          reject(new Error(this.options.connectErrorMessage))
+        }, this.options.connectTimeoutMs)
+      }
     })
   }
 

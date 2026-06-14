@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import pytest
 from unittest.mock import MagicMock, patch
@@ -61,6 +62,44 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
             return True
         time.sleep(interval)
     return False
+
+
+def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
+    """pywinpty expects str input; bytes raises a PyString conversion error."""
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-win")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", True)
+
+    result = registry.write_stdin(session.id, "hello\n")
+
+    assert result == {"status": "ok", "bytes_written": 6}
+    assert written == ["hello\n"]
+    assert isinstance(written[0], str)
+
+
+def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-posix")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
+
+    result = registry.write_stdin(session.id, "hello\n")
+
+    assert result == {"status": "ok", "bytes_written": 6}
+    assert written == [b"hello\n"]
 
 
 # =========================================================================
@@ -227,6 +266,31 @@ class TestOrphanedPipeReconciliation:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+
+    def test_wait_wakes_when_session_moves_to_finished(self, registry):
+        """wait() should not sleep for the old 1s polling tick after exit."""
+        s = _make_session(sid="proc_wait_event", output="done")
+        registry._running[s.id] = s
+
+        def finish_later():
+            time.sleep(0.05)
+            s.exited = True
+            s.exit_code = 0
+            with patch.object(registry, "_write_checkpoint"):
+                registry._move_to_finished(s)
+
+        t = threading.Thread(target=finish_later)
+        t.start()
+        start = time.monotonic()
+        try:
+            result = registry.wait(s.id, timeout=5)
+        finally:
+            t.join(timeout=1)
+        elapsed = time.monotonic() - start
+
+        assert result["status"] == "exited", result
+        assert result["exit_code"] == 0
+        assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
 # =========================================================================

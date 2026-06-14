@@ -274,6 +274,20 @@ def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkey
     assert calls == [False]
 
 
+def test_gateway_start_ignores_legacy_platform_selector(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(system))
+
+    args = SimpleNamespace(gateway_command="start", system=False, all=False, platform="photon")
+    gateway.gateway_command(args)
+
+    assert calls == [False]
+
+
 def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkeypatch):
     """Windows manual restart must not fall back to foreground run_gateway().
 
@@ -369,6 +383,16 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Synthetic unit with a non-temp home: the real generator bakes the
+    # hermetic test HERMES_HOME (a tmp dir), which the temp-home write
+    # guard correctly refuses.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []
@@ -396,6 +420,15 @@ def test_systemd_install_can_skip_enable_on_startup(monkeypatch, tmp_path, capsy
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Non-temp home so the temp-home write guard (which trips on the
+    # hermetic test HERMES_HOME) stays out of the way.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []

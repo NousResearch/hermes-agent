@@ -219,6 +219,14 @@ gateway:
 
   resume:
     db_unavailable:        "セッションデータベースは利用できません。"
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "名前付きセッションが見つかりません。\n`/title セッション名` で現在のセッションに名前を付けると、後で `/resume セッション名` で戻れます。"
     list_header:           "📋 **名前付きセッション**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,6 +259,12 @@ gateway:
 
   status:
     header:                "📊 **Hermes ゲートウェイ状態**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**セッション ID:** `{session_id}`"
     title:                 "**タイトル:** {title}"
     created:               "**作成日時:** {timestamp}"
@@ -320,6 +334,9 @@ gateway:
     detailed_after_first:     "_(詳細な使用状況は最初のエージェント応答後に利用可能)_"
     no_data:                  "このセッションの使用データはありません。"
 
+  credits:
+    not_logged_in:            "Nous Portal にログインしていません。ログインすると残高の確認とチャージができます。"
+
   verbose:
     not_enabled:           "`/verbose` コマンドはメッセージングプラットフォームで有効になっていません。\n\n`config.yaml` で有効にしてください:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ ツール進捗: **OFF** — ツールの動作は表示されません。"
@@ -343,6 +360,8 @@ gateway:
     label_off:             "オフ (テキストのみ)"
     label_voice_only:      "オン (音声メッセージにのみ音声で返信)"
     label_all:             "TTS (すべてのメッセージに音声で返信)"
+    help:                  "{toggle}\n\n**/voice の使い方**\n• `/voice on` — 音声メッセージを送ると音声で返信\n• `/voice tts` — *すべての*メッセージに音声で返信\n• `/voice off` — テキストのみの返信に戻す\n• `/voice status` — 現在のモードを表示\n• `/voice`（引数なし）— オンとオフをすばやく切り替え{channels}"
+    help_channels:         "\n\n**ライブ音声チャンネル (Discord)**\n• 先に音声チャンネルに参加してから `/voice channel` — 参加して聞き取り、音声で返信します\n• `/voice leave` — 音声チャンネルから切断"
 
   yolo:
     disabled:                   "⚠️ このセッションの YOLO モードは **OFF** — 危険なコマンドには承認が必要です。"

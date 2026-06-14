@@ -95,6 +95,38 @@ describe('toChatMessages', () => {
     )
   })
 
+  it('keeps the generated image on the tool row while preserving agent prose', () => {
+    const [message] = toChatMessages([
+      {
+        content: '',
+        role: 'assistant',
+        timestamp: 1,
+        tool_calls: [{ id: 'img-1', function: { name: 'image_generate', arguments: '{"prompt":"draw a cat"}' } }]
+      },
+      {
+        content: '{"success":true,"image":"https://cdn.example/cat.png"}',
+        role: 'tool',
+        timestamp: 2,
+        tool_call_id: 'img-1',
+        tool_name: 'image_generate'
+      },
+      {
+        content: 'Here you go.\n\n![Generated image](https://cdn.example/cat.png)',
+        role: 'assistant',
+        timestamp: 3
+      }
+    ])
+
+    const toolPart = message.parts.find(
+      (part): part is Extract<ChatMessagePart, { type: 'tool-call' }> =>
+        part.type === 'tool-call' && part.toolName === 'image_generate'
+    )
+
+    expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
+    // The duplicated image is stripped, but the agent's words survive.
+    expect(chatMessageText(message)).toBe('Here you go.')
+  })
+
   it('coerces non-string message content without throwing', () => {
     const [message] = toChatMessages([
       {

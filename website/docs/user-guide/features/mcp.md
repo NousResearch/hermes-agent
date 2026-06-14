@@ -245,6 +245,41 @@ Then run `hermes mcp login googledrive` — with the pre-registered client, Herm
 
 **Pitfall — config auto-reload race.** When you edit `~/.hermes/config.yaml` from inside a running Hermes session, the CLI auto-reloads MCP connections with a 30s timeout. That's not enough for an interactive OAuth flow. Add the entry, then run `hermes mcp login <server>` from a fresh terminal — it waits the full 5 minutes for you to complete auth.
 
+## mTLS / client certificates
+
+Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.
+
+`client_cert` accepts three shapes:
+
+- **A single combined PEM path** — one file holding both the certificate and the private key:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: "~/.certs/mcp-client.pem"
+```
+
+- **A `[cert, key]` 2-tuple** — certificate and key in separate files (equivalent to setting `client_cert` + `client_key`):
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key"]
+```
+
+- **A `[cert, key, password]` 3-tuple** — when the private key is encrypted, the third element is the key passphrase:
+
+```yaml
+mcp_servers:
+  internal_api:
+    url: "https://mcp.internal.example.com/mcp"
+    client_cert: ["~/.certs/mcp-client.crt", "~/.certs/mcp-client.key", "${MCP_KEY_PASSWORD}"]
+```
+
+You can also keep the cert and key fully separate via `client_cert` (combined PEM) plus an explicit `client_key`. Paths support `~` expansion; a missing file raises a clear, server-scoped error rather than an opaque TLS handshake failure.
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
@@ -258,6 +293,8 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `env` | mapping | Environment variables passed to the stdio server |
 | `url` | string | HTTP MCP endpoint |
 | `headers` | mapping | HTTP headers for remote servers |
+| `client_cert` | string \| list | Client certificate for mTLS — a combined PEM path, or `[cert, key]` / `[cert, key, password]` |
+| `client_key` | string | Client private-key PEM path (when separate from `client_cert`) |
 | `timeout` | number | Tool call timeout |
 | `connect_timeout` | number | Initial connection timeout |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |

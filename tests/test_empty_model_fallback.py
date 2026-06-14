@@ -30,6 +30,46 @@ class TestGetDefaultModelForProvider:
         # Custom providers don't have entries in _PROVIDER_MODELS
         assert get_default_model_for_provider("some-random-custom") == ""
 
+    def test_nous_silent_default_is_not_the_expensive_flagship(self):
+        """Nous Portal is a metered aggregator whose curated list is ordered
+        most-capable-first, so entry [0] is the priciest flagship
+        (anthropic/claude-opus-4.8). The silent fallback (provider set, no model)
+        must NOT escalate to it — otherwise an unconfigured profile silently
+        bills the most expensive model. Regression for the billing footgun.
+        """
+        from hermes_cli.models import (
+            _PROVIDER_MODELS,
+            _PROVIDER_SILENT_DEFAULT_OVERRIDES,
+            get_default_model_for_provider,
+        )
+
+        result = get_default_model_for_provider("nous")
+        assert result, "nous must resolve to a usable default model"
+        assert "opus" not in result.lower(), (
+            f"silent default escalated to an expensive flagship: {result!r}"
+        )
+        assert result != _PROVIDER_MODELS["nous"][0], (
+            "silent default must not be the most-capable/priciest catalog entry"
+        )
+        # The override must point at a model that actually exists in the catalog.
+        assert result == _PROVIDER_SILENT_DEFAULT_OVERRIDES["nous"]
+        assert result in _PROVIDER_MODELS["nous"]
+
+    def test_override_falls_back_to_catalog_when_missing(self):
+        """If an override model is no longer in the catalog, fall back to [0]
+        rather than returning a stale/absent id."""
+        from unittest.mock import patch
+
+        from hermes_cli import models as models_mod
+
+        with patch.dict(
+            models_mod._PROVIDER_SILENT_DEFAULT_OVERRIDES,
+            {"openai-codex": "does-not-exist-model"},
+            clear=False,
+        ):
+            result = models_mod.get_default_model_for_provider("openai-codex")
+            assert result == models_mod._PROVIDER_MODELS["openai-codex"][0]
+
 
 class TestGatewayEmptyModelFallback:
     """Test that _resolve_session_agent_runtime fills in empty model from provider catalog."""

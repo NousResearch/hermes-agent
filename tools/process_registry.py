@@ -129,6 +129,7 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
+    _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -472,6 +473,7 @@ class ProcessRegistry:
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
+                    stdin=subprocess.DEVNULL,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 try:
@@ -869,6 +871,7 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
@@ -1092,6 +1095,8 @@ class ProcessRegistry:
 
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
+            if session is None:
+                return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
             # child has already exited (issue #17327).
@@ -1117,7 +1122,10 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            time.sleep(1)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            session._completion_event.wait(timeout=min(1.0, remaining))
 
         result = {
             "status": "timeout",
@@ -1207,10 +1215,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
+                if _IS_WINDOWS:
+                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:

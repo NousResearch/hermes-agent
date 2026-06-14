@@ -585,15 +585,20 @@ class S6ServiceManager:
         would instead look up ``$HERMES_HOME/profiles/default/`` — a
         completely different (and almost always nonexistent) profile.
 
-        Port selection: the gateway picks its bind port from the
-        profile's ``config.yaml`` (``[gateway] port = ...``) — that
-        is the single source of truth. Previously this method took a
-        ``port`` parameter that was passed in but never substituted
-        into the rendered script (it was carried in for "API parity"
-        with a deterministic SHA-256 allocator in
-        ``hermes_cli.profiles._allocate_gateway_port``). PR #30136
-        review item I5 retired both the allocator and the parameter
-        because they were dead code through the entire stack.
+        Port selection: the gateway binds the port resolved by
+        ``gateway/config.py`` from the profile's own environment —
+        ``API_SERVER_PORT`` (or ``platforms.api_server.extra.port`` in
+        that profile's ``config.yaml``), defaulting to 8642. There is
+        no ``[gateway] port`` key and no Python-side allocator: because
+        each supervised profile gateway loads its own ``HERMES_HOME``,
+        two profiles that both leave the port unset will both try to
+        bind 8642 — give each profile a distinct ``API_SERVER_PORT`` in
+        its ``.env``. Previously this method took a ``port`` parameter
+        that was passed in but never substituted into the rendered
+        script (carried for "API parity" with a deterministic SHA-256
+        allocator in ``hermes_cli.profiles._allocate_gateway_port``).
+        PR #30136 review item I5 retired both the allocator and the
+        parameter because they were dead code through the entire stack.
         """
         import shlex
         lines = [
@@ -739,13 +744,55 @@ class S6ServiceManager:
         """
         self._run_svc("-u", "start", name)
 
+    def _supervised_pid(self, name: str) -> int | None:
+        """Return the PID of the supervised gateway process, or None.
+
+        Parses ``s6-svstat`` output (``up (pid NNNN) ...``). Used to
+        mark an operator-initiated stop with the planned-stop marker so
+        the gateway's shutdown handler classifies the incoming SIGTERM
+        as intentional rather than an unexpected kill (issue #42675).
+        Best-effort: any parse/exec failure returns None.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        m = re.search(r"\(pid (\d+)\)", result.stdout)
+        return int(m.group(1)) if m else None
+
     def stop(self, name: str) -> None:
         """Bring down a registered service (``s6-svc -d``).
+
+        Writes a planned-stop marker naming the supervised gateway PID
+        BEFORE sending the down command, so the gateway's shutdown
+        handler recognises this SIGTERM as an operator-initiated stop
+        and persists ``gateway_state=stopped`` (respecting the explicit
+        intent). Without the marker, an intentional ``hermes gateway
+        stop`` is indistinguishable from the container/s6 SIGTERM sent on
+        ``docker restart``; the latter must NOT persist ``stopped`` or
+        container_boot refuses to auto-start on the next boot (#42675).
+        The marker write is best-effort — a failure only means the stop
+        is treated as signal-initiated, which is the safe fallback.
 
         Raises:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason.
         """
+        pid = self._supervised_pid(name)
+        if pid is not None:
+            try:
+                from gateway.status import write_planned_stop_marker
+
+                write_planned_stop_marker(pid)
+            except Exception:
+                pass
         self._run_svc("-d", "stop", name)
 
     def restart(self, name: str) -> None:

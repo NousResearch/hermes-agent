@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
@@ -42,6 +43,8 @@ export function ModelPickerDialog({
   onSelect,
   contentClassName
 }: ModelPickerDialogProps) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
   const [persistGlobal, setPersistGlobal] = useState(!sessionId)
   // Own the search term so we can filter manually. cmdk's built-in
   // shouldFilter reorders items by its fuzzy-match score (≈alphabetical with
@@ -97,9 +100,9 @@ export function ModelPickerDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
         <DialogHeader className="border-b border-border px-4 py-3">
-          <DialogTitle>Switch model</DialogTitle>
+          <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
-            current: {optionsModel || currentModel || '(unknown)'}
+            {copy.current} {optionsModel || currentModel || copy.unknown}
             {optionsProvider || currentProvider ? ` · ${optionsProvider || currentProvider}` : ''}
           </DialogDescription>
         </DialogHeader>
@@ -108,11 +111,11 @@ export function ModelPickerDialog({
           <CommandInput
             autoFocus
             onValueChange={setSearch}
-            placeholder="Filter providers and models..."
+            placeholder={copy.search}
             value={search}
           />
           <CommandList className="max-h-96">
-            {!loading && !error && <CommandEmpty>No models found.</CommandEmpty>}
+            {!loading && !error && <CommandEmpty>{copy.noModels}</CommandEmpty>}
             <ModelResults
               currentModel={optionsModel || currentModel}
               currentProvider={optionsProvider || currentProvider}
@@ -125,22 +128,22 @@ export function ModelPickerDialog({
           </CommandList>
         </Command>
 
-        <DialogFooter className="flex-row items-center justify-between gap-3 border-t border-border bg-card p-3 sm:justify-between">
+        <DialogFooter className="flex-row items-center justify-between gap-3 bg-card p-3 sm:justify-between">
           <label className="flex cursor-pointer select-none items-center gap-2 text-xs text-muted-foreground">
             <Checkbox
               checked={persistGlobal || !sessionId}
               disabled={!sessionId}
               onCheckedChange={checked => setPersistGlobal(checked === true)}
             />
-            {sessionId ? 'Persist globally (otherwise this session only)' : 'Persist globally'}
+            {sessionId ? copy.persistGlobalSession : copy.persistGlobal}
           </label>
 
           <div className="flex items-center gap-2">
             <Button onClick={addProvider} variant="ghost">
-              Add provider
+              {copy.addProvider}
             </Button>
             <Button onClick={() => onOpenChange(false)} variant="outline">
-              Cancel
+              {t.common.cancel}
             </Button>
           </div>
         </DialogFooter>
@@ -166,6 +169,9 @@ function ModelResults({
   onSelectModel: (provider: ModelOptionProvider, model: string) => void
   search: string
 }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
   if (loading) {
     return <LoadingResults />
   }
@@ -173,7 +179,7 @@ function ModelResults({
   if (error) {
     return (
       <div className="px-3 py-3">
-        <InlineNotice kind="error" title="Could not load models">
+        <InlineNotice kind="error" title={copy.loadFailed}>
           {error}
         </InlineNotice>
       </div>
@@ -181,10 +187,11 @@ function ModelResults({
   }
 
   if (providers.length === 0) {
-    return <div className="px-4 py-6 text-sm text-muted-foreground">No authenticated providers.</div>
+    return <div className="px-4 py-6 text-sm text-muted-foreground">{copy.noAuthenticatedProviders}</div>
   }
 
   const q = search.trim().toLowerCase()
+
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
     model.toLowerCase().includes(q) ||
@@ -240,14 +247,14 @@ function ModelResults({
                   value={`${provider.slug}:${model}`}
                 >
                   <span className="min-w-0 flex-1 truncate">{model}</span>
-                  {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">Pro</span>}
+                  {locked && <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>}
                   <ModelPrice isCurrent={isCurrent} price={price} />
                 </CommandItem>
               )
             })}
             {unavailable.size > 0 && (
               <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
-                Pro models need a paid Nous subscription.
+                {copy.proNeedsSubscription}
               </div>
             )}
           </CommandGroup>
@@ -260,6 +267,9 @@ function ModelResults({
 // Compact In/Out $/Mtok price tag, mirroring the CLI picker's price columns.
 // Renders nothing when pricing is unavailable for the model.
 function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boolean }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
   if (!price || (!price.input && !price.output)) {
     return null
   }
@@ -272,7 +282,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
           isCurrent ? 'bg-primary-foreground/20' : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
         )}
       >
-        Free
+        {copy.free}
       </span>
     )
   }
@@ -283,7 +293,7 @@ function ModelPrice({ price, isCurrent }: { price?: ModelPricing; isCurrent: boo
         'shrink-0 text-[0.66rem] tabular-nums',
         isCurrent ? 'text-primary-foreground/80' : 'text-muted-foreground'
       )}
-      title="Input / Output price per million tokens"
+      title={copy.priceTitle}
     >
       {price.input || '?'} / {price.output || '?'}
     </span>
@@ -303,15 +313,18 @@ function LoadingResults() {
 }
 
 function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
+  const { t } = useI18n()
+  const copy = t.modelPicker
+
   // free_tier is only set for Nous. true → "Free tier", false → "Pro".
   const tierBadge =
     provider.free_tier === true ? (
       <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
-        Free tier
+        {copy.freeTier}
       </span>
     ) : provider.free_tier === false ? (
       <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">
-        Pro
+        {copy.pro}
       </span>
     ) : null
 

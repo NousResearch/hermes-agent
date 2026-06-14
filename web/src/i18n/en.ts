@@ -43,6 +43,9 @@ export const en: Translations = {
     expand: "Expand",
     general: "General",
     messaging: "Messaging",
+    gateway: "Gateway",
+    gatewayHint:
+      "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
     pluginLoadFailed:
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
@@ -90,6 +93,10 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
+    managingProfile: "Managing profile",
+    currentProfileOption: "this dashboard ({name})",
+    managingProfileBanner:
+      "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
   },
 
   status: {
@@ -276,6 +283,9 @@ export const en: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      needsHomeChannel: "set a home channel first",
+      noneConfigured:
+        "No messaging platforms configured. Set one up under Channels to deliver reports.",
     },
   },
 
@@ -287,7 +297,8 @@ export const en: Translations = {
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
     invalidName: "Invalid profile name",
-    cloneFromDefault: "Clone config from default profile",
+    cloneFrom: "Clone config from",
+    cloneFromNone: "None (blank)",
     allProfiles: "Profiles",
     noProfiles: "No profiles found.",
     defaultBadge: "default",
@@ -309,6 +320,38 @@ export const en: Translations = {
     created: "Created",
     deleted: "Deleted",
     renamed: "Renamed",
+    activeProfile: "Active profile",
+    activeBadge: "active",
+    setActive: "Set as active",
+    activeSet: "Active profile set",
+    gatewayRunning: "Gateway running",
+    gatewayStopped: "Gateway stopped",
+    gatewayRunningWarning:
+      "This profile's gateway is running — it will be stopped.",
+    aliasBadge: "alias",
+    description: "Description",
+    descriptionPlaceholder:
+      "What is this profile good at? Used to route kanban tasks by role.",
+    noDescription: "No description",
+    editDescription: "Edit description",
+    descriptionSaved: "Description saved",
+    reviewBadge: "review",
+    autoGenerate: "Auto-generate",
+    generating: "Generating…",
+    describeFailed: "Could not generate description",
+    distribution: "Distribution",
+    advancedOptions: "Advanced options",
+    cloneAll: "Clone everything (memories, sessions, skills, state)",
+    noSkillsOption: "Don't seed bundled skills",
+    descriptionOptional: "Description (optional)",
+    modelOptional: "Model (optional)",
+    modelInherit: "Inherit from clone / default",
+    modelLoading: "Loading models…",
+    modelNone: "No authenticated providers — set a key first",
+    editModel: "Change model",
+    modelSaved: "Model updated",
+    modelSelect: "Select a model",
+    actions: "Actions",
   },
 
   pluginsPage: {
@@ -324,7 +367,7 @@ export const en: Translations = {
     inactive: "inactive",
     installBtn: "Install",
     installHeading: "Install from GitHub / Git URL",
-    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
+    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL. For a plugin in a subdirectory, append the path: owner/repo/path/to/plugin (or <url>#path/to/plugin).",
     memoryProviderLabel: "Memory provider",
     missingEnvWarn: "Set these in Keys before the plugin can run:",
     noDashboardTab: "No dashboard tab",
@@ -370,6 +413,10 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
+    profileSelector: "Profile",
+    currentProfile: "current ({name})",
+    managingProfile:
+      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {
@@ -480,6 +527,12 @@ export const en: Translations = {
   theme: {
     title: "Theme",
     switchTheme: "Switch theme",
+    fontTitle: "Font",
+    fontDefault: "Theme default",
+    fontDefaultHint: "Use the active theme's font",
+    fontSans: "Sans",
+    fontSerif: "Serif",
+    fontMono: "Mono",
   },
 
   achievements: {

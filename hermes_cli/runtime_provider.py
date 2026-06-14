@@ -31,7 +31,7 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, env_int
 
 
 def _normalize_custom_provider_name(value: str) -> str:
@@ -474,17 +474,44 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Propagate a per-provider output cap onto the resolved runtime dict.
+
+    Accepts ``max_output_tokens`` or ``max_tokens`` on a ``custom_providers``
+    entry so a provider block can pin its own output limit. Gateway and CLI
+    map this onto ``AIAgent.max_tokens`` only when the top-level
+    ``model.max_tokens`` isn't set, so the documented global key still wins.
+    """
+    for _k in ("max_output_tokens", "max_tokens"):
+        _v = entry.get(_k)
+        if isinstance(_v, int) and _v > 0:
+            result["max_output_tokens"] = _v
+            return
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
-    if not requested_norm or requested_norm == "custom":
+    if not requested_norm:
         return None
+
+    # Bare "custom" is normally an incomplete spec — the canonical form is
+    # "custom:<name>" — and is otherwise owned by the model.base_url "bare
+    # custom" trust path. BUT a user may literally name a ``providers:`` (or
+    # legacy ``custom_providers:``) entry "custom" (e.g. ``providers.custom``
+    # pointing at cliproxy). We used to return None here *before* scanning
+    # config, so such an entry was never matched and resolution fell through to
+    # the global default (Codex) — the cause of cron jobs with
+    # ``provider: "custom"`` failing with ``auth_unavailable: providers=codex``.
+    # Fall through to the config scan instead; if no entry is literally named
+    # "custom" it still returns None at the end, preserving the trust path.
 
     # Raw names should only map to custom providers when they are not already
     # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
+    # ``custom:local`` always target the saved custom provider. Bare "custom"
+    # is exempt from the shadow check — it is not a built-in to defer to.
     if requested_norm == "auto":
         return None
-    if not requested_norm.startswith("custom:"):
+    if requested_norm != "custom" and not requested_norm.startswith("custom:"):
         try:
             canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
@@ -541,6 +568,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    _lift_max_output_tokens(entry, result)
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -562,6 +590,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        _lift_max_output_tokens(entry, result)
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -611,9 +640,79 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        _lift_max_output_tokens(entry, result)
         return result
 
     return None
+
+
+def has_named_custom_provider(requested_provider: str) -> bool:
+    """Return True when config defines a custom provider matching the request.
+
+    Thin public wrapper around :func:`_get_named_custom_provider` so other
+    modules (e.g. the cronjob tool) can decide whether a provider name will
+    actually resolve to a configured ``providers:`` / ``custom_providers:``
+    entry — without reaching into a private helper or duplicating the scan.
+    """
+    try:
+        return _get_named_custom_provider(requested_provider) is not None
+    except Exception:
+        return False
+
+
+def find_custom_provider_identity(base_url: str) -> Optional[str]:
+    """Map an endpoint URL back to its canonical ``custom:<name>`` menu key.
+
+    Returns the ``custom:<normalized-name>`` slug of the first ``providers:``
+    / ``custom_providers:`` entry whose base_url matches, or ``None`` when no
+    entry owns the URL.
+
+    Session persistence stores the agent's *resolved* provider, and for every
+    named custom endpoint that is the literal string ``"custom"`` — the entry
+    name is lost, and the api_key is deliberately never persisted. The
+    endpoint URL is the one durable fact that survives the round-trip, so
+    this reverse lookup lets persist/rebuild paths recover the entry identity
+    (and with it key_env/api_key/api_mode resolution via
+    :func:`_get_named_custom_provider`) instead of failing with
+    ``auth_unavailable`` or silently rebuilding with placeholder credentials.
+    """
+    target = _normalize_base_url_for_match(base_url)
+    if not target:
+        return None
+    try:
+        config = load_config()
+    except Exception:
+        return None
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for ep_name, entry in providers.items():
+            if not isinstance(entry, dict):
+                continue
+            entry_url = (
+                entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+            )
+            if _normalize_base_url_for_match(entry_url) == target:
+                return f"custom:{_normalize_custom_provider_name(str(ep_name))}"
+
+    try:
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        custom_providers = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if _normalize_base_url_for_match(entry.get("base_url")) == target:
+            return f"custom:{_normalize_custom_provider_name(name)}"
+
+    return None
+
+
+def _normalize_base_url_for_match(value) -> str:
+    return str(value or "").strip().rstrip("/").lower()
 
 
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
@@ -699,6 +798,8 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        if isinstance(custom_provider.get("max_output_tokens"), int):
+            pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]
         request_overrides = _custom_provider_request_overrides(custom_provider)
         if request_overrides:
             pool_result["request_overrides"] = {
@@ -736,6 +837,8 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    if isinstance(custom_provider.get("max_output_tokens"), int):
+        result["max_output_tokens"] = custom_provider["max_output_tokens"]
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides
@@ -1122,7 +1225,7 @@ def _resolve_explicit_runtime(
             str(state.get("agent_key") or "").strip()
             if _agent_key_is_usable(
                 state,
-                max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800)),
             )
             else ""
         )
@@ -1321,7 +1424,7 @@ def resolve_runtime_provider(
         # expired, clear pool_api_key so we fall through to
         # resolve_nous_runtime_credentials() which handles refresh.
         if provider == "nous" and entry is not None and pool_api_key:
-            min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
+            min_ttl = max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))
             nous_state = {
                 "agent_key": getattr(entry, "agent_key", None),
                 "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),

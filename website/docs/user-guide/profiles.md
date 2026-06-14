@@ -50,7 +50,7 @@ You can also set or auto-generate the description later with `hermes profile des
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, and `SOUL.md` into the new profile. Same API keys and model, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into the new profile. Same API keys, model, and capabilities, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 ### Clone everything (`--clone-all`)
 
@@ -58,16 +58,22 @@ Copies your current profile's `config.yaml`, `.env`, and `SOUL.md` into the new 
 hermes profile create backup --clone-all
 ```
 
-Copies **everything** — config, API keys, personality, all memories, full session history, skills, cron jobs, plugins. A complete snapshot. Useful for backups or forking an agent that already has context.
+Copies **everything** — config, API keys, personality, all memories, skills, cron jobs, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. For a full backup including history, use `hermes profile export` or `hermes backup` instead.
 
 ### Clone from a specific profile
 
 ```bash
-hermes profile create work --clone --clone-from coder
+hermes profile create work --clone-from coder
+```
+
+`--clone-from <source>` selects the source profile directly and implies a config/skills/SOUL clone. Combine it with `--clone-all` when you want a full copy of that source profile:
+
+```bash
+hermes profile create work-backup --clone-from coder --clone-all
 ```
 
 :::tip Honcho memory + profiles
-When Honcho is enabled, `--clone` automatically creates a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
+When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
 :::
 
 ## Using profiles
@@ -198,6 +204,20 @@ If you want this profile to work in a specific project by default, also set its 
 ```bash
 coder config set terminal.cwd /absolute/path/to/project
 ```
+
+### From the dashboard
+
+The [web dashboard](features/web-dashboard.md#managing-multiple-profiles)
+is a machine-level surface that can manage **any** profile's config, API
+keys, skills, MCPs, and model via the profile switcher in its sidebar — no
+per-profile dashboard needed. `coder dashboard` routes to the machine
+dashboard with the `coder` profile preselected. The dashboard's Chat tab
+also follows the switcher, spawning a conversation under the selected
+profile's home.
+
+Note: "Set as active" on the dashboard's Profiles page is the sticky
+default for **future CLI/gateway runs** (same as `hermes profile use`) —
+to edit a profile from the dashboard, use the switcher instead.
 
 ## Updating
 

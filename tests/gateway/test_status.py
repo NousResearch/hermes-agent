@@ -1036,3 +1036,28 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+class TestCorruptStatusFiles:
+    """A status / pid file holding non-UTF-8 (binary) bytes must read as
+    None, not crash the gateway status path with UnicodeDecodeError."""
+
+    def test_read_json_file_returns_none_on_binary_garbage(self, tmp_path):
+        p = tmp_path / "runtime.json"
+        p.write_bytes(b"\xff\xfe\x00\x80not utf-8\x81")
+        assert status._read_json_file(p) is None
+
+    def test_read_json_file_still_parses_valid_json(self, tmp_path):
+        p = tmp_path / "runtime.json"
+        p.write_text(json.dumps({"pid": 7}), encoding="utf-8")
+        assert status._read_json_file(p) == {"pid": 7}
+
+    def test_read_pid_record_returns_none_on_binary_garbage(self, tmp_path):
+        p = tmp_path / "gateway.pid"
+        p.write_bytes(b"\xff\xfe\x00\x80\x81")
+        assert status._read_pid_record(p) is None
+
+    def test_read_pid_record_still_parses_bare_pid(self, tmp_path):
+        p = tmp_path / "gateway.pid"
+        p.write_text("4242", encoding="utf-8")
+        assert status._read_pid_record(p) == {"pid": 4242}

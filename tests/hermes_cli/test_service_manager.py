@@ -799,3 +799,111 @@ def test_s6_is_running_parses_svstat(
         return _sp.CompletedProcess(cmd, 0, "", "")
     monkeypatch.setattr("subprocess.run", _svstat_down)
     assert S6ServiceManager(scandir=s6_scandir).is_running("gateway-coder") is False
+
+
+# ---------------------------------------------------------------------------
+# S6 stop writes a planned-stop marker (issue #42675)
+#
+# `hermes gateway stop` inside a container dispatches through
+# S6ServiceManager.stop() -> `s6-svc -d`, which SIGTERMs the gateway.
+# That SIGTERM is indistinguishable from the one s6/Docker sends on a
+# container restart unless we mark the intentional stop first. Without
+# the marker, the gateway's shutdown handler can't tell an operator
+# stop from a restart kill, and the gateway_state=stopped suppression
+# (run.py) would never engage for explicit stops.
+# ---------------------------------------------------------------------------
+
+
+def test_s6_supervised_pid_parses_svstat(monkeypatch, s6_scandir):
+    """_supervised_pid extracts the PID from `up (pid NNNN) ...`."""
+    import subprocess as _sp
+
+    def _fake(cmd, **kw):
+        return _sp.CompletedProcess(cmd, 0, "up (pid 4242) 17 seconds\n", "")
+
+    monkeypatch.setattr("subprocess.run", _fake)
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    assert mgr._supervised_pid("gateway-coder") == 4242
+
+
+def test_s6_supervised_pid_none_when_down(monkeypatch, s6_scandir):
+    """A down service (`s6-svstat` rc!=0 or no pid) yields None."""
+    import subprocess as _sp
+
+    def _fake(cmd, **kw):
+        return _sp.CompletedProcess(cmd, 0, "down (exitcode 0) 3 seconds\n", "")
+
+    monkeypatch.setattr("subprocess.run", _fake)
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    assert mgr._supervised_pid("gateway-coder") is None
+
+
+def test_s6_stop_writes_planned_stop_marker(monkeypatch, s6_scandir):
+    """stop() must mark the supervised PID before `s6-svc -d` so the
+    gateway recognises the SIGTERM as an intentional stop (#42675)."""
+    import subprocess as _sp
+
+    svc_dir = s6_scandir / "gateway-coder"
+    svc_dir.mkdir()  # so _run_svc doesn't raise GatewayNotRegisteredError
+
+    svc_calls: list[list[str]] = []
+
+    def _fake(cmd, **kw):
+        seq = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
+        if seq and seq[0].startswith("/command/"):
+            seq[0] = seq[0][len("/command/"):]
+        svc_calls.append(seq)
+        if seq and seq[0] == "s6-svstat":
+            return _sp.CompletedProcess(cmd, 0, "up (pid 9090) 5 seconds\n", "")
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("subprocess.run", _fake)
+
+    marked: list[int] = []
+    monkeypatch.setattr(
+        "gateway.status.write_planned_stop_marker",
+        lambda pid: marked.append(pid) or True,
+    )
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.stop("gateway-coder")
+
+    assert marked == [9090], (
+        f"stop() must write the planned-stop marker for the supervised PID; "
+        f"marked={marked}"
+    )
+    # And it must still issue the down command.
+    assert any(
+        cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls
+    ), f"s6-svc -d not invoked; saw: {svc_calls}"
+
+
+def test_s6_stop_tolerates_marker_write_failure(monkeypatch, s6_scandir):
+    """A marker-write failure must not block the stop (best-effort)."""
+    import subprocess as _sp
+
+    svc_dir = s6_scandir / "gateway-coder"
+    svc_dir.mkdir()
+
+    svc_calls: list[list[str]] = []
+
+    def _fake(cmd, **kw):
+        seq = list(cmd) if isinstance(cmd, (list, tuple)) else [str(cmd)]
+        if seq and seq[0].startswith("/command/"):
+            seq[0] = seq[0][len("/command/"):]
+        svc_calls.append(seq)
+        if seq and seq[0] == "s6-svstat":
+            return _sp.CompletedProcess(cmd, 0, "up (pid 9090) 5 seconds\n", "")
+        return _sp.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("subprocess.run", _fake)
+
+    def _boom(pid):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("gateway.status.write_planned_stop_marker", _boom)
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.stop("gateway-coder")  # must not raise
+
+    assert any(cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls)

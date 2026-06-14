@@ -876,9 +876,9 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 
 | Value | Behaviour |
 |---|---|
-| `auto` | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
+| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
 | `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
-| `edit` (default) | Legacy progressive `editMessageText` polling for every chat type. |
+| `edit` | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
 
 In `~/.hermes/config.yaml`:
@@ -887,7 +887,7 @@ In `~/.hermes/config.yaml`:
 gateway:
   streaming:
     enabled: true
-    transport: edit    # edit | auto | draft | off
+    transport: auto    # auto | draft | edit | off
 ```
 
 **What you'll see in DMs with `edit` (default)** — the gateway sends a normal preview message and progressively updates it via `editMessageText`, avoiding Telegram's draft-preview collapse/rollback effect.
@@ -898,14 +898,28 @@ gateway:
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
-## Rendering: Tables and Link Previews
+## Rendering: Rich Messages, Tables and Link Previews
 
-Telegram's MarkdownV2 has no native table syntax — pipe tables render as backslash-escaped noise if passed through raw. Hermes normalizes markdown tables automatically:
+**Rich Messages (Bot API 10.1).** Final replies are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so tables, task lists, headings, nested blockquotes, collapsible `<details>`, footnotes/references, math/formulas, underline, sub/superscript, marked text, and anchors render natively — no client-side flattening. In DMs the live streaming preview also uses `sendRichMessageDraft`, so the animated draft matches the final rich message.
+
+The rich path is skipped automatically when content exceeds the 32,768-byte rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
+
+**MarkdownV2 fallback.** When the rich path is unavailable for a message, Hermes converts markdown to MarkdownV2. Since MarkdownV2 has no native table syntax, pipe tables are normalized:
 
 - **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.
-- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses. A one-line prompt hint is added so the agent knows to prefer prose follow-ups over more tables on Telegram.
+- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses.
 
-There's nothing to configure — the adapter picks the right fallback per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
+There's nothing to configure for the API fallback — the adapter picks the right rendering per message. If a Telegram client accepts but cannot render rich messages (for example, a watch client that shows them as opaque media blocks), opt out and force the MarkdownV2 path:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_messages: false
+```
+
+Rich messages are enabled by default (`rich_messages: true`). This setting is for client-rendering compatibility; Hermes already falls back automatically when Telegram rejects the rich API call. If you only want the legacy "always code-block" table behavior while keeping rich messages enabled, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
 
 **Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 

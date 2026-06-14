@@ -1655,13 +1655,18 @@ def _setup_telegram_auto_result():
 
     profile_name: str | None = None
     try:
-        hermes_home = str(get_hermes_home())
-        if "/profiles/" in hermes_home:
-            profile_name = hermes_home.rstrip("/").rsplit("/", 1)[-1]
+        profile_name = _profile_name_from_hermes_home(Path(get_hermes_home()))
     except Exception:
         pass
 
     return auto_setup_telegram_bot_result(profile_name=profile_name)
+
+
+def _profile_name_from_hermes_home(hermes_home) -> str | None:
+    """Return the active profile name when HERMES_HOME is a profile dir."""
+    if hermes_home.parent.name == "profiles":
+        return hermes_home.name
+    return None
 
 
 def _setup_telegram_auto() -> str | None:

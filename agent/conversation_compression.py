@@ -40,6 +40,16 @@ from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
+# Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
+# status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
+# drivers like the desktop app can show an explicit "Summarizing…" indicator
+# instead of the transcript appearing to silently reset. Keep the marker phrase
+# intact if you reword COMPACTION_STATUS.
+COMPACTION_STATUS_MARKER = "Compacting context"
+COMPACTION_STATUS = (
+    f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
+)
+
 
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
@@ -324,9 +334,7 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(
-        "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
-    )
+    agent._emit_status(COMPACTION_STATUS)
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
@@ -631,7 +639,11 @@ def compress_context(
     return compressed, new_system_prompt
 
 
-def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
+def try_shrink_image_parts_in_messages(
+    api_messages: list,
+    *,
+    max_dimension: int = 8000,
+) -> bool:
     """Re-encode all native image parts at a smaller size to recover from
     image-too-large errors (Anthropic 5 MB, unknown other providers).
 
@@ -642,7 +654,8 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     Strategy: look for ``image_url`` / ``input_image`` parts carrying a
     ``data:image/...;base64,...`` payload.  For each one whose encoded
     size exceeds 4 MB (a safe target that slides under Anthropic's 5 MB
-    ceiling with header overhead), write the base64 to a tempfile, call
+    ceiling with header overhead) or whose longest side exceeds
+    ``max_dimension``, write the base64 to a tempfile, call
     ``vision_tools._resize_image_for_vision`` to produce a smaller data
     URL, and substitute it in place.
 
@@ -664,10 +677,9 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     # after a confirmed provider rejection, so the alternative is failure.
     target_bytes = 4 * 1024 * 1024
     # Anthropic enforces an 8000px per-side dimension cap independently of
-    # the 5 MB byte cap.  A tall screenshot can be well under 5 MB yet far
-    # over 8000px (e.g. 1200×12000 at 0.06 MB).  We check pixel dimensions
-    # even when the byte budget is fine.
-    max_dimension = 8000
+    # the 5 MB byte cap.  In many-image requests, the provider can report a
+    # lower cap (observed: 2000px).  The caller passes that parsed ceiling
+    # when the rejection includes it.
     changed_count = 0
     # Track parts that are over the target but could NOT be shrunk under it.
     # If any survive, retrying is pointless — the same oversized payload will
@@ -684,9 +696,9 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
         # Check both byte size AND pixel dimensions.
         needs_shrink = len(url) > target_bytes  # over byte budget
         if not needs_shrink:
-            # Even if bytes are fine, check pixel dimensions against
-            # Anthropic's 8000px cap.  A tall image can be tiny in bytes
-            # yet huge in pixels.
+            # Even if bytes are fine, check pixel dimensions against the
+            # provider's reported per-side cap.  A screenshot can be tiny in
+            # bytes yet too large in pixels.
             try:
                 import base64 as _b64_dim
                 header_d, _, data_d = url.partition(",")
@@ -795,6 +807,8 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
 
 
 __all__ = [
+    "COMPACTION_STATUS",
+    "COMPACTION_STATUS_MARKER",
     "check_compression_model_feasibility",
     "replay_compression_warning",
     "compress_context",

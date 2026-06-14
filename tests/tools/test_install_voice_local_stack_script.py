@@ -35,6 +35,7 @@ def test_render_sidecar_unit_points_at_voice_repo_and_pcm_sink(tmp_path: Path):
         voice_repo=voice_repo,
         voice_bin="/home/user/.local/bin/voice",
         webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+        voice_daemon_service="voiced.service",
         host="127.0.0.1",
         port=8787,
         rx_pcm_path=rx_pcm,
@@ -43,6 +44,7 @@ def test_render_sidecar_unit_points_at_voice_repo_and_pcm_sink(tmp_path: Path):
 
     assert "Description=Voice WebRTC Sidecar" in unit
     assert "After=network.target voiced.service" in unit
+    assert "Wants=voiced.service" in unit
     assert "voice-daemon.service" not in unit
     assert f"WorkingDirectory={voice_repo}" in unit
     assert 'Environment="VOICE_BIN=/home/user/.local/bin/voice"' in unit
@@ -109,6 +111,7 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert plan["sidecar_url"] == "http://127.0.0.1:8787"
     assert plan["voice_bin"] == sys.executable
     assert plan["webrtc_python_bin"] == sys.executable
+    assert plan["voice_daemon_service"] == "voiced.service"
     assert plan["paths"]["hermes_dropin"] == str(
         systemd_dir / "hermes-gateway.service.d" / "voice-stack.conf"
     )
@@ -152,6 +155,9 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert local_stack_live[
         local_stack_live.index("--live-gateway-sidecar-service") + 1
     ] == "voice-webrtc-sidecar.service"
+    assert local_stack_live[
+        local_stack_live.index("--live-gateway-voice-daemon-service") + 1
+    ] == "voiced.service"
     assert "--run-live-gateway-stt-smoke" not in local_stack_live
     assert plan["verify_commands"]["local_stack_live_gateway_cloud_only"][-1] == (
         "--skip-live-gateway-bridge-health"
@@ -173,6 +179,9 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert "--run-stt-smoke" not in live_gateway
     assert "--sidecar-service" in live_gateway
     assert "voice-webrtc-sidecar.service" in live_gateway
+    assert live_gateway[live_gateway.index("--voice-daemon-service") + 1] == (
+        "voiced.service"
+    )
     assert "--voice-repo" in live_gateway
     assert str(voice_repo.resolve()) in live_gateway
     assert "--skip-bridge-health" not in live_gateway
@@ -213,6 +222,47 @@ def test_build_plan_adds_live_stt_smoke_when_configuring_stt(tmp_path: Path):
     assert live_gateway[live_gateway.index("--stt-provider") + 1] == "voice"
     assert live_gateway[live_gateway.index("--stt-timeout") + 1] == "123"
     assert "--run-live-gateway-stt-smoke" in local_stack_live
+
+
+def test_build_plan_threads_custom_voice_daemon_service(tmp_path: Path):
+    script = _load_script_module()
+    args = script.parse_args(
+        [
+            "--systemd-user-dir",
+            str(tmp_path / "systemd"),
+            "--hermes-home",
+            str(tmp_path / ".hermes"),
+            "--live-hermes-root",
+            str(tmp_path / "hermes-agent"),
+            "--voice-repo",
+            str(tmp_path / "voice"),
+            "--voice-bin",
+            sys.executable,
+            "--webrtc-python-bin",
+            sys.executable,
+            "--voice-daemon-service",
+            "custom-voiced.service",
+        ]
+    )
+
+    plan = script.build_plan(args)
+    sidecar_unit = next(
+        item["content"]
+        for item in plan["files"]
+        if item["kind"] == "systemd_user_service"
+    )
+
+    assert plan["voice_daemon_service"] == "custom-voiced.service"
+    assert "After=network.target custom-voiced.service" in sidecar_unit
+    assert "Wants=custom-voiced.service" in sidecar_unit
+    local_stack_live = plan["verify_commands"]["local_stack_live_gateway"]
+    assert local_stack_live[
+        local_stack_live.index("--live-gateway-voice-daemon-service") + 1
+    ] == "custom-voiced.service"
+    live_gateway = plan["verify_commands"]["live_gateway"]
+    assert live_gateway[live_gateway.index("--voice-daemon-service") + 1] == (
+        "custom-voiced.service"
+    )
 
 
 def test_configure_tts_provider_writes_voice_compatible_ogg_provider(tmp_path: Path):

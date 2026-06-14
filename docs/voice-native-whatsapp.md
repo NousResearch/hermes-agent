@@ -28,6 +28,16 @@ The target shape is:
 
 ## Install Plan
 
+Install and start the `voice` daemon before applying the Hermes wiring. On
+Linux, `voice daemon install` registers and starts the `voiced.service`
+systemd user unit. The sidecar unit generated below orders after that daemon
+and pulls it in with `Wants=voiced.service`.
+
+```bash
+voice daemon install
+voice daemon status
+```
+
 Run the installer in dry-run mode first. The output is JSON with the files it
 would write and the verifier commands to run afterward.
 
@@ -37,6 +47,7 @@ python3 scripts/install_voice_local_stack.py \
   --live-hermes-root ~/.hermes/hermes-agent-voice-stack \
   --voice-repo ~/code/src/github.com/rgbkrk/voice \
   --voice-bin ~/.local/bin/voice \
+  --voice-daemon-service voiced.service \
   --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python \
   --configure-tts \
   --configure-stt
@@ -54,6 +65,7 @@ python3 scripts/install_voice_local_stack.py \
   --live-hermes-root ~/.hermes/hermes-agent-voice-stack \
   --voice-repo ~/code/src/github.com/rgbkrk/voice \
   --voice-bin ~/.local/bin/voice \
+  --voice-daemon-service voiced.service \
   --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python \
   --configure-tts \
   --configure-stt
@@ -112,6 +124,7 @@ python3 scripts/verify_voice_local_stack.py \
   --live-gateway-hermes-home ~/.hermes \
   --run-live-gateway-stt-smoke \
   --live-gateway-sidecar-service voice-webrtc-sidecar.service \
+  --live-gateway-voice-daemon-service voiced.service \
   --skip-live-gateway-bridge-health
 ```
 

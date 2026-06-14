@@ -535,6 +535,13 @@ def live_gateway_command(
         command.extend(["--sidecar-service", args.live_gateway_sidecar_service])
         if voice_repo is not None:
             command.extend(["--voice-repo", str(voice_repo)])
+    if args.live_gateway_sidecar_service and args.live_gateway_voice_daemon_service:
+        command.extend(
+            [
+                "--voice-daemon-service",
+                args.live_gateway_voice_daemon_service,
+            ]
+        )
     if args.skip_live_gateway_bridge_health:
         command.append("--skip-bridge-health")
     return command
@@ -621,6 +628,14 @@ def parse_args() -> argparse.Namespace:
         "--live-gateway-sidecar-service",
         default="voice-webrtc-sidecar.service",
         help="systemd user service name for the running WebRTC sidecar.",
+    )
+    parser.add_argument(
+        "--live-gateway-voice-daemon-service",
+        default="voiced.service",
+        help=(
+            "systemd user service name for the running voice daemon checked by "
+            "the live gateway verifier; pass an empty string to skip it."
+        ),
     )
     parser.add_argument(
         "--skip-live-gateway-bridge-health",

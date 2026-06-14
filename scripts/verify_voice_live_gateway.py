@@ -352,6 +352,7 @@ def validate_sidecar_service_state(
     voice_bin: str | None,
     voice_repo: Path | None,
     sidecar_url: str | None,
+    voice_daemon_service: str | None,
 ) -> dict[str, Any]:
     pid = validate_service_state(state, label=service)
     env = parse_systemd_environment(state.get("Environment", ""))
@@ -365,8 +366,10 @@ def validate_sidecar_service_state(
             f"{service} still orders after deprecated voice-daemon.service; "
             "rerun install_voice_local_stack.py so it uses voiced.service"
         )
-    if "voiced.service" not in after_units:
-        raise SystemExit(f"{service} does not order after voiced.service")
+    if voice_daemon_service and voice_daemon_service not in after_units:
+        raise SystemExit(
+            f"{service} does not order after {voice_daemon_service}"
+        )
     result["after"] = sorted(after_units)
 
     if voice_bin is not None:
@@ -1217,6 +1220,7 @@ def main() -> int:
             voice_bin=voice_bin,
             voice_repo=voice_repo,
             sidecar_url=args.calling_sidecar_url,
+            voice_daemon_service=args.voice_daemon_service,
         )
 
     checks["imports"] = import_smoke(

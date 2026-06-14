@@ -60,6 +60,7 @@ def _args(**overrides):
         "live_gateway_hermes_home": Path("/home/user/.hermes"),
         "calling_sidecar_url": None,
         "live_gateway_sidecar_service": "voice-webrtc-sidecar.service",
+        "live_gateway_voice_daemon_service": "voiced.service",
         "skip_live_gateway_bridge_health": False,
         "run_live_gateway_stt_smoke": False,
         "live_gateway_timeout": 360.0,
@@ -314,8 +315,46 @@ def test_live_gateway_command_runs_offer_readiness_smoke():
     assert command[command.index("--sidecar-service") + 1] == (
         "voice-webrtc-sidecar.service"
     )
+    assert command[command.index("--voice-daemon-service") + 1] == "voiced.service"
     assert command[command.index("--voice-repo") + 1] == "/voice"
     assert "--skip-bridge-health" in command
+
+
+def test_live_gateway_command_passes_custom_voice_daemon_service():
+    script = _load_script_module()
+
+    command = script.live_gateway_command(
+        _args(
+            live_hermes_root=Path("/checkout/hermes-agent"),
+            calling_sidecar_url="http://127.0.0.1:8787",
+            webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+            live_gateway_voice_daemon_service="custom-voiced.service",
+        ),
+        voice_bin="/home/user/.local/bin/voice",
+        voice_repo=Path("/voice"),
+    )
+
+    assert command[command.index("--voice-daemon-service") + 1] == (
+        "custom-voiced.service"
+    )
+
+
+def test_live_gateway_command_skips_daemon_service_without_sidecar_service():
+    script = _load_script_module()
+
+    command = script.live_gateway_command(
+        _args(
+            live_hermes_root=Path("/checkout/hermes-agent"),
+            calling_sidecar_url="http://127.0.0.1:8787",
+            webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+            live_gateway_sidecar_service="",
+        ),
+        voice_bin="/home/user/.local/bin/voice",
+        voice_repo=Path("/voice"),
+    )
+
+    assert "--sidecar-service" not in command
+    assert "--voice-daemon-service" not in command
 
 
 def test_live_gateway_command_requires_live_inputs():

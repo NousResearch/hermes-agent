@@ -32,6 +32,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 DEFAULT_HERMES_SERVICE = "hermes-gateway.service"
 DEFAULT_SIDECAR_SERVICE = "voice-webrtc-sidecar.service"
+DEFAULT_VOICE_DAEMON_SERVICE = "voiced.service"
 DEFAULT_STREAM_TIMEOUT = 180.0
 DEFAULT_STT_TIMEOUT = 300
 
@@ -125,6 +126,7 @@ def render_sidecar_unit(
     voice_repo: Path,
     voice_bin: str,
     webrtc_python_bin: str,
+    voice_daemon_service: str,
     host: str,
     port: int,
     rx_pcm_path: Path,
@@ -143,11 +145,16 @@ def render_sidecar_unit(
         "--log-level",
         log_level,
     ]
-    return "\n".join(
+    after_units = dedupe_preserve_order(["network.target", voice_daemon_service])
+    unit_lines = [
+        "[Unit]",
+        "Description=Voice WebRTC Sidecar",
+        "After=" + " ".join(after_units),
+    ]
+    if voice_daemon_service:
+        unit_lines.append(f"Wants={voice_daemon_service}")
+    unit_lines.extend(
         [
-            "[Unit]",
-            "Description=Voice WebRTC Sidecar",
-            "After=network.target voiced.service",
             "",
             "[Service]",
             "Type=simple",
@@ -162,6 +169,7 @@ def render_sidecar_unit(
             "",
         ]
     )
+    return "\n".join(unit_lines)
 
 
 def render_hermes_dropin(
@@ -244,6 +252,7 @@ def build_verify_commands(
     webrtc_python_bin: str,
     sidecar_url: str,
     sidecar_service: str | None,
+    voice_daemon_service: str | None,
     run_stt_smoke: bool,
     stt_provider_name: str,
     stt_timeout: int,
@@ -278,6 +287,13 @@ def build_verify_commands(
             [
                 "--live-gateway-sidecar-service",
                 sidecar_service,
+            ]
+        )
+    if sidecar_service and voice_daemon_service:
+        local_stack_live_gateway_command.extend(
+            [
+                "--live-gateway-voice-daemon-service",
+                voice_daemon_service,
             ]
         )
 
@@ -316,6 +332,13 @@ def build_verify_commands(
                 sidecar_service,
                 "--voice-repo",
                 str(voice_repo),
+            ]
+        )
+    if sidecar_service and voice_daemon_service:
+        live_gateway_command.extend(
+            [
+                "--voice-daemon-service",
+                voice_daemon_service,
             ]
         )
     return {
@@ -544,6 +567,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                     voice_repo=voice_repo,
                     voice_bin=voice_bin,
                     webrtc_python_bin=webrtc_python_bin,
+                    voice_daemon_service=args.voice_daemon_service,
                     host=sidecar_host,
                     port=sidecar_port,
                     rx_pcm_path=rx_pcm_path,
@@ -580,6 +604,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         "sidecar_url": args.sidecar_url.rstrip("/"),
         "hermes_service": args.hermes_service,
         "sidecar_service": args.sidecar_service,
+        "voice_daemon_service": args.voice_daemon_service,
         "paths": {
             "systemd_user_dir": str(systemd_user_dir),
             "hermes_dropin": str(hermes_dropin_path),
@@ -599,6 +624,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             webrtc_python_bin=webrtc_python_bin,
             sidecar_url=args.sidecar_url.rstrip("/"),
             sidecar_service=None if args.skip_sidecar_service else args.sidecar_service,
+            voice_daemon_service=args.voice_daemon_service,
             run_stt_smoke=args.configure_stt,
             stt_provider_name=args.stt_provider_name,
             stt_timeout=args.stt_timeout,
@@ -713,6 +739,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--hermes-service", default=DEFAULT_HERMES_SERVICE)
     parser.add_argument("--sidecar-service", default=DEFAULT_SIDECAR_SERVICE)
+    parser.add_argument(
+        "--voice-daemon-service",
+        default=DEFAULT_VOICE_DAEMON_SERVICE,
+        help=(
+            "systemd user service name for the voice daemon that the sidecar "
+            "orders after and the live verifier checks; pass an empty string "
+            "to skip daemon service verification"
+        ),
+    )
     parser.add_argument(
         "--systemd-user-dir",
         default=str(Path.home() / ".config" / "systemd" / "user"),

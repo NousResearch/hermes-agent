@@ -319,6 +319,7 @@ def test_validate_sidecar_service_state_accepts_expected_unit(tmp_path: Path):
         voice_bin=str(voice_bin),
         voice_repo=voice_repo,
         sidecar_url="http://127.0.0.1:8787",
+        voice_daemon_service="voiced.service",
     )
 
     assert result["service"] == "voice-webrtc-sidecar.service"
@@ -345,6 +346,7 @@ def test_validate_sidecar_service_state_rejects_deprecated_daemon_unit():
             voice_bin=None,
             voice_repo=None,
             sidecar_url=None,
+            voice_daemon_service="voiced.service",
         )
 
 
@@ -362,6 +364,7 @@ def test_validate_sidecar_service_state_requires_voiced_ordering():
             voice_bin=None,
             voice_repo=None,
             sidecar_url=None,
+            voice_daemon_service="voiced.service",
         )
 
 
@@ -386,6 +389,7 @@ def test_validate_sidecar_service_state_rejects_stale_voice_bin(tmp_path: Path):
             voice_bin=str(expected_voice),
             voice_repo=None,
             sidecar_url=None,
+            voice_daemon_service="voiced.service",
         )
 
 
@@ -412,6 +416,7 @@ def test_validate_sidecar_service_state_rejects_wrong_voice_repo(tmp_path: Path)
             voice_bin=None,
             voice_repo=voice_repo,
             sidecar_url=None,
+            voice_daemon_service="voiced.service",
         )
 
 
@@ -431,7 +436,27 @@ def test_validate_sidecar_service_state_rejects_wrong_bind_port(tmp_path: Path):
             voice_bin=None,
             voice_repo=None,
             sidecar_url="http://127.0.0.1:8787",
+            voice_daemon_service="voiced.service",
         )
+
+
+def test_validate_sidecar_service_state_accepts_custom_daemon_ordering():
+    script = _load_script_module()
+
+    result = script.validate_sidecar_service_state(
+        {
+            "ActiveState": "active",
+            "MainPID": "42",
+            "After": "network.target custom-voiced.service",
+        },
+        service="voice-webrtc-sidecar.service",
+        voice_bin=None,
+        voice_repo=None,
+        sidecar_url=None,
+        voice_daemon_service="custom-voiced.service",
+    )
+
+    assert "custom-voiced.service" in result["after"]
 
 
 def test_validate_voice_daemon_service_state_accepts_expected_unit(tmp_path: Path):

@@ -467,6 +467,11 @@ def init_agent(
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
 
+    # ── System-reminder engine (cyclic reminder injection) ──────────
+    # Initialised here with a sentinel None; the real engine is built
+    # in the config-read section below when _agent_cfg is available.
+    agent._system_reminder_engine = None  # type: ignore[assignment]
+
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
     # threads have tids distinct from `_execution_thread_id`, so
@@ -1251,6 +1256,30 @@ def init_agent(
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
+
+    # ── System-reminder engine (cyclic reminder injection) ──────────────
+    # Reads system_reminder section from config.yaml:
+    #   system_reminder:
+    #     enabled: true
+    #     cadence: 5         # every N tool calls
+    #     position: last_user
+    #     blocks:
+    #       - id: my-reminder
+    #         content: "<system-reminder>...</system-reminder>"
+    try:
+        sr_cfg = _agent_cfg.get("system_reminder", {})
+        if sr_cfg.get("enabled", True):
+            from agent.system_reminder_engine import SystemReminderEngine
+
+            sr_blocks = sr_cfg.get("blocks", None)
+            agent._system_reminder_engine = SystemReminderEngine(
+                enabled=True,
+                cadence=sr_cfg.get("cadence", 5),
+                blocks=sr_blocks,
+                position=sr_cfg.get("position", "last_user"),
+            )
+    except Exception:
+        pass  # System reminders are optional -- don't break agent init
     
 
 

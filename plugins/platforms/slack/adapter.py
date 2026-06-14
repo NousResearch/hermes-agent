@@ -459,8 +459,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
         # Track active assistant thread status indicators so stop_typing can
-        # clear them (chat_id → thread_ts).
-        self._active_status_threads: Dict[str, str] = {}
+        # clear them. A single Slack channel/DM can have multiple assistant
+        # threads running concurrently, so this must be chat_id → thread_ts set
+        # instead of a single chat_id → thread_ts slot.
+        self._active_status_threads: Dict[str, set[str]] = {}
+        # Map bot reply message ts → parent thread ts so streaming final edits
+        # can clear the exact Slack Assistant status for the edited message.
+        self._message_thread_ts: Dict[str, str] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -1346,6 +1351,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        thread_ts = None
         try:
             # Check for a pending slash-command context.  When the user ran a
             # native slash command (e.g. /q, /stop, /model), the initial ack
@@ -1388,7 +1394,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
-                await self.stop_typing(chat_id)
+                await self.stop_typing(chat_id, metadata={"thread_ts": thread_ts})
 
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
@@ -1398,10 +1404,12 @@ class SlackAdapter(BasePlatformAdapter):
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
                     self._bot_message_ts.add(thread_ts)
+                    self._message_thread_ts[sent_ts] = thread_ts
                 if len(self._bot_message_ts) > self._BOT_TS_MAX:
                     excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
                     for old_ts in list(self._bot_message_ts)[:excess]:
                         self._bot_message_ts.discard(old_ts)
+                        self._message_thread_ts.pop(old_ts, None)
 
             return SendResult(
                 success=True,
@@ -1410,6 +1418,14 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
+            if thread_ts:
+                try:
+                    await self.stop_typing(chat_id, metadata={"thread_ts": thread_ts})
+                except Exception as clear_error:
+                    logger.debug(
+                        "[Slack] assistant.threads.setStatus clear after send error failed: %s",
+                        clear_error,
+                    )
             logger.error("[Slack] Send error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
@@ -1468,7 +1484,9 @@ class SlackAdapter(BasePlatformAdapter):
                 text=formatted,
             )
             if finalize:
-                await self.stop_typing(chat_id)
+                thread_ts = self._message_thread_ts.get(message_id)
+                metadata = {"thread_ts": thread_ts} if thread_ts else None
+                await self.stop_typing(chat_id, metadata=metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
@@ -1497,13 +1515,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
-        self._active_status_threads[chat_id] = thread_ts
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
                 thread_ts=thread_ts,
                 status="is thinking...",
             )
+            self._active_status_threads.setdefault(chat_id, set()).add(thread_ts)
         except Exception as e:
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
@@ -1513,17 +1531,36 @@ class SlackAdapter(BasePlatformAdapter):
         """Clear the assistant thread status indicator."""
         if not self._app:
             return
-        thread_ts = self._active_status_threads.pop(chat_id, None)
-        if not thread_ts:
+
+        active_threads = self._active_status_threads.get(chat_id)
+        if not active_threads:
             return
-        try:
-            await self._get_client(chat_id).assistant_threads_setStatus(
-                channel_id=chat_id,
-                thread_ts=thread_ts,
-                status="",
-            )
-        except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+
+        thread_ts = None
+        if metadata:
+            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
+
+        if thread_ts:
+            targets = [thread_ts] if thread_ts in active_threads else []
+        else:
+            # Fallback for shutdown/interruption paths that predate metadata
+            # propagation. Normal send/final-edit paths pass metadata so one
+            # completed thread does not clear a sibling thread's status.
+            targets = list(active_threads)
+
+        for target_thread_ts in targets:
+            active_threads.discard(target_thread_ts)
+            try:
+                await self._get_client(chat_id).assistant_threads_setStatus(
+                    channel_id=chat_id,
+                    thread_ts=target_thread_ts,
+                    status="",
+                )
+            except Exception as e:
+                logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+
+        if not active_threads:
+            self._active_status_threads.pop(chat_id, None)
 
     def _dm_top_level_threads_as_sessions(self) -> bool:
         """Whether top-level Slack DMs get per-message session threads.

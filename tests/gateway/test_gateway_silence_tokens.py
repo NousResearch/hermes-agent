@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import gateway.run as gateway_run
-from gateway.config import GatewayConfig, Platform
-from gateway.platforms.base import MessageEvent
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
     is_intentional_silence_agent_result,
@@ -29,6 +29,46 @@ def _event():
         text="side chatter",
         source=_source(),
         message_id="msg-42",
+    )
+
+
+class _ThreadAwareStopAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.SLACK)
+        self.stopped = []
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        return SendResult(success=True, message_id="reply-1")
+
+    async def stop_typing(self, chat_id, metadata=None):
+        self.stopped.append({"chat_id": chat_id, "metadata": metadata})
+
+    async def get_chat_info(self, chat_id: str):
+        return {"id": chat_id}
+
+
+def _slack_thread_source():
+    return SessionSource(
+        platform=Platform.SLACK,
+        chat_id="C123",
+        chat_type="channel",
+        user_id="U123",
+        thread_id="111.222",
+    )
+
+
+def _slack_thread_event():
+    source = _slack_thread_source()
+    return MessageEvent(
+        text="thread question",
+        source=source,
+        message_id="111.333",
     )
 
 
@@ -163,3 +203,32 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
     )
 
     assert response == text
+
+
+@pytest.mark.asyncio
+async def test_agent_done_stop_typing_preserves_thread_metadata(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    adapter = _ThreadAwareStopAdapter()
+    runner.adapters[Platform.SLACK] = adapter
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "done",
+        "messages": [
+            {"role": "user", "content": "thread question"},
+            {"role": "assistant", "content": "done"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+    source = _slack_thread_source()
+
+    response = await runner._handle_message_with_agent(
+        _slack_thread_event(), source, "agent:main:slack:channel:C123:111.222", 1
+    )
+
+    assert response == "done"
+    assert adapter.stopped == [
+        {"chat_id": "C123", "metadata": {"thread_id": "111.222"}}
+    ]

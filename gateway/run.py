@@ -10398,11 +10398,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
             )
 
-            # Stop persistent typing indicator now that the agent is done
+            # Stop persistent typing indicator now that the agent is done.
+            # Thread-aware adapters (Slack Assistant status) need metadata so
+            # one completed thread does not clear a sibling thread in the same
+            # channel/DM.
             try:
                 _typing_adapter = self.adapters.get(source.platform)
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
-                    await _typing_adapter.stop_typing(source.chat_id)
+                    _typing_metadata = self._thread_metadata_for_source(
+                        source,
+                        self._reply_anchor_for_event(event),
+                    )
+                    _stop_with_metadata = getattr(
+                        _typing_adapter,
+                        "_stop_typing_with_metadata",
+                        None,
+                    )
+                    if callable(_stop_with_metadata):
+                        _stop_result = _stop_with_metadata(
+                            source.chat_id,
+                            metadata=_typing_metadata,
+                        )
+                    else:
+                        _stop_result = _typing_adapter.stop_typing(source.chat_id)
+                    if inspect.isawaitable(_stop_result):
+                        await _stop_result
             except Exception:
                 pass
 
@@ -10905,11 +10925,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return response
             
         except Exception as e:
-            # Stop typing indicator on error too
+            # Stop typing indicator on error too.
             try:
                 _err_adapter = self.adapters.get(source.platform)
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
-                    await _err_adapter.stop_typing(source.chat_id)
+                    _err_metadata = self._thread_metadata_for_source(
+                        source,
+                        self._reply_anchor_for_event(event),
+                    )
+                    _stop_with_metadata = getattr(
+                        _err_adapter,
+                        "_stop_typing_with_metadata",
+                        None,
+                    )
+                    if callable(_stop_with_metadata):
+                        _stop_result = _stop_with_metadata(
+                            source.chat_id,
+                            metadata=_err_metadata,
+                        )
+                    else:
+                        _stop_result = _err_adapter.stop_typing(source.chat_id)
+                    if inspect.isawaitable(_stop_result):
+                        await _stop_result
             except Exception:
                 pass
             logger.exception("Agent error in session %s", session_key)

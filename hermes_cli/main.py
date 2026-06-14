@@ -890,12 +890,21 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             preview = (s.get("preview") or "").strip()
             source = s.get("source", "")[:6]
             last_active = _relative_time(s.get("last_active"))
-            sid = s["id"][:18]
+            sid_full = s["id"]
 
-            # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
-            name_width = max(20, max_x - fixed_cols)
+            # Adaptive column widths based on terminal width.
+            # Fixed overhead per row: spacers (2+2+1) + active(10) + src(5) = 20
+            fixed_overhead = 20
+            remaining = max_x - fixed_overhead
+            # Reserve 1 char margin (addnstr truncates at max_x-1). Allocate:
+            # min 15 for name, min 8 for id; prefer full 22-char session id
+            if remaining >= 38:
+                sid_width = min(22, remaining - 16)
+                name_width = remaining - sid_width - 1
+            else:
+                name_width = max(15, remaining - 13)
+                sid_width = max(8, remaining - name_width - 1)
+            sid = sid_full[:sid_width]
 
             if title:
                 name = title[:name_width]

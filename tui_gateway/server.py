@@ -2310,6 +2310,10 @@ def _probe_credentials(agent) -> str:
     try:
         key = getattr(agent, "api_key", "") or ""
         provider = getattr(agent, "provider", "") or ""
+        # Bedrock uses AWS credentials (bearer token, env vars, or ~/.aws/),
+        # not an explicit api_key field — skip the naive check.
+        if provider and "bedrock" in provider.lower():
+            return ""
         if not key or key == "no-key-required":
             return f"No API key configured for provider '{provider}'. First message will fail."
     except Exception:

@@ -397,6 +397,42 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+# Shared recovery hint appended to every content-policy refusal message. Both
+# the HTTP-200 refusal path (``finish_reason=content_filter``) and the
+# exception path (a provider moderation error classified as
+# ``content_policy_blocked``) end with the same actionable next steps, so they
+# share one trailer to keep the guidance from drifting between the two sites.
+_CONTENT_POLICY_RECOVERY_HINT = (
+    "Try rephrasing the request, narrowing the context, or "
+    "adding a fallback provider with `hermes fallback add`."
+)
+
+
+def _content_policy_blocked_result(
+    messages: List[Dict],
+    api_call_count: int,
+    *,
+    final_response: str,
+    error_detail: str,
+) -> Dict[str, Any]:
+    """Build the terminal turn result for a content-policy block.
+
+    A content-policy refusal is deterministic for the unchanged prompt, so the
+    turn ends here (no retry). Both the HTTP-200 refusal handler and the
+    exception-path handler return the identical shape — a failed, non-completed
+    turn carrying the user-facing message and a ``content_policy_blocked:``
+    prefixed error — so they funnel through this one builder.
+    """
+    return {
+        "final_response": final_response,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "failed": True,
+        "error": f"content_policy_blocked: {error_detail}",
+    }
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -1389,7 +1425,7 @@ def run_conversation(
                         retry_count=retry_count,
                         max_retries=max_retries,
                         retryable=False,
-                        reason="content_policy_blocked",
+                        reason=FailoverReason.content_policy_blocked.value,
                     )
 
                     if thinking_spinner:
@@ -1427,36 +1463,26 @@ def run_conversation(
                         "⚠️ The model declined to respond to this request (safety refusal)."
                     )
 
-                    if _refusal_text:
-                        _refusal_response = (
-                            "⚠️  The model declined to respond to this request "
-                            "(safety refusal — not a Hermes/gateway failure).\n\n"
-                            f"Model's explanation: {_refusal_text}\n\n"
-                            "Try rephrasing the request, narrowing the context, or "
-                            "adding a fallback provider with `hermes fallback add`."
-                        )
-                    else:
-                        _refusal_response = (
-                            "⚠️  The model declined to respond to this request "
-                            "(safety refusal — not a Hermes/gateway failure). The "
-                            "model returned no explanation.\n\n"
-                            "Try rephrasing the request, narrowing the context, or "
-                            "adding a fallback provider with `hermes fallback add`."
-                        )
+                    _refusal_detail = (
+                        f"Model's explanation: {_refusal_text}"
+                        if _refusal_text
+                        else "The model returned no explanation."
+                    )
+                    _refusal_response = (
+                        "⚠️  The model declined to respond to this request "
+                        "(safety refusal — not a Hermes/gateway failure).\n\n"
+                        f"{_refusal_detail}\n\n"
+                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                    )
 
                     agent._cleanup_task_resources(effective_task_id)
                     agent._persist_session(messages, conversation_history)
-                    return {
-                        "final_response": _refusal_response,
-                        "messages": messages,
-                        "api_calls": api_call_count,
-                        "completed": False,
-                        "failed": True,
-                        "error": (
-                            "content_policy_blocked: "
-                            + (_refusal_text or "model declined (content_filter)")
-                        ),
-                    }
+                    return _content_policy_blocked_result(
+                        messages,
+                        api_call_count,
+                        final_response=_refusal_response,
+                        error_detail=_refusal_text or "model declined (content_filter)",
+                    )
 
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
@@ -3229,20 +3255,17 @@ def run_conversation(
                     if classified.reason == FailoverReason.content_policy_blocked:
                         _summary = agent._summarize_api_error(api_error)
                         _policy_response = (
-                            f"⚠️  The model provider's safety filter blocked this request "
-                            f"(not a Hermes/gateway failure).\n\n"
+                            "⚠️  The model provider's safety filter blocked this request "
+                            "(not a Hermes/gateway failure).\n\n"
                             f"Provider message: {_summary}\n\n"
-                            f"Try rephrasing the request, narrowing the context, or "
-                            f"adding a fallback provider with `hermes fallback add`."
+                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
                         )
-                        return {
-                            "final_response": _policy_response,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": f"content_policy_blocked: {_summary}",
-                        }
+                        return _content_policy_blocked_result(
+                            messages,
+                            api_call_count,
+                            final_response=_policy_response,
+                            error_detail=_summary,
+                        )
                     return {
                         "final_response": None,
                         "messages": messages,

@@ -1084,6 +1084,26 @@ class TestMatrixMarkdownToHtml:
         assert "href=" not in result.lower()
         assert "click" in result
 
+    def test_matrix_markdown_rejects_entity_encoded_schemes(self):
+        # A Matrix client's HTML parser decodes character references in
+        # attribute values, so a scheme hidden behind entities — a hex entity
+        # at (``&#x6a;avascript:``) or inside (``java&#x73;cript:``) the scheme,
+        # a decimal entity (``&#106;``), or an entity-encoded colon
+        # (``data&#x3a;``) — must not survive into a live URL once decoded.
+        import html as _html
+
+        payloads = [
+            "[a](&#x6a;avascript:alert(1))",
+            "[b](java&#x73;cript:alert(1))",
+            "[c](&#106;avascript:alert(1))",
+            "[d](data&#x3a;text/html,x)",
+        ]
+        for payload in payloads:
+            decoded = _html.unescape(self.adapter._markdown_to_html(payload)).lower()
+            assert "javascript:" not in decoded, payload
+            assert "vbscript:" not in decoded, payload
+            assert 'href="data:' not in decoded, payload
+
     def test_matrix_markdown_preserves_code_fences(self):
         result = self.adapter._markdown_to_html("```python\nprint('x')\n```")
         assert "<pre>" in result

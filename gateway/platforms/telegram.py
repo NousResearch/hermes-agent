@@ -6894,6 +6894,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # All send() / send_draft() / send_or_update_status() calls during processing
         # were silently buffered; we fire a single answerGuestQuery here with the
         # complete response so the user sees the full answer, not a status fragment.
+        #
+        # Private-chat routing note: in groups the reply appears in the group chat as
+        # expected.  In P2P private chats between two regular users, Telegram cannot
+        # post a bot message into the conversation, so it surfaces the reply in the
+        # bot's own DM thread with the mentioning user instead.  This is Telegram API
+        # behaviour — our call is identical in both cases; the difference is how
+        # Telegram routes the answerGuestQuery result on its end.
         _gc_id = str(getattr(event.source, "chat_id", None) or "")
         if _gc_id:
             _guest_qid = self._pending_guest_queries.pop(_gc_id, None)

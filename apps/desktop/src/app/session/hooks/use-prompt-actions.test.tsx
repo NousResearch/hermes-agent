@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -789,6 +789,7 @@ describe('usePromptActions sleep/wake session recovery', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -831,6 +832,62 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+  })
+
+  it('unlocks the chat when prompt.submit succeeds but no stream ever starts', async () => {
+    const states: Record<string, unknown>[] = []
+    const busyRef: MutableRefObject<boolean> = { current: false }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+    vi.useFakeTimers()
+
+    expect(await handle!.submitText('message that never streams')).toBe(true)
+    expect(busyRef.current).toBe(true)
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+    })
+
+    expect(busyRef.current).toBe(false)
+    expect(states.at(-1)).toMatchObject({ awaitingResponse: false, busy: false, sawAssistantPayload: true })
+    expect(JSON.stringify(states.at(-1))).toContain('did not start a response stream')
+  })
+
+  it('clears local busy state immediately when stopping a run', async () => {
+    const states: Record<string, unknown>[] = []
+    const busyRef: MutableRefObject<boolean> = { current: true }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.cancelRun()
+
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
+    expect(busyRef.current).toBe(false)
+    expect(states.at(-1)).toMatchObject({ awaitingResponse: false, busy: false, interrupted: true })
   })
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {

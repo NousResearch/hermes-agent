@@ -448,7 +448,7 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
     """
     model_lower = model_id.lower()
     # Strip regional prefix if present
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in ("us.", "global.", "eu.", "apac.", "ap.", "au.", "jp."):
         if model_lower.startswith(prefix):
             model_lower = model_lower[len(prefix):]
             break

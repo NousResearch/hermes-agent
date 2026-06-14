@@ -364,7 +364,7 @@ class MemoryStore:
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
-            if new_total > limit:
+            if limit > 0 and new_total > limit:
                 current = self._char_count(target)
                 return self._consolidation_failure({
                     "success": False,
@@ -434,7 +434,7 @@ class MemoryStore:
             test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
-            if new_total > limit:
+            if limit > 0 and new_total > limit:
                 current = self._char_count(target)
                 return self._consolidation_failure({
                     "success": False,
@@ -741,7 +741,15 @@ class MemoryStore:
         char_limit = self._char_limit(target)
         max_entry_len = max((len(e) for e in parsed), default=0)
 
-        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        # char_limit == 0 means "unlimited" (e.g. provider: atheneum, where the
+        # .md file is a benign local cache and atheneum SQL is the real store).
+        # Without this guard, an entry of any size trips signal #2 and every
+        # write is falsely refused as "drift" — a false positive in the guard
+        # that issue #26045 added to catch genuine external clobbering. Signal
+        # #1 (round-trip mismatch) is unaffected, so real drift is still caught.
+        drift_detected = (raw.strip() != roundtrip) or (
+            char_limit > 0 and max_entry_len > char_limit
+        )
         if not drift_detected:
             return None
 

@@ -503,6 +503,43 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestZeroCharLimit:
+    """char_limit == 0 means "unlimited" (e.g. provider: atheneum, where the
+    .md file is a benign local cache). The drift guard and the add/replace
+    budget checks must treat 0 as unlimited, not as an impossibly-tight
+    ceiling that rejects every write."""
+
+    @pytest.fixture()
+    def unlimited_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore(memory_char_limit=0, user_char_limit=0)
+        s.load_from_disk()
+        return s
+
+    def test_add_not_blocked_as_drift_with_zero_limit(self, unlimited_store, tmp_path):
+        # Regression: a pre-existing well-formed entry made signal #2
+        # (max_entry_len > char_limit, i.e. > 0) always fire, so every add()
+        # was refused as "drift". With 0 = unlimited the new entry must succeed.
+        (tmp_path / "MEMORY.md").write_text("prior session fact")
+        result = unlimited_store.add("memory", "new fact, " * 80)
+        assert result["success"] is True
+
+    def test_real_external_clobber_still_blocked_with_zero_limit(self, unlimited_store, tmp_path):
+        # The round-trip-mismatch signal (#1) must stay active at char_limit=0
+        # so genuine external writes — the #26045 data-loss race — are still
+        # refused. Per-entry leading whitespace survives parsing, making the
+        # file non-round-trippable.
+        (tmp_path / "MEMORY.md").write_text("good\n§\n appended externally")
+        result = unlimited_store.add("memory", "benign new entry")
+        assert result["success"] is False
+        assert "drift" in result["error"].lower()
+
+    def test_replace_not_budget_blocked_with_zero_limit(self, unlimited_store):
+        unlimited_store.add("memory", "x" * 600)
+        result = unlimited_store.replace("memory", "x", "y" * 800)
+        assert result["success"] is True
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

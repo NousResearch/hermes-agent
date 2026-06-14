@@ -194,7 +194,7 @@ class A2AAdapter(BasePlatformAdapter):
             pass
         return protocol.build_agent_card(
             name=self.agent_name,
-            url=f"http://{self.host}:{self.port}/",
+            url=os.getenv("A2A_PUBLIC_URL", f"http://{self.host}:{self.port}/"),
             description=os.getenv(
                 "A2A_AGENT_DESCRIPTION",
                 "Hermes Agent — a general-purpose agent reachable over A2A.",
@@ -214,8 +214,19 @@ class A2AAdapter(BasePlatformAdapter):
         """
         text = protocol.extract_text(params)
         peer = str(params.get("peer") or (params.get("message", {}) or {}).get("from") or "remote-agent")
-        context_id = (params.get("message", {}) or {}).get("contextId") or protocol.new_context_id()
+        context_id = (
+            params.get("contextId")                                   # A2A spec: top-level in params
+            or (params.get("message", {}) or {}).get("contextId")    # legacy/non-standard placement
+            or protocol.new_context_id()
+        )
         task_id = protocol.new_task_id()
+
+        # Optional caller identity for OBO (On-Behalf-Of) flows.
+        # Callers pass { "userContext": { "user_id": "U123", "user_name": "alice", "email": "..." } }
+        # in params. Falls back to peer name so anonymous callers still work.
+        user_ctx = params.get("userContext") or {}
+        user_id = str(user_ctx.get("user_id") or user_ctx.get("slack_user_id") or peer)
+        user_name = str(user_ctx.get("user_name") or user_ctx.get("name") or user_ctx.get("email") or peer)
 
         if not text:
             return protocol.build_task(task_id, context_id, protocol.STATE_FAILED, "Empty task — nothing to do.")
@@ -241,8 +252,8 @@ class A2AAdapter(BasePlatformAdapter):
                 chat_id=context_id,
                 chat_name=f"a2a:{peer}",
                 chat_type="dm",
-                user_id=peer,
-                user_name=peer,
+                user_id=user_id,
+                user_name=user_name,
             ),
             message_id=task_id,
         )
@@ -283,9 +294,9 @@ class A2AAdapter(BasePlatformAdapter):
         """
         with self._pending_lock:
             fut = self._pending_replies.get(chat_id)
-        if fut is not None and not fut.done():
-            fut.set_result(content or "")
-            return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+            if fut is not None and not fut.done():
+                fut.set_result(content or "")
+                return SendResult(success=True, message_id=str(int(time.time() * 1000)))
         # No waiter (e.g. a late streamed chunk or out-of-band send) — drop it.
         logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))

@@ -48,7 +48,15 @@ optional_env:
     description: "Allow any authenticated A2A peer to reach the agent (dev only)."
     prompt: "Allow all A2A peers? (true/false)"
     password: false
+  - name: A2A_PUBLIC_URL
+    description: "Public URL advertised in the Agent Card (e.g. https://jarvis-a2a.example.com/). Defaults to http://<bind-host>:<port>/ which is wrong when behind a reverse proxy or Cloudflare Tunnel."
+    prompt: "Public A2A URL (e.g. https://myagent-a2a.example.com/)"
+    password: false
   - name: A2A_HOME_CHANNEL
-    description: "Task/context id used as the cron / notification delivery target for deliver=a2a."
-    prompt: "A2A home channel (or empty)"
+    description: "Task/context id used as the cron / notification delivery target for deliver=a2a. Set this to suppress the first-message home-channel onboarding prompt."
+    prompt: "A2A home channel context ID (or empty)"
+    password: false
+  - name: A2A_DEFAULT_USER_ID
+    description: "Fallback user_id for inbound A2A callers that omit userContext. Defaults to 'remote-agent'. Set to a real Slack user ID to give anonymous peers a fixed identity."
+    prompt: "Default A2A caller user ID (or empty for 'remote-agent')"
     password: false

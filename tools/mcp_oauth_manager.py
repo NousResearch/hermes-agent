@@ -408,6 +408,7 @@ class MCPOAuthManager:
         # Local imports avoid circular deps at module import time.
         from tools.mcp_oauth import (
             HermesTokenStorage,
+            OAuthNonInteractiveError,
             _OAUTH_AVAILABLE,
             _build_client_metadata,
             _configure_callback_port,
@@ -424,11 +425,12 @@ class MCPOAuthManager:
         storage = HermesTokenStorage(server_name)
 
         if not _is_interactive() and not storage.has_cached_tokens():
-            logger.warning(
-                "MCP OAuth for '%s': non-interactive environment and no "
-                "cached tokens found. Run interactively first to complete "
-                "initial authorization.",
-                server_name,
+            raise OAuthNonInteractiveError(
+                "MCP OAuth for "
+                f"'{server_name}': non-interactive environment and no "
+                "cached tokens found. Run `hermes mcp login "
+                f"{server_name}` interactively first to complete initial "
+                "authorization."
             )
 
         _configure_callback_port(cfg)

@@ -536,6 +536,69 @@ def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
         assert "reclaimed" not in kinds
 
 
+def test_stale_claim_with_live_pid_and_old_heartbeat_defers_to_stale_detector(
+    kanban_home, monkeypatch,
+):
+    """TTL expiry alone must not kill a live worker with an old heartbeat.
+
+    The dispatcher-level stale detector owns live-worker termination because
+    it also checks the configured task-age floor. ``release_stale_claims``
+    should only extend the live claim; once the task is old enough,
+    ``detect_stale_running`` can reclaim it with the same heartbeat snapshot.
+    """
+    import signal
+    import hermes_cli.kanban_db as _kb
+
+    now = int(time.time())
+    started_at = now - 7200
+    old_heartbeat = now - (_kb.DEFAULT_STALE_HEARTBEAT_GAP_SECONDS + 60)
+    old_expires = now - 60
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="old-heartbeat-live", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 12345)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, claim_expires = ?, "
+                "last_heartbeat_at = ? WHERE id = ?",
+                (started_at, old_expires, old_heartbeat, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ?, claim_expires = ? "
+                "WHERE task_id = ?",
+                (started_at, old_expires, t),
+            )
+
+        killed: list[tuple[int, int]] = []
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: not killed)
+        reclaimed = kb.release_stale_claims(
+            conn, signal_fn=lambda p, sig: killed.append((p, sig)),
+        )
+
+        assert reclaimed == 0
+        assert killed == []
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "running"
+        assert task.claim_expires is not None
+        assert task.claim_expires > old_expires
+
+        stale = kb.detect_stale_running(
+            conn,
+            stale_timeout_seconds=3600,
+            stale_heartbeat_gap_seconds=_kb.DEFAULT_STALE_HEARTBEAT_GAP_SECONDS,
+            signal_fn=lambda p, sig: killed.append((p, sig)),
+        )
+
+        assert stale == [t]
+        assert killed == [(12345, signal.SIGTERM)]
+        task = kb.get_task(conn, t)
+        assert task is not None
+        assert task.status == "ready"
+
+
 def test_stale_claim_with_live_pid_uses_env_ttl_override(
     kanban_home, monkeypatch,
 ):

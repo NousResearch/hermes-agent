@@ -666,8 +666,13 @@ def _patch_skill(
     }
 
 
-def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
-    """Delete a skill.
+def _delete_skill(
+    name: str,
+    absorbed_into: Optional[str] = None,
+    *,
+    archive: bool = False,
+) -> Dict[str, Any]:
+    """Delete or archive a skill.
 
     ``absorbed_into`` declares intent:
       - ``None`` / missing  → caller didn't declare (legacy / non-curator path);
@@ -706,6 +711,22 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
     skill_dir = existing["path"]
     skills_root = _containing_skills_root(skill_dir)
+
+    if archive:
+        from tools import skill_usage
+
+        ok, msg = skill_usage.archive_skill(name)
+        if not ok:
+            return {"success": False, "error": msg}
+        message = f"Skill '{name}' archived."
+        if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
+            message += f" Content absorbed into '{absorbed_into.strip()}'."
+        return {
+            "success": True,
+            "message": message,
+            "archive_path": msg.removeprefix("archived to "),
+        }
+
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove the skills root itself)
@@ -939,7 +960,12 @@ def skill_manage(
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
-        result = _delete_skill(name, absorbed_into=absorbed_into)
+        from tools.skill_provenance import is_background_review
+        result = _delete_skill(
+            name,
+            absorbed_into=absorbed_into,
+            archive=is_background_review(),
+        )
 
     elif action == "write_file":
         if not file_path:
@@ -976,7 +1002,7 @@ def skill_manage(
                     mark_agent_created(name)
             elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
-            elif action == "delete":
+            elif action == "delete" and not result.get("archive_path"):
                 forget(name)
         except Exception:
             pass

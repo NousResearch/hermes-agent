@@ -1762,6 +1762,11 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        # Reuse the background-review write origin so skill_manage mutations are
+        # treated as autonomous maintenance, not foreground user-directed edits.
+        # In particular, delete means recoverable archive for this review fork.
+        review_agent._memory_write_origin = "background_review"
+        review_agent._memory_write_context = "curator"
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

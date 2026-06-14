@@ -591,6 +591,7 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is True
         assert "absorbed into 'umbrella'" in result["message"]
+        assert not (tmp_path / "narrow").exists()
 
     def test_delete_via_dispatcher_rejects_missing_absorbed_target(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -599,6 +600,45 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is False
         assert "does not exist" in result["error"]
+
+    def test_delete_from_background_review_archives_instead_of_removing(
+        self, tmp_path, monkeypatch
+    ):
+        from tools.skill_provenance import (
+            BACKGROUND_REVIEW,
+            reset_current_write_origin,
+            set_current_write_origin,
+        )
+        from tools.skill_usage import load_usage
+
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        skills_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            with _skill_dir(skills_dir):
+                umbrella_content = VALID_SKILL_CONTENT.replace(
+                    "name: test-skill", "name: umbrella"
+                )
+                narrow_content = VALID_SKILL_CONTENT.replace(
+                    "name: test-skill", "name: narrow"
+                )
+                skill_manage(action="create", name="umbrella", content=umbrella_content)
+                skill_manage(action="create", name="narrow", content=narrow_content)
+                raw = skill_manage(action="delete", name="narrow", absorbed_into="umbrella")
+                usage = load_usage()
+        finally:
+            reset_current_write_origin(token)
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "archived" in result["message"]
+        assert "absorbed into 'umbrella'" in result["message"]
+        assert not (skills_dir / "narrow").exists()
+        assert (skills_dir / ".archive" / "narrow" / "SKILL.md").exists()
+        assert usage["narrow"]["state"] == "archived"
 
 
 class TestSecurityScanGate:

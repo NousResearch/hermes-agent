@@ -214,7 +214,11 @@ class A2AAdapter(BasePlatformAdapter):
         """
         text = protocol.extract_text(params)
         peer = str(params.get("peer") or (params.get("message", {}) or {}).get("from") or "remote-agent")
-        context_id = (params.get("message", {}) or {}).get("contextId") or protocol.new_context_id()
+        context_id = (
+            params.get("contextId")                                   # A2A spec: top-level in params
+            or (params.get("message", {}) or {}).get("contextId")    # legacy/non-standard placement
+            or protocol.new_context_id()
+        )
         task_id = protocol.new_task_id()
 
         if not text:

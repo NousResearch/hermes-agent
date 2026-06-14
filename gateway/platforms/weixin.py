@@ -1228,6 +1228,13 @@ class WeixinAdapter(BasePlatformAdapter):
         # timestamp to avoid resetting the iLink cooldown window. 0.0 = no cooldown.
         self._rate_limited_until: float = 0.0
 
+        # WeChat iLink typing keepalive interval — 5 s per protocol spec §7.2
+        # ("如果生成耗时较长，可以每 5 秒发送一次 status=1 作为 keepalive").
+        # The default 2 s (Telegram/Discord cadence) generates ~110 sendtyping
+        # calls during a 223 s agent run vs. ~44 at 5 s, a 2.5× reduction
+        # that avoids triggering iLink frequency limits (ret=-2).
+        self._typing_interval_seconds: float = 5.0
+
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:

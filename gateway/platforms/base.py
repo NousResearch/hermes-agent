@@ -1264,6 +1264,11 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        # Typing indicator refresh interval in seconds.  Platform-specific
+        # adapters override this to match their target platform's expectations:
+        #   - Telegram / Discord: 2s (typing status expires after ~5s)
+        #   - WeChat iLink:        5s (per protocol spec §7.2 recommendation)
+        self._typing_interval_seconds: float = 2.0
 
     @property
     def has_fatal_error(self) -> bool:
@@ -1963,7 +1968,7 @@ class BasePlatformAdapter(ABC):
     async def _keep_typing(
         self,
         chat_id: str,
-        interval: float = 2.0,
+        interval: float | None = None,
         metadata=None,
         stop_event: asyncio.Event | None = None,
     ) -> None:
@@ -1987,6 +1992,11 @@ class BasePlatformAdapter(ABC):
         one of them succeeds within the 5s platform-side window, the bubble
         stays visible across provider stalls / upstream API timeouts.
         """
+        # Resolve interval from adapter attribute when caller doesn't specify
+        # one.  This lets platform adapters set their own typing refresh
+        # cadence (e.g. WeChat iLink uses 5s per protocol spec §7.2).
+        if interval is None:
+            interval = getattr(self, '_typing_interval_seconds', 2.0)
         # Bound each send_typing round-trip so the refresh cadence isn't
         # gated on network health.  Must stay below ``interval`` so a slow
         # call gets abandoned before the next scheduled tick.

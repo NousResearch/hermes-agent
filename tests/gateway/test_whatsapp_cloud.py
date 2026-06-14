@@ -1129,7 +1129,34 @@ class TestSendDocument:
 
 
 class TestSendVoice:
-    """MP3 voice with ffmpeg present -> opus; without ffmpeg -> MP3 fallback."""
+    """Local non-Opus audio converts to Opus; fallback sends the original."""
+
+    @pytest.mark.parametrize("suffix", [".ogg", ".opus"])
+    @pytest.mark.asyncio
+    async def test_send_voice_native_opus_uploads_without_conversion(self, suffix):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_upload_response("voice_id"),
+            _mock_message_response(),
+        ])
+        adapter._convert_to_opus = AsyncMock()
+
+        path = _tmpfile(suffix, content=b"OggS")
+        try:
+            result = await adapter.send_voice("15551234567", path)
+            assert result.success is True
+            adapter._convert_to_opus.assert_not_awaited()
+
+            upload_files = adapter._http_client.post.call_args_list[0].kwargs["files"]
+            assert upload_files["file"][2] == "audio/ogg; codecs=opus"
+            assert upload_files["type"] == (None, "audio/ogg; codecs=opus")
+
+            send_payload = adapter._http_client.post.call_args_list[1].kwargs["json"]
+            assert send_payload["type"] == "audio"
+            assert send_payload["audio"]["id"] == "voice_id"
+        finally:
+            _os.unlink(path)
 
     @pytest.mark.asyncio
     async def test_send_voice_no_ffmpeg_falls_back_to_mp3(self):
@@ -1181,6 +1208,54 @@ class TestSendVoice:
                 _os.unlink(opus_path)
 
     @pytest.mark.asyncio
+    async def test_send_voice_wav_uses_opus_conversion(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_upload_response("voice_id"),
+            _mock_message_response(),
+        ])
+        # Pretend ffmpeg conversion succeeded by returning a fake Opus path.
+        opus_path = _tmpfile(".ogg", content=b"OggS")
+        adapter._convert_to_opus = AsyncMock(return_value=opus_path)
+
+        wav_path = _tmpfile(".wav", content=b"RIFF\x24\x00\x00\x00WAVE")
+        try:
+            result = await adapter.send_voice("15551234567", wav_path)
+            assert result.success is True
+            adapter._convert_to_opus.assert_awaited_once_with(wav_path)
+            upload_files = adapter._http_client.post.call_args_list[0].kwargs["files"]
+            assert upload_files["file"][0] == _os.path.basename(opus_path)
+            assert upload_files["file"][2] == "audio/ogg; codecs=opus"
+            send_payload = adapter._http_client.post.call_args_list[1].kwargs["json"]
+            assert send_payload["type"] == "audio"
+        finally:
+            _os.unlink(wav_path)
+            if _os.path.exists(opus_path):
+                _os.unlink(opus_path)
+
+    @pytest.mark.asyncio
+    async def test_send_voice_existing_ogg_uploads_as_opus_without_conversion(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_upload_response("voice_id"),
+            _mock_message_response(),
+        ])
+        adapter._convert_to_opus = AsyncMock()
+
+        ogg_path = _tmpfile(".ogg", content=b"OggS")
+        try:
+            result = await adapter.send_voice("15551234567", ogg_path)
+            assert result.success is True
+            adapter._convert_to_opus.assert_not_awaited()
+            upload_files = adapter._http_client.post.call_args_list[0].kwargs["files"]
+            assert upload_files["file"][0] == _os.path.basename(ogg_path)
+            assert upload_files["file"][2] == "audio/ogg; codecs=opus"
+        finally:
+            _os.unlink(ogg_path)
+
+    @pytest.mark.asyncio
     async def test_warn_once_no_ffmpeg_actually_only_warns_once(self):
         adapter = _make_adapter()
         adapter._warned_no_ffmpeg = False
@@ -1189,6 +1264,52 @@ class TestSendVoice:
         # Second call: no-op (we just verify no exception + flag stays True)
         adapter._warn_once_no_ffmpeg()
         assert adapter._warned_no_ffmpeg is True
+
+    @pytest.mark.asyncio
+    async def test_convert_to_opus_forces_whatsapp_voice_note_shape(self):
+        from pathlib import Path
+
+        from gateway.platforms import whatsapp_cloud as wac
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        adapter = _make_adapter()
+        source_path = _tmpfile(".wav", content=b"RIFF....WAVE")
+        captured_args = None
+
+        async def fake_create_subprocess_exec(*args, **_kwargs):
+            nonlocal captured_args
+            captured_args = args
+            Path(str(args[-1])).write_bytes(b"OggS")
+            return _Proc()
+
+        try:
+            with _patch.object(wac, "_FFMPEG_PATH", "ffmpeg"), _patch(
+                "gateway.platforms.whatsapp_cloud.asyncio.create_subprocess_exec",
+                new=fake_create_subprocess_exec,
+            ):
+                opus_path = await adapter._convert_to_opus(source_path)
+
+            assert opus_path is not None
+            args = captured_args
+            assert args is not None
+            assert args[0] == "ffmpeg"
+            assert args[3] == source_path
+            assert args[args.index("-ac") + 1] == "1"
+            assert args[args.index("-ar") + 1] == "48000"
+            assert args[args.index("-c:a") + 1] == "libopus"
+            assert args[args.index("-b:a") + 1] == "32k"
+            assert args[args.index("-vbr") + 1] == "on"
+            assert args[args.index("-application") + 1] == "voip"
+            assert args[-1] == opus_path
+        finally:
+            _os.unlink(source_path)
+            if "opus_path" in locals() and opus_path and _os.path.exists(opus_path):
+                _os.unlink(opus_path)
 
 
 # ---------------------------------------------------------------------------

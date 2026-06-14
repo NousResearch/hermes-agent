@@ -22,8 +22,9 @@ Custom command providers:
   See the Local Command section of ``website/docs/user-guide/features/tts.md``.
 
 Output formats:
-- Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
-- MP3 (.mp3) for everything else (CLI, Discord, WhatsApp)
+- Opus (.ogg/.opus) for native voice bubbles/notes on Telegram and WhatsApp
+  surfaces (requires ffmpeg for providers that only emit MP3/WAV)
+- MP3 (.mp3) for everything else (CLI, Discord)
 
 Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
 The user chooses the provider and voice; the model just sends text.
@@ -388,8 +389,11 @@ BUILTIN_TTS_PROVIDERS = frozenset({
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
-COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
+COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "opus", "flac"})
 DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
+OPUS_VOICE_PLATFORMS = frozenset({"telegram", "whatsapp", "whatsapp_cloud"})
+OGG_OPUS_EXTENSIONS = frozenset({".ogg", ".opus"})
+OGG_OPUS_SIGNATURE_SCAN_BYTES = 64 * 1024
 
 
 def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -600,7 +604,7 @@ def _get_command_tts_output_format(
     config: Dict[str, Any],
     output_path: Optional[str] = None,
 ) -> str:
-    """Return the validated output format (mp3/wav/ogg/flac)."""
+    """Return the validated output format (mp3/wav/ogg/opus/flac)."""
     if output_path:
         suffix = Path(output_path).suffix.lower().strip().lstrip(".")
         if suffix in COMMAND_TTS_OUTPUT_FORMATS:
@@ -620,6 +624,26 @@ def _is_command_tts_voice_compatible(config: Dict[str, Any]) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _wants_ogg_opus_output(path: str) -> bool:
+    """Return True when *path* asks for an Ogg/Opus container extension."""
+    return Path(path).suffix.lower() in OGG_OPUS_EXTENSIONS
+
+
+def _is_native_ogg_opus(path: str) -> bool:
+    """Return True when *path* is a non-empty Ogg container with Opus audio."""
+    file_path = Path(path)
+    if file_path.suffix.lower() not in OGG_OPUS_EXTENSIONS:
+        return False
+    try:
+        if file_path.stat().st_size <= 0:
+            return False
+        with file_path.open("rb") as f:
+            header = f.read(OGG_OPUS_SIGNATURE_SCAN_BYTES)
+    except OSError:
+        return False
+    return header.startswith(b"OggS") and b"OpusHead" in header
 
 
 def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
@@ -876,19 +900,19 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
 
 
 # ===========================================================================
-# ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
+# ffmpeg Opus conversion for voice-note platforms
 # ===========================================================================
 def _has_ffmpeg() -> bool:
     """Check if ffmpeg is available on the system."""
     return shutil.which("ffmpeg") is not None
 
 
-def _convert_to_opus(mp3_path: str) -> Optional[str]:
+def _convert_to_opus(audio_path: str) -> Optional[str]:
     """
-    Convert an MP3 file to OGG Opus format for Telegram voice bubbles.
+    Convert an audio file to OGG Opus format for voice bubbles.
 
     Args:
-        mp3_path: Path to the input MP3 file.
+        audio_path: Path to the input audio file.
 
     Returns:
         Path to the .ogg file, or None if conversion fails.
@@ -896,11 +920,20 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     if not _has_ffmpeg():
         return None
 
-    ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+    source = Path(audio_path)
+    ogg_path = str(source.with_suffix(".ogg"))
+    if os.path.abspath(ogg_path) == os.path.abspath(audio_path):
+        ogg_path = str(source.with_name(f"{source.stem}.opus.ogg"))
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
-             "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
+            [
+                "ffmpeg", "-i", audio_path,
+                "-acodec", "libopus",
+                "-ac", "1", "-ar", "48000",
+                "-b:a", "64k", "-vbr", "off",
+                "-application", "voip",
+                ogg_path, "-y",
+            ],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
         )
@@ -908,7 +941,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
             logger.warning("ffmpeg conversion failed with return code %d: %s", 
                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
             return None
-        if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
+        if _is_native_ogg_opus(ogg_path):
             return ogg_path
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg OGG conversion timed out after 30s")
@@ -916,6 +949,16 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
         logger.warning("ffmpeg not found in PATH")
     except Exception as e:
         logger.warning("ffmpeg OGG conversion failed: %s", e, exc_info=True)
+    return None
+
+
+def _ensure_ogg_opus_voice_file(audio_path: str) -> Optional[str]:
+    """Return a verified Ogg/Opus file path, converting when needed."""
+    if _is_native_ogg_opus(audio_path):
+        return audio_path
+    opus_path = _convert_to_opus(audio_path)
+    if opus_path and _is_native_ogg_opus(opus_path):
+        return opus_path
     return None
 
 
@@ -973,7 +1016,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
     # Determine output format based on file extension
-    if output_path.endswith(".ogg"):
+    if _wants_ogg_opus_output(output_path):
         output_format = "opus_48000_64"
     else:
         output_format = "mp3_44100_128"
@@ -1019,7 +1062,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
     # Determine response format from extension
-    if output_path.endswith(".ogg"):
+    if _wants_ogg_opus_output(output_path):
         response_format = "opus"
     else:
         response_format = "mp3"
@@ -1332,7 +1375,7 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
     model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
     voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
 
-    if output_path.endswith(".ogg"):
+    if _wants_ogg_opus_output(output_path):
         response_format = "opus"
     elif output_path.endswith(".wav"):
         response_format = "wav"
@@ -1565,7 +1608,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Args:
         text: Text to convert (prompt-style; supports inline direction like
               "Say cheerfully:" and audio tags like [whispers]).
-        output_path: Where to save the audio file (.wav, .mp3, or .ogg).
+        output_path: Where to save the audio file (.wav, .mp3, .ogg, or .opus).
         tts_config: TTS config dict.
 
     Returns:
@@ -1660,7 +1703,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         return output_path
 
     # Otherwise write WAV to a temp file and ffmpeg-convert to the target
-    # format (.mp3 or .ogg). If ffmpeg is missing, fall back to renaming the
+    # format (.mp3, .ogg, or .opus). If ffmpeg is missing, fall back to renaming the
     # WAV -- this matches the NeuTTS behavior and keeps the tool usable on
     # systems without ffmpeg (audio still plays, just with a misleading
     # extension).
@@ -1673,7 +1716,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         if ffmpeg:
             # For .ogg output, force libopus encoding (Telegram voice bubbles
             # require Opus specifically; ffmpeg's default for .ogg is Vorbis).
-            if output_path.lower().endswith(".ogg"):
+            if _wants_ogg_opus_output(output_path):
                 cmd = [
                     ffmpeg, "-i", wav_path,
                     "-acodec", "libopus", "-ac", "1",
@@ -2059,12 +2102,13 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
+    # Telegram voice bubbles and WhatsApp voice notes require Opus (.ogg/.opus).
+    # OpenAI, ElevenLabs, Mistral, and Gemini can produce Opus natively
+    # (no ffmpeg needed). Edge TTS always outputs MP3 and needs ffmpeg
+    # for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    want_opus = platform in OPUS_VOICE_PLATFORMS
 
     # Determine output path
     if output_path:
@@ -2265,11 +2309,10 @@ def text_to_speech_tool(
             # delivery only kicks in when the user explicitly opts in
             # via ``voice_compatible: true`` in their provider config.
             if _is_command_tts_voice_compatible(command_provider_config):
-                if not file_str.endswith(".ogg"):
-                    opus_path = _convert_to_opus(file_str)
-                    if opus_path:
-                        file_str = opus_path
-                voice_compatible = file_str.endswith(".ogg")
+                opus_path = _ensure_ogg_opus_voice_file(file_str)
+                if opus_path:
+                    file_str = opus_path
+                    voice_compatible = True
         elif provider not in BUILTIN_TTS_PROVIDERS:
             # Plugin-registered provider (issue #30398). Voice-bubble
             # delivery opts in via ``TTSProvider.voice_compatible``
@@ -2277,22 +2320,20 @@ def text_to_speech_tool(
             # already write Opus skip the ffmpeg conversion.
             plugin_voice_compatible = _plugin_provider_is_voice_compatible(provider)
             if plugin_voice_compatible:
-                if not file_str.endswith(".ogg"):
-                    opus_path = _convert_to_opus(file_str)
-                    if opus_path:
-                        file_str = opus_path
-                voice_compatible = file_str.endswith(".ogg")
+                opus_path = _ensure_ogg_opus_voice_file(file_str)
+                if opus_path:
+                    file_str = opus_path
+                    voice_compatible = True
         elif (
             want_opus
             and provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"}
-            and not file_str.endswith(".ogg")
         ):
-            opus_path = _convert_to_opus(file_str)
+            opus_path = _ensure_ogg_opus_voice_file(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
         elif provider in {"elevenlabs", "openai", "mistral", "gemini"}:
-            voice_compatible = want_opus and file_str.endswith(".ogg")
+            voice_compatible = want_opus and _is_native_ogg_opus(file_str)
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
@@ -2702,7 +2743,7 @@ from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",
-    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble on Telegram; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
+    "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as native audio. Compatible providers render as a voice bubble/note on Telegram and WhatsApp; otherwise audio is sent as a regular attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured (built-in providers like edge/openai or custom command providers under tts.providers.<name>), not model-selected.",
     "parameters": {
         "type": "object",
         "properties": {

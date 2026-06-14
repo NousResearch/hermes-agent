@@ -33,6 +33,7 @@ from tools.tts_tool import (
     _has_any_command_tts_provider,
     _is_command_provider_config,
     _is_command_tts_voice_compatible,
+    _is_native_ogg_opus,
     _iter_command_providers,
     _render_command_tts_template,
     _resolve_command_provider_config,
@@ -47,6 +48,9 @@ from tools.tts_tool import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+OPUS_OGG_BYTES = b"OggS\x00\x02" + (b"\x00" * 20) + b"OpusHead" + (b"\x00" * 16)
+
+
 def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
     """Return a cross-platform shell command that copies {input_path} -> output."""
     interpreter = sys.executable
@@ -54,6 +58,19 @@ def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
         f'"{interpreter}" -c "import shutil, sys; '
         f'shutil.copyfile(sys.argv[1], sys.argv[2])" '
         f'{{input_path}} {output_placeholder}'
+    )
+
+
+def _python_write_bytes_command(
+    payload: bytes,
+    output_placeholder: str = "{output_path}",
+) -> str:
+    """Return a command that writes fixed bytes to {output_path}."""
+    interpreter = sys.executable
+    return (
+        f'"{interpreter}" -c "from pathlib import Path; import sys; '
+        f'Path(sys.argv[1]).write_bytes(bytes.fromhex(sys.argv[2]))" '
+        f'{output_placeholder} {payload.hex()}'
     )
 
 
@@ -197,14 +214,20 @@ class TestConfigGetters:
     def test_output_format_path_override(self):
         assert _get_command_tts_output_format({}, "/tmp/clip.wav") == "wav"
 
+    def test_output_format_path_override_opus(self):
+        assert _get_command_tts_output_format({}, "/tmp/clip.opus") == "opus"
+
     def test_output_format_unknown_path_falls_back_to_config(self):
         assert _get_command_tts_output_format({"format": "ogg"}, "/tmp/clip.xyz") == "ogg"
+
+    def test_output_format_accepts_opus(self):
+        assert _get_command_tts_output_format({"format": "opus"}) == "opus"
 
     def test_output_format_rejects_unknown(self):
         assert _get_command_tts_output_format({"format": "m4a"}) == DEFAULT_COMMAND_TTS_OUTPUT_FORMAT
 
     def test_output_format_supported_set(self):
-        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset({"mp3", "wav", "ogg", "flac"})
+        assert COMMAND_TTS_OUTPUT_FORMATS == frozenset({"mp3", "wav", "ogg", "opus", "flac"})
 
     def test_voice_compatible_boolean(self):
         assert _is_command_tts_voice_compatible({"voice_compatible": True}) is True
@@ -452,13 +475,13 @@ class TestTextToSpeechToolWithCommandProvider:
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the
-        file is already .ogg (no ffmpeg needed)."""
+        file is already Ogg/Opus (no ffmpeg needed)."""
         cfg = {
             "provider": "py-copy-ogg",
             "providers": {
                 "py-copy-ogg": {
                     "type": "command",
-                    "command": _python_copy_command(),
+                    "command": _python_write_bytes_command(OPUS_OGG_BYTES),
                     "output_format": "ogg",
                     "voice_compatible": True,
                 },
@@ -471,7 +494,55 @@ class TestTextToSpeechToolWithCommandProvider:
         data = json.loads(result)
         assert data["success"] is True
         assert data["voice_compatible"] is True
+        assert _is_native_ogg_opus(data["file_path"]) is True
         assert data["media_tag"].startswith("[[audio_as_voice]]")
+
+    def test_voice_compatible_opt_in_accepts_opus_extension(self, tmp_path):
+        cfg = {
+            "provider": "py-opus",
+            "providers": {
+                "py-opus": {
+                    "type": "command",
+                    "command": _python_write_bytes_command(OPUS_OGG_BYTES),
+                    "output_format": "opus",
+                    "voice_compatible": True,
+                },
+            },
+        }
+        out = tmp_path / "clip"
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(text="hi", output_path=str(out))
+        data = json.loads(result)
+        opus_path = tmp_path / "clip.opus"
+        assert data["success"] is True
+        assert data["file_path"] == str(opus_path)
+        assert data["voice_compatible"] is True
+        assert data["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus_path}"
+
+    def test_voice_compatible_opt_in_rejects_fake_ogg(self, tmp_path):
+        cfg = {
+            "provider": "py-fake-ogg",
+            "providers": {
+                "py-fake-ogg": {
+                    "type": "command",
+                    "command": _python_write_bytes_command(b"not opus"),
+                    "output_format": "ogg",
+                    "voice_compatible": True,
+                },
+            },
+        }
+        out = tmp_path / "clip.ogg"
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg), \
+             patch("tools.tts_tool._convert_to_opus", return_value=None) as convert:
+            result = text_to_speech_tool(text="hi", output_path=str(out))
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["file_path"] == str(out)
+        assert data["voice_compatible"] is False
+        assert data["media_tag"] == f"MEDIA:{out}"
+        convert.assert_called_once_with(str(out))
 
     def test_missing_command_falls_through_to_builtin(self, tmp_path):
         """A provider entry with an empty command is not a command

@@ -1,6 +1,7 @@
 """Tests for the Google Gemini TTS provider in tools/tts_tool.py."""
 
 import base64
+import subprocess
 import struct
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -114,6 +115,29 @@ class TestGenerateGeminiTts:
         assert data[8:12] == b"WAVE"
         # Audio payload should match the PCM we put in
         assert data[44:] == fake_pcm_bytes
+
+    def test_opus_output_uses_libopus_ffmpeg(
+        self, tmp_path, monkeypatch, mock_gemini_response
+    ):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output_path = str(tmp_path / "test.opus")
+        seen_cmd: list[str] = []
+
+        def fake_run(cmd, **_kwargs):
+            seen_cmd[:] = cmd
+            (tmp_path / "test.opus").write_bytes(b"OggS\x00\x02OpusHead")
+            return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        with patch("requests.post", return_value=mock_gemini_response), \
+             patch("tools.tts_tool.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             patch("tools.tts_tool.subprocess.run", side_effect=fake_run):
+            result = _generate_gemini_tts("Hi", output_path, {})
+
+        assert result == output_path
+        assert "-acodec" in seen_cmd
+        assert "libopus" in seen_cmd
 
     def test_default_voice_and_model(self, tmp_path, monkeypatch, mock_gemini_response):
         from tools.tts_tool import (

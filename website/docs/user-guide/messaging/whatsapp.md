@@ -225,6 +225,32 @@ gateway:
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
+### Outgoing Message Bubbles
+
+By default Hermes sends the final assistant reply as one WhatsApp message, only chunking when it exceeds WhatsApp's message length limit. Group-chat personas sometimes read more naturally when one model reply becomes several short WhatsApp bubbles. Opt into blank-line splitting via `config.yaml`:
+
+```yaml
+# ~/.hermes/config.yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        split_outgoing_on_blank_lines: true
+        split_outgoing_delay_seconds: 0.7
+        split_outgoing_max_parts: 4
+```
+
+When enabled, single newlines stay inside one bubble, while blank lines split the reply into separate sends:
+
+```text
+Got it, checking now.
+
+I'll send an update
+when it is ready.
+```
+
+This sends two messages: `Got it, checking now.`, then `I'll send an update\nwhen it is ready.`. The setting is opt-in per WhatsApp profile; other profiles keep the default single-message behavior.
+
 ---
 
 ## Troubleshooting

@@ -33,6 +33,9 @@ def _make_adapter():
     adapter._bridge_log = None
     adapter._bridge_process = None
     adapter._reply_prefix = None
+    adapter._split_outgoing_on_blank_lines = False
+    adapter._split_outgoing_delay_seconds = 0
+    adapter._split_outgoing_max_parts = 4
     adapter._running = True
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -296,6 +299,53 @@ class TestSendChunking:
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Not connected" in result.error
+
+    @pytest.mark.asyncio
+    async def test_blank_line_split_is_opt_in(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "one\n\ntwo")
+
+        assert result.success
+        assert adapter._http_session.post.call_count == 1
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["message"] == "one\n\ntwo"
+
+    @pytest.mark.asyncio
+    async def test_blank_line_split_sends_separate_bubbles_when_enabled(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "one\n\ntwo\nthree")
+
+        assert result.success
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == ["one", "two\nthree"]
+
+    @pytest.mark.asyncio
+    async def test_blank_line_split_respects_max_parts(self):
+        adapter = _make_adapter()
+        adapter._split_outgoing_on_blank_lines = True
+        adapter._split_outgoing_max_parts = 3
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "one\n\ntwo\n\nthree\n\nfour")
+
+        assert result.success
+        payloads = [call.kwargs["json"] for call in adapter._http_session.post.call_args_list]
+        assert [payload["message"] for payload in payloads] == [
+            "one",
+            "two",
+            "three\n\nfour",
+        ]
 
 
 # ---------------------------------------------------------------------------

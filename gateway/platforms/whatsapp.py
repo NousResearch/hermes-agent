@@ -19,6 +19,7 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -274,6 +275,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        self._split_outgoing_on_blank_lines = str(
+            config.extra.get("split_outgoing_on_blank_lines", "false")
+        ).strip().lower() in {"true", "1", "yes", "on"}
+        self._split_outgoing_delay_seconds = self._coerce_float_extra(
+            "split_outgoing_delay_seconds", 0.6
+        )
+        try:
+            self._split_outgoing_max_parts = int(
+                config.extra.get("split_outgoing_max_parts", 4)
+            )
+        except (TypeError, ValueError):
+            self._split_outgoing_max_parts = 4
         self._dm_policy = str(config.extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")).strip().lower()
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
@@ -723,7 +736,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Format and chunk the message
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            chunks = []
+            for part in self._outgoing_message_parts(formatted):
+                chunks.extend(self.truncate_message(part, self._outgoing_chunk_limit()))
 
             last_message_id = None
             for chunk in chunks:
@@ -749,7 +764,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
                 # Small delay between chunks to avoid rate limiting
                 if len(chunks) > 1:
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(self._split_outgoing_delay_seconds)
 
             return SendResult(
                 success=True,
@@ -757,6 +772,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
+
+    def _outgoing_message_parts(self, formatted: str) -> list[str]:
+        """Split an outgoing WhatsApp reply into chat-bubble-sized parts.
+
+        This is opt-in because many WhatsApp bots prefer one coherent message,
+        while group-chat personas often read more naturally as several short
+        bubbles. Blank lines are the delimiter so prompts can control the
+        rhythm without introducing a visible platform-specific syntax.
+        """
+        if not self._split_outgoing_on_blank_lines:
+            return [formatted]
+        parts = [part.strip() for part in re.split(r"\n\s*\n+", formatted) if part.strip()]
+        if len(parts) <= 1:
+            return [formatted]
+        max_parts = self._split_outgoing_max_parts
+        if max_parts > 0 and len(parts) > max_parts:
+            return parts[: max_parts - 1] + ["\n\n".join(parts[max_parts - 1 :])]
+        return parts
 
     async def edit_message(
         self,

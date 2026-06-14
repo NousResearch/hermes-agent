@@ -1,7 +1,7 @@
 {
   "id": "task-009",
   "title": "Map Hermes OS tasks to agent kinds",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 4 - Agent Registry",
   "summary": "Map Hermes OS task categories to official runtime agent kinds without forcing all tasks through the runtime.",

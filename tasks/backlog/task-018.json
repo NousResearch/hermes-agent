@@ -1,7 +1,7 @@
 {
   "id": "task-018",
   "title": "Design long-running workflow orchestration",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 9 - Long-Running Workflows",
   "summary": "Design long-running Hermes OS workflows that use the official runtime for worker execution.",

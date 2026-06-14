@@ -1,7 +1,7 @@
 {
   "id": "task-001",
   "title": "Verify standalone Hermes Agent runtime",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 1 - Standalone Runtime",
   "summary": "Verify the official Hermes Agent runtime starts and operates independently from Hermes OS.",

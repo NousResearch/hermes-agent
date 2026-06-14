@@ -1,7 +1,7 @@
 {
   "id": "task-016",
   "title": "Design dashboard runtime status panels",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Phase 8 - Dashboard",
   "summary": "Design Hermes OS dashboard panels for official runtime status, agent usage, and delegation metrics.",

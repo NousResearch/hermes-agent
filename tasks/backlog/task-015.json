@@ -1,7 +1,7 @@
 {
   "id": "task-015",
   "title": "Build MCP adapter prototype",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Phase 7 - MCP Integration",
   "summary": "Build a prototype MCP adapter that exposes one controlled tool capability to the official runtime.",

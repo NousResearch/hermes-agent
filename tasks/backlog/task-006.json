@@ -1,7 +1,7 @@
 {
   "id": "task-006",
   "title": "Add validated integration schemas",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 3 - Contracts",
   "summary": "Add typed schemas for all Hermes OS to Hermes Agent integration messages.",

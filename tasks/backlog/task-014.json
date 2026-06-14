@@ -1,7 +1,7 @@
 {
   "id": "task-014",
   "title": "Design MCP permission bridge",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 7 - MCP Integration",
   "summary": "Design how Hermes OS grants MCP/tool permissions to official runtime workers.",

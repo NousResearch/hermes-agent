@@ -1,7 +1,7 @@
 {
   "id": "task-019",
   "title": "Build checkpointed workflow prototype",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 9 - Long-Running Workflows",
   "summary": "Build a prototype checkpointed workflow using official runtime workers for at least two steps.",

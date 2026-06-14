@@ -1,7 +1,7 @@
 {
   "id": "task-012",
   "title": "Define memory boundary",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 6 - Memory Boundary",
   "summary": "Define how Hermes OS memory and official runtime memory coexist without source-of-truth conflicts.",

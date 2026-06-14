@@ -1,7 +1,7 @@
 {
   "id": "task-011",
   "title": "Build delegation prototype",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 5 - Delegation",
   "summary": "Build a minimal delegation prototype that routes one Hermes OS task to the official runtime and stores the result.",

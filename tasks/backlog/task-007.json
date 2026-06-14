@@ -1,7 +1,7 @@
 {
   "id": "task-007",
   "title": "Add adapter error taxonomy",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Phase 3 - Contracts",
   "summary": "Define standard error codes for runtime, validation, timeout, permission, and tool failures.",

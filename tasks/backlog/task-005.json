@@ -1,7 +1,7 @@
 {
   "id": "task-005",
   "title": "Build runtime wrapper prototype",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 2 - Runtime Wrapper",
   "summary": "Build a thin wrapper that launches official Hermes Agent and captures structured output for Hermes OS.",

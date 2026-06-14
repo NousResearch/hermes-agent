@@ -1,7 +1,7 @@
 {
   "id": "task-002",
   "title": "Create hermes-agent launcher",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 1 - Standalone Runtime",
   "summary": "Create a non-conflicting launcher named hermes-agent for the official runtime.",

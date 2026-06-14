@@ -1,7 +1,7 @@
 {
   "id": "task-020",
   "title": "Define Kalshi research agent architecture",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Phase 10 - Kalshi Research",
   "summary": "Define the long-term Kalshi research architecture using official runtime worker agents under Hermes OS.",

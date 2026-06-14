@@ -1,7 +1,7 @@
 {
   "id": "task-013",
   "title": "Add memory sync guardrails",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Phase 6 - Memory Boundary",
   "summary": "Add guardrails that prevent runtime memory from overwriting Hermes OS project state.",

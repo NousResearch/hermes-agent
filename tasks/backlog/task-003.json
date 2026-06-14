@@ -1,7 +1,7 @@
 {
   "id": "task-003",
   "title": "Document command ownership",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Phase 1 - Standalone Runtime",
   "summary": "Document the command boundary between Hermes OS and official Hermes Agent.",

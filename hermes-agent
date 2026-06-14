@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+  exec "${REPO_ROOT}/.venv/bin/python" "${REPO_ROOT}/hermes" "$@"
+elif command -v python3.13 >/dev/null 2>&1; then
+  exec python3.13 "${REPO_ROOT}/hermes" "$@"
+elif command -v python3.12 >/dev/null 2>&1; then
+  exec python3.12 "${REPO_ROOT}/hermes" "$@"
+elif command -v python3.11 >/dev/null 2>&1; then
+  exec python3.11 "${REPO_ROOT}/hermes" "$@"
+fi
+
+echo "hermes-agent requires Python 3.11 or newer. Install Python 3.11+ or run setup-hermes.sh." >&2
+exit 127

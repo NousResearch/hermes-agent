@@ -223,16 +223,40 @@ def configure_tts_provider(
     provider_name: str,
     provider: dict[str, Any],
 ) -> dict[str, Any]:
-    from ruamel.yaml import YAML
-
-    yaml = YAML()
-    yaml.default_flow_style = False
-
     if config_path.exists():
-        with config_path.open("r", encoding="utf-8") as handle:
-            data = yaml.load(handle) or {}
+        text = config_path.read_text(encoding="utf-8")
     else:
-        data = {}
+        text = ""
+
+    try:
+        from ruamel.yaml import YAML
+    except ModuleNotFoundError:
+        try:
+            import yaml
+        except ModuleNotFoundError as exc:
+            raise SystemExit(
+                "updating Hermes config requires PyYAML or ruamel.yaml; "
+                "rerun without --configure-tts or install one of those packages"
+            ) from exc
+
+        data = yaml.safe_load(text) if text.strip() else {}
+
+        def dump_yaml(value: dict[str, Any], handle: Any) -> None:
+            yaml.safe_dump(
+                value,
+                handle,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+    else:
+        yaml = YAML()
+        yaml.default_flow_style = False
+        data = yaml.load(text) if text.strip() else {}
+
+        def dump_yaml(value: dict[str, Any], handle: Any) -> None:
+            yaml.dump(value, handle)
+
+    data = data or {}
 
     if not isinstance(data, dict):
         raise SystemExit(f"Hermes config root must be a mapping: {config_path}")
@@ -250,7 +274,7 @@ def configure_tts_provider(
     providers[provider_name] = provider
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with config_path.open("w", encoding="utf-8") as handle:
-        yaml.dump(data, handle)
+        dump_yaml(data, handle)
 
     return {
         "path": str(config_path),

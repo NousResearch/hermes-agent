@@ -1,9 +1,11 @@
+import builtins
 import importlib.util
 import json
 from pathlib import Path
 import sys
 
 from ruamel.yaml import YAML
+import yaml
 
 
 SCRIPT_PATH = (
@@ -152,6 +154,42 @@ def test_configure_tts_provider_writes_voice_compatible_ogg_provider(tmp_path: P
     )
     assert configured["output_format"] == "ogg"
     assert configured["voice_compatible"] is True
+
+
+def test_configure_tts_provider_falls_back_to_pyyaml(
+    tmp_path: Path,
+    monkeypatch,
+):
+    script = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("gateway:\n  enabled: true\n", encoding="utf-8")
+    provider = script.build_tts_provider(
+        voice_bin="/home/user/.local/bin/voice",
+        voice="af_heart",
+        speed="1.0",
+        timeout=180,
+        max_text_length=2000,
+    )
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "ruamel.yaml":
+            raise ModuleNotFoundError("No module named 'ruamel'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    result = script.configure_tts_provider(
+        config_path=config_path,
+        provider_name="kokoro",
+        provider=provider,
+    )
+
+    parsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert result["provider"] == "kokoro"
+    assert parsed["gateway"]["enabled"] is True
+    assert parsed["tts"]["providers"]["kokoro"]["output_format"] == "ogg"
+    assert parsed["tts"]["providers"]["kokoro"]["voice_compatible"] is True
 
 
 def test_apply_without_systemctl_writes_files_and_config(

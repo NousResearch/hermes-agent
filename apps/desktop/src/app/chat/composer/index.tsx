@@ -231,6 +231,21 @@ export function ChatBar({
   const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
 
+  const safeSetComposerText = useCallback(
+    (text: string) => {
+      try {
+        aui.composer().setText(text)
+      } catch (error) {
+        // assistant-ui can briefly unmount the composer during route/profile
+        // swaps or edit-mode transitions. The Hermes composer keeps its own
+        // DOM + draft refs, so losing this transient mirror update must not
+        // abort submit/restore paths and leave the chat waiting forever.
+        console.warn('[hermes] composer text mirror unavailable', error)
+      }
+    },
+    [aui]
+  )
+
   const narrow = useMediaQuery('(max-width: 30rem)')
 
   const { availableThemes, themeName } = useTheme()
@@ -320,7 +335,7 @@ export function ChatBar({
       const next = `${base}${sep}${value}`
 
       draftRef.current = next
-      aui.composer().setText(next)
+      safeSetComposerText(next)
 
       const editor = editorRef.current
 
@@ -488,7 +503,7 @@ export function ChatBar({
     const nextDraft = `${currentDraft}${sep}${text}`
 
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    safeSetComposerText(nextDraft)
 
     // Push the new text into the contentEditable editor directly. Setting the
     // assistant-ui composer state alone is not enough: the draft→editor sync
@@ -521,7 +536,7 @@ export function ChatBar({
     }
 
     draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    safeSetComposerText(nextDraft)
     requestMainFocus()
 
     return true
@@ -607,7 +622,7 @@ export function ChatBar({
 
     if (nextDraft !== draftRef.current) {
       draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      safeSetComposerText(nextDraft)
     }
 
     window.setTimeout(refreshTrigger, 0)
@@ -733,7 +748,7 @@ export function ChatBar({
       renderComposerContents(editor, prefix)
       placeCaretEnd(editor)
       draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      safeSetComposerText(draftRef.current)
       closeTrigger()
       runAction()
       requestMainFocus()
@@ -761,7 +776,7 @@ export function ChatBar({
 
     const finish = () => {
       draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      safeSetComposerText(draftRef.current)
       requestMainFocus()
       keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
@@ -1197,7 +1212,7 @@ export function ChatBar({
   }
 
   const clearDraft = useCallback(() => {
-    aui.composer().setText('')
+    safeSetComposerText('')
     draftRef.current = ''
 
     if (editorRef.current) {
@@ -1207,7 +1222,7 @@ export function ChatBar({
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     draftRef.current = text
-    aui.composer().setText(text)
+    safeSetComposerText(text)
     $composerAttachments.set(cloneAttachments(attachments))
 
     const editor = editorRef.current
@@ -1580,7 +1595,7 @@ export function ChatBar({
 
       if (domText !== draftRef.current) {
         draftRef.current = domText
-        aui.composer().setText(domText)
+        safeSetComposerText(domText)
       }
     }
 

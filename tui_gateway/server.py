@@ -1971,6 +1971,24 @@ def _save_cfg(cfg: dict):
             _cfg_mtime = None
 
 
+def _config_home_for_params(params: dict | None = None) -> Path:
+    params = params or {}
+    session = _sessions.get(params.get("session_id") or "")
+    profile_home = session.get("profile_home") if session else None
+    return Path(profile_home) if profile_home else _hermes_home
+
+
+def _load_cfg_for_params(params: dict | None = None) -> dict:
+    home = _config_home_for_params(params)
+    if home == _hermes_home:
+        return _load_cfg()
+    token = set_hermes_home_override(str(home))
+    try:
+        return _load_cfg()
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _cwd_for_session_key(session_key: str) -> str:
     """Reverse-map session_key to the session's logical cwd.
 
@@ -11305,7 +11323,7 @@ def _(rid, params: dict) -> dict:
         cwd = _completion_cwd({"cwd": raw} if raw else {})
         return _ok(rid, {"cwd": cwd, "branch": _git_branch_for_cwd(cwd)})
     if key == "full":
-        return _ok(rid, {"config": _load_cfg()})
+        return _ok(rid, {"config": _load_cfg_for_params(params)})
     if key == "prompt":
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":
@@ -11423,7 +11441,7 @@ def _(rid, params: dict) -> dict:
         display = _load_cfg().get("display")
         return _ok(rid, {"value": _display_mouse_tracking(display)})
     if key == "mtime":
-        cfg_path = _hermes_home / "config.yaml"
+        cfg_path = _config_home_for_params(params) / "config.yaml"
         try:
             return _ok(
                 rid, {"mtime": cfg_path.stat().st_mtime if cfg_path.exists() else 0}

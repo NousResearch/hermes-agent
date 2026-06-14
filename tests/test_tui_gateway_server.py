@@ -1854,6 +1854,60 @@ def _session(agent=None, **extra):
     }
 
 
+def test_config_get_full_uses_session_profile_home(monkeypatch, tmp_path):
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profile-home"
+    launch_home.mkdir()
+    profile_home.mkdir()
+    (launch_home / "config.yaml").write_text(
+        "display:\n  tui_compact: false\n", encoding="utf-8"
+    )
+    (profile_home / "config.yaml").write_text(
+        "display:\n  tui_compact: true\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+    server._sessions["cfg-profile"] = _session(profile_home=str(profile_home))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.get",
+            "params": {"key": "full", "session_id": "cfg-profile"},
+        }
+    )
+
+    assert resp["result"]["config"]["display"]["tui_compact"] is True
+
+
+def test_config_get_mtime_uses_session_profile_home(monkeypatch, tmp_path):
+    launch_home = tmp_path / "launch-home"
+    profile_home = tmp_path / "profile-home"
+    launch_home.mkdir()
+    profile_home.mkdir()
+    launch_cfg = launch_home / "config.yaml"
+    profile_cfg = profile_home / "config.yaml"
+    launch_cfg.write_text("display:\n  tui_compact: false\n", encoding="utf-8")
+    profile_cfg.write_text("display:\n  tui_compact: true\n", encoding="utf-8")
+    profile_mtime = launch_cfg.stat().st_mtime + 10
+    os.utime(profile_cfg, (profile_mtime, profile_mtime))
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    server._sessions["cfg-mtime"] = _session(profile_home=str(profile_home))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.get",
+            "params": {"key": "mtime", "session_id": "cfg-mtime"},
+        }
+    )
+
+    assert resp["result"]["mtime"] == profile_cfg.stat().st_mtime
+    assert resp["result"]["mtime"] != launch_cfg.stat().st_mtime
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

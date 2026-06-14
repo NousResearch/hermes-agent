@@ -1913,6 +1913,51 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_includes_local_validation_traceback(monkeypatch, tmp_path):
+    """Local TypeError/ValueError dumps should preserve the failing call site."""
+    import json
+
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    def _raise_adapter_type_error():
+        raise TypeError("adapter response shape broke")
+
+    try:
+        _raise_adapter_type_error()
+    except TypeError as exc:
+        dump_file = agent._dump_api_request_debug(
+            _codex_request_kwargs(),
+            reason="non_retryable_client_error",
+            error=exc,
+        )
+
+    payload = json.loads(dump_file.read_text())
+    traceback_lines = payload["error"]["traceback"]
+    assert payload["error"]["type"] == "TypeError"
+    assert any("_raise_adapter_type_error" in line for line in traceback_lines)
+    assert any("adapter response shape broke" in line for line in traceback_lines)
+
+
+def test_dump_api_request_debug_skips_retryable_decode_traceback(monkeypatch, tmp_path):
+    """JSON decode failures stay compact because they remain retryable transport errors."""
+    import json
+
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    error = json.JSONDecodeError("bad json", "<html>", 0)
+
+    dump_file = agent._dump_api_request_debug(
+        _codex_request_kwargs(),
+        reason="retryable_error",
+        error=error,
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["error"]["type"] == "JSONDecodeError"
+    assert "traceback" not in payload["error"]
+
+
 # --- Reasoning-only response tests (fix for empty content retry loop) ---
 
 

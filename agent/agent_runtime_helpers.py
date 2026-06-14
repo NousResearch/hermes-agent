@@ -26,7 +26,9 @@ import copy
 import json
 import logging
 import re
+import ssl
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,6 +42,19 @@ from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+
+def should_capture_local_validation_traceback(error: BaseException) -> bool:
+    """Return True when a local validation failure needs traceback context."""
+    return (
+        isinstance(error, (ValueError, TypeError))
+        and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError, ssl.SSLError))
+        and not (
+            isinstance(error, TypeError)
+            and "nonetype" in str(error).lower()
+            and "not iterable" in str(error).lower()
+        )
+    )
 
 
 def _ra():
@@ -1196,6 +1211,10 @@ def dump_api_request_debug(
                 "type": type(error).__name__,
                 "message": str(error),
             }
+            if should_capture_local_validation_traceback(error):
+                error_info["traceback"] = traceback.format_exception(
+                    type(error), error, error.__traceback__,
+                )
             for attr_name in ("status_code", "request_id", "code", "param", "type"):
                 attr_value = getattr(error, attr_name, None)
                 if attr_value is not None:
@@ -2579,6 +2598,7 @@ __all__ = [
     "restore_primary_runtime",
     "extract_reasoning",
     "dump_api_request_debug",
+    "should_capture_local_validation_traceback",
     "anthropic_prompt_cache_policy",
     "create_openai_client",
     "switch_model",

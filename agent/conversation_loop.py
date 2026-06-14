@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.agent_runtime_helpers import should_capture_local_validation_traceback
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -2550,6 +2551,7 @@ def run_conversation(
                     error_type,
                     agent._client_log_context(),
                     _error_summary,
+                    exc_info=should_capture_local_validation_traceback(api_error),
                 )
 
                 _provider = getattr(agent, "provider", "unknown")

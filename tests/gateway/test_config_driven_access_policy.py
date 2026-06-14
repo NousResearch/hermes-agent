@@ -220,6 +220,42 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
     assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
 
 
+@pytest.mark.parametrize(
+    "module_path, class_name, dm_helper",
+    [
+        ("gateway.platforms.whatsapp", "WhatsAppAdapter", "_is_dm_allowed"),
+        ("gateway.platforms.wecom", "WeComAdapter", "_is_dm_allowed"),
+        ("gateway.platforms.weixin", "WeixinAdapter", "_is_dm_allowed"),
+        ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
+    ],
+)
+def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
+    monkeypatch, module_path, class_name, dm_helper,
+):
+    """Default ``dm_policy: pairing`` must not admit senders via strict auth."""
+    _clear_auth_env(monkeypatch)
+    import importlib
+
+    from gateway.config import PlatformConfig
+
+    module = importlib.import_module(module_path)
+    adapter_cls = getattr(module, class_name)
+    adapter = adapter_cls(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+    assert getattr(adapter, dm_helper)("unknown-user") is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_pairing_group_policy_not_blanket_authorized(monkeypatch, platform):
+    """Default ``group_policy: pairing`` must not authorize unknown group senders."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "pairing"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform, chat_type="group")) is False
+
+
 def test_wecom_open_group_with_per_group_sender_allowlist_is_authorized(monkeypatch):
     """WeCom ``groups.<id>.allow_from`` is an adapter-enforced restriction.
 

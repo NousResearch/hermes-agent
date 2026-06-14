@@ -197,9 +197,31 @@ def test_dm_policy_allowlist_allows_listed_sender():
     assert adapter._should_process_message(_dm_message("hello")) is True
 
 
-def test_dm_policy_open_allows_all_dms():
+def test_dm_policy_open_allows_all_dms_with_opt_in(monkeypatch):
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
     adapter = _make_adapter(dm_policy="open")
 
+    assert adapter._should_process_message(_dm_message("hello")) is True
+
+
+def test_dm_policy_open_blocked_without_opt_in():
+    adapter = _make_adapter(dm_policy="open")
+
+    assert adapter._is_dm_allowed("6281234567890@s.whatsapp.net") is False
+    assert adapter._should_process_message(_dm_message("hello")) is False
+
+
+def test_dm_policy_pairing_strict_auth_denies_unknown():
+    adapter = _make_adapter()
+
+    assert adapter._dm_policy == "pairing"
+    assert adapter._is_dm_allowed("6281234567890@s.whatsapp.net") is False
+
+
+def test_dm_policy_pairing_still_forwards_to_gateway_intake():
+    adapter = _make_adapter()
+
+    assert adapter._is_dm_intake_allowed("6281234567890@s.whatsapp.net") is True
     assert adapter._should_process_message(_dm_message("hello")) is True
 
 
@@ -347,7 +369,7 @@ def test_broadcast_filter_runs_before_allowlist():
 
 def test_real_dm_still_processed_after_broadcast_filter():
     """Sanity check: the broadcast filter doesn't accidentally drop real DMs."""
-    adapter = _make_adapter(dm_policy="open")
+    adapter = _make_adapter(dm_policy="pairing")
 
     msg = _dm_message(
         body="hello",

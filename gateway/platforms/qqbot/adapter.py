@@ -1214,7 +1214,7 @@ class QQAdapter(BasePlatformAdapter):
         user_openid = str(author.get("user_openid", ""))
         if not user_openid:
             return
-        if not self._is_dm_allowed(user_openid):
+        if not self._is_dm_intake_allowed(user_openid):
             return
 
         text = content
@@ -1454,7 +1454,7 @@ class QQAdapter(BasePlatformAdapter):
         # Without this check any member of any guild the bot is in could
         # bypass the configured allowlist via direct messages.
         author_id = str(author.get("id", ""))
-        if not self._is_dm_allowed(author_id):
+        if not self._is_dm_intake_allowed(author_id):
             logger.debug(
                 "[%s] Guild DM blocked by ACL: guild=%s user=%s",
                 self._log_tag, guild_id, author_id,
@@ -3142,12 +3142,30 @@ class QQAdapter(BasePlatformAdapter):
         stripped = re.sub(r"^@\S+\s*", "", content.strip())
         return stripped
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("QQ_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def _is_dm_allowed(self, user_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return self._entry_matches(self._allow_from, user_id)
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, user_id: str) -> bool:
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return self._entry_matches(self._allow_from, user_id)
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def _is_group_allowed(self, group_id: str, user_id: str) -> bool:
         if self._group_policy == "disabled":

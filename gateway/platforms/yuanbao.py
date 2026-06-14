@@ -1545,13 +1545,32 @@ class AccessPolicy:
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("YUANBAO_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def is_dm_allowed(self, sender_id: str) -> bool:
-        """Platform-level DM inbound filter (open / allowlist / disabled)."""
+        """Strict DM authorization — pairing does not imply access."""
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return sender_id.strip() in self._dm_allow_from
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def is_dm_intake_allowed(self, sender_id: str) -> bool:
+        """Whether a DM may reach gateway intake (pairing handshake path)."""
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return sender_id.strip() in self._dm_allow_from
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     def is_group_allowed(self, group_code: str) -> bool:
         """Platform-level group chat inbound filter (open / allowlist / disabled)."""
@@ -1579,7 +1598,7 @@ class AccessGuardMiddleware(InboundMiddleware):
         adapter = ctx.adapter
         policy: AccessPolicy = adapter._access_policy
         if ctx.chat_type == "dm":
-            if not policy.is_dm_allowed(ctx.from_account):
+            if not policy.is_dm_intake_allowed(ctx.from_account):
                 logger.debug(
                     "[%s] DM from %s blocked by dm_policy=%s",
                     adapter.name, ctx.from_account, policy.dm_policy,

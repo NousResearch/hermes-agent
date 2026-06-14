@@ -61,7 +61,12 @@ kimi = KimiProfile(
     base_url="https://api.moonshot.ai/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    # User-Agent: The Kimi Coding Plan API (api.kimi.com/coding) checks the
+    # User-Agent header and only allows whitelisted agents (Kimi CLI, Claude
+    # Code, Roo Code, Kilo Code, etc.). Send "KimiCLI/1.3" so requests to the
+    # coding endpoint succeed. The Moonshot Open Platform (api.moonshot.ai)
+    # doesn't check User-Agent, so this is harmless for both endpoints.
+    default_headers={"User-Agent": "KimiCLI/1.3"},
     default_aux_model="kimi-k2-turbo-preview",
 )
 
@@ -72,7 +77,7 @@ kimi_cn = KimiProfile(
     base_url="https://api.moonshot.cn/v1",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_headers={"User-Agent": "KimiCLI/1.3"},
     default_aux_model="kimi-k2-turbo-preview",
 )
 

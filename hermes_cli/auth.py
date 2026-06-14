@@ -503,16 +503,17 @@ def get_anthropic_key() -> str:
 # =============================================================================
 
 # Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
-# on api.kimi.com/coding.  Legacy keys from platform.moonshot.ai work on
+# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
 # api.moonshot.ai/v1 (the old default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
 #
-# Note: the base URL intentionally has NO /v1 suffix.  The /coding endpoint
-# speaks the Anthropic Messages protocol, and the anthropic SDK appends
-# "/v1/messages" internally — so "/coding" + SDK suffix → "/coding/v1/messages"
-# (the correct target). Using "/coding/v1" here would produce
-# "/coding/v1/v1/messages" (a 404).
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
+# Note: the base URL includes the /v1 suffix because the kimi-coding provider
+# uses OpenAI chat-completions transport (not Anthropic Messages).  The OpenAI
+# SDK expects a base URL ending in /v1 and appends /chat/completions, so
+# "/coding/v1" + SDK suffix → "/coding/v1/chat/completions" (the correct
+# OpenAI-compatible target for the Kimi Coding Plan API).
+# Using "/coding" here would produce "/coding/chat/completions" (wrong path).
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:

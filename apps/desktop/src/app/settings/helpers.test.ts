@@ -59,6 +59,7 @@ describe('settings helpers', () => {
     it('maps schema keys to camelCase translation keys', () => {
       expect(schemaKeyToFieldCopyKey('model_context_length')).toBe('modelContextLength')
       expect(schemaKeyToFieldCopyKey('display.show_reasoning')).toBe('display.showReasoning')
+      expect(schemaKeyToFieldCopyKey('display.hover_reveal_file_browser')).toBe('display.hoverRevealFileBrowser')
       expect(schemaKeyToFieldCopyKey('tool_output.max_line_length')).toBe('toolOutput.maxLineLength')
       expect(schemaKeyToFieldCopyKey('updates.non_interactive_local_changes')).toBe(
         'updates.nonInteractiveLocalChanges'
@@ -68,6 +69,7 @@ describe('settings helpers', () => {
     it('looks up camelCase field copy by schema key with legacy fallback', () => {
       const copy = defineFieldCopy({
         display: {
+          hoverRevealFileBrowser: 'File Browser Hover Reveal',
           showReasoning: 'Reasoning Blocks'
         },
         file_read_max_chars: 'Legacy File Read Limit',
@@ -79,6 +81,7 @@ describe('settings helpers', () => {
 
       expect(fieldCopyForSchemaKey(copy, 'model_context_length')).toBe('Context Window')
       expect(fieldCopyForSchemaKey(copy, 'display.show_reasoning')).toBe('Reasoning Blocks')
+      expect(fieldCopyForSchemaKey(copy, 'display.hover_reveal_file_browser')).toBe('File Browser Hover Reveal')
       expect(fieldCopyForSchemaKey(copy, 'tool_output.max_line_length')).toBe('Line Length Limit')
       expect(fieldCopyForSchemaKey(copy, 'file_read_max_chars')).toBe('Legacy File Read Limit')
     })

@@ -56,6 +56,7 @@ import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from 
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { watchDeadSessionPrune } from '@/store/dead-session-prune'
+import { $fileBrowserHoverReveal } from '@/store/file-browser-hover-reveal'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -261,6 +262,10 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'right' },
       revealAliases: ['file-browser'],
+      // Pointer hover may reveal the collapsed pane as an edge overlay; with
+      // `display.hover_reveal_file_browser` false only manual keyboard/event
+      // reveal opens it. Resolved per hover pass so the toggle applies live.
+      pointerHoverReveal: () => $fileBrowserHoverReveal.get(),
       width: FILE_BROWSER_DEFAULT_WIDTH,
       minWidth: FILE_BROWSER_MIN_WIDTH,
       maxWidth: FILE_BROWSER_MAX_WIDTH,

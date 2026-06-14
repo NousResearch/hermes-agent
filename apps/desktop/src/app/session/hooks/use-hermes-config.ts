@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 
 import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
@@ -6,6 +7,7 @@ import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromC
 import { composerServiceTier } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
+import { $fileBrowserHoverReveal, setFileBrowserHoverRevealFromConfig } from '@/store/file-browser-hover-reveal'
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   getComposerSelectionGeneration,
@@ -31,6 +33,7 @@ import {
 import { setChatFontFamilyFromConfig } from '@/themes/chat-font'
 
 const DEFAULT_VOICE_SECONDS = 120
+export { DEFAULT_FILE_BROWSER_HOVER_REVEAL, isFileBrowserHoverRevealEnabled } from '@/store/file-browser-hover-reveal'
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
@@ -58,6 +61,7 @@ interface HermesConfigOptions {
 }
 
 export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
+  const fileBrowserHoverReveal = useStore($fileBrowserHoverReveal)
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
   const profileRefreshEpochRef = useRef(0)
@@ -136,6 +140,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
           return
         }
 
+        setFileBrowserHoverRevealFromConfig(config)
         setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
         setSttEnabled(config.stt?.enabled !== false)
 
@@ -168,5 +173,5 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
     [activeSessionIdRef]
   )
 
-  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
+  return { fileBrowserHoverReveal, refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
 }

@@ -7,10 +7,11 @@ This aggregate preflight runs the existing focused verifiers in a safe order:
 2. The voice checkout's own WhatsApp contract verifier proves the installed
    voice binary can emit Ogg/Opus and WebRTC-shaped PCM frames.
 3. The local Baileys bridge keeps Ogg/Opus as native voice notes.
-4. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
-5. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
-6. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
-7. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
+4. The WhatsApp Cloud adapter uploads Ogg/Opus with voice-note MIME.
+5. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
+6. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
+7. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
+8. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
 
 By default the script creates a temporary Hermes home and removes it after a
 passing or failing run. Pass --keep-home to inspect the generated config.
@@ -38,6 +39,7 @@ DEFAULT_STREAM_TEXT = "Hermes local voice stream preflight."
 DEFAULT_FULL_DUPLEX_INBOUND_TEXT = "hello world"
 DEFAULT_FULL_DUPLEX_OUTBOUND_TEXT = "Hello from Hermes through the local voice sidecar."
 DEFAULT_WHATSAPP_BRIDGE_MEDIA_TIMEOUT = 15.0
+DEFAULT_WHATSAPP_CLOUD_VOICE_TIMEOUT = 15.0
 
 LIVE_ROOT_REQUIREMENTS = (
     {
@@ -362,6 +364,10 @@ def whatsapp_bridge_media_payload_command(*, node_bin: str) -> list[str]:
     return [node_bin, "--test", str(test_path)]
 
 
+def whatsapp_cloud_voice_note_command() -> list[str]:
+    return [sys.executable, str(script_path("verify_voice_whatsapp_cloud_voice_note.py"))]
+
+
 def calling_control_plane_command(args: argparse.Namespace) -> list[str]:
     return [
         sys.executable,
@@ -439,6 +445,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_WHATSAPP_BRIDGE_MEDIA_TIMEOUT,
     )
+    parser.add_argument(
+        "--whatsapp-cloud-voice-timeout",
+        type=float,
+        default=DEFAULT_WHATSAPP_CLOUD_VOICE_TIMEOUT,
+    )
     parser.add_argument("--node-bin", default=os.environ.get("NODE_BIN", "node"))
     parser.add_argument("--stream-text", default=DEFAULT_STREAM_TEXT)
     parser.add_argument("--stream-command-template")
@@ -455,6 +466,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--webrtc-python-bin", default=os.environ.get("VOICE_WEBRTC_PYTHON"))
     parser.add_argument("--skip-voice-contract", action="store_true")
     parser.add_argument("--skip-whatsapp-bridge-media", action="store_true")
+    parser.add_argument("--skip-whatsapp-cloud-voice", action="store_true")
     parser.add_argument("--skip-calling-control-plane", action="store_true")
     parser.add_argument("--skip-full-duplex", action="store_true")
     parser.add_argument(
@@ -546,6 +558,19 @@ def main() -> int:
                 timeout=args.whatsapp_bridge_media_timeout,
                 env=env,
                 include_stdout_lines=True,
+            )
+        if args.skip_whatsapp_cloud_voice:
+            checks["whatsapp_cloud_voice_note"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-whatsapp-cloud-voice was provided",
+            }
+        else:
+            checks["whatsapp_cloud_voice_note"] = run_json_step(
+                "WhatsApp Cloud voice-note verifier",
+                whatsapp_cloud_voice_note_command(),
+                timeout=args.whatsapp_cloud_voice_timeout,
+                env=env,
             )
         checks["command_tts"] = run_json_step(
             "command TTS verifier",

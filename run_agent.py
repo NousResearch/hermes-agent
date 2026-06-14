@@ -510,7 +510,9 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        from hermes_state import resolve_session_source
+
+        source = resolve_session_source(self.platform)
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
@@ -573,10 +575,12 @@ class AIAgent:
         )
         target_session_id = new_session_id or getattr(self, "session_id", "") or ""
         if should_start and target_session_id and hasattr(engine, "on_session_start"):
+            from hermes_state import resolve_session_source
+
             start_context = {
                 "old_session_id": old_session_id,
                 "carry_over_context": carry_over_context,
-                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                "platform": resolve_session_source(getattr(self, "platform", None)),
                 "model": getattr(self, "model", ""),
                 "context_length": getattr(engine, "context_length", None),
                 "conversation_id": getattr(self, "_gateway_session_key", None),

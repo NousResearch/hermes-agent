@@ -5980,10 +5980,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if self._session_db:
                 try:
+                    from hermes_state import resolve_session_source
+
                     self.agent._session_db_created = False
                     self._session_db.create_session(
                         session_id=self.session_id,
-                        source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        source=resolve_session_source(getattr(self, "platform", None) or "cli"),
                         model=self.model,
                         model_config={
                             "max_iterations": self.max_turns,

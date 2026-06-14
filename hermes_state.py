@@ -16,6 +16,7 @@ Key design decisions:
 
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -28,6 +29,22 @@ from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_session_source(platform: Optional[str] = None) -> str:
+    """Resolve the ``source`` tag stored on state.db session rows.
+
+    ``hermes chat --source <tag>`` sets ``HERMES_SESSION_SOURCE`` before the
+    CLI boots. That override must win over the agent's ``platform`` argument
+    (typically ``"cli"``) so subprocess integrations like graphify workers
+    are tagged ``tool`` and filtered from interactive session lists.
+    """
+    override = (os.environ.get("HERMES_SESSION_SOURCE") or "").strip()
+    if override:
+        return override
+    cleaned = (platform or "").strip()
+    return cleaned or "cli"
+
 
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"

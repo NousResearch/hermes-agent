@@ -8850,11 +8850,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # False even though the user clearly has a desktop install. Without this
         # fallback, every update silently destroys the desktop app shortcut.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        desktop_stamp = Path(os.environ.get("HERMES_HOME", HERMES_HOME)) / "desktop-build-stamp.json"
         has_desktop_app = (
             _desktop_packaged_executable(desktop_dir) is not None
             or _desktop_dist_exists(desktop_dir)
-            or desktop_stamp.exists()
+            or _desktop_stamp_path().exists()
         )
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")

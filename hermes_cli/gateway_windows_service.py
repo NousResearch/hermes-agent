@@ -290,7 +290,7 @@ def is_service_installed() -> bool:
 
 
 def get_service_status() -> dict:
-    """Query the service status via ``win32service.QueryServiceStatus``.
+    """Query the service status via ``win32serviceutil.QueryServiceStatus``.
 
     Uses the win32service API directly rather than parsing ``sc query``
     output, which is locale-dependent.
@@ -299,12 +299,13 @@ def get_service_status() -> dict:
     or an empty dict if the service is not installed.
     """
     import win32service
+    import win32serviceutil
     svc_name = get_service_name()
     if not is_service_installed():
         return {}
 
     try:
-        status = win32service.QueryServiceStatus(svc_name)
+        status = win32serviceutil.QueryServiceStatus(svc_name)
         # status: (serviceType, currentState, controlsAccepted,
         #          win32ExitCode, serviceSpecificExitCode, checkPoint, waitHint)
         state_map = {
@@ -319,7 +320,7 @@ def get_service_status() -> dict:
         current_state = status[1]
         return {
             "state": state_map.get(current_state, f"unknown ({current_state})"),
-            "pid": None,  # PID not available from this API
+            "pid": None,
         }
     except Exception as e:
         logger.warning("Failed to query service status: %s", e)

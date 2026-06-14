@@ -1944,9 +1944,9 @@ DEFAULT_CONFIG = {
         "infisical": {
             # Master switch. When false, Infisical is never contacted.
             "enabled": False,
-            # Infisical API base URL. Use your self-hosted URL when not
-            # using Infisical Cloud.
-            "api_url": "https://app.infisical.com",
+            # Infisical API base URL. Use https://eu.infisical.com for EU
+            # Cloud or your self-hosted URL when not using US Cloud.
+            "api_url": "https://us.infisical.com",
             # Env var names that hold the Machine Identity Universal Auth
             # bootstrap credentials. These live in ~/.hermes/.env or the
             # parent shell; never in config.yaml.

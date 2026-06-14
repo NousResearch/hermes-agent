@@ -201,6 +201,44 @@ def test_apply_external_secret_sources_defaults_bad_infisical_cache_ttl(
     assert captured["cache_ttl_seconds"] == 300.0
 
 
+def test_apply_external_secret_sources_passes_self_hosted_infisical_url(
+    tmp_path,
+    monkeypatch,
+):
+    """Configured self-hosted Infisical URLs must flow into the backend."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  infisical:\n"
+        "    enabled: true\n"
+        "    api_url: https://infisical.internal:8080\n"
+        "    project_id: test-project\n"
+        "    env: staging\n"
+        "    path: /hermes\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.infisical import FetchResult
+
+    captured = {}
+
+    def _fake_apply(**kwargs):
+        captured.update(kwargs)
+        return FetchResult()
+
+    import agent.secret_sources.infisical as inf_module
+
+    monkeypatch.setattr(inf_module, "apply_infisical_secrets", _fake_apply)
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert captured["api_url"] == "https://infisical.internal:8080"
+    assert captured["environment"] == "staging"
+    assert captured["secret_path"] == "/hermes"
+
+
 def test_apply_external_secret_sources_does_not_return_after_bitwarden_disabled(
     tmp_path,
     monkeypatch,

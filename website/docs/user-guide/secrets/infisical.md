@@ -9,6 +9,8 @@ Pull API keys from [Infisical](https://infisical.com) at process startup instead
 3. Every time `hermes` starts, after `.env` has loaded, Hermes logs in through Universal Auth and calls the Infisical v4 secrets API.
 4. Returned `secretKey` / `secretValue` pairs are written into `os.environ` before provider and gateway config is built.
 
+Infisical's current API versions differ by surface: Universal Auth login is documented at `/api/v1/auth/universal-auth/login`, while secret listing is documented at `/api/v4/secrets`.
+
 By default Hermes overwrites existing env vars with Infisical values so rotating a secret in Infisical takes effect on the next Hermes start. Set `override_existing: false` if local `.env` or shell exports should win.
 
 ## Setup
@@ -38,12 +40,12 @@ hermes secrets infisical setup \
   --client-id "$INFISICAL_CLIENT_ID" \
   --client-secret "$INFISICAL_CLIENT_SECRET" \
   --project-id <project-uuid> \
-  --api-url https://app.infisical.com \
+  --api-url https://us.infisical.com \
   --env prod \
   --path /
 ```
 
-For self-hosted Infisical, set `--api-url` to your instance URL.
+For Infisical EU Cloud, use `https://eu.infisical.com`. For self-hosted Infisical, set `--api-url` to your instance URL.
 
 ### 3. Confirm
 
@@ -71,7 +73,7 @@ Defaults in `~/.hermes/config.yaml`:
 secrets:
   infisical:
     enabled: false
-    api_url: https://app.infisical.com
+    api_url: https://us.infisical.com
     project_id: ""
     project_id_env: INFISICAL_PROJECT_ID
     env: prod
@@ -89,7 +91,7 @@ secrets:
 | Key | Default | What it does |
 |---|---|---|
 | `enabled` | `false` | Master switch. When false, Infisical is never contacted. |
-| `api_url` | `https://app.infisical.com` | Infisical API base URL. Use your self-hosted URL when applicable. |
+| `api_url` | `https://us.infisical.com` | Infisical API base URL. Use `https://eu.infisical.com` for EU Cloud, or your self-hosted URL when applicable. |
 | `project_id` | `""` | UUID of the project to sync from. If empty, Hermes falls back to `project_id_env`. |
 | `project_id_env` | `INFISICAL_PROJECT_ID` | Env var fallback for project ID, useful for existing `infisical run` deployments. |
 | `env` | `prod` | Infisical environment slug. |

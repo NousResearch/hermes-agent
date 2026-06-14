@@ -35,7 +35,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_API_URL = "https://app.infisical.com"
+# Infisical's latest documented endpoint versions are not uniform:
+# Universal Auth login is v1, while the secrets list API is v4.
+DEFAULT_API_URL = "https://us.infisical.com"
+UNIVERSAL_AUTH_LOGIN_PATH = "/api/v1/auth/universal-auth/login"
+SECRETS_LIST_PATH = "/api/v4/secrets"
 _HTTP_TIMEOUT = 30
 
 _CacheKey = Tuple[str, str, str, str, str, str, str, str, str, str]
@@ -170,7 +174,7 @@ def login_universal_auth(
 
     payload = _http_json(
         "POST",
-        f"{api_url}/api/v1/auth/universal-auth/login",
+        f"{api_url}{UNIVERSAL_AUTH_LOGIN_PATH}",
         body=body,
     )
     token = payload.get("accessToken")
@@ -234,7 +238,7 @@ def fetch_infisical_secrets(
     )
     payload = _http_json(
         "GET",
-        f"{api_url}/api/v4/secrets",
+        f"{api_url}{SECRETS_LIST_PATH}",
         token=token,
         params={
             "projectId": project_id,

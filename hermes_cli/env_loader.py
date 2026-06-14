@@ -87,6 +87,8 @@ def format_secret_source_suffix(env_var: str) -> str:
 
 
 def _float_config(value: object, default: float) -> float:
+    if not isinstance(value, (str, int, float)):
+        return default
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -188,9 +190,8 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     except ImportError:
         return  # early bootstrap — config module not available yet
 
-    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
     try:
-        with open(path, **read_kw) as f:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
             original = f.readlines()
         # Strip null bytes before _sanitize_env_lines so they never
         # reach python-dotenv (which passes them to os.environ and
@@ -288,9 +289,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         try:
             from agent.secret_sources.bitwarden import apply_bitwarden_secrets
         except ImportError:
-            apply_bitwarden_secrets = None
-
-        if apply_bitwarden_secrets is not None:
+            pass
+        else:
             result = apply_bitwarden_secrets(
                 enabled=True,
                 access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
@@ -314,11 +314,13 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     inf_cfg = (cfg or {}).get("infisical") or {}
     if inf_cfg.get("enabled"):
         try:
-            from agent.secret_sources.infisical import apply_infisical_secrets
+            from agent.secret_sources.infisical import (
+                DEFAULT_API_URL as infisical_default_api_url,
+                apply_infisical_secrets,
+            )
         except ImportError:
-            apply_infisical_secrets = None
-
-        if apply_infisical_secrets is not None:
+            pass
+        else:
             result = apply_infisical_secrets(
                 enabled=True,
                 client_id_env=inf_cfg.get("client_id_env", "INFISICAL_CLIENT_ID"),
@@ -332,7 +334,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 api_url=str(
                     inf_cfg.get("api_url")
                     or os.environ.get("INFISICAL_API_URL")
-                    or "https://app.infisical.com"
+                    or infisical_default_api_url
                 ).strip(),
                 organization_slug=str(
                     inf_cfg.get("organization_slug", "") or ""
@@ -392,7 +394,7 @@ def _load_secrets_config(home_path: Path) -> dict:
     if not config_path.exists():
         return {}
     try:
-        import yaml  # type: ignore
+        import yaml
     except ImportError:
         return {}
     try:

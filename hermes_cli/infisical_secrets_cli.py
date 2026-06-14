@@ -39,7 +39,7 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     setup.add_argument(
         "--api-url",
         default="",
-        help="Infisical API URL (default: https://app.infisical.com)",
+        help=f"Infisical API URL (default: {infisical.DEFAULT_API_URL})",
     )
     setup.add_argument("--env", default="", help="Infisical environment slug")
     setup.add_argument("--path", default="", help="Secret path to sync")
@@ -370,7 +370,7 @@ def _print_sync_actions(
         console.print("[yellow]No secrets found.[/yellow]")
         return
 
-    override = bool(inf_cfg.get("override_existing", True)) or bool(args.apply)
+    override = bool(inf_cfg.get("override_existing", True))
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name", style="cyan")
     table.add_column("Action")

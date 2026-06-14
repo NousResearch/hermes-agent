@@ -151,7 +151,7 @@ model:
 # secrets:
 #   infisical:
 #     enabled: false
-#     api_url: "https://app.infisical.com"  # or your self-hosted URL
+#     api_url: "https://us.infisical.com"  # or https://eu.infisical.com / self-hosted
 #     project_id: ""                        # falls back to INFISICAL_PROJECT_ID
 #     env: "prod"
 #     path: "/"

@@ -113,6 +113,28 @@ def test_fetch_secrets_uses_v4_list_endpoint(monkeypatch):
     }
 
 
+def test_default_api_url_uses_current_us_cloud_host(monkeypatch):
+    calls = []
+
+    def fake_http(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if method == "POST":
+            return {"accessToken": "access-token"}
+        return {"secrets": []}
+
+    monkeypatch.setattr(inf, "_http_json", fake_http)
+
+    inf.fetch_infisical_secrets(
+        client_id="cid",
+        client_secret="csecret",
+        project_id="proj",
+        use_cache=False,
+    )
+
+    assert calls[0][1] == "https://us.infisical.com/api/v1/auth/universal-auth/login"
+    assert calls[1][1] == "https://us.infisical.com/api/v4/secrets"
+
+
 def test_extract_includes_imports_with_lower_precedence():
     payload = {
         "imports": [
@@ -234,6 +256,7 @@ def test_apply_missing_bootstrap_credentials(monkeypatch):
     result = inf.apply_infisical_secrets(enabled=True, project_id="proj")
 
     assert not result.ok
+    assert result.error is not None
     assert "INFISICAL_CLIENT_ID" in result.error
 
 

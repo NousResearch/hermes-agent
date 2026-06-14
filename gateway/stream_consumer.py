@@ -613,6 +613,9 @@ class GatewayStreamConsumer:
                                 not self._adapter_requires_finalize
                                 or self._last_edit_overflowed
                             )
+                            and not self._adapter_prefers_fresh_final(
+                                self._accumulated
+                            )
                         ):
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant

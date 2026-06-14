@@ -294,6 +294,42 @@ for _cmd in COMMAND_REGISTRY:
         SUBCOMMANDS[key] = m.group(0).split("|")
 
 
+# Aliases in this allowlist are intentionally discoverable shortcuts. Other
+# aliases remain dispatchable for backwards compatibility but are hidden from
+# user-facing discovery surfaces to keep the command map canonical.
+_USER_VISIBLE_ALIASES: frozenset[str] = frozenset({"bg", "q", "exit", "reset", "sb"})
+
+
+def _is_internal_alias(alias: str, canonical: str) -> bool:
+    """Return True for spelling-only aliases kept for transport compatibility.
+
+    Some platform menus cannot display hyphenated slash commands, so Hermes
+    keeps underscore aliases such as ``reload_mcp`` for dispatch. Those aliases
+    are implementation details; user-facing surfaces should show the canonical
+    hyphenated command once, not a duplicate row.
+    """
+    return alias != canonical and alias.replace("-", "_") == canonical.replace("-", "_")
+
+
+def _is_hidden_alias(alias: str, canonical: str) -> bool:
+    """Return True when an alias should resolve but not be advertised.
+
+    Canonical commands define the public map. A small allowlist of ergonomic
+    shortcuts stays visible; spelling-only, legacy, and semantic duplicate
+    aliases stay working but disappear from autocomplete/help/menu surfaces.
+    """
+    return alias not in _USER_VISIBLE_ALIASES or _is_internal_alias(alias, canonical)
+
+
+def _is_hidden_alias_command(slash_command: str) -> bool:
+    """Return True if ``/name`` is a hidden alias of a registry command."""
+    name = slash_command.lstrip("/")
+    for cmd in COMMAND_REGISTRY:
+        if name in cmd.aliases and _is_hidden_alias(name, cmd.name):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Gateway helpers
 # ---------------------------------------------------------------------------
@@ -436,8 +472,8 @@ def gateway_help_lines() -> list[str]:
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
         for a in cmd.aliases:
-            # Skip internal aliases like reload_mcp (underscore variant)
-            if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
+            # Skip hidden aliases like reload_mcp, /btw, /tasks, etc.
+            if _is_hidden_alias(a, cmd.name):
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
@@ -1191,10 +1227,14 @@ class SlashCommandCompleter(Completer):
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
         skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        show_skill_commands: bool = True,
+        show_skill_bundles: bool = True,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
         self._skill_bundles_provider = skill_bundles_provider
+        self._show_skill_commands = show_skill_commands
+        self._show_skill_bundles = show_skill_bundles
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -1209,6 +1249,8 @@ class SlashCommandCompleter(Completer):
             return True
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
+        if not self._show_skill_commands:
+            return {}
         if self._skill_commands_provider is None:
             return {}
         try:
@@ -1217,6 +1259,8 @@ class SlashCommandCompleter(Completer):
             return {}
 
     def _iter_skill_bundles(self) -> Mapping[str, dict[str, Any]]:
+        if not self._show_skill_bundles:
+            return {}
         if self._skill_bundles_provider is None:
             return {}
         try:
@@ -1692,6 +1736,8 @@ class SlashCommandCompleter(Completer):
         word = text[1:]
 
         for cmd, desc in COMMANDS.items():
+            if _is_hidden_alias_command(cmd):
+                continue
             if not self._command_allowed(cmd):
                 continue
             cmd_name = cmd[1:]
@@ -1781,6 +1827,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
             # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
             for cmd in COMMANDS:
+                if _is_hidden_alias_command(cmd):
+                    continue
                 if self._completer is not None and not self._completer._command_allowed(cmd):
                     continue
                 cmd_name = cmd[1:]  # strip leading /

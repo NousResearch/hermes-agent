@@ -1767,6 +1767,103 @@ def test_complete_slash_drops_removed_provider_alias():
     assert any(item["text"] == "model" for item in resp_model["result"]["items"])
 
 
+def _slash_completion_displays(text: str) -> set[str]:
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": text}}
+    )
+
+    assert resp is not None
+    result = resp["result"]
+    assert isinstance(result, dict)
+    return {item["display"] for item in result["items"]}
+
+
+def test_complete_slash_hides_internal_spelling_aliases():
+    # Keep underscore aliases dispatchable for platforms that cannot expose
+    # hyphenated commands, but do not show both spellings in the TUI picker.
+    texts = _slash_completion_displays("/reload")
+
+    assert "/reload-mcp" in texts
+    assert "/reload-skills" in texts
+    assert "/reload_mcp" not in texts
+    assert "/reload_skills" not in texts
+
+
+def test_complete_slash_hides_legacy_and_semantic_duplicate_aliases():
+    # Keep the public command map canonical: only ergonomic shortcuts from the
+    # allowlist are discoverable, while older/semantic aliases still dispatch.
+    background_texts = _slash_completion_displays("/b")
+    assert "/background" in background_texts
+    assert "/bg" in background_texts
+    assert "/btw" not in background_texts
+
+    assert "/fork" not in _slash_completion_displays("/f")
+    assert "/snap" not in _slash_completion_displays("/s")
+    assert "/tasks" not in _slash_completion_displays("/t")
+    assert "/gateway" not in _slash_completion_displays("/g")
+
+    # Intentionally visible shortcuts remain discoverable.
+    assert "/q" in _slash_completion_displays("/q")
+    assert "/reset" in _slash_completion_displays("/r")
+
+
+def test_tui_slash_completion_hides_individual_skill_commands(monkeypatch):
+    import agent.skill_bundles as skill_bundles
+    import agent.skill_commands as skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/grill-me": {"description": "Interview the user relentlessly"},
+        },
+    )
+    monkeypatch.setattr(
+        skill_bundles,
+        "get_skill_bundles",
+        lambda: {
+            "/hub-day": {"description": "Daily operating pipeline", "skills": ["hub-day"]},
+        },
+    )
+
+    # The top-level TUI slash menu should surface commands and curated bundles,
+    # not every individual skill command.
+    assert "/goal" in _slash_completion_displays("/g")
+    assert "/grill-me" not in _slash_completion_displays("/g")
+    assert "/hub-day" in _slash_completion_displays("/h")
+
+
+def test_hidden_aliases_still_resolve():
+    from hermes_cli.commands import resolve_command
+
+    expected = {
+        "reload_mcp": "reload-mcp",
+        "reload_skills": "reload-skills",
+        "btw": "background",
+        "fork": "branch",
+        "snap": "snapshot",
+        "tasks": "agents",
+        "gateway": "platforms",
+        "set-home": "sethome",
+    }
+    for alias, canonical in expected.items():
+        resolved = resolve_command(alias)
+        assert resolved is not None, alias
+        assert resolved.name == canonical
+
+
+def test_gateway_help_hides_non_visible_aliases():
+    from hermes_cli.commands import gateway_help_lines
+
+    help_text = "\n".join(gateway_help_lines())
+    assert "alias: `/q`" in help_text
+    assert "alias: `/bg`" in help_text
+    assert "alias: `/btw`" not in help_text
+    assert "alias: `/tasks`" not in help_text
+    assert "alias: `/set-home`" not in help_text
+    assert "alias: `/reload_mcp`" not in help_text
+
+
 def test_complete_slash_returns_plain_string_fields():
     # prompt_toolkit hands us FormattedText (a list subclass) for
     # display/display_meta; the TUI's CompletionItem contract is plain

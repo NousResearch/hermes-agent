@@ -6533,6 +6533,11 @@ def _(rid, params: dict) -> dict:
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: get_skill_commands(),
             skill_bundles_provider=lambda: get_skill_bundles(),
+            # Keep TUI slash discovery focused on the command/pipeline layer.
+            # Individual skills remain invokable via their exact /skill-name
+            # commands and discoverable through /skills, but they no longer
+            # flood the top-level "/" menu.
+            show_skill_commands=False,
         )
         doc = Document(text, len(text))
         items = [

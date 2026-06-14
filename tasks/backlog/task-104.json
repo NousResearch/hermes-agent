@@ -1,10 +1,10 @@
 {
   "id": "task-104",
-  "title": "Add portfolio dashboard contract",
+  "title": "Add workspace dashboard contract",
   "status": "completed",
   "priority": "medium",
-  "phase": "Portfolio Control Plane",
-  "summary": "Define portfolio dashboard panels for all projects, all work, all reviews, all approvals, and all agents.",
+  "phase": "Workspace Control Plane",
+  "summary": "Define workspace dashboard panels for all projects, all work, all reviews, all approvals, and all agents.",
   "acceptanceCriteria": [
     "Dashboard contract includes project health summary",
     "Dashboard contract includes cross-project work status",

@@ -1,14 +1,14 @@
 {
   "id": "task-112",
-  "title": "Add experiment and promotion decision graph nodes",
+  "title": "Add template decision graph nodes",
   "status": "completed",
   "priority": "medium",
-  "phase": "Market Research Work Graph Expansion",
-  "summary": "Represent market research experiment history and decision records as graph nodes.",
+  "phase": "Template Engine Expansion",
+  "summary": "Represent template selection and approval decisions as graph nodes.",
   "acceptanceCriteria": [
-    "Experiment nodes track hypothesis, bucket, status, and outcome",
+    "Template selection nodes track selected template and rationale",
     "Decision nodes track approval and rationale",
-    "Portfolio assignment depends on approved decision records",
+    "Generated work depends on approved decision records",
     "Nodes preserve audit trail"
   ]
 }

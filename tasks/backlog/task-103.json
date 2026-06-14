@@ -1,10 +1,10 @@
 {
   "id": "task-103",
-  "title": "Add hermes portfolio CLI entrypoint",
+  "title": "Add hermes workspace CLI entrypoint",
   "status": "completed",
   "priority": "high",
-  "phase": "Portfolio Control Plane",
-  "summary": "Add a `hermes portfolio` CLI entrypoint for cross-project control-plane status.",
+  "phase": "Workspace Control Plane",
+  "summary": "Add a `hermes workspace` CLI entrypoint for cross-project control-plane status.",
   "acceptanceCriteria": [
     "CLI summarizes all discovered projects",
     "CLI supports JSON and text output",

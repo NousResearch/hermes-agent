@@ -1,14 +1,14 @@
 {
   "id": "task-020",
-  "title": "Define market research agent architecture",
+  "title": "Define template engine architecture",
   "status": "completed",
   "priority": "medium",
-  "phase": "Phase 10 - Market Research",
-  "summary": "Define the long-term market research architecture using official runtime worker agents under Hermes OS.",
+  "phase": "Phase 10 - Template Engine",
+  "summary": "Define the long-term template engine architecture using reusable, domain-neutral work graph patterns under Hermes OS.",
   "acceptanceCriteria": [
-    "Architecture covers research, evidence, validation, portfolio, experiment tracking, and dashboard",
+    "Architecture covers registry, loader, compiler, validator, generated nodes, and dashboard metrics",
     "Hermes OS remains command center",
     "Official runtime is worker layer only",
-    "Architecture identifies which tasks stay direct DeepSeek vs official runtime"
+    "Architecture identifies which tasks stay in Hermes OS vs delegated runtime"
   ]
 }

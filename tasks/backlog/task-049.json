@@ -1,12 +1,12 @@
 {
   "id": "task-049",
-  "title": "Review Investment System architecture readiness",
+  "title": "Review workspace project architecture readiness",
   "status": "completed",
   "priority": "medium",
   "phase": "Existing Project Reviews",
-  "summary": "Run the architecture-first review model against Investment System and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmap.",
+  "summary": "Run the architecture-first review model against workspace project and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmap.",
   "acceptanceCriteria": [
-    "Review covers watchlists, theses, portfolio exposure, valuation opportunities, and risk metrics",
+    "Review covers watchlists, theses, project exposure, valuation opportunities, and risk metrics",
     "Missing project documents are listed",
     "Priority roadmap is generated",
     "Review is stored as a Hermes OS artifact"

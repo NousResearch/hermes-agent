@@ -128,7 +128,7 @@ Supported MCP categories:
 - Filesystem.
 - Documentation.
 - Research.
-- Market data.
+- External data.
 - Broker integrations.
 
 ### Phase 8 - Dashboard
@@ -158,19 +158,19 @@ Research -> Validation -> Review -> Report
 
 Hermes OS stores checkpoints after each step and can resume from the latest checkpoint.
 
-### Phase 10 - Market Research
+### Phase 10 - Template Engine
 
-- `task-020`: Define market research agent architecture.
+- `task-020`: Define template engine architecture.
 
-Market research target architecture:
+Template engine target architecture:
 
 ```text
-Bucket
-  -> Research Agent
-  -> Evidence Agent
-  -> Validation Agent
-  -> Portfolio Agent
-  -> Experiment Tracker
+Template Definition
+  -> Template Registry
+  -> Template Loader
+  -> Template Compiler
+  -> Template Validator
+  -> Work Graph
   -> Dashboard
 ```
 
@@ -291,9 +291,8 @@ Before automation is implemented, the project must define daily visibility, succ
 
 Examples:
 
-- Market research: research throughput, evidence coverage, validation quality, decision readiness, portfolio exposure.
-- Media Engine: stories published, coverage mix, brand growth, cross-brand comparison, platform coverage, approval time.
-- Investment System: watchlist size, thesis status, portfolio exposure, valuation opportunities, risk metrics.
+- Template engine: template usage, validation pass rate, compile success rate, generated nodes, generated dependencies.
+- Workspace projects: architecture score, workflow completeness, approval coverage, execution progress, blocker count.
 
 ### Architecture Task Batches
 
@@ -349,8 +348,8 @@ Examples:
 ### Phase 19 - Existing Project Reviews
 
 - `task-048`: Review workspace project architecture readiness.
-- `task-049`: Review Investment System architecture readiness.
-- `task-050`: Review Media Engine and Rinseables architecture readiness.
+- `task-049`: Review workspace project architecture readiness.
+- `task-050`: Review workspace project and workspace project architecture readiness.
 
 ### Phase 20 - Architect CLI Implementation
 
@@ -482,11 +481,11 @@ Add:
 - Architecture dashboard: missing documents, score, workflow completeness, approval coverage, governance status.
 - Work graph dashboard: epics, tasks, dependencies, blocked work, execution progress, agent assignments, approval queue.
 - Agent dashboard: availability, success, failures, retries, cost, latency, token usage.
-- Portfolio dashboard: all projects, all work, all reviews, all approvals, all agents.
+- Workspace dashboard: all projects, all work, all reviews, all approvals, all agents.
 
 ### Cross-Project Control Plane
 
-`hermes portfolio` gives one screen for every project and reports:
+`hermes workspace` gives one screen for every project and reports:
 
 - Architecture score.
 - Task health.
@@ -532,11 +531,11 @@ Add:
 - `task-100`: Add execution progress and validation panels.
 - `task-101`: Add agent assignment dashboard panels.
 
-### Phase 32 - Portfolio Control Plane
+### Phase 32 - Workspace Control Plane
 
-- `task-102`: Add portfolio scanner and aggregate model.
-- `task-103`: Add `hermes portfolio` CLI entrypoint.
-- `task-104`: Add portfolio dashboard contract.
+- `task-102`: Add workspace scanner and aggregate model.
+- `task-103`: Add `hermes workspace` CLI entrypoint.
+- `task-104`: Add workspace dashboard contract.
 - `task-105`: Add cross-project blocker and approval summaries.
 
 ### Phase 33 - Autonomous Review Loops
@@ -546,9 +545,9 @@ Add:
 - `task-108`: Add continuous architecture score history.
 - `task-109`: Add autonomous review safety and approval policy.
 
-### Phase 34 - Market Research Work Graph Expansion
+### Phase 34 - Template Engine Expansion
 
-- `task-110`: Model market research-to-portfolio work graph.
-- `task-111`: Add evidence quality and validation nodes.
-- `task-112`: Add experiment and promotion decision graph nodes.
-- `task-113`: Add market research dashboard metrics for work graph execution.
+- `task-110`: Model reusable template work graph.
+- `task-111`: Add template validation nodes.
+- `task-112`: Add template decision graph nodes.
+- `task-113`: Add template dashboard metrics for work graph execution.

@@ -1,14 +1,14 @@
 {
   "id": "task-111",
-  "title": "Add evidence quality and validation nodes",
+  "title": "Add template validation nodes",
   "status": "completed",
   "priority": "medium",
-  "phase": "Market Research Work Graph Expansion",
-  "summary": "Add generic market-research evidence quality and validation nodes to the work graph model.",
+  "phase": "Template Engine Expansion",
+  "summary": "Add generic template validation nodes to the work graph model.",
   "acceptanceCriteria": [
-    "Evidence quality nodes track source coverage and confidence",
-    "Validation nodes track pass/fail criteria",
-    "Nodes feed promotion decision readiness",
+    "Template validation nodes track required fields and pass/fail criteria",
+    "Validation nodes preserve traceability to template definitions",
+    "Nodes feed readiness checks",
     "Nodes feed dashboard metrics"
   ]
 }

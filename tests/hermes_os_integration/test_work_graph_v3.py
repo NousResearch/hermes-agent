@@ -6,12 +6,6 @@ from hermes_os_integration.dashboard import (
     execution_validation_panel,
     work_graph_summary_panel,
 )
-from hermes_os_integration.market_research_graph import (
-    evidence_quality_node,
-    experiment_node,
-    market_dashboard_metrics,
-    market_research_work_graph,
-)
 from hermes_os_integration.persistence import (
     LocalRepository,
     persist_runtime_usage,
@@ -19,11 +13,11 @@ from hermes_os_integration.persistence import (
     persist_work_graph,
 )
 from hermes_os_integration.plan_cli import main as plan_main
-from hermes_os_integration.portfolio import (
+from hermes_os_integration.workspace_control import (
     blocker_approval_summary,
-    build_portfolio_summary,
-    main as portfolio_main,
-    portfolio_dashboard_panel,
+    build_workspace_summary,
+    main as workspace_main,
+    workspace_dashboard_panel,
 )
 from hermes_os_integration.review_loops import (
     ScheduledReview,
@@ -44,6 +38,12 @@ from hermes_os_integration.work_graph import (
     resolve_dependencies,
     save_work_graph,
     serialize_work_graph,
+)
+from hermes_os_integration.templates import (
+    TemplateCompiler,
+    TemplateLoader,
+    TemplateRegistry,
+    base_project_template,
 )
 
 
@@ -127,14 +127,14 @@ def test_plan_cli_json_and_write(tmp_path, capsys):
     assert (project / "workgraph.json").exists()
 
 
-def test_portfolio_summary_cli_and_dashboard(tmp_path, capsys):
+def test_workspace_summary_cli_and_dashboard(tmp_path, capsys):
     _project(tmp_path, name="project-a", docs=["PROJECT.md"])
     _project(tmp_path, name="project-b", docs=["PROJECT.md", "DOMAIN.md"])
 
-    summary = build_portfolio_summary(str(tmp_path / "projects"))
-    panel = portfolio_dashboard_panel(summary)
+    summary = build_workspace_summary(str(tmp_path / "projects"))
+    panel = workspace_dashboard_panel(summary)
     grouped = blocker_approval_summary(summary)
-    exit_code = portfolio_main(["--projects-root", str(tmp_path / "projects"), "--json"])
+    exit_code = workspace_main(["--projects-root", str(tmp_path / "projects"), "--json"])
 
     assert len(summary.projects) == 2
     assert panel.data["project_count"] == 2
@@ -165,13 +165,19 @@ def test_review_loop_score_history_policy_and_persistence(tmp_path):
     assert repository.get("work-graphs", "project-1")["project_id"] == "project-1"
 
 
-def test_market_research_graph_metrics_and_nodes():
-    graph = market_research_work_graph("market-project")
-    quality = evidence_quality_node("market-project", source_count=5, confidence=0.8)
-    experiment = experiment_node("market-project", "price dislocation")
-    metrics = market_dashboard_metrics(graph)
+def test_template_engine_compiles_domain_neutral_graph():
+    registry = TemplateRegistry()
+    template = base_project_template()
+    registered, error = registry.register(template)
+    loaded = TemplateLoader().load_dict({
+        "template_id": "custom",
+        "name": "Custom",
+        "nodes": [{"id": "n1", "type": "task", "title": "Do Work"}],
+    })
+    graph, compile_error = TemplateCompiler().compile(loaded, "project-1")
 
-    assert graph.project_id == "market-project"
-    assert quality.metadata["confidence"] == 0.8
-    assert experiment.metadata["task_type"] == "experiment"
-    assert metrics["evidence_quality_nodes"] >= 1
+    assert error is None
+    assert registered.template_id == "base-project"
+    assert registry.get("base-project") is not None
+    assert compile_error is None
+    assert graph.nodes[0].id == "n1"

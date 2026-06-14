@@ -65,11 +65,11 @@ Hermes OS v3 adds:
 - Architecture dashboard.
 - Work graph dashboard.
 - Agent dashboard.
-- Portfolio dashboard.
+- Workspace dashboard.
 
 ## Control Plane
 
-`hermes portfolio` summarizes architecture score, task health, execution status, blockers, approvals, and runtime usage across workspace projects.
+`hermes workspace` summarizes architecture score, task health, execution status, blockers, approvals, and runtime usage across workspace projects.
 
 ## Continuous Improvement
 

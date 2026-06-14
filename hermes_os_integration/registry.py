@@ -63,12 +63,12 @@ AGENT_REGISTRY: Dict[str, AgentDefinition] = {
         allowed_tools=["filesystem", "terminal"],
         runtime_provider="official-hermes-agent",
     ),
-    "market-research": AgentDefinition(
-        kind="market-research",
-        purpose="Research market opportunities with evidence trails.",
-        inputs=["market_context", "research_question"],
-        outputs=["evidence", "hypotheses", "research_notes"],
-        allowed_tools=["web", "research", "filesystem"],
+    "template": AgentDefinition(
+        kind="template",
+        purpose="Compile reusable project templates into work graph nodes.",
+        inputs=["template_definition", "project_context"],
+        outputs=["template_nodes", "validation_rules", "open_questions"],
+        allowed_tools=["filesystem", "docs"],
         runtime_provider="official-hermes-agent",
     ),
     "experiment": AgentDefinition(
@@ -91,7 +91,7 @@ TASK_TYPE_TO_AGENT = {
     "docs": "documentation",
     "documentation": "documentation",
     "deployment": "deployment",
-    "market": "market-research",
+    "template": "template",
     "experiment": "experiment",
 }
 

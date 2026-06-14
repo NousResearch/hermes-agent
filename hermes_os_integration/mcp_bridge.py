@@ -10,7 +10,7 @@ SUPPORTED_MCP_CATEGORIES = {
     "filesystem",
     "documentation",
     "research",
-    "market-data",
+    "external-data",
     "broker",
 }
 

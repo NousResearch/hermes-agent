@@ -13,7 +13,7 @@ AGENT_KINDS = {
     "review",
     "documentation",
     "deployment",
-    "market-research",
+    "template",
     "experiment",
 }
 

@@ -1,4 +1,4 @@
-"""Cross-project portfolio control plane summaries."""
+"""Cross-project workspace control plane summaries."""
 
 import argparse
 import json
@@ -12,7 +12,7 @@ from .scanners import discover_projects, scan_project
 
 
 @dataclass(frozen=True)
-class ProjectPortfolioSummary:
+class ProjectWorkspaceSummary:
     project_id: str
     project_path: str
     architecture_score: int
@@ -22,13 +22,13 @@ class ProjectPortfolioSummary:
 
 
 @dataclass(frozen=True)
-class PortfolioSummary:
-    projects: List[ProjectPortfolioSummary]
+class WorkspaceSummary:
+    projects: List[ProjectWorkspaceSummary]
     blocker_count: int
     approval_count: int
 
 
-def build_portfolio_summary(projects_root: str):
+def build_workspace_summary(projects_root: str):
     summaries = []
     for discovered in discover_projects(projects_root):
         scan = scan_project(discovered["project_path"], projects_root)
@@ -38,7 +38,7 @@ def build_portfolio_summary(projects_root: str):
             present_documents=scan.present_documents,
             completed_stages=scan.completed_stages,
         ))
-        summaries.append(ProjectPortfolioSummary(
+        summaries.append(ProjectWorkspaceSummary(
             project_id=scan.project_id,
             project_path=scan.project_path,
             architecture_score=report.architecture_score,
@@ -46,17 +46,17 @@ def build_portfolio_summary(projects_root: str):
             approvals=report.missing_approvals,
             runtime_usage={"status": "unknown"},
         ))
-    return PortfolioSummary(
+    return WorkspaceSummary(
         projects=summaries,
         blocker_count=sum(len(item.blockers) for item in summaries),
         approval_count=sum(len(item.approvals) for item in summaries),
     )
 
 
-def portfolio_dashboard_panel(summary: PortfolioSummary):
+def workspace_dashboard_panel(summary: WorkspaceSummary):
     return DashboardPanel(
-        panel_id="portfolio-control-plane",
-        title="Portfolio Control Plane",
+        panel_id="workspace-control-plane",
+        title="Workspace Control Plane",
         data={
             "project_count": len(summary.projects),
             "blocker_count": summary.blocker_count,
@@ -66,7 +66,7 @@ def portfolio_dashboard_panel(summary: PortfolioSummary):
     )
 
 
-def blocker_approval_summary(summary: PortfolioSummary):
+def blocker_approval_summary(summary: WorkspaceSummary):
     return {
         "blockers_by_project": {project.project_id: project.blockers for project in summary.projects},
         "approvals_by_project": {project.project_id: project.approvals for project in summary.projects},
@@ -75,15 +75,15 @@ def blocker_approval_summary(summary: PortfolioSummary):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="hermes portfolio")
+    parser = argparse.ArgumentParser(prog="hermes workspace")
     parser.add_argument("--projects-root", required=True)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    summary = build_portfolio_summary(args.projects_root)
+    summary = build_workspace_summary(args.projects_root)
     if args.json:
         sys.stdout.write(json.dumps(asdict(summary), indent=2, sort_keys=True) + "\n")
     else:
-        sys.stdout.write("Portfolio projects: " + str(len(summary.projects)) + "\n")
+        sys.stdout.write("Workspace projects: " + str(len(summary.projects)) + "\n")
         sys.stdout.write("Blockers: " + str(summary.blocker_count) + "\n")
         sys.stdout.write("Approvals: " + str(summary.approval_count) + "\n")
     return 2 if summary.blocker_count else 0

@@ -8,7 +8,7 @@
   "acceptanceCriteria": [
     "Score records include timestamp and review reference",
     "History supports latest and trend queries",
-    "History feeds architecture and portfolio dashboards",
+    "History feeds architecture and workspace dashboards",
     "Persistence has tests"
   ]
 }

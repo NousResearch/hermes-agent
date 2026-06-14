@@ -1,14 +1,14 @@
 {
   "id": "task-113",
-  "title": "Add market research dashboard metrics for work graph execution",
+  "title": "Add template dashboard metrics for work graph execution",
   "status": "completed",
   "priority": "medium",
-  "phase": "Market Research Work Graph Expansion",
-  "summary": "Expose market research history, decision rate, evidence quality, and portfolio impact from work graph execution.",
+  "phase": "Template Engine Expansion",
+  "summary": "Expose template usage, validation pass rate, compile success rate, and generated work graph health.",
   "acceptanceCriteria": [
-    "Metrics map to market research graph nodes",
-    "Metrics include decision rate and evidence quality",
-    "Metrics include portfolio impact",
+    "Metrics map to template graph nodes",
+    "Metrics include validation pass rate and compile success rate",
+    "Metrics include generated node and dependency counts",
     "Metrics feed dashboard panel contracts"
   ]
 }

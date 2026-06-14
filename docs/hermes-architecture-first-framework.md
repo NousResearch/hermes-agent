@@ -86,8 +86,8 @@ Every architecture-first project receives:
 Initial existing-project reviews:
 
 - Workspace projects.
-- Investment System.
-- Media Engine.
-- Rinseables.
+- workspace project.
+- workspace project.
+- workspace project.
 
 Each review should generate missing documentation, workflows, dashboards, schemas, approvals, and an improvement roadmap.

@@ -1,14 +1,14 @@
 {
   "id": "task-110",
-  "title": "Model market research-to-portfolio work graph",
+  "title": "Model reusable template work graph",
   "status": "completed",
   "priority": "medium",
-  "phase": "Market Work Graph Expansion",
-  "summary": "Represent market research, evidence collection, validation, experiment, promotion decision, and portfolio assignment as a work graph.",
+  "phase": "Template Engine Expansion",
+  "summary": "Represent reusable template nodes, dependencies, approvals, metrics, and validation rules as a work graph.",
   "acceptanceCriteria": [
-    "Graph includes research-to-portfolio workflow nodes",
+    "Graph includes reusable template workflow nodes",
     "Graph includes dependencies and approvals",
-    "Graph includes agent assignments",
+    "Graph includes optional agent assignments",
     "Graph can emit dashboard metrics"
   ]
 }

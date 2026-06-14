@@ -1,13 +1,13 @@
 {
   "id": "task-050",
-  "title": "Review Media Engine and Rinseables architecture readiness",
+  "title": "Review workspace project and workspace project architecture readiness",
   "status": "completed",
   "priority": "medium",
   "phase": "Existing Project Reviews",
-  "summary": "Run the architecture-first review model against Media Engine and Rinseables and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmaps.",
+  "summary": "Run the architecture-first review model against workspace project and workspace project and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmaps.",
   "acceptanceCriteria": [
-    "Media Engine review covers publishing, coverage mix, brand growth, platform coverage, and approval time",
-    "Rinseables review covers business model, workflows, dashboards, approvals, and agent boundaries",
+    "workspace project review covers publishing, coverage mix, brand growth, platform coverage, and approval time",
+    "workspace project review covers business model, workflows, dashboards, approvals, and agent boundaries",
     "Missing project documents are listed for each project",
     "Priority roadmaps are generated for both projects"
   ]

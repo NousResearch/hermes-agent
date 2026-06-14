@@ -7,13 +7,7 @@ from typing import Dict, List, Optional
 from .architecture_first import REQUIRED_PROJECT_DOCS, existing_project_review_targets
 
 
-PROJECT_ALIASES = {
-    "investment-system": "investing-system",
-    "investing-system": "investing-system",
-    "media-engine": "media-engine",
-    "rinseables": "rinseables-crm",
-    "rinseables-crm": "rinseables-crm",
-}
+PROJECT_ALIASES = {}
 
 
 @dataclass(frozen=True)
@@ -49,30 +43,7 @@ def workspace_projects_root(start_path: Optional[str] = None):
 
 
 def project_profiles():
-    targets = existing_project_review_targets()
-    return {
-        "investing-system": ProjectProfile(
-            project_id="investing-system",
-            canonical_name="Investment System",
-            aliases=["investment-system", "investing-system"],
-            expected_metrics=targets["investing-system"],
-            review_hints=["watchlists", "theses", "valuation", "risk"],
-        ),
-        "media-engine": ProjectProfile(
-            project_id="media-engine",
-            canonical_name="Media Engine",
-            aliases=["media-engine"],
-            expected_metrics=targets["media-engine"],
-            review_hints=["publishing", "coverage", "brand growth"],
-        ),
-        "rinseables-crm": ProjectProfile(
-            project_id="rinseables-crm",
-            canonical_name="Rinseables",
-            aliases=["rinseables", "rinseables-crm"],
-            expected_metrics=targets["rinseables"],
-            review_hints=["crm", "approvals", "business model"],
-        ),
-    }
+    return {}
 
 
 def resolve_project_path(project: str, projects_root: Optional[str] = None):
@@ -169,7 +140,13 @@ def scan_project(project: str, projects_root: Optional[str] = None):
     present, missing = scan_document_coverage(project_path)
     evidence = scan_architecture_evidence(project_path) if os.path.isdir(project_path) else {}
     completed = infer_completed_stages(present, evidence)
-    profile = project_profiles().get(project_id)
+    profile = project_profiles().get(project_id) or ProjectProfile(
+        project_id=project_id,
+        canonical_name=project_id,
+        aliases=[project_id],
+        expected_metrics=[],
+        review_hints=[],
+    )
     return ProjectScan(
         project_id=project_id,
         project_path=project_path,

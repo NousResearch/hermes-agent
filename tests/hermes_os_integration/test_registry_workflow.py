@@ -1,4 +1,4 @@
-from hermes_os_integration.market_research_architecture import MARKET_RESEARCH_ARCHITECTURE
+from hermes_os_integration.templates import base_project_template
 from hermes_os_integration.registry import get_agent, select_agent_kind
 from hermes_os_integration.workflows import CheckpointedWorkflow
 
@@ -23,6 +23,7 @@ def test_checkpointed_workflow_runs_two_dry_run_steps():
     assert run.latest_step() == "review"
 
 
-def test_market_research_architecture_keeps_hermes_os_control_plane():
-    assert MARKET_RESEARCH_ARCHITECTURE["control_plane"] == "Hermes OS"
-    assert "research-agent" in MARKET_RESEARCH_ARCHITECTURE["pipeline"]
+def test_base_template_keeps_domain_logic_out_of_os():
+    template = base_project_template()
+    assert template.template_id == "base-project"
+    assert "workflow-design" in [node["id"] for node in template.nodes]

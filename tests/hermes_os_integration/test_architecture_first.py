@@ -89,7 +89,7 @@ def test_workflow_and_dashboard_gates():
         success_metrics=["coverage"],
         failure_indicators=["stale thesis"],
         opportunity_indicators=["valuation gap"],
-        required_reports=["weekly portfolio"],
+        required_reports=["weekly status"],
     ))
 
     assert readiness["ready"] is True
@@ -115,4 +115,4 @@ def test_agent_boundaries_artifacts_and_delegation_gate():
 
 def test_existing_project_review_targets_include_workspace_projects():
     targets = existing_project_review_targets()
-    assert "investing-system" in targets
+    assert targets == {}

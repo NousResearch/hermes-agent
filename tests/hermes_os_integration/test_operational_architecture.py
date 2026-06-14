@@ -30,24 +30,24 @@ from hermes_os_integration.wrapper import build_oneshot_command, build_runtime_p
 
 def test_project_scanner_and_cli_json_output(tmp_path, capsys):
     projects = tmp_path / "projects"
-    project = projects / "investing-system"
+    project = projects / "workspace-project"
     docs = project / "docs"
     docs.mkdir(parents=True)
     (docs / "PROJECT.md").write_text("# Project\n", encoding="utf-8")
     (docs / "DOMAIN.md").write_text("# Domain\n", encoding="utf-8")
 
     discovered = discover_projects(str(projects))
-    assert discovered[0]["project_id"] == "investing-system"
+    assert discovered[0]["project_id"] == "workspace-project"
 
-    scan = scan_project("investment-system", str(projects))
-    assert scan.project_id == "investing-system"
+    scan = scan_project("workspace-project", str(projects))
+    assert scan.project_id == "workspace-project"
     assert "PROJECT.md" in scan.present_documents
-    assert scan.profile.canonical_name == "Investment System"
+    assert scan.profile.canonical_name == "workspace-project"
 
-    exit_code = architect_main(["review", "investment-system", "--projects-root", str(projects), "--json"])
+    exit_code = architect_main(["review", "workspace-project", "--projects-root", str(projects), "--json"])
     output = json.loads(capsys.readouterr().out)
     assert exit_code == WARNING
-    assert output["project_id"] == "investing-system"
+    assert output["project_id"] == "workspace-project"
     assert "missing_documents" in output
 
 

@@ -13,7 +13,7 @@
 - Verified the local `./hermes --help` runtime path currently fails under Python 3.9.6 because the official runtime requires Python 3.11+ syntax.
 - Added non-conflicting `hermes-agent` launcher.
 - Created a local Python 3.11 `.venv`, installed the official Hermes Agent runtime into it, and verified `./hermes-agent --help` starts without conflicting with Hermes OS ownership.
-- Added `hermes_os_integration` contracts, error taxonomy, runtime wrapper, agent registry, delegation prototype, memory guardrails, MCP permission bridge, runtime health contract, checkpointed workflow prototype, and Market architecture definition.
+- Added `hermes_os_integration` contracts, error taxonomy, runtime wrapper, agent registry, delegation prototype, memory guardrails, MCP permission bridge, runtime health contract, checkpointed workflow prototype, and Data source architecture definition.
 - Added integration tests for schemas, delegation, memory/MCP guardrails, health, workflow checkpoints, command boundary, and smoke behavior.
 - Reviewed Hermes OS Architecture-First Development Framework handoff.
 - Updated integration plan so Hermes OS enforces architecture before implementation and treats Official Hermes Agent as execution infrastructure only.
@@ -25,4 +25,4 @@
 - Implemented tasks `task-051` through `task-079` with an architect review CLI entrypoint, workspace project scanners, safe missing-doc generation, review artifacts, dashboard panel contracts, execution gates, local persistence, and real `hermes-agent --oneshot` command assembly with dry-run fallback.
 - Reviewed Hermes OS v3 Control Plane + Governance + Work Graph Architecture roadmap.
 - Updated the plan around the new Work Graph Compiler north star and generated backlog tasks `task-080` through `task-113`.
-- Implemented tasks `task-080` through `task-113` with work graph schemas, architecture artifact reading, graph compilation, `hermes plan`, dependency resolution, execution queues, validation rules, intelligent assignment contracts, work graph dashboard panels, portfolio summaries, autonomous review loops, and generic market research graph templates.
+- Implemented tasks `task-080` through `task-113` with work graph schemas, architecture artifact reading, graph compilation, `hermes plan`, dependency resolution, execution queues, validation rules, intelligent assignment contracts, work graph dashboard panels, workspace summaries, autonomous review loops, and a domain-neutral template engine.

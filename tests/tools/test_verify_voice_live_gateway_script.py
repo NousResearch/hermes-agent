@@ -36,6 +36,10 @@ def _write_voice_native_root(root: Path) -> None:
         "\n".join(["voice_compatible", "libopus", "-application", "voip"]),
         encoding="utf-8",
     )
+    (tools_dir / "transcription_tools.py").write_text(
+        "\n".join(["stt.providers", "_transcribe_command_stt", "transcribe_audio"]),
+        encoding="utf-8",
+    )
     (gateway_dir / "whatsapp_cloud.py").write_text(
         "\n".join(
             [

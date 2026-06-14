@@ -9,9 +9,10 @@ This aggregate preflight runs the existing focused verifiers in a safe order:
 3. The local Baileys bridge keeps Ogg/Opus as native voice notes.
 4. The WhatsApp Cloud adapter uploads Ogg/Opus with voice-note MIME.
 5. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
-6. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
-7. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
-8. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
+6. Hermes command-provider STT transcribes through voice stream-transcribe.
+7. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
+8. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
+9. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
 
 By default the script creates a temporary Hermes home and removes it after a
 passing or failing run. Pass --keep-home to inspect the generated config.
@@ -34,6 +35,7 @@ from typing import Any
 
 
 DEFAULT_COMMAND_TEXT = "Hermes local voice command preflight."
+DEFAULT_COMMAND_STT_TEXT = "hello world"
 DEFAULT_VOICE_CONTRACT_TEXT = "Hermes voice contract preflight."
 DEFAULT_STREAM_TEXT = "Hermes local voice stream preflight."
 DEFAULT_FULL_DUPLEX_INBOUND_TEXT = "hello world"
@@ -51,6 +53,15 @@ LIVE_ROOT_REQUIREMENTS = (
             "libopus",
             "-application",
             "voip",
+        ),
+    },
+    {
+        "path": "tools/transcription_tools.py",
+        "description": "command-provider STT routing",
+        "tokens": (
+            "stt.providers",
+            "_transcribe_command_stt",
+            "transcribe_audio",
         ),
     },
     {
@@ -297,6 +308,39 @@ def command_tts_command(
     return command
 
 
+def command_stt_command(
+    args: argparse.Namespace,
+    *,
+    voice_bin: str,
+    hermes_home: Path,
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(script_path("verify_voice_command_stt.py")),
+        "--voice-bin",
+        voice_bin,
+        "--hermes-home",
+        str(hermes_home),
+        "--force",
+        "--provider",
+        args.stt_provider,
+        "--voice",
+        args.voice,
+        "--speed",
+        args.speed,
+        "--timeout",
+        f"{args.stt_timeout:g}",
+        "--generate-timeout",
+        f"{args.tts_timeout:g}",
+    ]
+    if args.keep_home:
+        command.append("--keep-home")
+    command.extend(["--text", args.command_stt_text])
+    for word in args.stt_expect_word:
+        command.extend(["--expect-word", word])
+    return command
+
+
 def stream_tts_command(
     args: argparse.Namespace,
     *,
@@ -434,9 +478,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hermes-home", type=Path)
     parser.add_argument("--keep-home", action="store_true")
     parser.add_argument("--provider", default="kokoro")
+    parser.add_argument("--stt-provider", default="voice")
     parser.add_argument("--voice", default="af_heart")
     parser.add_argument("--speed", default="1.0")
     parser.add_argument("--tts-timeout", type=float, default=180.0)
+    parser.add_argument("--stt-timeout", type=float, default=300.0)
     parser.add_argument("--stream-timeout", type=float, default=180.0)
     parser.add_argument("--calling-control-plane-timeout", type=float, default=10.0)
     parser.add_argument("--full-duplex-timeout", type=float, default=90.0)
@@ -451,6 +497,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cli-timeout", type=float, default=10.0)
     parser.add_argument("--command-text", default=DEFAULT_COMMAND_TEXT)
+    parser.add_argument("--command-stt-text", default=DEFAULT_COMMAND_STT_TEXT)
     parser.add_argument("--voice-contract-text", default=DEFAULT_VOICE_CONTRACT_TEXT)
     parser.add_argument("--voice-contract-timeout", type=float, default=240.0)
     parser.add_argument(
@@ -480,6 +527,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-voice-contract", action="store_true")
     parser.add_argument("--skip-whatsapp-bridge-media", action="store_true")
     parser.add_argument("--skip-whatsapp-cloud-voice", action="store_true")
+    parser.add_argument("--skip-command-stt", action="store_true")
     parser.add_argument("--skip-calling-control-plane", action="store_true")
     parser.add_argument("--skip-full-duplex", action="store_true")
     parser.add_argument(
@@ -489,6 +537,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--full-duplex-outbound-text",
         default=DEFAULT_FULL_DUPLEX_OUTBOUND_TEXT,
+    )
+    parser.add_argument(
+        "--stt-expect-word",
+        action="append",
+        default=None,
+        help="word expected in the command-STT transcript; repeatable",
     )
     parser.add_argument(
         "--expect-word",
@@ -501,6 +555,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--full-duplex-max-queued-tx-ms must be non-negative")
     if args.expect_word is None:
         args.expect_word = ["hello", "world"]
+    if args.stt_expect_word is None:
+        args.stt_expect_word = ["hello", "world"]
     return args
 
 
@@ -593,6 +649,23 @@ def main() -> int:
             timeout=args.tts_timeout + 30,
             env=env,
         )
+        if args.skip_command_stt:
+            checks["command_stt"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-command-stt was provided",
+            }
+        else:
+            checks["command_stt"] = run_json_step(
+                "command STT verifier",
+                command_stt_command(
+                    args,
+                    voice_bin=voice_bin,
+                    hermes_home=hermes_home,
+                ),
+                timeout=args.stt_timeout + args.tts_timeout + 30,
+                env=env,
+            )
         checks["stream_tts"] = run_json_step(
             "stream TTS verifier",
             stream_tts_command(args, voice_bin=voice_bin),

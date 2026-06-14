@@ -27,14 +27,17 @@ def _load_script_module():
 def _args(**overrides):
     values = {
         "provider": "kokoro",
+        "stt_provider": "voice",
         "voice": "af_heart",
         "speed": "1.0",
         "tts_timeout": 180.0,
+        "stt_timeout": 300.0,
         "stream_timeout": 180.0,
         "calling_control_plane_timeout": 10.0,
         "full_duplex_timeout": 90.0,
         "full_duplex_max_queued_tx_ms": 1000,
         "command_text": "command smoke",
+        "command_stt_text": "hello world",
         "voice_contract_text": "contract smoke",
         "voice_contract_timeout": 240.0,
         "whatsapp_bridge_media_timeout": 15.0,
@@ -45,12 +48,14 @@ def _args(**overrides):
         "skip_voice_contract": False,
         "skip_whatsapp_bridge_media": False,
         "skip_whatsapp_cloud_voice": False,
+        "skip_command_stt": False,
         "skip_calling_control_plane": False,
         "skip_full_duplex": False,
         "voice_repo": Path("/voice"),
         "webrtc_python_bin": None,
         "full_duplex_inbound_text": "hello world",
         "full_duplex_outbound_text": "hello back",
+        "stt_expect_word": ["hello", "world"],
         "expect_word": ["hello", "world"],
         "keep_home": False,
     }
@@ -75,6 +80,28 @@ def test_command_tts_command_uses_isolated_hermes_home():
     assert "--force" in command
     assert "--keep-home" in command
     assert command[-2:] == ["--text", "command smoke"]
+
+
+def test_command_stt_command_uses_isolated_hermes_home():
+    script = _load_script_module()
+
+    command = script.command_stt_command(
+        _args(keep_home=True, stt_expect_word=["hello"]),
+        voice_bin="/tmp/voice",
+        hermes_home=Path("/tmp/hermes-home"),
+    )
+
+    assert command[:2] == [sys.executable, str(script.script_path("verify_voice_command_stt.py"))]
+    assert "--voice-bin" in command
+    assert "/tmp/voice" in command
+    assert "--hermes-home" in command
+    assert "/tmp/hermes-home" in command
+    assert "--force" in command
+    assert "--keep-home" in command
+    assert "--provider" in command
+    assert "voice" in command
+    assert "--generate-timeout" in command
+    assert command[-4:] == ["--text", "hello world", "--expect-word", "hello"]
 
 
 def test_stream_tts_command_can_use_custom_template():
@@ -275,6 +302,10 @@ def _write_live_root(root: Path, *, include_cloud: bool = True) -> None:
         "\n".join(["voice_compatible", "libopus", "-application", "voip"]),
         encoding="utf-8",
     )
+    (tools_dir / "transcription_tools.py").write_text(
+        "\n".join(["stt.providers", "_transcribe_command_stt", "transcribe_audio"]),
+        encoding="utf-8",
+    )
     if include_cloud:
         (gateway_dir / "whatsapp_cloud.py").write_text(
             "\n".join(
@@ -301,6 +332,7 @@ def test_audit_live_hermes_root_accepts_voice_native_checkout(tmp_path: Path):
     assert result["failures"] == []
     assert [check["path"] for check in result["checked"]] == [
         "tools/tts_tool.py",
+        "tools/transcription_tools.py",
         "gateway/platforms/whatsapp_cloud.py",
     ]
 

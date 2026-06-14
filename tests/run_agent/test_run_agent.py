@@ -6001,6 +6001,41 @@ class TestStreamingApiCall:
         assert resp.choices[0].message.content == "Hello"
         assert resp.model == "gpt-4"
 
+    def test_anthropic_partial_stream_error_returns_anthropic_message(self, agent):
+        class FakeAnthropicStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text="Recovered text"),
+                )
+
+            def get_final_message(self):
+                raise IndexError("list index out of range")
+
+        class FakeMessages:
+            def stream(self, **kwargs):
+                return FakeAnthropicStream()
+
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "custom-anthropic"
+        agent._anthropic_client = SimpleNamespace(messages=FakeMessages())
+        agent.stream_delta_callback = MagicMock()
+
+        resp = agent._interruptible_streaming_api_call({"messages": [], "model": "claude-test"})
+
+        assert not hasattr(resp, "choices")
+        assert resp.content[0].type == "text"
+        assert resp.content[0].text == "Recovered text"
+        assert resp.stop_reason == "max_tokens"
+
 
 # ===================================================================
 # Interrupt _vprint force=True verification

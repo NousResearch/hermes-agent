@@ -2651,13 +2651,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     result["error"],
                 )
                 _stub_finish_reason = FINISH_REASON_LENGTH
+            _stub_model = getattr(agent, "model", None) or api_kwargs.get("model", "unknown")
+            if agent.api_mode == "anthropic_messages":
+                _content_text = _partial_text or ""
+                return SimpleNamespace(
+                    id=PARTIAL_STREAM_STUB_ID,
+                    type="message",
+                    role="assistant",
+                    model=_stub_model,
+                    content=[SimpleNamespace(type="text", text=_content_text)],
+                    stop_reason="max_tokens",
+                    stop_sequence=None,
+                    usage=None,
+                    _dropped_tool_names=_partial_names or None,
+                )
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,
             )
             return SimpleNamespace(
                 id=PARTIAL_STREAM_STUB_ID,
-                model=getattr(agent, "model", "unknown"),
+                model=_stub_model,
                 choices=[SimpleNamespace(
                     index=0, message=_stub_msg, finish_reason=_stub_finish_reason,
                 )],

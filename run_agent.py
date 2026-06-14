@@ -132,7 +132,7 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_transcript_context
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
@@ -1603,13 +1603,18 @@ class AIAgent:
                 if _is_multimodal_tool_result(content):
                     content = _multimodal_text_summary(content)
                 elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
+                    # List of OpenAI-style content parts: strip images, keep
+                    # durable user text only. Native vision routing appends
+                    # ``[Image attached at: ...]`` hints to the current API
+                    # turn so tools can reference the just-attached image;
+                    # those hints (and synthetic ``[screenshot]`` placeholders)
+                    # must not persist into replayable transcript history.
                     _txt = []
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
+                            _clean = sanitize_transcript_context(str(p.get("text", ""))).strip()
+                            if _clean:
+                                _txt.append(_clean)
                     content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:

@@ -117,6 +117,15 @@ _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
+_IMAGE_ATTACHMENT_MARKER_RE = re.compile(
+    r'\s*\[Image attached(?: at)?:[^\]\n]+\]',
+    re.IGNORECASE,
+)
+_IMAGE_ATTACHMENT_PLACEHOLDER_RE = re.compile(
+    r'\s*\[(?:screenshot|inline image)\](?=\s|$)',
+    re.IGNORECASE,
+)
+_EXCESS_BLANK_LINES_RE = re.compile(r'\n{3,}')
 
 
 def sanitize_context(text: str) -> str:
@@ -125,6 +134,25 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def sanitize_transcript_context(text: str) -> str:
+    """Strip internal context plus ephemeral attachment-routing metadata.
+
+    Native image routing appends text hints such as ``[Image attached at:
+    /.../image_cache/img_x.jpg]`` to the current multimodal user turn so the
+    model can reference the just-attached image in tools. Those hints are
+    transport metadata, not durable user text. If replayed from the session DB
+    on later turns, a plain follow-up can look like it still contains the old
+    screenshot.
+    """
+    cleaned = sanitize_context(text)
+    had_attachment_marker = _IMAGE_ATTACHMENT_MARKER_RE.search(cleaned) is not None
+    cleaned = _IMAGE_ATTACHMENT_MARKER_RE.sub('', cleaned)
+    if had_attachment_marker:
+        cleaned = _IMAGE_ATTACHMENT_PLACEHOLDER_RE.sub('', cleaned)
+        cleaned = _EXCESS_BLANK_LINES_RE.sub('\n\n', cleaned)
+    return cleaned
 
 
 class StreamingContextScrubber:

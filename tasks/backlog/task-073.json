@@ -1,7 +1,7 @@
 {
   "id": "task-073",
   "title": "Add validated agent artifact persistence model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Persistence",
   "summary": "Persist validated artifacts produced by Official Hermes Agent or other worker runtimes.",

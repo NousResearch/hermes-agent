@@ -1,7 +1,7 @@
 {
   "id": "task-055",
   "title": "Build documentation coverage scanner",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Project Scanners",
   "summary": "Detect which required architecture-first documents exist for a project.",

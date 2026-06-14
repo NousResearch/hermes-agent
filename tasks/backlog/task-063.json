@@ -1,7 +1,7 @@
 {
   "id": "task-063",
   "title": "Add architecture score and gap panels",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Architecture Dashboard",
   "summary": "Build dashboard panel contracts for architecture score and critical gaps.",

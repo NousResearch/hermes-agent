@@ -1,7 +1,7 @@
 {
   "id": "task-072",
   "title": "Add decision and approval persistence model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Persistence",
   "summary": "Persist decisions, approvals, overrides, approvers, reasons, and timestamps.",

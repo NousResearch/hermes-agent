@@ -1,7 +1,7 @@
 {
   "id": "task-053",
   "title": "Add architect CLI exit codes",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Architect CLI Implementation",
   "summary": "Return stable exit codes for pass, warning, blocked, and invalid architecture reviews.",

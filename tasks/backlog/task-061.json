@@ -1,7 +1,7 @@
 {
   "id": "task-061",
   "title": "Add per-project architecture review artifacts",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Review-Generated Documentation",
   "summary": "Store architecture reviews as durable project artifacts under a predictable path.",

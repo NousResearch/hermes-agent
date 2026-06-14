@@ -1,7 +1,7 @@
 {
   "id": "task-054",
   "title": "Build project discovery scanner",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Project Scanners",
   "summary": "Scan the workspace for Hermes-controlled projects and resolve project names to paths.",

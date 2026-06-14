@@ -1,7 +1,7 @@
 {
   "id": "task-060",
   "title": "Add review-to-roadmap generation",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Review-Generated Documentation",
   "summary": "Turn critical architecture gaps into prioritized roadmap items.",

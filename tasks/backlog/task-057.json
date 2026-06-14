@@ -1,7 +1,7 @@
 {
   "id": "task-057",
   "title": "Add workspace project profiles",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Project Scanners",
   "summary": "Add project profiles for Kalshi VC, Investment System, Media Engine, and Rinseables.",

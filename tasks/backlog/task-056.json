@@ -1,7 +1,7 @@
 {
   "id": "task-056",
   "title": "Build architecture artifact scanner",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Project Scanners",
   "summary": "Scan projects for domain, workflow, dashboard, metric, approval, schema, and agent-boundary evidence.",

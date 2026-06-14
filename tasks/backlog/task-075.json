@@ -1,7 +1,7 @@
 {
   "id": "task-075",
   "title": "Replace wrapper help behavior with real oneshot invocation",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Real Runtime Invocation",
   "summary": "Invoke Official Hermes Agent with `--oneshot` for real delegated work instead of using help output as a runtime smoke path.",

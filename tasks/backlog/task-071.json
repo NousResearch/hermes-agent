@@ -1,7 +1,7 @@
 {
   "id": "task-071",
   "title": "Add grill-me session persistence model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Persistence",
   "summary": "Persist grill-me questions, answers, unresolved assumptions, and session status.",

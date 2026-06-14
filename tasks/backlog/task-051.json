@@ -1,7 +1,7 @@
 {
   "id": "task-051",
   "title": "Implement architect review CLI entrypoint",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Architect CLI Implementation",
   "summary": "Turn the architecture review contract into a real `hermes architect review <project>` command entrypoint.",

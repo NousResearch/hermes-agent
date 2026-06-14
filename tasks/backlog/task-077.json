@@ -1,7 +1,7 @@
 {
   "id": "task-077",
   "title": "Add runtime artifact capture and ingestion",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Real Runtime Invocation",
   "summary": "Capture artifacts produced by Official Hermes Agent and pass them through validated artifact ingestion.",

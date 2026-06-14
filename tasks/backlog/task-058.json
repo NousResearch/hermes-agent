@@ -1,7 +1,7 @@
 {
   "id": "task-058",
   "title": "Generate missing architecture docs from review output",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Review-Generated Documentation",
   "summary": "Generate missing PROJECT, DOMAIN, WORKFLOWS, DASHBOARD, METRICS, APPROVALS, AGENTS, TASKS, DECISIONS, ROADMAP, and ARCHITECTURE docs from architecture review results.",

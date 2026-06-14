@@ -6,6 +6,7 @@ import time
 
 from .contracts import AgentResponse
 from .errors import PROCESS_ERROR, RUNTIME_TIMEOUT, RUNTIME_UNAVAILABLE, adapter_error
+from .architecture_first import load_constitution
 
 
 def default_launcher_path():
@@ -14,8 +15,9 @@ def default_launcher_path():
 
 
 class RuntimeWrapper:
-    def __init__(self, launcher_path=None):
+    def __init__(self, launcher_path=None, max_retries=0):
         self.launcher_path = launcher_path or default_launcher_path()
+        self.max_retries = int(max_retries)
 
     def run(self, request):
         started = time.monotonic()
@@ -34,10 +36,17 @@ class RuntimeWrapper:
                 errors=[adapter_error(RUNTIME_UNAVAILABLE, "hermes-agent launcher not found")],
             )
 
-        command = [
-            self.launcher_path,
-            "--help",
-        ]
+        command = build_oneshot_command(self.launcher_path, request)
+        attempts = 0
+        last_response = None
+        while attempts <= self.max_retries:
+            last_response = self._run_command(command, request, started)
+            if last_response.status != "timeout":
+                return last_response
+            attempts += 1
+        return last_response
+
+    def _run_command(self, command, request, started):
         try:
             completed = subprocess.run(
                 command,
@@ -78,6 +87,47 @@ class RuntimeWrapper:
             errors=errors,
             duration_ms=_duration_ms(started),
         )
+
+
+def build_runtime_prompt(request):
+    constitution = load_constitution()
+    sections = [
+        "Hermes OS delegated task",
+        "",
+        "Task ID: " + request.task_id,
+        "Project ID: " + request.project_id,
+        "Agent kind: " + request.agent_kind,
+        "",
+        "Objective:",
+        request.prompt,
+        "",
+        "Source-of-truth boundary:",
+        "Hermes OS owns projects, tasks, workflows, dashboards, approvals, state, and memory.",
+        "You are a worker runtime. Produce artifacts; do not claim ownership of source-of-truth state.",
+        "",
+        "Constitution:",
+    ]
+    sections.extend("- " + rule for rule in constitution["rules"])
+    sections.extend([
+        "",
+        "Tool policy:",
+        "Allowed tools: " + ", ".join(request.tool_policy.allowed_tools or ["none specified"]),
+        "Denied tools: " + ", ".join(request.tool_policy.denied_tools or ["none specified"]),
+        "Requires approval: " + str(request.tool_policy.require_approval).lower(),
+    ])
+    if request.context:
+        sections.extend(["", "Context:"])
+        for key in sorted(request.context):
+            sections.append(str(key) + ": " + str(request.context[key]))
+    return "\n".join(sections)
+
+
+def build_oneshot_command(launcher_path, request):
+    return [
+        launcher_path,
+        "--oneshot",
+        build_runtime_prompt(request),
+    ]
 
 
 def _duration_ms(started):

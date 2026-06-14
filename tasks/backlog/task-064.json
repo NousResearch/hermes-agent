@@ -1,7 +1,7 @@
 {
   "id": "task-064",
   "title": "Add approvals and blocked-execution panels",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Architecture Dashboard",
   "summary": "Expose human approvals, override decisions, and blocked premature-coding attempts in the dashboard.",

@@ -1,7 +1,7 @@
 {
   "id": "task-079",
   "title": "Add live delegation integration tests with dry-run fallback",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Real Runtime Invocation",
   "summary": "Test live Official Hermes Agent delegation when available and fall back to deterministic dry-run behavior when unavailable.",

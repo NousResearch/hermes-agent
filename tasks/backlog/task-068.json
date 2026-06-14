@@ -1,7 +1,7 @@
 {
   "id": "task-068",
   "title": "Add human override and approval audit trail",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Execution Gates",
   "summary": "Allow explicit human override for blocked architecture gates while preserving an audit trail.",

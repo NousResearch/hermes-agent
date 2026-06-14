@@ -1,7 +1,7 @@
 {
   "id": "task-076",
   "title": "Add Official Hermes Agent prompt and context assembly",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Real Runtime Invocation",
   "summary": "Assemble prompts for delegated runtime execution using task context, constitution rules, tool policy, and architecture boundaries.",

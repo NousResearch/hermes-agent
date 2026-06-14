@@ -1,7 +1,7 @@
 {
   "id": "task-070",
   "title": "Add review report persistence model",
-  "status": "backlog",
+  "status": "completed",
   "priority": "high",
   "phase": "Persistence",
   "summary": "Persist architecture review reports as source-of-truth Hermes OS records.",

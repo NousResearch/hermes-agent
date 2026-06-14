@@ -1,7 +1,7 @@
 {
   "id": "task-065",
   "title": "Add runtime delegation status panel",
-  "status": "backlog",
+  "status": "completed",
   "priority": "medium",
   "phase": "Architecture Dashboard",
   "summary": "Expose Official Hermes Agent delegation health and recent execution results in the architecture dashboard.",

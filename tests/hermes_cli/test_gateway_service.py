@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -616,6 +617,50 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_launchd_program_arguments_prefers_hermes_entrypoint(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_hermes_cli_entrypoint", lambda: "/opt/hermes/venv/bin/hermes")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/opt/hermes/venv/bin/python")
+
+        assert gateway_cli._launchd_program_arguments("--profile coder") == [
+            "/opt/hermes/venv/bin/hermes",
+            "--profile",
+            "coder",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+
+    def test_launchd_program_arguments_falls_back_to_python_module(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_hermes_cli_entrypoint", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/opt/hermes/venv/bin/python")
+
+        assert gateway_cli._launchd_program_arguments() == [
+            "/opt/hermes/venv/bin/python",
+            "-m",
+            "hermes_cli.main",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+
+    def test_generate_launchd_plist_uses_hermes_entrypoint(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "get_hermes_cli_entrypoint", lambda: "/opt/hermes/venv/bin/hermes")
+        monkeypatch.setattr(gateway_cli, "_stable_service_working_dir", lambda: "/Users/alice/.hermes")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: Path("/opt/hermes/venv"))
+        monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: ["/opt/hermes/venv/bin"])
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: "/Users/alice/.hermes")
+
+        data = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))
+
+        assert data["ProgramArguments"][:4] == [
+            "/opt/hermes/venv/bin/hermes",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+        assert "-m" not in data["ProgramArguments"]
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})

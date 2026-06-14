@@ -2514,6 +2514,37 @@ def get_python_path() -> str:
     return sys.executable
 
 
+def get_hermes_cli_entrypoint() -> str | None:
+    """Return a stable Hermes CLI entrypoint when one exists.
+
+    On macOS launchd surfaces the basename of ``ProgramArguments[0]`` in
+    Background Items. Launching ``venv/bin/python -m hermes_cli.main`` works,
+    but it makes Hermes look like raw Python. Prefer the installed ``hermes``
+    console script from the same venv so the service definition is visibly
+    Hermes-owned. This is label/identity cleanup only; a true TCC fix still
+    needs a signed app/helper broker.
+    """
+    venv = _detect_venv_dir()
+    candidates: list[Path] = []
+    if venv is not None:
+        candidates.append(venv / ("Scripts/hermes.exe" if is_windows() else "bin/hermes"))
+
+    try:
+        python_path = Path(get_python_path())
+        candidates.append(python_path.parent / ("hermes.exe" if is_windows() else "hermes"))
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    resolved = shutil.which("hermes")
+    if resolved:
+        return resolved
+    return None
+
+
 # =============================================================================
 # Systemd (Linux)
 # =============================================================================
@@ -3869,8 +3900,27 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
     return False
 
 
+def _launchd_program_arguments(profile_arg: str = "") -> list[str]:
+    """Build launchd ProgramArguments for the gateway service.
+
+    Prefer the Hermes console-script entrypoint on macOS so System Settings
+    Background Items shows a Hermes-owned command instead of a raw Python
+    interpreter. Fall back to ``python -m hermes_cli.main`` when the console
+    script is unavailable.
+    """
+    hermes_entrypoint = get_hermes_cli_entrypoint()
+    if hermes_entrypoint:
+        args = [hermes_entrypoint]
+    else:
+        args = [get_python_path(), "-m", "hermes_cli.main"]
+
+    if profile_arg:
+        args.extend(profile_arg.split())
+    args.extend(["gateway", "run", "--replace"])
+    return args
+
+
 def generate_launchd_plist() -> str:
-    python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
@@ -3907,22 +3957,8 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
-        ]
-    )
+    # Build ProgramArguments array, including --profile when using a named profile.
+    prog_args = [f"<string>{part}</string>" for part in _launchd_program_arguments(profile_arg)]
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>

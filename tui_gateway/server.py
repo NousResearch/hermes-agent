@@ -160,6 +160,11 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+# If the reap timer fires with more than this much of the grace still
+# unelapsed on the monotonic clock, the host slept through the wait —
+# re-arm instead of reaping (#44183). Big enough to ignore timer jitter
+# and wall-clock NTP nudges, small relative to any real sleep.
+_WS_ORPHAN_REAP_SLEEP_SLACK_S = 0.5
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -516,7 +521,26 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
 
+    # time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC) does not advance
+    # while the host is asleep, so this deadline measures *awake* time.
+    deadline = time.monotonic() + _WS_ORPHAN_REAP_GRACE_S
+
     def _reap() -> None:
+        # threading.Timer's wait elapses in wall-clock time on platforms
+        # without a monotonic condvar (macOS lacks pthread_condattr_setclock),
+        # so a system sleep makes the timer fire "early" in awake-time terms:
+        # closing a MacBook lid for >20s reaped the parked session at the
+        # instant of wake, before the Desktop app's WS reconnect or
+        # session.resume could re-bind a transport — every sleep/wake cycle
+        # 404'd the open chat (#44183). If the monotonic (awake-time) clock
+        # says the grace hasn't actually elapsed, re-arm for the remainder
+        # so the Desktop gets the full grace of awake time to reconnect.
+        remaining = deadline - time.monotonic()
+        if remaining > _WS_ORPHAN_REAP_SLEEP_SLACK_S:
+            rearm = threading.Timer(remaining, _reap)
+            rearm.daemon = True
+            rearm.start()
+            return
         # Serialize the orphan re-check against session.resume (which re-binds a
         # live transport under _session_resume_lock and would make this session
         # non-orphaned). The actual pop + teardown then goes through the shared

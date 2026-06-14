@@ -811,12 +811,12 @@ class SimplexAdapter(BasePlatformAdapter):
         tools to signal file attachments), they are stripped from the text
         body and sent as native voice notes or documents.
 
-        Groups use the structured ``/_send #<id> json [...]`` form
-        because the bracket chat-command syntax (``#[<id>] text``) is
-        parsed by the daemon as a display-name lookup, which silently
-        drops when the group's display name isn't the literal ID. DMs
-        use the simple ``@<id> text`` form which has always worked in
-        production.
+        Both groups and DMs use the structured ``/_send <id> json [...]``
+        form because the bracket chat-command syntax (``@<id> text``
+        for DMs, ``#[<id>] text`` for groups) resolves ``<id>`` as a
+        display name rather than a numeric contactId. When ``chat_id``
+        is a numeric ID (the common case for DMs), the bare form
+        silently fails with ``contactNotFound``.
 
         The call is fire-and-forget at the WebSocket level: the daemon
         doesn't always return a corrId reply for chat commands, and
@@ -831,14 +831,15 @@ class SimplexAdapter(BasePlatformAdapter):
         if content:
             corr_id = self._make_corr_id()
             if chat_id.startswith("group:"):
-                # Structured form: addresses by numeric ID, and json.dumps
-                # escapes newlines + special chars correctly.
-                composed = json.dumps(
-                    [{"msgContent": {"type": "text", "text": content}}]
-                )
-                cmd_str = f"/_send #{chat_id[6:]} json {composed}"
+                target = f"#{chat_id[6:]}"
             else:
-                cmd_str = f"@{chat_id} {content}"
+                target = f"@{chat_id}"
+            # Structured form: addresses by numeric ID, and json.dumps
+            # escapes newlines + special chars correctly.
+            composed = json.dumps(
+                [{"msgContent": {"type": "text", "text": content}}]
+            )
+            cmd_str = f"/_send {target} json {composed}"
 
             await self._send_ws({"corrId": corr_id, "cmd": cmd_str})
 
@@ -1192,14 +1193,13 @@ async def _standalone_send(
 
     try:
         if chat_id.startswith("group:"):
-            group_id = chat_id[6:]
-            composed = json.dumps(
-                [{"msgContent": {"type": "text", "text": message}}]
-            )
-            cmd_str = f"/_send #{group_id} json {composed}"
+            target = f"#{chat_id[6:]}"
         else:
-            # Direct contacts are addressed by display name without brackets.
-            cmd_str = f"@{chat_id} {message}"
+            target = f"@{chat_id}"
+        composed = json.dumps(
+            [{"msgContent": {"type": "text", "text": message}}]
+        )
+        cmd_str = f"/_send {target} json {composed}"
 
         payload = {
             "corrId": f"{_CORR_PREFIX}snd-{int(time.time() * 1000)}",

@@ -183,6 +183,38 @@ model:
 # Choose ONE of the following terminal configurations by uncommenting it.
 # The terminal tool executes commands in the specified environment.
 
+# =============================================================================
+# Voice model (the voice modality's dedicated model)
+# =============================================================================
+# A top-level sibling to `model:` and `fallback_model:`. Real-time voice turns
+# are latency-critical, so they can run on a faster, non-reasoning model while
+# the main model stays whatever you set above. Absent / empty / provider: auto
+# all mean voice rides the main model. Used by the voice platform plugin.
+#
+# voice_model:
+#   provider: groq
+#   model: meta-llama/llama-4-scout-17b-16e-instruct
+
+# =============================================================================
+# Voice platform plugin (realtime voice calls — plugins/platforms/voice)
+# =============================================================================
+# Joins a Daily (WebRTC) room, transcribes with Deepgram Flux (streaming STT +
+# turn detection), and speaks with Cartesia (streaming TTS), with in-process
+# barge-in. Enabled when its three keys are present:
+#   DAILY_API_KEY, DEEPGRAM_API_KEY, CARTESIA_API_KEY   (set in .env)
+# Plus a model for voice turns (voice_model: above, or the main model).
+#
+# platforms:
+#   voice:
+#     extra:
+#       cartesia_voice_id: ""        # Cartesia voice id (or CARTESIA_VOICE_ID)
+#       cartesia_model: sonic-3.5
+#       eot_threshold: 0.7           # Flux end-of-turn confidence
+#       eager_eot_threshold: 0.5     # Flux eager (speculative) end-of-turn
+#       allow_interruptions: true    # barge-in on the caller speaking
+#       tts_speed: ""                # optional Cartesia speed (e.g. 1.0)
+#       greeting_prompt: ""          # optional: how the agent opens the call
+
 # -----------------------------------------------------------------------------
 # OPTION 1: Local execution (default)
 # Commands run directly on your machine in the current directory

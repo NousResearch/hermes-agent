@@ -880,6 +880,38 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
 
 
 
+def _fallback_targets_current_backend(
+    fb_provider: str,
+    fb_model: str,
+    fb_base_url: str,
+    current_provider: str,
+    current_model: str,
+    current_base_url: str,
+) -> bool:
+    """True if a fallback entry resolves to the SAME backend that just failed.
+
+    "Same backend" = same model AND same endpoint, where the endpoint is the
+    fallback's explicit base_url when set, else the provider's default:
+
+      * same model + explicit base_url == current base_url  -> same backend
+      * same model + NO explicit base_url + same provider   -> same backend
+        (inherits the provider default == the current endpoint)
+
+    A same-provider/same-model entry with a DIFFERENT explicit base_url is a
+    DISTINCT backend (e.g. the same router type on ANOTHER HOST) and must NOT
+    be treated as the current backend — otherwise multi-host failover (primary
+    router host A, fallback router host B, identical provider+model) silently
+    skips the second host. This fixes the prior check that skipped on
+    provider+model alone, ignoring base_url. (Args are pre-normalised:
+    lower-cased, trailing slash stripped.)
+    """
+    if fb_model != current_model:
+        return False
+    if fb_base_url:
+        return fb_base_url == current_base_url
+    return fb_provider == current_provider
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -919,21 +951,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     current_model = (getattr(agent, "model", "") or "").strip()
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
-    if fb_provider == current_provider and fb_model == current_model:
-        logger.warning(
-            "Fallback skip: chain entry %s/%s matches current provider/model",
-            fb_provider, fb_model,
-        )
-        return agent._try_activate_fallback()
-    if (
-        fb_base_url_for_dedup
-        and current_base_url
-        and fb_base_url_for_dedup == current_base_url
-        and fb_model == current_model
+    if _fallback_targets_current_backend(
+        fb_provider, fb_model, fb_base_url_for_dedup,
+        current_provider, current_model, current_base_url,
     ):
         logger.warning(
-            "Fallback skip: chain entry base_url %s matches current backend",
-            fb_base_url_for_dedup,
+            "Fallback skip: chain entry %s/%s @ %s resolves to the current backend",
+            fb_provider, fb_model, fb_base_url_for_dedup or current_base_url,
         )
         return agent._try_activate_fallback()
 

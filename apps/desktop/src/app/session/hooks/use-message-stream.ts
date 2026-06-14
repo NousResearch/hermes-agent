@@ -27,6 +27,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
 import { setClarifyRequest } from '@/store/clarify'
+import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -825,6 +826,7 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
+        setSessionCompacting(sessionId, null)
         nativeSubagentSessionsRef.current.delete(sessionId)
 
         if (isActiveEvent) {
@@ -870,6 +872,7 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
+        setSessionCompacting(sessionId, null)
 
         flushQueuedDeltas(sessionId)
 
@@ -904,10 +907,7 @@ export function useMessageStream({
 
           // terminal/process tool calls are the only things that spawn or reap
           // background processes — sync the composer status stack right after.
-          if (
-            !sessionInterrupted(sessionId) &&
-            (payload?.name === 'terminal' || payload?.name === 'process')
-          ) {
+          if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
             void refreshBackgroundProcesses(sessionId)
           }
         }
@@ -1061,9 +1061,14 @@ export function useMessageStream({
           })
         }
       } else if (event.type === 'status.update') {
-        // The gateway's notification poller announces background process
-        // completions / watch matches here — re-sync the status stack.
-        if (sessionId && payload?.kind === 'process') {
+        if (sessionId && payload?.kind === 'compacting') {
+          // Auto-compaction is rewriting history to a summary mid-turn — surface
+          // it so the transcript doesn't look like it silently reset. Cleared
+          // when the turn ends (message.complete / error) or a new one starts.
+          setSessionCompacting(sessionId, coerceGatewayText(payload?.text))
+        } else if (sessionId && payload?.kind === 'process') {
+          // The gateway's notification poller announces background process
+          // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
         }
       } else if (event.type === 'error') {
@@ -1075,6 +1080,7 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
+          setSessionCompacting(sessionId, null)
         }
 
         dispatchNativeNotification({

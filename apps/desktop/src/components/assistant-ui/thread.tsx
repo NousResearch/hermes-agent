@@ -96,6 +96,7 @@ import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $compactionStatus } from '@/store/compaction'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -273,10 +274,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
     return pickPrimaryPreviewTarget(extractPreviewTargets(completedText))
   }, [completedText])
 
-  const getMessageText = useCallback(
-    () => messageContentText(messageRuntime.getState().content),
-    [messageRuntime]
-  )
+  const getMessageText = useCallback(() => messageContentText(messageRuntime.getState().content), [messageRuntime])
 
   const enterRef = useEnterAnimation(isRunning, `assistant-message:${messageId}`)
 
@@ -342,10 +340,12 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
   const elapsed = useElapsedSeconds()
+  const compaction = useStore($compactionStatus)
 
   return (
-    <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
+    <StatusRow data-slot="aui_response-loading" label={compaction ?? t.assistant.thread.loadingResponse}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      {compaction && <span className="min-w-0 truncate">{compaction}</span>}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )
@@ -380,6 +380,7 @@ const StreamStallIndicator: FC = () => {
   })
 
   const [stalled, setStalled] = useState(false)
+  const compaction = useStore($compactionStatus)
 
   useEffect(() => {
     setStalled(false)
@@ -388,15 +389,18 @@ const StreamStallIndicator: FC = () => {
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const elapsed = useElapsedSeconds(stalled)
+  // Compaction surfaces immediately; an ordinary stall waits out STREAM_STALL_S.
+  const active = stalled || Boolean(compaction)
+  const elapsed = useElapsedSeconds(active)
 
-  if (!stalled) {
+  if (!active) {
     return null
   }
 
   return (
-    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label={compaction ?? 'Hermes is thinking'}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      {compaction && <span className="min-w-0 truncate">{compaction}</span>}
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
   )

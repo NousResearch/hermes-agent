@@ -134,7 +134,7 @@ def show_status(args):
         "xAI / Grok": "XAI_API_KEY",
         "NVIDIA NIM": "NVIDIA_API_KEY",
         "Z.AI / GLM": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
-        "Kimi": "KIMI_API_KEY",
+        "Kimi": ("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
         "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
         "MiniMax-CN": "MINIMAX_CN_API_KEY",

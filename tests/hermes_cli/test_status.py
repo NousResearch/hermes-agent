@@ -366,3 +366,18 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+
+
+def test_show_status_kimi_key_shows_configured_with_coding_alias(monkeypatch, capsys, tmp_path):
+    """Kimi should show ✓ when KIMI_CODING_API_KEY is set (not just KIMI_API_KEY)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi-coding-key-456")
+    # Ensure KIMI_API_KEY is NOT set
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Kimi" in output
+    # Should show the key (masked) or ✓, not ✗
+    assert "kimi...456" in output or "✓" in output

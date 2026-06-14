@@ -114,6 +114,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     resize: 'instant'
   })
 
+  const scrollToBottomRef = useRef(scrollToBottom)
+  const stopScrollRef = useRef(stopScroll)
+
+  scrollToBottomRef.current = scrollToBottom
+  stopScrollRef.current = stopScroll
+
   const [renderBudget, setRenderBudget] = useState(RENDER_BUDGET)
 
   // Walk turns newest-first, summing their part weights until the budget is met;
@@ -178,7 +184,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    stopScroll()
+    stopScrollRef.current()
     el.scrollTop = el.scrollHeight
 
     let frame = 0
@@ -200,7 +206,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
       // ~5 steady frames ≈ layout has settled; the frame cap bounds slow loads.
       if (stableFrames >= 5 || ++frame > 90) {
-        void scrollToBottom('instant')
+        void scrollToBottomRef.current('instant')
 
         return
       }
@@ -211,7 +217,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     let rafId = requestAnimationFrame(settle)
 
     return () => cancelAnimationFrame(rafId)
-  }, [scrollRef, scrollToBottom, sessionKey, stopScroll])
+  }, [scrollRef, sessionKey])
 
   // Prepend an older page while preserving the on-screen position. The user is
   // scrolled up (reading history) so the stick-to-bottom lock is escaped and

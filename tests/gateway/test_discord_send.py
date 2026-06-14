@@ -181,7 +181,7 @@ async def test_send_retries_transient_broken_pipe_once(monkeypatch):
     async def fake_sleep(delay):
         sleep_calls.append(delay)
 
-    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", fake_sleep)
 
     sent_msg = SimpleNamespace(id=1234)
     channel = SimpleNamespace(
@@ -208,7 +208,7 @@ async def test_send_retries_429_with_retry_after(monkeypatch):
     async def fake_sleep(delay):
         sleep_calls.append(delay)
 
-    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", fake_sleep)
 
     sent_msg = SimpleNamespace(id=1235)
     channel = SimpleNamespace(
@@ -234,7 +234,7 @@ async def test_send_retries_429_with_retry_after(monkeypatch):
 async def test_send_returns_partial_success_after_acknowledged_chunk_failure(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     adapter.MAX_MESSAGE_LENGTH = 20
-    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", _noop_sleep)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", _noop_sleep)
 
     first_msg = SimpleNamespace(id=2001)
     channel = SimpleNamespace(
@@ -423,7 +423,7 @@ async def test_send_to_forum_follow_up_chunk_failures_collected_as_warnings():
 async def test_send_to_forum_retries_follow_up_transient_failure(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     adapter.MAX_MESSAGE_LENGTH = 20
-    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", _noop_sleep)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", _noop_sleep)
 
     starter = SimpleNamespace(id=500)
     follow_up_calls = []
@@ -464,7 +464,7 @@ async def test_send_to_forum_retries_create_thread_on_429(monkeypatch):
     async def fake_sleep(delay):
         sleep_calls.append(delay)
 
-    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", fake_sleep)
 
     thread = SimpleNamespace(
         id=555,
@@ -494,7 +494,7 @@ async def test_send_to_forum_retries_create_thread_on_429(monkeypatch):
 @pytest.mark.asyncio
 async def test_send_to_forum_does_not_retry_ambiguous_create_thread_disconnect(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    monkeypatch.setattr("gateway.platforms.discord.asyncio.sleep", _noop_sleep)
+    monkeypatch.setattr("plugins.platforms.discord.adapter.asyncio.sleep", _noop_sleep)
 
     forum_channel = _discord_mod.ForumChannel()
     forum_channel.id = 999

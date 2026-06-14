@@ -164,7 +164,7 @@ class TestGetDisabledSkillNames:
 
         from agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names(platform="telegram")
-        assert result == {"tg-only-skill"}
+        assert result == {"tg-only-skill", "global-skill"}
 
     def test_session_platform_env_var(self, tmp_path, monkeypatch):
         """HERMES_SESSION_PLATFORM should be used when HERMES_PLATFORM is unset."""
@@ -183,7 +183,7 @@ class TestGetDisabledSkillNames:
 
         from agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
-        assert result == {"discord-skill"}
+        assert result == {"discord-skill", "global-skill"}
 
     def test_hermes_platform_takes_precedence(self, tmp_path, monkeypatch):
         """HERMES_PLATFORM should win over HERMES_SESSION_PLATFORM."""

@@ -305,13 +305,14 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         or os.getenv("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
     )
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform
         )
         if platform_disabled is not None:
-            return _normalize_string_set(platform_disabled)
-    return _normalize_string_set(skills_cfg.get("disabled"))
+            return global_disabled | _normalize_string_set(platform_disabled)
+    return global_disabled
 
 
 def _normalize_string_set(values) -> Set[str]:

@@ -67,7 +67,7 @@ export function buildMediaPayload({
         tmpPath = makeTempPath(filePath);
         try {
           exec(
-            `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+            `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus -b:a 32k -vbr on -application voip ${JSON.stringify(tmpPath)}`,
             { timeout: 30000, stdio: 'pipe' },
           );
           audioBuffer = readFile(tmpPath);

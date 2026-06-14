@@ -62,6 +62,12 @@ test('buildMediaPayload converts non-Opus audio to a native voice note when ffmp
 
     assert.equal(warning, null);
     assert.match(execCommand, /^ffmpeg -y -i /);
+    assert.match(execCommand, / -ar 48000 /);
+    assert.match(execCommand, / -ac 1 /);
+    assert.match(execCommand, / -c:a libopus /);
+    assert.match(execCommand, / -b:a 32k /);
+    assert.match(execCommand, / -vbr on /);
+    assert.match(execCommand, / -application voip /);
     assert.deepEqual(payload.audio, converted);
     assert.equal(payload.mimetype, 'audio/ogg; codecs=opus');
     assert.equal(payload.ptt, true);

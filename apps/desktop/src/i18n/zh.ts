@@ -200,6 +200,8 @@ export const zh: Translations = {
       'session.togglePin': '固定/取消固定当前会话',
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
+      'composer.reasoningUp': '提高推理等级',
+      'composer.reasoningDown': '降低推理等级',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.showFiles': '显示文件浏览器',

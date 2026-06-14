@@ -20,6 +20,8 @@ export interface KeybindActionMeta {
   category: KeybindCategory
   /** Default combos. Empty = shipped unbound (user can assign one). */
   defaults: readonly string[]
+  /** Extra allowance for editable targets beyond the global combo safety policy. */
+  editableTargetPolicy?: 'modified'
 }
 
 // Positional switch slots for *named* profiles: ⌘1…⌘9 for profiles 1-9, then
@@ -55,6 +57,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   { id: 'composer.focus', category: 'composer', defaults: [] },
   { id: 'composer.modelPicker', category: 'composer', defaults: [] },
+  { id: 'composer.reasoningUp', category: 'composer', defaults: [], editableTargetPolicy: 'modified' },
+  { id: 'composer.reasoningDown', category: 'composer', defaults: [], editableTargetPolicy: 'modified' },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
@@ -102,6 +106,16 @@ const ACTION_BY_ID = new Map(KEYBIND_ACTIONS.map(action => [action.id, action]))
 
 export function keybindAction(id: string): KeybindActionMeta | undefined {
   return ACTION_BY_ID.get(id)
+}
+
+function comboHasNonShiftModifier(combo: string): boolean {
+  const parts = combo.split('+')
+
+  return parts.slice(0, -1).some(part => part !== 'shift')
+}
+
+export function keybindActionAllowedInEditableTarget(id: string, combo: string): boolean {
+  return keybindAction(id)?.editableTargetPolicy === 'modified' && comboHasNonShiftModifier(combo)
 }
 
 export type KeybindBindings = Record<string, string[]>

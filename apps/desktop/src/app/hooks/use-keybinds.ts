@@ -4,8 +4,10 @@ import { useNavigate } from 'react-router-dom'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
-import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
+import { keybindActionAllowedInEditableTarget, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { type ReasoningStepDirection, stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/model-reasoning'
+import type { GatewayRequester } from '@/lib/yolo-session'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
 import {
@@ -17,6 +19,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
   cycleProfile,
@@ -25,7 +28,12 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { setModelPickerOpen } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentReasoningEffort,
+  setCurrentReasoningEffort,
+  setModelPickerOpen
+} from '@/store/session'
 import {
   $switcherOpen,
   closeSwitcher,
@@ -53,6 +61,8 @@ import {
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
+  /** Gateway RPC requester for session-scoped model controls. */
+  requestGateway: GatewayRequester
   /** Open/close the command center overlay (sessions / system / usage). */
   toggleCommandCenter: () => void
   /** Drop to a fresh new-session draft. */
@@ -73,6 +83,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   // Keep the latest closures without re-subscribing the listener.
   const handlersRef = useRef<HandlerMap>({})
   const commitSwitcherRef = useRef<() => void>(() => {})
+  const reasoningRequestSeqRef = useRef(0)
 
   const profileSwitchHandlers: HandlerMap = {}
 
@@ -108,11 +119,40 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
+  const stepReasoning = (direction: ReasoningStepDirection) => {
+    const rollback = $currentReasoningEffort.get()
+    const next = stepReasoningEffort(rollback, direction)
+
+    if (next === rollback.trim().toLowerCase()) {
+      return
+    }
+
+    const requestSeq = reasoningRequestSeqRef.current + 1
+
+    reasoningRequestSeqRef.current = requestSeq
+    setCurrentReasoningEffort(next)
+
+    void writeSessionReasoningEffort(deps.requestGateway, $activeSessionId.get() ?? '', next)
+      .then(value => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(value)
+        }
+      })
+      .catch(error => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(rollback)
+          notifyError(error, 'Could not update reasoning level')
+        }
+      })
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': toggleKeybindPanel,
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
+    'composer.reasoningUp': () => stepReasoning(1),
+    'composer.reasoningDown': () => stepReasoning(-1),
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,
@@ -216,7 +256,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+      if (
+        isEditableTarget(event.target) &&
+        !comboAllowedInInput(combo) &&
+        !keybindActionAllowedInEditableTarget(actionId, combo)
+      ) {
         return
       }
 

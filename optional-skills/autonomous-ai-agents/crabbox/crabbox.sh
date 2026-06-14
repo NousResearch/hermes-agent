@@ -21,7 +21,7 @@
 # ---
 # name: crabbox
 # description: "Delegate work to crabbox.sh — a single-file Hermes skill and CLI wrapper that drives a cloud sandbox backend for AI work. Backend-agnostic (CRABBOX_BACKEND): the default `islo` backend provisions hardware-isolated microVMs that run Cursor or Claude on a GitHub repo and return a PR; the `crabbox` backend (openclaw/crabbox) syncs your dirty checkout to a leased box and runs the suite remotely. Use for autonomous build, code review, refinement, parallel planning, issue triage, log analysis, and remote test/run."
-# version: 1.1.0
+# version: 1.2.0
 # author: Hermes Agent
 # license: MIT
 # platforms: [linux, macos]
@@ -36,7 +36,7 @@
 
 set -euo pipefail
 
-CRABBOX_VERSION="1.1.0"
+CRABBOX_VERSION="1.2.0"
 CRABBOX_BACKEND="${CRABBOX_BACKEND:-islo}"
 
 cmd_skill() {
@@ -44,7 +44,7 @@ cmd_skill() {
 ---
 name: crabbox
 description: "Delegate work to crabbox.sh — a single-file Hermes skill and CLI wrapper that drives a cloud sandbox backend for AI work. Backend-agnostic (CRABBOX_BACKEND): the default `islo` backend provisions hardware-isolated microVMs that run Cursor or Claude on a GitHub repo and return a PR; the `crabbox` backend (openclaw/crabbox) syncs your dirty checkout to a leased box and runs the suite remotely. Use for autonomous build, code review, refinement, parallel planning, issue triage, log analysis, and remote test/run."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -65,10 +65,16 @@ prerequisites:
 
 ## Backends
 
-| Backend | Paradigm | `new`→ | agent→PR? | `schema`? | Install |
-|---------|----------|--------|-----------|-----------|---------|
-| **islo** (default) | Provision a hardware-isolated microVM, clone a repo, run `claude`/`cursor` against `--task`, **return a PR**. | `use` | ✅ yes | ✅ yes | `curl -fsSL https://islo.dev/install.sh \| sh` then `islo login` |
-| **crabbox** ([openclaw/crabbox](https://github.com/openclaw/crabbox)) | "Warm a box, sync the diff, run the suite": rsync your dirty checkout to a leased box, run a command remotely, stream output, release. **No autonomous agent.** | `run` | ❌ no | ❌ no (falls back to `--help`) | `brew install openclaw/tap/crabbox` ([crabbox.sh](https://crabbox.sh)) |
+| Backend | Paradigm | `new`→ / `rm`→ | box addressing | json flag | agent→PR? | `schema`? | Install |
+|---------|----------|----------------|----------------|-----------|-----------|-----------|---------|
+| **islo** (default) | Provision a hardware-isolated microVM, clone a repo, run `claude`/`cursor` against `--task`, **return a PR**. | `use` / `rm` | positional NAME | `--output json` | ✅ yes | ✅ yes | `curl -fsSL https://islo.dev/install.sh \| sh` then `islo login` |
+| **crabbox** ([openclaw/crabbox](https://github.com/openclaw/crabbox)) | "Warm a box, sync the diff, run the suite": rsync your dirty checkout to a leased box, run a command remotely, stream output, release. **No autonomous agent.** | `run` / `stop` | `--id NAME` (lease-id or slug); **never positional** | `--json` (per-command) | ❌ no | ❌ no (stubbed) | `brew install openclaw/tap/crabbox` ([crabbox.sh](https://crabbox.sh)) |
+
+**Box addressing differs by backend.** islo takes the box name **positionally**; crabbox addresses every single-box verb by **`--id NAME`** (the canonical `cbx_…` lease id *or* the friendly slug) — the wrapper injects `--id` for you on `new`(reuse)/`status`/`rm`(→`stop`)/`pause`/`resume`/`stop`/`ssh`/`share`/`ports`. It never lands the name in a positional slot, because for `crabbox run` the positional/trailing argv is the **remote command**.
+
+**Removal semantics (crabbox).** `crabbox.sh rm NAME` maps to **`crabbox stop --id NAME`** — the correct single-lease teardown (release/delete the machine for direct/coordinator providers, tear down delegated sandboxes, or drop the local claim for static `provider=ssh`). `release` is a confirmed compat alias for `stop`. It is **never** mapped to `crabbox cleanup`: cleanup is a fleet-wide GC *sweep* that enumerates owned direct-provider machines by label, takes **no** per-box id, and **refuses** when a coordinator is configured.
+
+**Ephemeral vs persistent (crabbox).** `crabbox run` **without** `--id` creates a fresh non-kept lease that **auto-releases when the command exits** — so a bare `new` is naturally one-shot. To create a **durable, reusable named box**, use `crabbox warmup --slug NAME` (warmup keeps the lease) or `crabbox run --keep --slug NAME`. `--slug` only names a *fresh* lease; reuse an existing one via `--id`.
 
 **Pick by the work, not by the brand.** Use **islo** when you want a machine to go off and *produce a PR on its own* (Patterns 1–3). Use **openclaw/crabbox** when *you* hold the diff and want cloud-grade compute for the edit-save-run loop — running a heavy suite, reproducing a flake on a "beast" box, or testing a PR with `--fresh-pr` (Pattern 8). Patterns that pass `--agent`/`--task` require an **agent-capable** backend; crabbox.sh refuses those flags on a non-agent backend with a clear message instead of silently producing nothing.
 
@@ -84,7 +90,7 @@ prerequisites:
 - **Self-describe:** `./crabbox.sh skill` prints this whole document, frontmatter included.
 - **Backends:** `./crabbox.sh backends` lists wired-in backends, their verb maps, and capabilities.
 - **Help:** `./crabbox.sh help` lists subcommands and global flags.
-- **Schema (machine-readable):** `./crabbox.sh schema [COMMAND]` defers to the backend's own schema (islo). Backends without a schema verb (crabbox) fall back to `<command> --help`. **Hermes should call `./crabbox.sh schema <cmd>` before composing any invocation it isn't certain about** — the backend CLI is the source of truth, not this skill.
+- **Schema (machine-readable):** `./crabbox.sh schema [COMMAND]` defers to the backend's own schema (islo). **crabbox is NOT schema-capable** — there is no schema/introspect/completion verb, so the wrapper stubs `schema` for crabbox and points you at the only machine-discovery surfaces: per-command `--json`, `crabbox providers --json`, and `crabbox config show --json`. **Hermes should call `./crabbox.sh schema <cmd>` before composing any invocation it isn't certain about** — the backend CLI is the source of truth, not this skill.
 
 ## Prerequisites
 
@@ -112,17 +118,17 @@ prerequisites:
 | `crabbox.sh pause NAME` | Snapshot state, free resources |
 | `crabbox.sh resume NAME` | Resume a paused box |
 | `crabbox.sh stop NAME` | Stop a running box without removing it |
-| `crabbox.sh rm NAME -f` | Remove a box (no recycle bin; wildcard-guarded) |
-| `crabbox.sh logs NAME [...]` | Investigate logs by mode |
+| `crabbox.sh rm NAME -f` | Remove ONE box (islo `rm NAME` / crabbox `stop --id NAME`; no recycle bin; wildcard-guarded) |
+| `crabbox.sh logs NAME [...]` | Investigate logs by mode (islo: box logs; **crabbox: RUN id `run_<hex>`, not a box name**) |
 | `crabbox.sh doctor` | Backend system health check |
 | `crabbox.sh ssh NAME` | SSH into the box |
 | `crabbox.sh share / ports / snapshot ...` | Passthrough to backend (verb spelling is backend-specific) |
 | `crabbox.sh schema [COMMAND]` | Machine-readable backend schema, or `--help` fallback |
 | `crabbox.sh update` | Update the backend CLI |
 
-`crabbox.sh` normalizes only the three workhorse verbs (`new`/`list`/`rm`) and the `schema` capability across backends; everything else forwards verbatim, so a verb a given backend doesn't have will surface that backend's own error.
+`crabbox.sh` normalizes the workhorse verbs (`new`/`list`/`rm`), the `schema` capability, and **box addressing** across backends; everything else forwards verbatim, so a verb a given backend doesn't have will surface that backend's own error. **Box addressing:** for crabbox the wrapper binds the box NAME to `--id NAME` on every single-box verb (`new`(reuse)/`status`/`rm`→`stop`/`pause`/`resume`/`stop`/`ssh`/`share`/`ports`); for islo the name stays positional. `logs` is exempt on crabbox (it takes a run id, not a box).
 
-**Global flags** pass through unchanged. `--output {table,json,plain}` is honored by `islo`; crabbox uses `--json`. **From Hermes, prefer machine-readable output** (`--output json` on islo, `--json` on crabbox) when consuming results programmatically.
+**Global flags** pass through unchanged. **JSON output differs by backend:** islo honors a global `--output {table,json,plain}`; crabbox has **no** global JSON — it uses a **per-command `--json`** appended *after* the subcommand and positionals (supported on `status`, `list`, `inspect`, `ports`, `doctor`, `providers`, `logs`, `events`, `results`, `history`). The wrapper does **not** force-inject `--json`; pass it yourself when you need machine output. **From Hermes, prefer machine-readable output** (`--output json` on islo, `--json` on crabbox) when consuming results programmatically.
 
 ## The `crabbox.sh new` workhorse
 
@@ -155,7 +161,7 @@ crabbox.sh new refactor-auth \
 
 ## Cleanup safety (enforced, not just advised)
 
-- **`crabbox.sh rm` refuses wildcards / `--all` / a missing name** and exits non-zero, so a glob can't sweep boxes you didn't create. It maps to the backend's removal verb (`islo rm` / `crabbox cleanup`).
+- **`crabbox.sh rm` refuses wildcards / `--all` / a missing name** and exits non-zero, so a glob can't sweep boxes you didn't create. It maps to the backend's per-box removal verb (`islo rm NAME` / `crabbox stop --id NAME`). **Never** `crabbox cleanup` — that is a fleet-wide GC sweep, takes no id, and refuses under a coordinator.
 - **Always `crabbox.sh list` first** and confirm the name matches a box spawned in the current Hermes session before deleting. Other sessions/users may have parallel boxes.
 - For long-lived dev boxes use `crabbox.sh pause` / `resume` (state preserved, resources freed). For ephemeral fan-out, `crabbox.sh rm NAME -f` after the PR is confirmed.
 
@@ -264,7 +270,7 @@ Pull issues via the Linear MCP server (`hermes mcp add linear-server` if not pre
 
 ### Pattern 6 — Log analysis (local first)
 
-Logs are best read locally — fetch via `terminal()` (gcloud, `gh run view`, `kubectl logs`, Logfire MCP) and summarize: error patterns, time clusters, affected users/services, suspected root cause, recommended next step. If the root cause points to a code fix, hand off to Pattern 1 (Build). If it points to a Linear issue, hand off to Pattern 5 (Triage). For an *agent* sandbox's logs, use `crabbox.sh logs SANDBOX --type agent --follow`; for exec stream, `--type exec`. Don't conflate the read and the write.
+Logs are best read locally — fetch via `terminal()` (gcloud, `gh run view`, `kubectl logs`, Logfire MCP) and summarize: error patterns, time clusters, affected users/services, suspected root cause, recommended next step. If the root cause points to a code fix, hand off to Pattern 1 (Build). If it points to a Linear issue, hand off to Pattern 5 (Triage). For an *islo agent* sandbox's logs, use `crabbox.sh logs SANDBOX --type agent --follow`; for exec stream, `--type exec`. **On the crabbox backend, `logs` addresses a RUN id (`run_<hex>`), not a box name** — pass the run id captured from the run (e.g. via `--timing-json`); it supports `--tail N` but not `--follow`/`--since` (use `crabbox attach <run-id>` to follow). Don't conflate the read and the write.
 
 ### Pattern 7 — Skill autoresearch
 
@@ -277,17 +283,39 @@ When *you* already hold the change (a dirty worktree, a fix in progress, a flake
 ```bash
 export CRABBOX_BACKEND=crabbox
 
+# How the wrapper invocation maps to the real crabbox CLI:
+#   crabbox.sh new swift-crab -- npm test   ->  crabbox run --id swift-crab -- npm test
+#   crabbox.sh new -- npm test              ->  crabbox run -- npm test   (no --id: fresh ephemeral lease, auto-released on exit)
+#   crabbox.sh list --json                  ->  crabbox list --json
+#   crabbox.sh rm swift-crab                 ->  crabbox stop --id swift-crab
+#   crabbox.sh status swift-crab --json      ->  crabbox status --id swift-crab --json
+#   crabbox.sh pause swift-crab              ->  crabbox pause --id swift-crab
+#   crabbox.sh resume swift-crab             ->  crabbox resume --id swift-crab
+#   crabbox.sh ssh swift-crab                ->  crabbox ssh --id swift-crab
+#   crabbox.sh ports swift-crab --json       ->  crabbox ports --id swift-crab --json
+#   crabbox.sh doctor --json                 ->  crabbox doctor --json
+# Create a PERSISTENT/reusable named box (divergence from islo — see below):
+#   crabbox warmup --slug swift-crab         (warmup keeps the lease; --keep defaults true)
+# Run logs by RUN id (run_<hex>), NOT a box name:
+#   crabbox logs <run-id> --json
+
 # Run the suite on a big remote box against your local dirty checkout
 crabbox.sh new ci-box -- pnpm test:changed
 
 # Reproduce a flake on a beefy class, capturing JUnit evidence
 crabbox.sh new flake-repro -- go test -run TestThatFlakes -count=20 ./...
 
-# Test a PR fresh (crabbox clones the PR for you), then release
+# Run, then tear down the single lease (stop, not cleanup)
 crabbox.sh new pr-smoke -- bash -c 'pnpm install --frozen-lockfile && pnpm test:integration'
-crabbox.sh list
-crabbox.sh rm pr-smoke -f
+crabbox.sh list --json
+crabbox.sh rm pr-smoke -f       # -> crabbox stop --id pr-smoke
 ```
+
+**`new NAME` ephemeral/persistent divergence from islo.** `crabbox.sh new NAME -- cmd` forwards to `crabbox run --id NAME -- cmd`. With **no** `--id` (bare `crabbox.sh new -- cmd`) crabbox creates a fresh ephemeral lease that auto-releases on exit. The `--` separator is **mandatory**; everything after it is the remote command sent verbatim as argv (never a box id). To create a **durable** named box, use `crabbox warmup --slug NAME` (the safest "make a reusable box" mapping) or `crabbox run --keep --slug NAME` — a bare `run` will not persist.
+
+**Logs are run-scoped on crabbox.** `crabbox logs` addresses a **RUN id** (`run_<hex>`), not a box/lease id, so `crabbox.sh logs NAME` (NAME = box) does **not** map cleanly — the wrapper forwards `logs` verbatim without `--id` injection. Capture the run id from the preceding run (e.g. via `--timing-json`) and pass it to `crabbox logs <run-id>`. `logs` supports `--tail N` but **not** `--follow`/`--since`; live following is the separate `crabbox attach <run-id>`. Logs/results/events also require a configured broker/coordinator — direct-provider runs aren't recorded, so fall back to `--capture-stdout`/`--capture-stderr`/`--timing-json` on `run` for direct-mode evidence.
+
+**Pause/resume are provider-gated.** Supported on islo and codesandbox; others return "provider does not support pause/resume". Docker Sandbox supports neither, and its `stop` is destructive (`sbx rm --force`). Surface the provider error rather than assuming success.
 
 This is complementary to Patterns 1–3: islo sends an agent to *write* a PR; crabbox gives you a remote box to *run* code you already have. When a Build sandbox can't reproduce an environment-specific failure, hand the diff to a crabbox box with production-like tooling.
 
@@ -320,12 +348,14 @@ For long fan-outs from the messaging gateway, schedule a notification on PR crea
 
 1. **No reliable completion API (islo)** — poll for the PR on the expected branch; `status` is for liveness, not done-ness; `logs --type agent --follow` for a liveness signal.
 2. **`--agent claude` doesn't pin Opus vs Sonnet** — controlled by Anthropic integration settings, not the CLI flag.
-3. **`--agent`/`--task` need an agent-capable backend** — crabbox.sh rejects them on `crabbox`; switch to `islo` (or another agent backend).
+3. **`--agent`/`--task` need an agent-capable backend** — crabbox.sh rejects them on `crabbox` (not agent-capable; `crabbox code` is a code-server VS Code bridge, not an AI agent). Switch to `islo` (or another agent backend).
 4. **Box environments lack production parity** — flag skipped integration tests in PRs.
 5. **No backend config in cwd** races the setup wizard with `--task` startup. Fix: `crabbox.sh init` first.
 6. **`crabbox.sh rm`** is wildcard-guarded but still has no recycle bin. Always `crabbox.sh list` first; remove only names this session created.
 7. **Cross-org `gh` search** sees only what the auth token can access — private repos in other orgs won't appear.
-8. **Only `new`/`list`/`rm`/`schema` are normalized across backends** — other verbs forward verbatim, so a verb a backend lacks surfaces that backend's own error. Run `crabbox.sh backends` / `schema <cmd>` when unsure.
+8. **Only `new`/`list`/`rm`/`schema` + box addressing are normalized across backends** — other verbs forward verbatim, so a verb a backend lacks surfaces that backend's own error. crabbox addresses boxes by `--id NAME` (injected for single-box verbs); islo uses positional names. `crabbox logs` takes a RUN id (`run_<hex>`), not a box name, and isn't `--id`-injected. Run `crabbox.sh backends` / `schema <cmd>` when unsure.
+10. **crabbox `rm`→`stop`, never `cleanup`** — `stop` ends ONE lease (`crabbox stop --id NAME`; `release` is a compat alias). `cleanup` is a fleet-wide GC sweep that takes no id and refuses under a coordinator — wrong/unsafe for per-box teardown.
+11. **crabbox is NOT agent-capable and NOT schema-capable** — `crabbox code` is a code-server browser bridge, not an autonomous agent; `--agent`/`--task` are rejected, and `schema` is stubbed (use per-command `--json`, `providers --json`, `config show --json`).
 9. **Native Windows is unsupported** — use WSL2.
 
 ## Why single-file?
@@ -347,7 +377,7 @@ crabbox.sh's value over local-CLI delegation is *cloud execution in isolated box
 
 ## Self-documentation hook
 
-When in doubt about a flag, **don't guess** — call `crabbox.sh schema <command>` and parse the output. islo ships a machine-readable schema for AI agents; crabbox falls back to `--help`. This skill describes patterns, not flag minutiae.
+When in doubt about a flag, **don't guess** — call `crabbox.sh schema <command>` and parse the output. islo ships a machine-readable schema for AI agents; crabbox is not schema-capable, so the wrapper stubs `schema` (exit 2) and prints `--help` for orientation only — for crabbox discovery use per-command `--json`, `crabbox providers --json`, and `crabbox config show --json`. This skill describes patterns, not flag minutiae.
 CRABBOX_SKILL_MARKDOWN
 }
 
@@ -356,16 +386,80 @@ CRABBOX_SKILL_MARKDOWN
 # other verb forwards verbatim. To add a backend, append a case arm; unknown
 # backends fall back to the islo-style contract.
 load_backend() {
-  # islo-style defaults
+  # islo-style defaults. BK_ID_FLAG empty => box names pass POSITIONALLY (islo).
   BK_NEW="use"; BK_LIST="ls"; BK_RM="rm"; BK_AGENT="yes"; BK_SCHEMA="yes"
+  BK_ID_FLAG=""; BK_JSON_FLAG="--output json"
+  BK_DURABLE=""   # backends where bare 'new NAME' is durable need no hint (islo)
   BK_INSTALL='curl -fsSL https://islo.dev/install.sh | sh   # then: islo login'
   case "$CRABBOX_BACKEND" in
     islo) : ;;
     crabbox)
-      BK_NEW="run"; BK_LIST="list"; BK_RM="cleanup"; BK_AGENT="no"; BK_SCHEMA="no"
+      # rm -> stop (per-box teardown), NOT cleanup (fleet-wide GC sweep).
+      # crabbox addresses boxes by --id <lease-id-or-slug>, never positionally.
+      BK_NEW="run"; BK_LIST="list"; BK_RM="stop"; BK_AGENT="no"; BK_SCHEMA="no"
+      BK_ID_FLAG="--id"; BK_JSON_FLAG="--json"
+      # 'run' without a kept lease auto-releases on exit; durable boxes use warmup.
+      BK_DURABLE="warmup --slug"
       BK_INSTALL='brew install openclaw/tap/crabbox   # docs: https://crabbox.sh' ;;
     *) : ;;  # unknown backend: assume islo-style verbs/capabilities
   esac
+}
+
+# Reshape args so the first non-flag token (the box NAME) is passed via the
+# backend's id flag (e.g. '--id NAME') instead of positionally. Backends with an
+# empty BK_ID_FLAG (islo) keep the name positional and are returned unchanged.
+# Everything else — other flags and any '-- COMMAND' tail — is preserved in
+# order; for 'run', the post-'--' argv is the remote command and must not be
+# treated as the box id. Emits the reshaped argv as NUL-delimited records on fd1.
+inject_id_flag() {
+  if [ -z "$BK_ID_FLAG" ]; then
+    local a
+    for a in "$@"; do printf '%s\0' "$a"; done
+    return 0
+  fi
+  local a injected=no seen_dashdash=no
+  for a in "$@"; do
+    if [ "$seen_dashdash" = yes ]; then
+      printf '%s\0' "$a"; continue
+    fi
+    case "$a" in
+      --) seen_dashdash=yes; printf '%s\0' "$a" ;;
+      -*) printf '%s\0' "$a" ;;
+      *)
+        if [ "$injected" = no ]; then
+          printf '%s\0%s\0' "$BK_ID_FLAG" "$a"; injected=yes
+        else
+          printf '%s\0' "$a"
+        fi ;;
+    esac
+  done
+}
+
+# Forward a single-box verb with the box NAME bound to the backend's id flag.
+forward_with_id() {
+  local verb="$1"; shift
+  ensure_backend
+  local -a out=()
+  while IFS= read -r -d '' tok; do out+=("$tok"); done < <(inject_id_flag "$@")
+  exec "$CRABBOX_BACKEND" "$verb" "${out[@]}"
+}
+
+# Non-blocking heads-up: on backends where a bare 'new NAME' creates an
+# ephemeral, auto-released lease (crabbox), point at the durable-box command.
+# Fires only when a NAME is given with no remote command and no keep/slug flag.
+durable_hint() {
+  [ -n "${BK_DURABLE:-}" ] || return 0
+  local a has_name=no
+  for a in "$@"; do
+    case "$a" in
+      --) return 0 ;;                       # a remote command follows: one-shot is intended
+      --keep|--keep-on-failure|--slug|--slug=*) return 0 ;;
+      -*) ;;
+      *)  has_name=yes ;;
+    esac
+  done
+  [ "$has_name" = yes ] || return 0
+  echo "crabbox.sh: note — '$CRABBOX_BACKEND' leases auto-release on exit; for a durable, reusable box use '$CRABBOX_BACKEND $BK_DURABLE NAME' (or add --keep). Proceeding." >&2
 }
 
 # Translate a canonical workhorse verb to the active backend's spelling.
@@ -450,24 +544,45 @@ crabbox.sh backends — set CRABBOX_BACKEND to choose (current: $CRABBOX_BACKEND
 
   islo     [default] agent-capable cloud microVMs. Provision a sandbox, clone a
            repo, run claude/cursor against --task, return a PR.
-           verbs: new->use  list->ls    rm->rm       agent: yes   schema: yes
+           verbs:  new->use   list->ls    rm->rm
+           addr:   positional box name        json: --output json
+           caps:   agent: yes   schema: yes
            install: curl -fsSL https://islo.dev/install.sh | sh && islo login
 
   crabbox  openclaw/crabbox — "warm a box, sync the diff, run the suite". Rsync
            your dirty checkout to a leased box and run a command. No agent/PR.
-           verbs: new->run  list->list  rm->cleanup  agent: no    schema: no
+           verbs:  new->run   list->list  rm->stop
+           addr:   --id NAME (lease-id or slug); NEVER positional
+                   single-box verbs: new/status/rm/stop/pause/resume/ssh/share/ports
+           json:   --json (per-command, append after positionals)
+           caps:   agent: no    schema: no
+           notes:  rm->stop (per-box teardown). NOT 'cleanup' (fleet GC sweep,
+                   takes no id, refuses under a coordinator). 'release' is a
+                   compat alias for stop. 'run' WITHOUT --id is ephemeral and
+                   auto-releases on exit; for a durable named box use
+                   'crabbox warmup --slug NAME' (or 'run --keep'). 'logs' takes
+                   a RUN id (run_<hex>), NOT a box name. pause/resume are
+                   provider-gated (islo, codesandbox).
            install: brew install openclaw/tap/crabbox   (https://crabbox.sh)
 
 Patterns needing --agent/--task (Build/Review/Refine) require an agent-capable
 backend (islo). Remote test/run (Pattern 8) works on crabbox. Add a backend by
-declaring its verb names and capabilities in load_backend().
+declaring its verb names, addressing (BK_ID_FLAG), and capabilities in
+load_backend().
 EOF
 }
 
 usage() {
+  local BK_ADDR_DESC
+  if [ -n "$BK_ID_FLAG" ]; then
+    BK_ADDR_DESC="$BK_ID_FLAG NAME (injected for single-box verbs)"
+  else
+    BK_ADDR_DESC="positional NAME"
+  fi
   cat <<EOF
 crabbox.sh v$CRABBOX_VERSION — single-file Hermes skill + sandbox wrapper
 active backend: $CRABBOX_BACKEND  (new->$(to_backend_verb new), list->$(to_backend_verb list), rm->$(to_backend_verb rm))
+box addressing: ${BK_ADDR_DESC}   json: $BK_JSON_FLAG
 
 Usage:
   crabbox.sh skill                            Print the full skill markdown (frontmatter + patterns)
@@ -477,7 +592,7 @@ Usage:
   crabbox.sh status [NAME]                    Show box / auth status
   crabbox.sh logs NAME [flags]                Stream box logs
   crabbox.sh rm NAME -f                       Remove a box (wildcard-guarded; no recycle bin)
-  crabbox.sh schema [COMMAND]                 Backend schema (JSON), or --help fallback
+  crabbox.sh schema [COMMAND]                 Backend schema (JSON); crabbox: stubbed (use --json/providers/config show)
   crabbox.sh doctor                           Backend system health check
   crabbox.sh pause|resume|stop NAME           Box lifecycle
   crabbox.sh login|logout [--tool ...]        Auth + integration management
@@ -508,22 +623,34 @@ case "$cmd" in
   version|--version)           ensure_backend
                                echo "crabbox.sh $CRABBOX_VERSION (backend: $CRABBOX_BACKEND $("$CRABBOX_BACKEND" --version 2>/dev/null | head -1))" ;;
   new)                         guard_agent_flags "$@"
-                               forward "$(to_backend_verb new)" "$@" ;;
+                               durable_hint "$@"
+                               forward_with_id "$(to_backend_verb new)" "$@" ;;
   list)                        forward "$(to_backend_verb list)" "$@" ;;
   rm)                          guard_rm "$@"
-                               forward "$(to_backend_verb rm)" "$@" ;;
+                               forward_with_id "$(to_backend_verb rm)" "$@" ;;
+  status|pause|resume|stop|ssh|share|ports)
+                               forward_with_id "$(to_backend_verb "$cmd")" "$@" ;;
   schema)
     if [ "$BK_SCHEMA" = yes ]; then
       forward schema "$@"
     else
       ensure_backend
-      echo "crabbox.sh: backend '$CRABBOX_BACKEND' has no machine-readable schema; showing --help instead." >&2
+      cat >&2 <<EOF
+crabbox.sh: backend '$CRABBOX_BACKEND' is NOT schema-capable — there is no
+schema/introspect/completion verb to defer to. Machine-readable discovery is
+limited to:
+  * per-command --json   (status, list, inspect, ports, doctor, providers, logs, ...)
+  * $CRABBOX_BACKEND providers --json
+  * $CRABBOX_BACKEND config show --json
+Showing '--help' for orientation only (this is NOT a schema):
+EOF
       if [ $# -gt 0 ]; then
         sub="$(to_backend_verb "$1")"; shift
-        exec "$CRABBOX_BACKEND" "$sub" "$@" --help
+        "$CRABBOX_BACKEND" "$sub" "$@" --help >&2 || true
       else
-        exec "$CRABBOX_BACKEND" --help
+        "$CRABBOX_BACKEND" --help >&2 || true
       fi
+      exit 2
     fi ;;
   *)                           forward "$cmd" "$@" ;;
 esac

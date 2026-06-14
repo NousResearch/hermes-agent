@@ -279,6 +279,25 @@ class TestProfileScopedModel:
         assert "worker/current-pin" not in resp.text
         assert isinstance(body, dict)
 
+    def test_model_options_rest_requests_unlimited_desktop_catalog(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """Desktop REST model options must not truncate large provider catalogs."""
+        from hermes_cli import inventory
+
+        calls = []
+
+        def fake_build_models_payload(ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(inventory, "build_models_payload", fake_build_models_payload)
+        resp = client.get("/api/model/options")
+
+        assert resp.status_code == 200
+        assert calls
+        assert calls[-1]["max_models"] is None
+
     def test_model_options_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404

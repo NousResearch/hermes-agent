@@ -118,7 +118,7 @@ def build_models_payload(
     capabilities: bool = False,
     force_fresh_nous_tier: bool = False,
     refresh: bool = False,
-    max_models: int | None = None,
+    max_models: Optional[int] = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -149,6 +149,9 @@ def build_models_payload(
       re-fetches its live catalog. Set only for an explicit user-triggered
       "refresh models" action; normal picker opens leave it false to stay
       snappy on the 1h cache.
+    - ``max_models``: maximum model IDs per provider. ``None`` means no
+      truncation for Desktop/GUI catalogs; keep an integer for compact CLI and
+      slash-command contexts.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 

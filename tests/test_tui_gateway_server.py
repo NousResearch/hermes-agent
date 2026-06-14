@@ -5518,6 +5518,22 @@ def test_model_options_does_not_overwrite_curated_models(monkeypatch):
     assert listing.call_count == 1
 
 
+def test_model_options_requests_unlimited_desktop_catalog(monkeypatch):
+    """Gateway model.options backs Desktop pickers and must not cap at 50."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"providers": {}, "custom_providers": []},
+    )
+
+    with patch("hermes_cli.model_switch.list_authenticated_providers", return_value=[]) as listing:
+        resp = server._methods["model.options"](42, {"session_id": ""})
+
+    assert "result" in resp, resp
+    assert listing.call_count == 1
+    assert listing.call_args.kwargs["max_models"] is None
+
+
 def test_model_options_propagates_list_exception(monkeypatch):
     """If list_authenticated_providers itself raises, surface as an RPC
     error rather than swallowing to a blank picker."""

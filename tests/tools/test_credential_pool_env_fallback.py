@@ -180,7 +180,7 @@ class TestAuthCredentialPoolFallback:
 
     def test_dotenv_takes_priority_over_pool(self, isolated_hermes_home):
         """Key in .env beats credential pool — pool only fires when both env sources are empty."""
-        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-priority-xyz")
+        _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dot...-xyz")
         assert "DEEPSEEK_API_KEY" not in os.environ
 
         mock_pool = MagicMock()
@@ -192,6 +192,61 @@ class TestAuthCredentialPoolFallback:
                 provider_id="deepseek",
                 pconfig=_make_pconfig(),
             )
-        assert key == "sk-dotenv-priority-xyz"
+        assert key == "sk-dot...-xyz"
         assert source == "DEEPSEEK_API_KEY"
         mp.assert_not_called()
+
+
+class TestOllamaCloudPrimaryAndBackup:
+    """The ollama-cloud provider has a primary+backup split in its
+    ``api_key_env_vars`` tuple.  Regression test for the user-reported
+    bug: the pool was only seeing 1 credential because the registry
+    declared only ``OLLAMA_API_KEY`` (not ``OLLAMA_API_KEY_BACKUP``)
+    and ``_seed_from_env`` iterates that tuple.
+
+    See kpi_test_ollama_failover.py for the end-to-end pool test;
+    this class pins the same contract at the env-seeding layer so a
+    future refactor can't silently drop the second key.
+    """
+
+    def test_registry_declares_both_keys(self):
+        """PROVIDER_REGISTRY['ollama-cloud'].api_key_env_vars contains
+        both OLLAMA_API_KEY (primary) and OLLAMA_API_KEY_BACKUP (failover)."""
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        cfg = PROVIDER_REGISTRY["ollama-cloud"]
+        env_vars = tuple(cfg.api_key_env_vars or ())
+        assert "OLLAMA_API_KEY" in env_vars
+        assert "OLLAMA_API_KEY_BACKUP" in env_vars
+        # Primary must come first — failback.run() relies on this for
+        # ``api_key_env_vars[0]`` being the primary source.
+        assert env_vars[0] == "OLLAMA_API_KEY"
+        assert env_vars.index("OLLAMA_API_KEY") < env_vars.index("OLLAMA_API_KEY_BACKUP")
+
+    def test_seed_from_env_adds_two_entries(self, isolated_hermes_home):
+        """Both OLLAMA_API_KEY and OLLAMA_API_KEY_BACKUP in .env → 2 pool entries."""
+        _write_env_file(
+            isolated_hermes_home,
+            OLLAMA_API_KEY="primary-abc-123",
+            OLLAMA_API_KEY_BACKUP="backup-xyz-789",
+        )
+        # Belt-and-braces: clear the OS env so the test really hits .env
+        for k in ("OLLAMA_API_KEY", "OLLAMA_API_KEY_BACKUP", "OLLAMA_BASE_URL"):
+            os.environ.pop(k, None)
+
+        from agent.credential_pool import _seed_from_env
+
+        entries = []
+        changed, active_sources = _seed_from_env("ollama-cloud", entries)
+
+        assert changed is True
+        sources = sorted(e.source for e in entries)
+        assert sources == sorted(["env:OLLAMA_API_KEY", "env:OLLAMA_API_KEY_BACKUP"])
+        assert "env:OLLAMA_API_KEY" in active_sources
+        assert "env:OLLAMA_API_KEY_BACKUP" in active_sources
+
+        by_source = {e.source: e for e in entries}
+        assert by_source["env:OLLAMA_API_KEY"].access_token == "primary-abc-123"
+        assert by_source["env:OLLAMA_API_KEY_BACKUP"].access_token == "backup-xyz-789"
+        # Priority: primary must win (lower priority number = picked first by fill_first).
+        assert by_source["env:OLLAMA_API_KEY"].priority < by_source["env:OLLAMA_API_KEY_BACKUP"].priority

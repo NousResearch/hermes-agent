@@ -534,6 +534,53 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         pricing_version="minimax-pricing-2026-04",
     ),
+    # ── Xiaomi MiMo ──────────────────────────────────────────────────────────
+    # Source: https://platform.xiaomimimo.com/docs/en-US/pricing (overseas USD)
+    # Cache write is free (limited time) — not priced per token.
+    (
+        "xiaomi",
+        "mimo-v2.5-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.0036"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/pricing",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
+    (
+        "xiaomi",
+        "mimo-v2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/pricing",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
+    (
+        "xiaomi",
+        "mimo-v2-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.0036"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/pricing",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
+    (
+        "xiaomi",
+        "mimo-v2-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.10"),
+        output_cost_per_million=Decimal("0.30"),
+        cache_read_cost_per_million=Decimal("0.01"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/pricing",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
 }
 
 
@@ -579,6 +626,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"minimax", "minimax-cn"}:
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
+    if provider_name == "xiaomi":
+        return BillingRoute(provider="xiaomi", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")

@@ -4444,7 +4444,7 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
+    "_config_version", "model", "providers", "fallback_model", "voice_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
@@ -4589,6 +4589,34 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "fallback_model appears inside custom_providers instead of at root level",
             "Move fallback_model to the top level of config.yaml (no indentation)",
         ))
+
+    # ── voice_model: top-level dict (provider + model) for the voice modality ──
+    # A sibling to model:/fallback_model:. Absent / empty / provider: auto all
+    # mean voice turns ride the main model.
+    vm = config.get("voice_model")
+    if vm is not None:
+        if not isinstance(vm, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"voice_model should be a dict with 'provider' and 'model', got {type(vm).__name__}",
+                "Change to:\n"
+                "  voice_model:\n"
+                "    provider: groq\n"
+                "    model: meta-llama/llama-4-scout-17b-16e-instruct",
+            ))
+        elif vm:
+            if not vm.get("provider"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "voice_model is missing 'provider' field — voice will use the main model",
+                    "Add: provider: groq (or another provider)",
+                ))
+            if not vm.get("model"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "voice_model is missing 'model' field — voice will use the main model",
+                    "Add: model: <model-name>",
+                ))
 
     # ── model section: should exist when custom_providers is configured ──
     model_cfg = config.get("model")

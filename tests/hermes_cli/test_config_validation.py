@@ -205,3 +205,40 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestVoiceModelValidation:
+    """voice_model should be a top-level dict with provider + model
+    (the dedicated model slot for the voice modality)."""
+
+    def test_missing_provider(self):
+        issues = validate_config_structure({
+            "voice_model": {"model": "meta-llama/llama-4-scout-17b-16e-instruct"},
+        })
+        assert any("voice_model is missing 'provider'" in i.message for i in issues)
+
+    def test_missing_model(self):
+        issues = validate_config_structure({
+            "voice_model": {"provider": "groq"},
+        })
+        assert any("voice_model is missing 'model'" in i.message for i in issues)
+
+    def test_wrong_type_is_error(self):
+        issues = validate_config_structure({"voice_model": "groq/some-model"})
+        assert any(
+            i.severity == "error" and "voice_model should be a dict" in i.message
+            for i in issues)
+
+    def test_valid_voice_model(self):
+        issues = validate_config_structure({
+            "voice_model": {
+                "provider": "groq",
+                "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+            },
+        })
+        vm_issues = [i for i in issues if "voice_model" in i.message]
+        assert vm_issues == []
+
+    def test_absent_voice_model_is_fine(self):
+        issues = validate_config_structure({"model": ""})
+        assert [i for i in issues if "voice_model" in i.message] == []

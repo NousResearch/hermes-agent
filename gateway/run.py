@@ -1848,6 +1848,90 @@ def _try_resolve_fallback_provider() -> dict | None:
     return None
 
 
+def _read_voice_model_cfg() -> dict | None:
+    """Read the top-level ``voice_model:`` slot from config.yaml.
+
+    Returns the mapping only when it names a real provider+model; an absent
+    slot, an empty model, or ``provider: auto`` all mean "voice rides the main
+    model" and return None.
+    """
+    try:
+        import yaml as _y
+        cfg_path = _hermes_home / "config.yaml"
+        if not cfg_path.exists():
+            return None
+        with open(cfg_path, encoding="utf-8") as _f:
+            cfg = _y.safe_load(_f) or {}
+        vm = cfg.get("voice_model")
+        if not isinstance(vm, dict) or not vm.get("model"):
+            return None
+        if str(vm.get("provider") or "").strip().lower() in ("", "auto"):
+            return None
+        return vm
+    except Exception:
+        return None
+
+
+def _voice_model_name() -> str | None:
+    """The configured ``voice_model`` slot's model name (telemetry/logging),
+    or None when voice uses the main model."""
+    vm = _read_voice_model_cfg()
+    return (vm or {}).get("model") or None
+
+
+def _resolve_voice_runtime_kwargs() -> dict | None:
+    """Resolve the ``voice_model:`` slot — a dedicated top-level model for the
+    real-time voice modality, a sibling to ``model:`` (main) and
+    ``fallback_model:``.
+
+    Voice is a full agentic turn (tools, memory, the iteration loop) delivered
+    in a latency-critical spoken modality, so it gets its own first-class slot
+    rather than a per-platform override. Returns AIAgent runtime kwargs
+    (endpoint/key/provider/api_mode + ``model``) when the slot is configured,
+    or None when it is unset / ``auto`` (caller uses the main model).
+
+    Mirrors :func:`_try_resolve_fallback_provider`.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    vm = _read_voice_model_cfg()
+    if vm is None:
+        return None
+    try:
+        explicit_api_key = vm.get("api_key")
+        if not explicit_api_key:
+            key_env = str(vm.get("key_env") or vm.get("api_key_env") or "").strip()
+            if key_env:
+                explicit_api_key = os.getenv(key_env, "").strip() or None
+        runtime = resolve_runtime_provider(
+            requested=vm.get("provider"),
+            explicit_base_url=vm.get("base_url"),
+            explicit_api_key=explicit_api_key,
+            target_model=vm.get("model"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "voice_model resolution failed (%s); falling back to the main model",
+            exc,
+        )
+        return None
+    logger.info(
+        "Voice model resolved: %s model=%s",
+        vm.get("provider") or runtime.get("provider"),
+        vm.get("model"),
+    )
+    return {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
+        "model": vm.get("model"),
+    }
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 

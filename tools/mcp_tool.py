@@ -1459,6 +1459,10 @@ class MCPServerTask:
             command=command,
             args=args,
             env=safe_env if safe_env else None,
+            # On Windows, pipe I/O can deliver non-UTF-8 bytes at chunk
+            # boundaries.  Use "replace" to substitute undecodable bytes
+            # with U+FFFD instead of crashing with UnicodeDecodeError.
+            encoding_error_handler="replace",
         )
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}

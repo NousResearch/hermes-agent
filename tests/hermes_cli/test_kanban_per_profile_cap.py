@@ -100,6 +100,101 @@ def test_pre_existing_running_counts_against_cap(isolated_kanban_home_with_profi
     assert capped_assignees.count("beta") == 1
 
 
+def test_initial_per_profile_counts_apply_cross_board_snapshot(isolated_kanban_home_with_profiles):
+    """Gateway can pass a cross-board running-count snapshot into dispatch_once.
+
+    With cap=1 and a synthetic alpha count of 1 from another board, this board
+    must not spawn more alpha work even though its local DB has no running alpha.
+    """
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        kb.create_task(conn, title="alpha ready", assignee="alpha")
+        kb.create_task(conn, title="beta ready", assignee="beta")
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_in_progress_per_profile=1,
+            initial_per_profile_running_counts={"alpha": 1},
+        )
+    spawn_assignees = [s[1] for s in res.spawned]
+    capped_assignees = [c[1] for c in res.skipped_per_profile_capped]
+    assert "alpha" not in spawn_assignees
+    assert spawn_assignees.count("beta") == 1
+    assert capped_assignees.count("alpha") == 1
+
+
+def test_initial_per_profile_counts_apply_to_review_tasks(isolated_kanban_home_with_profiles):
+    """Review-column dispatch must not bypass the same per-profile cap."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        review = kb.create_task(conn, title="alpha review", assignee="alpha")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_in_progress_per_profile=1,
+            initial_per_profile_running_counts={"alpha": 1},
+        )
+    assert res.spawned == []
+    assert res.skipped_per_profile_capped == [(review, "alpha", 1)]
+
+
+def test_global_cap_applies_to_review_only_queue(isolated_kanban_home_with_profiles):
+    """Review-only queues must not bypass kanban.max_in_progress."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running = kb.create_task(conn, title="running alpha", assignee="alpha")
+        review = kb.create_task(conn, title="review beta", assignee="beta")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running', claim_lock = 'test:1' "
+                "WHERE id = ?",
+                (running,),
+            )
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_in_progress=1,
+        )
+    assert res.spawned == []
+
+
+def test_combined_caps_allow_review_spawn_when_headroom_exists(isolated_kanban_home_with_profiles):
+    """max_spawn remains a total live cap when folded with max_in_progress."""
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running = kb.create_task(conn, title="running alpha", assignee="alpha")
+        review = kb.create_task(conn, title="review beta", assignee="beta")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running', claim_lock = 'test:1' "
+                "WHERE id = ?",
+                (running,),
+            )
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (review,))
+    with kb.connect_closing() as conn:
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            max_in_progress=2,
+            max_spawn=5,
+        )
+    assert res.spawned == [(review, "beta", "")]
+
+
 @pytest.mark.parametrize("cap", [0, -1, "abc", None])
 def test_invalid_cap_treated_as_no_cap(isolated_kanban_home_with_profiles, cap):
     """Cap values that don't represent a positive int should be treated as

@@ -664,7 +664,9 @@ class GatewayKanbanWatchersMixin:
             )
             failure_limit = _kb.DEFAULT_FAILURE_LIMIT
 
-        # Read stale_timeout_seconds — 0 disables stale detection.
+        # Read stale_timeout_seconds — 0 disables stale detection. The heartbeat
+        # gap is a second, independent floor: a task must be old enough AND have
+        # stopped heartbeating long enough before the dispatcher reclaims it.
         raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
         try:
             stale_timeout_seconds = int(raw_stale or 0)
@@ -675,6 +677,33 @@ class GatewayKanbanWatchersMixin:
                 raw_stale,
             )
             stale_timeout_seconds = 0
+
+        raw_stale_hb_gap = kanban_cfg.get(
+            "dispatch_stale_heartbeat_gap_seconds",
+            getattr(_kb, "DEFAULT_STALE_HEARTBEAT_GAP_SECONDS", 3600),
+        )
+        try:
+            stale_heartbeat_gap_seconds = int(raw_stale_hb_gap or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.dispatch_stale_heartbeat_gap_seconds=%r; "
+                "using default %d",
+                raw_stale_hb_gap,
+                getattr(_kb, "DEFAULT_STALE_HEARTBEAT_GAP_SECONDS", 3600),
+            )
+            stale_heartbeat_gap_seconds = getattr(
+                _kb, "DEFAULT_STALE_HEARTBEAT_GAP_SECONDS", 3600,
+            )
+        if stale_heartbeat_gap_seconds < 1:
+            logger.warning(
+                "kanban dispatcher: kanban.dispatch_stale_heartbeat_gap_seconds=%r "
+                "is below 1; using default %d",
+                raw_stale_hb_gap,
+                getattr(_kb, "DEFAULT_STALE_HEARTBEAT_GAP_SECONDS", 3600),
+            )
+            stale_heartbeat_gap_seconds = getattr(
+                _kb, "DEFAULT_STALE_HEARTBEAT_GAP_SECONDS", 3600,
+            )
 
         # Read kanban.default_assignee — fallback profile for tasks
         # created without an explicit assignee (e.g. via the dashboard).
@@ -762,7 +791,10 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _tick_once_for_board(
+            slug: str,
+            per_profile_running_counts: Optional[dict[str, int]] = None,
+        ) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -810,8 +842,10 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
+                    stale_heartbeat_gap_seconds=stale_heartbeat_gap_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    initial_per_profile_running_counts=per_profile_running_counts,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -855,16 +889,58 @@ class GatewayKanbanWatchersMixin:
 
             Enumerating boards on every tick keeps the dispatcher honest
             when users create a new board mid-run: no restart required,
-            the next tick picks it up automatically.
+            the next tick picks it up automatically. When a per-profile cap is
+            configured, each board sees a fresh cross-board running-count
+            snapshot so one busy profile cannot exceed its cap by spreading
+            tasks across multiple boards.
             """
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+
+            def _global_per_profile_counts() -> Optional[dict[str, int]]:
+                if max_in_progress_per_profile is None:
+                    return None
+                counts: dict[str, int] = {}
+                seen_db_paths: set[str] = set()
+                for meta in boards:
+                    slug = meta.get("slug") or _kb.DEFAULT_BOARD
+                    db_path = meta.get("db_path")
+                    try:
+                        resolved = str(
+                            Path(db_path).expanduser().resolve()
+                            if db_path else _kb.kanban_db_path(slug).resolve()
+                        )
+                    except Exception:
+                        resolved = f"slug:{slug}"
+                    if resolved in seen_db_paths:
+                        continue
+                    seen_db_paths.add(resolved)
+                    conn = None
+                    try:
+                        conn = _kb.connect(board=slug)
+                        for row in conn.execute(
+                            "SELECT assignee, COUNT(*) AS n FROM tasks "
+                            "WHERE status = 'running' AND assignee IS NOT NULL "
+                            "GROUP BY assignee"
+                        ):
+                            assignee = row["assignee"]
+                            counts[assignee] = counts.get(assignee, 0) + int(row["n"])
+                    except Exception:
+                        continue
+                    finally:
+                        if conn is not None:
+                            try:
+                                conn.close()
+                            except Exception:
+                                pass
+                return counts
+
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                out.append((slug, _tick_once_for_board(slug, _global_per_profile_counts())))
             return out
 
         def _ready_nonempty() -> bool:

@@ -3512,6 +3512,141 @@ def test_detect_stale_returns_task_with_stale_heartbeat(kanban_home, monkeypatch
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_detect_stale_custom_heartbeat_gap_allows_faster_reclaim(kanban_home, monkeypatch):
+    """Operators can lower the heartbeat gap to recover wedged workers sooner."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="custom-gap", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, os.getpid())
+
+        now = int(time.time())
+        started_45m_ago = now - (45 * 60)
+        heartbeat_20m_ago = now - (20 * 60)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = ? "
+                "WHERE id = ?",
+                (started_45m_ago, heartbeat_20m_ago, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (started_45m_ago, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        stale = kb.detect_stale_running(
+            conn,
+            stale_timeout_seconds=30 * 60,
+            stale_heartbeat_gap_seconds=15 * 60,
+            signal_fn=lambda p, s: None,
+        )
+        assert t in stale
+        assert kb.get_task(conn, t).status == "ready"
+        payload = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'stale'",
+            (t,),
+        ).fetchone()["payload"]
+        assert '"heartbeat_gap_seconds": 900' in payload
+
+
+def test_detect_stale_custom_heartbeat_gap_skips_recent_heartbeat(kanban_home, monkeypatch):
+    """A lowered heartbeat gap still protects workers with recent heartbeats."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="custom-gap-alive", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, os.getpid())
+
+        now = int(time.time())
+        started_45m_ago = now - (45 * 60)
+        heartbeat_5m_ago = now - (5 * 60)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = ? "
+                "WHERE id = ?",
+                (started_45m_ago, heartbeat_5m_ago, t),
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (started_45m_ago, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        stale = kb.detect_stale_running(
+            conn,
+            stale_timeout_seconds=30 * 60,
+            stale_heartbeat_gap_seconds=15 * 60,
+            signal_fn=lambda p, s: None,
+        )
+        assert stale == []
+        assert kb.get_task(conn, t).status == "running"
+
+
+def test_detect_stale_rechecks_heartbeat_before_kill(kanban_home, monkeypatch):
+    """A heartbeat racing after candidate selection prevents stale reclaim."""
+    import hermes_cli.kanban_db as _kb
+
+    class HeartbeatBeforeStaleUpdateConn:
+        def __init__(self, inner, task_id):
+            self.inner = inner
+            self.task_id = task_id
+            self.injected = False
+
+        def execute(self, sql, params=()):
+            if (
+                not self.injected
+                and "UPDATE tasks SET status = 'ready'" in sql
+                and "last_heartbeat_at" in sql
+            ):
+                self.injected = True
+                self.inner.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+                    (int(time.time()), self.task_id),
+                )
+            return self.inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    with kb.connect() as real_conn:
+        t = kb.create_task(real_conn, title="race-heartbeat", assignee="worker")
+        kb.claim_task(real_conn, t)
+        kb._set_worker_pid(real_conn, t, os.getpid())
+
+        now = int(time.time())
+        old = now - (5 * 3600)
+        with kb.write_txn(real_conn):
+            real_conn.execute(
+                "UPDATE tasks SET started_at = ?, last_heartbeat_at = ? "
+                "WHERE id = ?",
+                (old, old, t),
+            )
+            real_conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (old, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        killed = []
+        stale = kb.detect_stale_running(
+            HeartbeatBeforeStaleUpdateConn(real_conn, t),
+            stale_timeout_seconds=14400,
+            stale_heartbeat_gap_seconds=3600,
+            signal_fn=lambda p, s: killed.append((p, s)),
+        )
+        assert stale == []
+        assert killed == []
+        task = kb.get_task(real_conn, t)
+        assert task.status == "running"
+        assert task.last_heartbeat_at is not None
+
+
 def test_detect_stale_skips_task_with_recent_heartbeat(kanban_home, monkeypatch):
     """A task running > timeout but with a recent heartbeat is NOT reclaimed."""
     import hermes_cli.kanban_db as _kb

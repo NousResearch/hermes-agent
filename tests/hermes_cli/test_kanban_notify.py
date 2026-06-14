@@ -318,6 +318,9 @@ def test_dispatcher_tick_does_not_call_init_db(kanban_home, monkeypatch):
         "see issue #21378. Use connect() alone; it runs migrations on first "
         "open per process."
     )
+    assert "dispatch_stale_heartbeat_gap_seconds" in src
+    assert "stale_heartbeat_gap_seconds=stale_heartbeat_gap_seconds" in src
+    assert "initial_per_profile_running_counts=per_profile_running_counts" in src
 
     notifier_src = inspect.getsource(GatewayRunner._kanban_notifier_watcher)
     assert "_kb.init_db(board=slug)" not in notifier_src, (

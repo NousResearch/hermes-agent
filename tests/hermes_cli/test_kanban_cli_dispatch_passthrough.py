@@ -43,6 +43,8 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
             "max_spawn": 5,
             "default_assignee": "default",
             "max_in_progress_per_profile": 2,
+            "dispatch_stale_timeout_seconds": 1800,
+            "dispatch_stale_heartbeat_gap_seconds": 900,
         }
     }
     monkeypatch.setattr(
@@ -69,6 +71,8 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     )
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
+    assert captured.get("stale_timeout_seconds") == 1800
+    assert captured.get("stale_heartbeat_gap_seconds") == 900
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):

@@ -5300,17 +5300,20 @@ def enforce_max_runtime(
     return timed_out
 
 
-# Heartbeat staleness heartbeat gap — if a running task hasn't sent a
-# heartbeat in this many seconds it's considered inactive regardless of
-# the ``dispatch_stale_timeout_seconds`` threshold.  Hardcoded at 1 hour
-# to match the original spec (">4h started + no commits in 1h").
-_STALE_HEARTBEAT_GAP_SECONDS = 3600
+# Default heartbeat staleness gap — if a running task hasn't sent a
+# heartbeat in this many seconds it's considered inactive once it has also
+# exceeded the ``dispatch_stale_timeout_seconds`` floor.  Default stays at
+# 1 hour to match the original spec (">4h started + no commits in 1h").
+DEFAULT_STALE_HEARTBEAT_GAP_SECONDS = 3600
+# Backward-compatible constant for tests / third-party imports.
+_STALE_HEARTBEAT_GAP_SECONDS = DEFAULT_STALE_HEARTBEAT_GAP_SECONDS
 
 
 def detect_stale_running(
     conn: sqlite3.Connection,
     *,
     stale_timeout_seconds: int = 0,
+    stale_heartbeat_gap_seconds: Optional[int] = None,
     signal_fn=None,
 ) -> list[str]:
     """Reclaim ``running`` tasks that show no progress (heartbeat) within the
@@ -5322,7 +5325,7 @@ def detect_stale_running(
        (measured from the active run's ``started_at``, falling back to
        ``tasks.started_at`` on older runs).
     2. Its ``last_heartbeat_at`` is older than
-       ``_STALE_HEARTBEAT_GAP_SECONDS`` (or NULL — never sent a heartbeat).
+       ``stale_heartbeat_gap_seconds`` (or NULL — never sent a heartbeat).
 
     On reclaim the task is reset to ``ready``, the run is closed with
     ``outcome='stale'``, and the host-local worker (if still running) is
@@ -5332,12 +5335,21 @@ def detect_stale_running(
     candidates.  Returns the list of reclaimed task IDs.
 
     ``stale_timeout_seconds=0`` disables the check entirely (returns ``[]``
-    immediately).  ``signal_fn`` is a test hook; defaults to ``os.kill``
-    on POSIX.
+    immediately).  ``stale_heartbeat_gap_seconds`` defaults to 3600 for
+    backward compatibility but can be lowered by operators with many
+    concurrent long-running workers that need faster recovery. ``signal_fn``
+    is a test hook; defaults to ``os.kill`` on POSIX.
     """
     if stale_timeout_seconds <= 0:
         return []
-
+    if stale_heartbeat_gap_seconds is None:
+        stale_heartbeat_gap_seconds = DEFAULT_STALE_HEARTBEAT_GAP_SECONDS
+    try:
+        stale_heartbeat_gap_seconds = int(stale_heartbeat_gap_seconds)
+    except (TypeError, ValueError):
+        stale_heartbeat_gap_seconds = DEFAULT_STALE_HEARTBEAT_GAP_SECONDS
+    if stale_heartbeat_gap_seconds < 1:
+        stale_heartbeat_gap_seconds = DEFAULT_STALE_HEARTBEAT_GAP_SECONDS
 
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -5345,6 +5357,7 @@ def detect_stale_running(
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "       t.current_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -5362,28 +5375,41 @@ def detect_stale_running(
 
         last_hb = row["last_heartbeat_at"]
         hb_age = (now - int(last_hb)) if last_hb is not None else None
-        if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
+        if hb_age is not None and hb_age < stale_heartbeat_gap_seconds:
             continue  # recent heartbeat → still alive
 
         pid = row["worker_pid"]
         tid = row["id"]
         lock = row["claim_lock"] or ""
-
-        # Terminate the worker if it's still host-local.
-        termination = _terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn,
-        )
+        run_id_before = row["current_run_id"]
 
         with write_txn(conn):
+            # Re-check the fields that made this row eligible before sending
+            # any signal. A worker can heartbeat between the snapshot above
+            # and this reclaim attempt; matching the original heartbeat/run
+            # state makes that race a harmless no-op instead of killing an
+            # active worker that just proved liveness.
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (tid,),
+                "WHERE id = ? AND status = 'running' "
+                "AND COALESCE(current_run_id, -1) = COALESCE(?, -1) "
+                "AND COALESCE(worker_pid, -1) = COALESCE(?, -1) "
+                "AND COALESCE(claim_lock, '') = ? "
+                "AND ((last_heartbeat_at IS NULL AND ? IS NULL) "
+                "     OR last_heartbeat_at = ?)",
+                (tid, run_id_before, pid, lock, last_hb, last_hb),
             )
             if cur.rowcount != 1:
                 continue
+
+            # Terminate only after the atomic stale re-check succeeds. The
+            # transaction remains open so no other dispatcher can re-claim the
+            # task until the stale run has been closed and audited.
+            termination = _terminate_reclaimed_worker(
+                pid, lock, signal_fn=signal_fn,
+            )
 
             payload = {
                 "elapsed_seconds": int(elapsed),
@@ -5394,6 +5420,7 @@ def detect_stale_running(
                     int(hb_age) if hb_age is not None else None
                 ),
                 "timeout_seconds": stale_timeout_seconds,
+                "heartbeat_gap_seconds": int(stale_heartbeat_gap_seconds),
                 "pid": int(pid) if pid else None,
             }
             payload.update(termination)
@@ -6032,9 +6059,11 @@ def dispatch_once(
     max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
+    stale_heartbeat_gap_seconds: Optional[int] = None,
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    initial_per_profile_running_counts: Optional[dict[str, int]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -6071,7 +6100,9 @@ def dispatch_once(
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
-        conn, stale_timeout_seconds=stale_timeout_seconds,
+        conn,
+        stale_timeout_seconds=stale_timeout_seconds,
+        stale_heartbeat_gap_seconds=stale_heartbeat_gap_seconds,
     )
     result.crashed = detect_crashed_workers(conn)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
@@ -6117,21 +6148,27 @@ def dispatch_once(
     # tasks, skip spawning this tick so slow workers (local LLMs,
     # resource-constrained hosts) can finish what they have before more tasks
     # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
+    if max_in_progress is not None:
+        in_progress = int(conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
+        ).fetchone()[0])
         if in_progress >= max_in_progress:
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
+        # ``max_spawn`` is interpreted below as a total live-worker cap
+        # (running + spawned this tick). Fold max_in_progress into the same
+        # total-cap unit rather than replacing it with remaining headroom;
+        # otherwise review-only queues with running_count>0 see
+        # ``running_count + spawned >= remaining`` and starve despite headroom.
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
+        running_count = in_progress
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
-    # when this would push that assignee past the cap. Prevents
-    # fan-out workloads from melting a single profile's local model /
+    # when this would push that assignee past the cap. Gateway callers that
+    # dispatch multiple boards can pass a host-global snapshot via
+    # ``initial_per_profile_running_counts`` so the cap applies across all
+    # boards instead of only within the current SQLite DB.
     # API quota / browser pool while leaving other profiles idle.
     # Tasks blocked this way go to skipped_per_profile_capped (not
     # skipped_unassigned — the operator-actionable signal is different:
@@ -6142,12 +6179,19 @@ def dispatch_once(
     ) else None
     _per_profile_running: dict[str, int] = {}
     if _per_profile_cap is not None:
-        for prow in conn.execute(
-            "SELECT assignee, COUNT(*) AS n FROM tasks "
-            "WHERE status = 'running' AND assignee IS NOT NULL "
-            "GROUP BY assignee"
-        ):
-            _per_profile_running[prow["assignee"]] = int(prow["n"])
+        if initial_per_profile_running_counts is not None:
+            _per_profile_running = {
+                str(profile): max(0, int(count))
+                for profile, count in initial_per_profile_running_counts.items()
+                if profile
+            }
+        else:
+            for prow in conn.execute(
+                "SELECT assignee, COUNT(*) AS n FROM tasks "
+                "WHERE status = 'running' AND assignee IS NOT NULL "
+                "GROUP BY assignee"
+            ):
+                _per_profile_running[prow["assignee"]] = int(prow["n"])
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
@@ -6362,8 +6406,20 @@ def dispatch_once(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        review_assignee = row["assignee"]
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(review_assignee, 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], review_assignee, current)
+                )
+                continue
         if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
+            result.spawned.append((row["id"], review_assignee, ""))
+            if _per_profile_cap is not None and review_assignee:
+                _per_profile_running[review_assignee] = (
+                    _per_profile_running.get(review_assignee, 0) + 1
+                )
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -6402,6 +6458,10 @@ def dispatch_once(
                 _set_worker_pid(conn, claimed.id, int(pid))
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),

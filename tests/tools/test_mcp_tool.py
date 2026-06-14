@@ -81,6 +81,32 @@ class TestLoadMCPConfig:
             result = _load_mcp_config()
             assert result == {}
 
+    def test_string_server_entry_becomes_url_config(self):
+        """URL string shorthand under mcp_servers is accepted."""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"mcp_servers": {"ink": "https://mcp.ml.ink/mcp"}},
+        ):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+            assert result == {"ink": {"url": "https://mcp.ml.ink/mcp"}}
+
+    def test_malformed_server_entry_skipped(self, caplog):
+        """One malformed entry does not poison the whole MCP config."""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "mcp_servers": {
+                    "broken": ["https://example.com/mcp"],
+                    "good": {"command": "npx"},
+                }
+            },
+        ):
+            from tools.mcp_tool import _load_mcp_config
+            result = _load_mcp_config()
+            assert result == {"good": {"command": "npx"}}
+            assert "Skipping malformed MCP server config 'broken'" in caplog.text
+
 
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(

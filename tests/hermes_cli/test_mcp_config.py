@@ -113,6 +113,31 @@ class TestMcpList:
         assert "myserver" in out
         assert "enabled" in out
 
+    def test_list_accepts_string_url_shorthand(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "shorthand": "https://example.com/mcp",
+            "after": {"command": "npx", "enabled": False},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "shorthand" in out
+        assert "https://example.com/mcp" in out
+        assert "after" in out
+
+    def test_list_skips_malformed_entry_and_continues(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "broken": ["https://example.com/mcp"],
+            "after": {"url": "https://after.example.com/mcp"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "Skipping malformed MCP entry 'broken'" in out
+        assert "after" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
@@ -437,6 +462,31 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_test_accepts_string_url_shorthand(
+        self,
+        tmp_path,
+        capsys,
+        monkeypatch,
+    ):
+        _seed_config(tmp_path, {
+            "ink": "https://mcp.ml.ink/mcp",
+        })
+        seen = {}
+
+        def mock_probe(name, config, **kw):
+            seen["config"] = config
+            return [("create_service", "Deploy")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert "Connected" in out
+        assert seen["config"] == {"url": "https://mcp.ml.ink/mcp"}
+
 
 # ---------------------------------------------------------------------------
 # Tests: env var interpolation
@@ -745,4 +795,3 @@ class TestMcpLogin:
 
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
-

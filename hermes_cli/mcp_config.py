@@ -84,6 +84,28 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers
 
 
+def _coerce_cli_mcp_server_config(
+    name: str,
+    cfg: Any,
+    *,
+    warn: bool = False,
+) -> Optional[dict]:
+    """Normalize one CLI MCP config entry, accepting URL string shorthand."""
+    if isinstance(cfg, str):
+        return {"url": cfg}
+    if isinstance(cfg, dict):
+        return cfg
+    message = (
+        f"Skipping malformed MCP entry '{name}': expected dict or URL string, "
+        f"got {type(cfg).__name__}"
+    )
+    if warn:
+        _warning(message)
+    else:
+        _error(message)
+    return None
+
+
 def _save_mcp_server(name: str, server_config: dict):
     """Add or update a server entry in config.yaml."""
     config = load_config()
@@ -532,7 +554,11 @@ def cmd_mcp_list(args=None):
     print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<10}")
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
-    for name, cfg in servers.items():
+    for name, raw_cfg in servers.items():
+        cfg = _coerce_cli_mcp_server_config(name, raw_cfg, warn=True)
+        if cfg is None:
+            continue
+
         # Transport info
         if "url" in cfg:
             url = cfg["url"]
@@ -591,7 +617,9 @@ def cmd_mcp_test(args):
             _info(f"Available: {', '.join(available)}")
         return
 
-    cfg = servers[name]
+    cfg = _coerce_cli_mcp_server_config(name, servers[name])
+    if cfg is None:
+        return
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
 
@@ -665,7 +693,9 @@ def cmd_mcp_login(args):
             _info(f"Available servers: {', '.join(servers)}")
         return
 
-    server_config = servers[name]
+    server_config = _coerce_cli_mcp_server_config(name, servers[name])
+    if server_config is None:
+        return
     url = server_config.get("url")
     if not url:
         _error(f"Server '{name}' has no URL — not an OAuth-capable server")
@@ -746,7 +776,9 @@ def cmd_mcp_configure(args):
             _info(f"Available: {', '.join(available)}")
         return
 
-    cfg = servers[name]
+    cfg = _coerce_cli_mcp_server_config(name, servers[name])
+    if cfg is None:
+        return
 
     # Discover all available tools
     print()
@@ -808,7 +840,10 @@ def cmd_mcp_configure(args):
 
     # Update config
     config = load_config()
-    server_entry = cfg_get(config, "mcp_servers", name, default={})
+    server_entry = _coerce_cli_mcp_server_config(
+        name,
+        cfg_get(config, "mcp_servers", name, default={}),
+    ) or {}
 
     if len(chosen) == total:
         # All selected → remove include/exclude (register all)

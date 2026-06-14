@@ -2673,6 +2673,20 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _coerce_mcp_server_config(name: str, cfg: Any) -> Optional[dict]:
+    """Normalize one ``mcp_servers`` entry into a server config dict."""
+    if isinstance(cfg, str):
+        return {"url": cfg}
+    if isinstance(cfg, dict):
+        return cfg
+    logger.warning(
+        "Skipping malformed MCP server config '%s': expected dict or URL string, got %s",
+        name,
+        type(cfg).__name__,
+    )
+    return None
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -2696,7 +2710,13 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+        normalized: Dict[str, dict] = {}
+        for name, cfg in servers.items():
+            server_config = _coerce_mcp_server_config(str(name), cfg)
+            if server_config is None:
+                continue
+            normalized[str(name)] = _interpolate_env_vars(server_config)
+        return normalized
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
@@ -3645,6 +3665,16 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     if not servers:
         logger.debug("No explicit MCP servers provided")
+        return []
+
+    normalized_servers: Dict[str, dict] = {}
+    for name, cfg in servers.items():
+        server_config = _coerce_mcp_server_config(str(name), cfg)
+        if server_config is not None:
+            normalized_servers[str(name)] = server_config
+    servers = normalized_servers
+    if not servers:
+        logger.debug("No valid explicit MCP servers provided")
         return []
 
     # Only attempt servers that aren't already connected and are enabled

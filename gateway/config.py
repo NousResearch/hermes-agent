@@ -145,6 +145,7 @@ class Platform(Enum):
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
+    WHATSAPP_CLOUD = "whatsapp_cloud"
     SLACK = "slack"
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
@@ -462,6 +463,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
     ),
     Platform.WHATSAPP: lambda cfg: True,  # bridge handles auth
+    Platform.WHATSAPP_CLOUD: lambda cfg: bool(
+        cfg.extra.get("phone_number_id") and cfg.extra.get("access_token")
+    ),
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
     Platform.EMAIL: lambda cfg: bool(cfg.extra.get("address")),
     Platform.SMS: lambda cfg: bool(os.getenv("TWILIO_ACCOUNT_SID")),
@@ -1218,17 +1222,30 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(matrix_cfg, dict):
                 if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
                     os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+                allowed_users = matrix_cfg.get("allowed_users")
+                if allowed_users is not None and not os.getenv("MATRIX_ALLOWED_USERS"):
+                    if isinstance(allowed_users, list):
+                        allowed_users = ",".join(str(v) for v in allowed_users)
+                    os.environ["MATRIX_ALLOWED_USERS"] = str(allowed_users)
+                allowed_rooms = matrix_cfg.get("allowed_rooms")
+                if allowed_rooms is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
+                    if isinstance(allowed_rooms, list):
+                        allowed_rooms = ",".join(str(v) for v in allowed_rooms)
+                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(allowed_rooms)
                 frc = matrix_cfg.get("free_response_rooms")
                 if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
-                # allowed_rooms: if set, bot ONLY responds in these rooms (whitelist)
-                ar = matrix_cfg.get("allowed_rooms")
-                if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
-                    if isinstance(ar, list):
-                        ar = ",".join(str(v) for v in ar)
-                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
+                ignore_patterns = matrix_cfg.get("ignore_user_patterns")
+                if ignore_patterns is not None and not os.getenv("MATRIX_IGNORE_USER_PATTERNS"):
+                    if isinstance(ignore_patterns, list):
+                        ignore_patterns = ",".join(str(v) for v in ignore_patterns)
+                    os.environ["MATRIX_IGNORE_USER_PATTERNS"] = str(ignore_patterns)
+                if "process_notices" in matrix_cfg and not os.getenv("MATRIX_PROCESS_NOTICES"):
+                    os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
+                if "session_scope" in matrix_cfg and not os.getenv("MATRIX_SESSION_SCOPE"):
+                    os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
@@ -1416,6 +1433,61 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             thread_id=os.getenv("WHATSAPP_HOME_CHANNEL_THREAD_ID") or None,
         )
 
+    # WhatsApp Cloud API (official Business Platform via Meta).
+    # Distinct from the Baileys bridge: pure HTTP graph.facebook.com calls
+    # outbound, public webhook inbound. Both adapters can run in parallel
+    # against different phone numbers.
+    whatsapp_cloud_phone_id = os.getenv("WHATSAPP_CLOUD_PHONE_NUMBER_ID")
+    whatsapp_cloud_token = os.getenv("WHATSAPP_CLOUD_ACCESS_TOKEN")
+    if whatsapp_cloud_phone_id and whatsapp_cloud_token:
+        if Platform.WHATSAPP_CLOUD not in config.platforms:
+            config.platforms[Platform.WHATSAPP_CLOUD] = PlatformConfig()
+        config.platforms[Platform.WHATSAPP_CLOUD].enabled = True
+        config.platforms[Platform.WHATSAPP_CLOUD].extra.update({
+            "phone_number_id": whatsapp_cloud_phone_id,
+            "access_token": whatsapp_cloud_token,
+        })
+        # Optional: app_id / app_secret (signature verification)
+        wa_cloud_app_id = os.getenv("WHATSAPP_CLOUD_APP_ID")
+        if wa_cloud_app_id:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_id"] = wa_cloud_app_id
+        wa_cloud_app_secret = os.getenv("WHATSAPP_CLOUD_APP_SECRET")
+        if wa_cloud_app_secret:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["app_secret"] = wa_cloud_app_secret
+        # Optional: WABA id (analytics, future use)
+        wa_cloud_waba_id = os.getenv("WHATSAPP_CLOUD_WABA_ID")
+        if wa_cloud_waba_id:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["waba_id"] = wa_cloud_waba_id
+        # Webhook verify token — Meta hub.verify_token shared secret
+        wa_cloud_verify_token = os.getenv("WHATSAPP_CLOUD_VERIFY_TOKEN")
+        if wa_cloud_verify_token:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["verify_token"] = wa_cloud_verify_token
+        # Webhook server bind config (defaults baked into the adapter)
+        wa_cloud_host = os.getenv("WHATSAPP_CLOUD_WEBHOOK_HOST")
+        if wa_cloud_host:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_host"] = wa_cloud_host
+        wa_cloud_port = os.getenv("WHATSAPP_CLOUD_WEBHOOK_PORT")
+        if wa_cloud_port:
+            try:
+                config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_port"] = int(wa_cloud_port)
+            except ValueError:
+                pass
+        wa_cloud_path = os.getenv("WHATSAPP_CLOUD_WEBHOOK_PATH")
+        if wa_cloud_path:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_path"] = wa_cloud_path
+        # Graph API version override (rarely needed)
+        wa_cloud_api_version = os.getenv("WHATSAPP_CLOUD_API_VERSION")
+        if wa_cloud_api_version:
+            config.platforms[Platform.WHATSAPP_CLOUD].extra["api_version"] = wa_cloud_api_version
+    whatsapp_cloud_home = os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL")
+    if whatsapp_cloud_home and Platform.WHATSAPP_CLOUD in config.platforms:
+        config.platforms[Platform.WHATSAPP_CLOUD].home_channel = HomeChannel(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id=whatsapp_cloud_home,
+            name=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_NAME", "Home"),
+            thread_id=os.getenv("WHATSAPP_CLOUD_HOME_CHANNEL_THREAD_ID") or None,
+        )
+
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:
@@ -1497,8 +1569,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_password = os.getenv("MATRIX_PASSWORD", "")
         if matrix_password:
             matrix_config.extra["password"] = matrix_password
-        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in {"true", "1", "yes"}
+        matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
+        matrix_e2ee = (
+            matrix_e2ee_mode in ("required", "require", "optional", "prefer", "preferred")
+            or os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        )
         matrix_config.extra["encryption"] = matrix_e2ee
+        if matrix_e2ee_mode:
+            matrix_config.extra["e2ee_mode"] = matrix_e2ee_mode
         matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
         if matrix_device_id:
             matrix_config.extra["device_id"] = matrix_device_id

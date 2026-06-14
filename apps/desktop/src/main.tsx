@@ -1,4 +1,6 @@
 import './styles.css'
+// Side-effect: applies the persisted window translucency on load.
+import './store/translucency'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'

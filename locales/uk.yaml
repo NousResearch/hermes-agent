@@ -219,6 +219,14 @@ gateway:
 
   resume:
     db_unavailable:        "База даних сеансів недоступна."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "Іменованих сеансів не знайдено.\nВикористайте `/title Мій сеанс`, щоб назвати поточний сеанс, потім `/resume Мій сеанс`, щоб повернутися до нього."
     list_header:           "📋 **Іменовані сеанси**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,6 +259,12 @@ gateway:
 
   status:
     header:                "📊 **Стан Hermes Gateway**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID сесії:** `{session_id}`"
     title:                 "**Назва:** {title}"
     created:               "**Створено:** {timestamp}"
@@ -319,6 +333,9 @@ gateway:
     label_estimated_context:  "Орієнтовний контекст: ~{count} токенів"
     detailed_after_first:     "_(Детальне використання доступне після першої відповіді агента)_"
     no_data:                  "Дані про використання для цього сеансу відсутні."
+
+  credits:
+    not_logged_in:            "Ви не ввійшли в Nous Portal. Увійдіть, щоб переглянути баланс кредитів і поповнити його."
 
   verbose:
     not_enabled:           "Команду `/verbose` не ввімкнено для платформ обміну повідомленнями.\n\nУвімкніть у `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

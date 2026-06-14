@@ -20,7 +20,13 @@ Two files make up the agent's memory:
 Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
 
 :::info
-Character limits keep memory focused. When memory is full, the agent consolidates or replaces entries to make room for new information.
+Character limits keep memory focused. Memory does **not** auto-compact: when a
+write would exceed the limit, the `memory` tool returns an error instead of
+silently dropping entries. The agent then makes room itself — consolidating or
+removing entries in the same turn before retrying (see [What Happens When Memory
+is Full](#what-happens-when-memory-is-full)). Note that `replace` is also bound
+by the limit: swapping an entry for a longer one can still overflow, so the new
+content must be shortened (or another entry removed) to fit.
 :::
 
 ## How Memory Appears in the System Prompt
@@ -264,6 +270,7 @@ inline, but the full diff stays out-of-band:
 On a messaging platform, approve a skill from its gist + metadata, or open
 `/skills diff` on the CLI / dashboard / the staged file under
 `~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
+Full details in [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
 
 ## External Memory Providers

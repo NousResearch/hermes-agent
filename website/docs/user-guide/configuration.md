@@ -109,6 +109,7 @@ terminal:
   backend: local    # local | docker | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
+  home_mode: auto   # auto | real | profile — subprocess HOME policy
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"  # Container image for Singularity backend
   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"                 # Container image for Modal backend
@@ -135,6 +136,54 @@ The default. Commands run directly on your machine with no isolation. No special
 ```yaml
 terminal:
   backend: local
+```
+
+By default, local tool subprocesses keep your real OS-user `HOME`. This lets
+external CLIs such as `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex
+find the credentials and config they already use in your normal shell. Hermes
+state is still profile-scoped through `HERMES_HOME`; `HOME` is not how profiles
+select config, memory, sessions, or skills.
+
+Hermes does **not** change your system-wide `HOME`, your shell startup files, or
+the operating system account home. This setting only controls the environment
+passed to subprocesses that Hermes launches through tools such as `terminal`,
+background terminal processes, `execute_code`, and ACP helper processes.
+
+#### `terminal.home_mode`
+
+| Mode | Host installs | Containers | Tradeoff |
+|---|---|---|---|
+| `auto` | Keep the real OS-user `HOME` | Use `{HERMES_HOME}/home` | Recommended default. Host CLIs keep working; container state persists. |
+| `real` | Force the real OS-user `HOME` | Force the real OS-user `HOME` if visible | Useful if a parent process accidentally started with `HOME` pointed at a profile home. |
+| `profile` | Use `{HERMES_HOME}/home` when it exists | Use `{HERMES_HOME}/home` when it exists | Strict per-profile CLI config isolation, but normal `~/.ssh`, `~/.gitconfig`, `~/.azure`, `~/.config/gh`, Claude/Codex auth, npm state, etc. will not be visible unless you initialize or link them inside the profile home. |
+
+The downside of the default is that host profiles share the same normal
+user-level CLI credentials/config under `~`. If you need a profile with a
+separate git identity, SSH keys, GitHub CLI login, npm config, or cloud CLI
+login, use `home_mode: profile` and initialize those tools inside that profile
+home deliberately.
+
+If you intentionally want strict per-profile tool-config isolation, set:
+
+```yaml
+terminal:
+  home_mode: profile
+```
+
+In that mode tool subprocesses use `{HERMES_HOME}/home` as `HOME`. Hermes also
+sets `HERMES_REAL_HOME` so scripts can still locate the actual user home when
+they need it. Container backends keep using `{HERMES_HOME}/home` in `auto` mode
+because that directory lives on the persistent Hermes data volume.
+
+Scripts that need to distinguish profile state from the real user home should
+prefer `HERMES_HOME` for Hermes data and `HERMES_REAL_HOME` for the account home:
+
+```python
+from pathlib import Path
+import os
+
+hermes_home = Path(os.environ["HERMES_HOME"])
+real_home = Path(os.environ.get("HERMES_REAL_HOME", os.environ["HOME"]))
 ```
 
 :::warning
@@ -533,6 +582,17 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+### Write approval for skill writes
+
+Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+
+```yaml
+skills:
+  write_approval: false   # false = write freely (default) | true = stage every write for review
+```
+
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+
 ## Memory Configuration
 
 ```yaml
@@ -541,7 +601,10 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+  write_approval: false     # true = require approval before any memory write
 ```
+
+With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
 ## File Read Safety
 
@@ -1250,6 +1313,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
+  credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 

@@ -41,7 +41,9 @@ Frontmatter:
   skill index truncates the description to 60 chars and loads it every
   session, so anything past char 60 is silently cut and never routes. After
   you write the description, COUNT the characters; if it is over 60, cut it
-  down before saving — do not ship a sentence and hope.
+  down before saving — do not ship a sentence and hope. The optional
+  `skills.description_max_length` setting can shorten prompt-index entries;
+  it never permits descriptions longer than 60 characters.
     Good (<=60): `Search arXiv papers by keyword, author, or ID.`
     Bad (123):   `A comprehensive skill that lets the agent search arXiv for
                   academic papers using keywords, authors, and categories.`

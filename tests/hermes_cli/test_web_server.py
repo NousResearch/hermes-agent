@@ -3776,6 +3776,18 @@ class TestBuildSchemaFromConfig:
         for cat, count in cats.items():
             assert count >= 2, f"Category '{cat}' has only {count} field(s) — should be merged"
 
+    def test_skill_description_truncation_config_in_schema(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        skills_cfg = DEFAULT_CONFIG["skills"]
+        assert skills_cfg["description_max_length"] == 60
+        assert skills_cfg["description_truncation_suffix"] == "..."
+        assert CONFIG_SCHEMA["skills.description_max_length"]["type"] == "number"
+        assert CONFIG_SCHEMA["skills.description_max_length"]["category"] == "agent"
+        assert CONFIG_SCHEMA["skills.description_truncation_suffix"]["type"] == "string"
+        assert CONFIG_SCHEMA["skills.description_truncation_suffix"]["category"] == "agent"
+
 
 # ---------------------------------------------------------------------------
 # Config round-trip tests

@@ -767,16 +767,68 @@ def resolve_skill_config_values(
 
 # ── Description extraction ────────────────────────────────────────────────
 
+DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH = 60
+DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX = "..."
+
+def _coerce_description_max_length(value: Any) -> int:
+    if isinstance(value, bool):
+        return DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH
+    if limit <= 0:
+        return DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH
+    return min(limit, DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH)
+
+
+def get_skill_description_truncation_config() -> Tuple[int, str]:
+    """Return the prompt-index description cap and truncation suffix.
+
+    The setting can reduce prompt usage but cannot relax the 60-character
+    skill-authoring contract. Raw config parsing shares this module's existing
+    mtime-aware cache with the other skill settings.
+    """
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if not isinstance(skills_cfg, dict):
+        return (
+            DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH,
+            DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX,
+        )
+    return (
+        _coerce_description_max_length(
+            skills_cfg.get(
+                "description_max_length",
+                DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH,
+            )
+        ),
+        str(
+            skills_cfg.get(
+                "description_truncation_suffix",
+                DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX,
+            )
+            or ""
+        ),
+    )
+
+
+def _truncate_skill_description(desc: str, max_length: int, suffix: str) -> str:
+    if len(desc) <= max_length:
+        return desc
+    if not suffix or len(suffix) >= max_length:
+        return desc[:max_length]
+    return desc[: max_length - len(suffix)] + suffix
+
 
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+    """Extract a configured-length description from parsed frontmatter."""
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
-    return desc
+    max_length, suffix = get_skill_description_truncation_config()
+    return _truncate_skill_description(desc, max_length, suffix)
 
 
 # ── File iteration ────────────────────────────────────────────────────────

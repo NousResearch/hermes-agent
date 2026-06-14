@@ -890,7 +890,8 @@ violate them.
    attention when many skills are loaded. State the capability, not
    the implementation. No marketing words ("powerful",
    "comprehensive", "seamless", "advanced"). Don't repeat the skill
-   name. Verify with:
+   name. `skills.description_max_length` may shorten prompt-index entries,
+   but it never relaxes this authoring limit. Verify with:
    ```python
    import re, pathlib
    m = re.search(r'^description: (.*)$',

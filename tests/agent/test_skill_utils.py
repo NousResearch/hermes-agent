@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from agent.skill_utils import (
     extract_skill_conditions,
+    extract_skill_description,
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
@@ -237,6 +238,75 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert found == [scripts_skill / "SKILL.md", templates_skill / "SKILL.md"]
     assert is_skill_support_path(scripts_skill / "SKILL.md") is False
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
+
+
+def test_extract_skill_description_uses_default_limit(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skill_utils._raw_config_cache_clear()
+    desc = "x" * 80
+
+    assert extract_skill_description({"description": desc}) == ("x" * 57) + "..."
+
+
+def test_extract_skill_description_uses_configured_limit(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 20\n",
+        encoding="utf-8",
+    )
+    skill_utils._raw_config_cache_clear()
+
+    assert extract_skill_description({"description": "abcdefghij" * 4}) == "abcdefghijabcdefg..."
+
+
+def test_extract_skill_description_uses_configured_suffix(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 12\n"
+        "  description_truncation_suffix: \" [more]\"\n",
+        encoding="utf-8",
+    )
+    skill_utils._raw_config_cache_clear()
+
+    assert extract_skill_description({"description": "abcdefghijklmnop"}) == "abcde [more]"
+
+
+def test_extract_skill_description_caps_config_at_authoring_limit(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 200\n",
+        encoding="utf-8",
+    )
+    skill_utils._raw_config_cache_clear()
+    desc = "x" * 200
+
+    assert extract_skill_description({"description": desc}) == ("x" * 57) + "..."
+
+
+def test_extract_skill_description_rejects_non_positive_limit(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 0\n",
+        encoding="utf-8",
+    )
+    skill_utils._raw_config_cache_clear()
+    desc = "x" * 80
+
+    assert extract_skill_description({"description": desc}) == ("x" * 57) + "..."
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────

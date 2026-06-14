@@ -24,6 +24,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_skill_description_truncation_config,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_environment,
@@ -1263,7 +1264,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1307,7 +1308,10 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+def _load_skills_snapshot(
+    skills_dir: Path,
+    description_config: tuple[int, str],
+) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
     if not snapshot_path.exists():
@@ -1320,6 +1324,8 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
+    if snapshot.get("description_config") != list(description_config):
+        return None
     if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
         return None
     return snapshot
@@ -1330,11 +1336,13 @@ def _write_skills_snapshot(
     manifest: dict[str, list[int]],
     skill_entries: list[dict],
     category_descriptions: dict[str, str],
+    description_config: tuple[int, str],
 ) -> None:
     """Persist skill metadata to disk for fast cold-start reuse."""
     payload = {
         "version": _SKILLS_SNAPSHOT_VERSION,
         "manifest": manifest,
+        "description_config": list(description_config),
         "skills": skill_entries,
         "category_descriptions": category_descriptions,
     }
@@ -1487,6 +1495,7 @@ def build_skills_system_prompt(
     # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
+    description_config = get_skill_description_truncation_config()
     cache_key = (
         str(skills_dir),
         tuple(str(d) for d in external_dirs),
@@ -1495,6 +1504,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        description_config,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1503,7 +1513,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, description_config)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -1575,6 +1585,7 @@ def build_skills_system_prompt(
             _build_skills_manifest(skills_dir),
             skill_entries,
             category_descriptions,
+            description_config,
         )
 
     # ── External skill directories ─────────────────────────────────────

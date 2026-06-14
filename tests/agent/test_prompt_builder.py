@@ -415,6 +415,50 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_description_config_invalidates_prompt_cache_and_snapshot(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import json
+        import os
+
+        from agent import skill_utils
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "long-description"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: long-description\ndescription: " + ("x" * 55) + "\n---\n",
+            encoding="utf-8",
+        )
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "skills:\n  description_max_length: 20\n",
+            encoding="utf-8",
+        )
+        skill_utils._raw_config_cache_clear()
+
+        first = build_skills_system_prompt()
+        snapshot_path = tmp_path / ".skills_prompt_snapshot.json"
+        first_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+        assert ("x" * 17) + "..." in first
+        assert first_snapshot["description_config"] == [20, "..."]
+
+        previous_mtime = config_path.stat().st_mtime_ns
+        config_path.write_text(
+            "skills:\n  description_max_length: 40\n",
+            encoding="utf-8",
+        )
+        os.utime(config_path, ns=(previous_mtime + 1_000_000, previous_mtime + 1_000_000))
+
+        second = build_skills_system_prompt()
+        second_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+        assert ("x" * 37) + "..." in second
+        assert second_snapshot["description_config"] == [40, "..."]
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -1651,5 +1695,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

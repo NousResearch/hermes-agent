@@ -706,6 +706,17 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context management engine",
         "options": ["default", "custom"],
     },
+    "skills.description_max_length": {
+        "type": "number",
+        "description": (
+            "Maximum characters from each skill description shown in the prompt "
+            "skill index (1-60; larger values are capped at 60)."
+        ),
+    },
+    "skills.description_truncation_suffix": {
+        "type": "string",
+        "description": "Suffix appended when a skill description is truncated.",
+    },
     "human_delay.mode": {
         "type": "select",
         "description": "Simulated typing delay mode",

@@ -269,6 +269,9 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
 
+        # Reusable SSL context for SMTP connections
+        self._smtp_ssl_ctx: ssl.SSLContext = ssl.create_default_context()
+
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
@@ -297,26 +300,59 @@ class EmailAdapter(BasePlatformAdapter):
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, using SMTP_SSL for port 465 (implicit TLS).
 
-        Forces IPv4 to avoid hanging on unreachable IPv6 addresses.
+        Tries IPv4 first to avoid hanging on unreachable AAAA records,
+        then falls back to default resolution (which includes IPv6) if
+        no A records are found.  This is thread-safe — no global state
+        is mutated.
         """
-        ctx = ssl.create_default_context()
-        # Force IPv4 — many SMTP servers have AAAA records but IPv6 is
-        # unreachable on this host, causing socket.create_connection to hang.
-        orig_gai = socket.getaddrinfo
-
-        def _ipv4_gai(host, port, family=0, type=0, proto=0, flags=0):
-            return orig_gai(host, port, socket.AF_INET, type, proto, flags)
-
-        socket.getaddrinfo = _ipv4_gai
-        try:
-            if self._smtp_port == 465:
-                smtp = smtplib.SMTP_SSL(self._smtp_host, self._smtp_port, timeout=30, context=ctx)
-            else:
-                smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
-                smtp.starttls(context=ctx)
-        finally:
-            socket.getaddrinfo = orig_gai
+        sock = self._connect_smtp_socket()
+        if self._smtp_port == 465:
+            # SMTP_SSL wraps the socket in _get_socket() during connect(),
+            # but we bypass connect() by providing a pre-connected socket,
+            # so we wrap and initialize manually.
+            ssl_sock = self._smtp_ssl_ctx.wrap_socket(
+                sock, server_hostname=self._smtp_host,
+            )
+            smtp: smtplib.SMTP = smtplib.SMTP_SSL(context=self._smtp_ssl_ctx)
+            smtp.sock = ssl_sock
+            smtp.file = ssl_sock.makefile("rb")
+            smtp.getreply()  # read server greeting banner
+        else:
+            smtp = smtplib.SMTP()
+            smtp.sock = sock
+            smtp.file = sock.makefile("rb")
+            smtp.getreply()  # read server greeting banner
+        smtp.ehlo()
+        if self._smtp_port != 465:
+            smtp.starttls(context=self._smtp_ssl_ctx)
+            smtp.ehlo()
         return smtp
+
+    def _connect_smtp_socket(self, timeout: float = 30) -> socket.socket:
+        """Resolve SMTP host preferring IPv4, then connect.
+
+        Tries IPv4 (A records) first so hosts with broken IPv6 don't
+        hang. Falls back to default resolution if no A records exist.
+        Thread-safe — no global state is mutated.
+        """
+        # Try IPv4 first
+        addrs = socket.getaddrinfo(
+            self._smtp_host, self._smtp_port, socket.AF_INET, socket.SOCK_STREAM,
+        )
+        if not addrs:
+            # No A records — fall back to default (may include IPv6)
+            addrs = socket.getaddrinfo(
+                self._smtp_host, self._smtp_port, type=socket.SOCK_STREAM,
+            )
+        for family, type_, proto, _, addr in addrs:
+            sock = socket.socket(family, type_, proto)
+            sock.settimeout(timeout)
+            try:
+                sock.connect(addr)
+                return sock
+            except OSError:
+                sock.close()
+        raise OSError(f"Cannot connect to {self._smtp_host}:{self._smtp_port}")
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
@@ -342,8 +378,13 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             # Test SMTP connection
             smtp = self._connect_smtp()
-            smtp.login(self._address, self._password)
-            smtp.quit()
+            try:
+                smtp.login(self._address, self._password)
+            finally:
+                try:
+                    smtp.quit()
+                except Exception:
+                    smtp.close()
             logger.info("[Email] SMTP connection test passed.")
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)

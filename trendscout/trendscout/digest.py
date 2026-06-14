@@ -34,7 +34,7 @@ def build_digest(date: str, top_terms: list[dict], new_clusters: list[dict],
     lines = [f"📡 *Trendscout — {date}*", '']
 
     if trending:
-        lines.append("📈 *Trending now (X/Twitter)*")
+        lines.append("📈 *Trending now*")
         for region, terms in trending.items():
             lines.append(f"  - {region}: {', '.join(terms)}")
         lines.append('')

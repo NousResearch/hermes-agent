@@ -135,6 +135,76 @@ class TestPartialStreamStubFinishReason:
         assert "Stream stalled mid tool-call" in content
         assert "write_file" in content
 
+    @patch("run_agent.AIAgent._anthropic_client", create=True)
+    @patch("run_agent.AIAgent._try_refresh_anthropic_client_credentials", create=True)
+    def test_anthropic_mode_partial_returns_content_list(
+        self, _mock_refresh, _mock_client, monkeypatch,
+    ):
+        """#45908: In anthropic_messages mode, the partial-stream stub must
+        have .content (a list of blocks) so that validate_response() passes.
+        Previously the stub was always OpenAI-shaped (.choices), causing
+        AnthropicTransport.validate_response to fail and the conversation
+        loop to retry 10x with the same unrecoverable error."""
+
+        def _stalling_anthropic_stream(**kwargs):
+            class _FakeStream:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    pass
+                def __iter__(self):
+                    yield SimpleNamespace(
+                        type="content_block_start",
+                        content_block=SimpleNamespace(type="text"),
+                        index=0,
+                    )
+                    yield SimpleNamespace(
+                        type="content_block_delta",
+                        delta=SimpleNamespace(type="text_delta", thinking=None, text="partial "),
+                        index=0,
+                    )
+                def get_final_message(self):
+                    raise IndexError("list index out of range")
+            return _FakeStream()
+
+        agent = _make_agent()
+        agent.api_mode = "anthropic_messages"
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = _stalling_anthropic_stream
+        agent._try_refresh_anthropic_client_credentials = lambda: None
+        agent._current_streamed_assistant_text = "partial "
+        agent._fire_stream_delta = lambda text: None
+        agent._fire_reasoning_delta = lambda text: None
+        agent._fire_first_delta = lambda: None
+        agent._touch_activity = lambda *a, **kw: None
+        agent._stream_diag_init = lambda: {}
+        agent._stream_diag_capture_response = lambda *a, **kw: None
+        agent._fire_tool_gen_started = lambda *a, **kw: None
+        agent._is_provider_stream_parse_error = lambda e: False
+        agent._emit_stream_drop = lambda **kw: None
+        agent._log_stream_retry = lambda **kw: None
+        agent._buffer_status = lambda *a, **kw: None
+        agent._reset_stream_delivery_tracking = lambda: None
+        agent._replace_primary_openai_client = lambda **kw: None
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert hasattr(response, "content"), (
+            "Anthropic partial stub must have .content attribute"
+        )
+        assert isinstance(response.content, list), (
+            "Anthropic partial stub .content must be a list"
+        )
+        assert len(response.content) > 0, (
+            "Anthropic partial stub .content must be non-empty"
+        )
+        assert response.content[0].type == "text"
+        assert response.content[0].text == "partial"
+        assert response.stop_reason == "max_tokens"
+        assert not hasattr(response, "choices") or response.choices is None
+
 
 # ── Clean stream-end mid-tool-call (no exception, no finish_reason) ─────────
 

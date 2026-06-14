@@ -2651,6 +2651,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     result["error"],
                 )
                 _stub_finish_reason = FINISH_REASON_LENGTH
+            if getattr(agent, "api_mode", None) == "anthropic_messages":
+                # Anthropic-shaped stub: validate_response() checks for
+                # response.content (a list), not response.choices.
+                _stub_content_block = SimpleNamespace(
+                    type="text", text=_partial_text or "",
+                )
+                return SimpleNamespace(
+                    id=PARTIAL_STREAM_STUB_ID,
+                    model=getattr(agent, "model", "unknown"),
+                    content=[_stub_content_block],
+                    stop_reason="max_tokens",
+                    usage=None,
+                    _dropped_tool_names=_partial_names or None,
+                )
             _stub_msg = SimpleNamespace(
                 role="assistant", content=_partial_text, tool_calls=None,
                 reasoning_content=None,

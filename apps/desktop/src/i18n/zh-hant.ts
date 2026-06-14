@@ -127,6 +127,18 @@ export const zhHant = defineLocale({
       transcriptionUnavailable: '語音轉寫暫不可用。',
       tryRecordingAgain: '請再錄製一次。',
       unavailable: '語音不可用'
+    },
+    native: {
+      approvalTitle: '需要核准',
+      approveAction: '核准',
+      rejectAction: '拒絕',
+      inputTitle: '需要輸入',
+      inputBody: 'Hermes 正在等待你的回應。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回覆已就緒。',
+      turnErrorTitle: '本輪失敗',
+      backgroundDoneTitle: '背景工作已完成',
+      backgroundFailedTitle: '背景工作失敗'
     }
   },
 
@@ -172,7 +184,45 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
-      about: '關於'
+      about: '關於',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
+      enableAll: '啟用通知',
+      enableAllDesc: '總開關。關閉後會靜音下方所有通知。',
+      focusedHint: '完成提醒僅在 Hermes 位於背景時觸發。',
+      kinds: {
+        approval: {
+          label: '需要核准',
+          description: '有指令正在等待你核准或拒絕。'
+        },
+        input: {
+          label: '需要輸入',
+          description: 'Hermes 提出了問題，或需要密碼或密鑰。'
+        },
+        turnDone: {
+          label: '回覆就緒',
+          description: 'Hermes 在背景時完成了一輪對話。'
+        },
+        turnError: {
+          label: '本輪失敗',
+          description: '本輪以錯誤結束。'
+        },
+        backgroundDone: {
+          label: '背景工作完成',
+          description: '背景終端機指令已完成。'
+        }
+      },
+      test: '傳送測試通知',
+      testTitle: 'Hermes',
+      testBody: '通知運作正常。',
+      testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
+      testUnsupported: '此系統不支援原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
+      completionSoundPreview: '預覽'
     },
     sections: {
       model: '模型',
@@ -213,9 +263,6 @@ export const zhHant = defineLocale({
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
-      completionSoundTitle: '完成提示音',
-      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
-      completionSoundPreview: '預覽',
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
       installPlaceholder: 'publisher.extension',

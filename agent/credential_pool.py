@@ -2097,6 +2097,27 @@ def _prune_stale_seeded_entries(
     return True
 
 
+def _resolve_env_ref(value: str) -> str:
+    """Resolve $ENV_VAR references in config values at runtime.
+
+    Looks up the referenced env var in ~/.hermes/.env first, then falls back
+    to os.environ, matching the priority used by built-in provider resolution
+    in _seed_from_env.  Non-$-prefixed values are returned unchanged.
+    """
+    stripped = value.strip()
+    if not stripped.startswith("$"):
+        return stripped
+    var_name = stripped.lstrip("$")
+    if not var_name:
+        return stripped
+    try:
+        env_file = load_env()
+    except Exception:
+        env_file = {}
+    resolved = (env_file.get(var_name) or os.environ.get(var_name) or "").strip()
+    return resolved if resolved else stripped  # keep literal when unresolvable
+
+
 def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     """Seed a custom endpoint pool from custom_providers config and model config."""
     changed = False
@@ -2112,7 +2133,8 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     # Seed from the custom_providers config entry's api_key field
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
-        api_key = str(cp_config.get("api_key") or "").strip()
+        raw_key = str(cp_config.get("api_key") or "").strip()
+        api_key = _resolve_env_ref(raw_key)
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
         if api_key:

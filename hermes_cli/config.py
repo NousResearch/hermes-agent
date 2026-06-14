@@ -1736,6 +1736,10 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Inject a compact, transferable memory packet for local and
+        # Grok-style models. Default on: it is a safety-preserving
+        # compression layer, not telemetry.
+        "portable_memory_packet_enabled": True,
         # Optional lazy idle sleep: when enabled, the next turn after the
         # idle threshold runs ebbinghaus_memory(action='sleep') and prepends
         # a one-shot wake greeting to the response.

@@ -59,6 +59,51 @@ def _ra():
     return run_agent
 
 
+def _model_needs_portable_memory_packet(agent: Any) -> bool:
+    """Return True when the model family benefits from a compact memory packet.
+
+    Local models and Grok-style providers tend to benefit from a strongly
+    structured memory handoff because they are often run with shorter windows
+    or more volatile prompt stacks than the primary cloud models.
+    """
+    model = (getattr(agent, "model", "") or "").lower()
+    provider = (getattr(agent, "provider", "") or "").lower()
+    return any(
+        token in model or token in provider
+        for token in ("grok", "llama", "local", "qwen", "ollama")
+    )
+
+
+def _build_portable_memory_packet(agent: Any) -> str:
+    """Compact the active memory context into a structured, transferable packet."""
+    if not getattr(agent, "_portable_memory_packet_enabled", True):
+        return ""
+
+    parts: List[str] = []
+    memory_store = getattr(agent, "_memory_store", None)
+
+    if memory_store:
+        for label in ("memory", "user"):
+            try:
+                packet = memory_store.build_memory_packet(label, portable=True)
+                block = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                block = ""
+            if block and block.strip():
+                parts.append(f"{label}: {block.strip().replace(chr(10), ' ')}")
+
+
+    if not parts:
+        return ""
+
+    return (
+        "# Portable memory packet\n"
+        "Use this as the durable cross-model handoff when the provider is local or Grok.\n"
+        "Treat it as evidence-backed memory, not raw conversation.\n\n"
+        + "\n".join(f"- {line}" for line in parts)
+    )
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered parts.
 
@@ -360,10 +405,17 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         except Exception:
             pass
 
+    if _model_needs_portable_memory_packet(agent):
+        portable_packet = _build_portable_memory_packet(agent)
+        if portable_packet:
+            volatile_parts.append(portable_packet)
+
     from hermes_time import now as _hermes_now
     now = _hermes_now()
+
     # Date-only (not minute-precision) so the system prompt is byte-stable
     # for the full day.  Minute-precision changes invalidate prefix-cache KV
+
     # on every rebuild path (compression boundary, fresh-agent gateway turns,
     # session resume without a stored prompt).  The model can still query the
     # exact wall-clock time via tools when it actually needs it.

@@ -12,6 +12,7 @@ from agent.memory_manager import (
     inject_memory_provider_tools,
     memory_provider_tools_enabled,
 )
+from agent.system_prompt import _build_portable_memory_packet
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -282,6 +283,39 @@ class TestMemoryManager:
         )
         assert mgr.consume_wake_greeting() == "おはよう！ボブにゃん。"
         assert mgr.consume_wake_greeting() == ""
+
+
+class TestPortableMemoryPacket:
+    def test_local_and_grok_models_get_portable_memory_packet(self):
+        class _DummyStore:
+            def format_for_system_prompt(self, kind):
+                return f"{kind.upper()}\nline2"
+            def build_memory_packet(self, target, *, portable=False):
+                return {"kind": "portable_memory_packet", "target": target, "portable": portable}
+
+        class _DummyAgent:
+            _memory_store = _DummyStore()
+            _portable_memory_packet_enabled = True
+
+        packet = _build_portable_memory_packet(_DummyAgent())
+        assert "Portable memory packet" in packet
+        assert "memory:" in packet
+        assert "user:" in packet
+        assert '"portable": true' in packet.lower()
+
+    def test_non_portable_models_skip_packet(self):
+        class _DummyStore:
+            def format_for_system_prompt(self, kind):
+                return f"{kind}"
+            def build_memory_packet(self, target, *, portable=False):
+                return {"kind": "memory_packet", "target": target, "portable": portable}
+
+        class _DummyAgent:
+            _memory_store = _DummyStore()
+            _portable_memory_packet_enabled = False
+
+        packet = _build_portable_memory_packet(_DummyAgent())
+        assert packet == ""
 
     def test_idle_sleep_disabled_does_not_call_provider(self):
         mgr = MemoryManager()

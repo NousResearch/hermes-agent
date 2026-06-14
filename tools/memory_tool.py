@@ -462,7 +462,28 @@ class MemoryStore:
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
-    # -- Internal helpers --
+    def build_memory_packet(self, target: str, *, portable: bool = False) -> Dict[str, Any]:
+        """Return a structured, model-transferable packet for the requested memory store.
+
+        The packet is intentionally conservative: it preserves the live entries,
+        includes a compact status wrapper, and avoids pretending to know fields
+        (confidence, freshness, contradiction) that are not explicitly stored yet.
+        Those fields are emitted as defaults so downstream model-specific memory
+        layers can extend the schema without breaking this source of truth.
+        """
+        entries = list(self._entries_for(target))
+        limit = self._char_limit(target)
+        current = self._char_count(target)
+        return {
+            "kind": "portable_memory_packet" if portable else "memory_packet",
+            "target": target,
+            "status": "supported",
+            "confidence": 0.5 if entries else 0.0,
+            "freshness": "snapshot",
+            "contradictions": [],
+            "entries": entries,
+            "usage": {"current_chars": current, "limit_chars": limit},
+        }
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)

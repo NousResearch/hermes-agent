@@ -25,6 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
+from utils import env_bool
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -146,14 +147,28 @@ _last_init_error_lock = threading.Lock()
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
-_FTS_TRIGGERS = (
+_FTS_MAIN_TRIGGERS = (
     "messages_fts_insert",
     "messages_fts_delete",
     "messages_fts_update",
+)
+_FTS_TRIGRAM_TRIGGERS = (
     "messages_fts_trigram_insert",
     "messages_fts_trigram_delete",
     "messages_fts_trigram_update",
 )
+_FTS_TRIGGERS = _FTS_MAIN_TRIGGERS + _FTS_TRIGRAM_TRIGGERS
+
+
+def _fts_trigram_enabled() -> bool:
+    """Whether the CJK/substring trigram FTS5 index should be maintained.
+
+    The trigram index mirrors every message into a second FTS5 table and
+    roughly doubles FTS storage. Deployments that never search CJK text can
+    set ``HERMES_DISABLE_FTS_TRIGRAM`` to skip building it; CJK queries then
+    fall back to LIKE substring search (see ``search_messages``).
+    """
+    return not env_bool("HERMES_DISABLE_FTS_TRIGRAM", False)
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -824,18 +839,45 @@ class SessionDB:
                 pass
 
     @staticmethod
-    def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
-        placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+    def _fts_trigger_count(
+        cursor: sqlite3.Cursor, triggers: Tuple[str, ...] = _FTS_TRIGGERS
+    ) -> int:
+        placeholders = ",".join("?" for _ in triggers)
         row = cursor.execute(
             f"SELECT COUNT(*) FROM sqlite_master "
             f"WHERE type = 'trigger' AND name IN ({placeholders})",
-            _FTS_TRIGGERS,
+            triggers,
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
+    def _drop_fts_trigram(self, cursor: sqlite3.Cursor) -> None:
+        """Remove the trigram FTS5 table and its triggers.
+
+        Called when ``HERMES_DISABLE_FTS_TRIGRAM`` is set so existing
+        databases reclaim the trigram storage (run VACUUM separately to
+        return the freed pages to the OS). Safe when the table was never
+        created. CJK search then falls back to LIKE in ``search_messages``.
+        """
+        for trigger in _FTS_TRIGRAM_TRIGGERS:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
+        try:
+            cursor.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+        except sqlite3.OperationalError as exc:
+            if not self._is_fts5_unavailable_error(exc):
+                raise
+            self._warn_fts5_unavailable(exc)
+
     @staticmethod
-    def _rebuild_fts_indexes(cursor: sqlite3.Cursor) -> None:
-        for table_name in ("messages_fts", "messages_fts_trigram"):
+    def _rebuild_fts_indexes(
+        cursor: sqlite3.Cursor, *, include_trigram: bool = True
+    ) -> None:
+        tables = ["messages_fts"]
+        if include_trigram:
+            tables.append("messages_fts_trigram")
+        for table_name in tables:
             cursor.execute(f"DELETE FROM {table_name}")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
@@ -845,14 +887,15 @@ class SessionDB:
             "COALESCE(tool_calls, '') "
             "FROM messages"
         )
-        cursor.execute(
-            "INSERT INTO messages_fts_trigram(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
-        )
+        if include_trigram:
+            cursor.execute(
+                "INSERT INTO messages_fts_trigram(rowid, content) "
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
         try:
@@ -1269,18 +1312,33 @@ class SessionDB:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
             # an earlier no-FTS5 runtime.
-            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            trigram_wanted = _fts_trigram_enabled()
+            expected_triggers = (
+                _FTS_TRIGGERS if trigram_wanted else _FTS_MAIN_TRIGGERS
+            )
+            triggers_need_repair = (
+                self._fts_trigger_count(cursor, expected_triggers)
+                < len(expected_triggers)
+            )
             self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
-            # Trigram FTS5 for CJK/substring search. This is optional relative
-            # to the main FTS table; if it cannot be created, CJK search falls
-            # back to LIKE.
+            # Trigram FTS5 for CJK/substring search. Optional relative to the
+            # main FTS table; when disabled via HERMES_DISABLE_FTS_TRIGRAM (or
+            # if it cannot be created) CJK search falls back to LIKE.
             if self._fts_enabled:
-                trigram_enabled = self._ensure_fts_schema(
-                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                )
-                if trigram_enabled and triggers_need_repair:
-                    self._rebuild_fts_indexes(cursor)
+                if trigram_wanted:
+                    trigram_enabled = self._ensure_fts_schema(
+                        cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                    )
+                    if trigram_enabled and triggers_need_repair:
+                        self._rebuild_fts_indexes(cursor)
+                else:
+                    # Disabled: drop the index + triggers that a previous run
+                    # (or the version-gated migrations above) may have created
+                    # so the storage is reclaimed on the next VACUUM.
+                    self._drop_fts_trigram(cursor)
+                    if triggers_need_repair:
+                        self._rebuild_fts_indexes(cursor, include_trigram=False)
 
         self._conn.commit()
 
@@ -3240,6 +3298,69 @@ class SessionDB:
         """Count CJK characters in text."""
         return sum(1 for ch in text if cls._is_cjk_codepoint(ord(ch)))
 
+    def _cjk_like_search(
+        self,
+        raw_query: str,
+        source_filter: Optional[List[str]],
+        exclude_sources: Optional[List[str]],
+        role_filter: Optional[List[str]],
+        limit: int,
+        offset: int,
+    ) -> List[Dict[str, Any]]:
+        """LIKE substring search for CJK queries.
+
+        Used both for short/mixed CJK queries (the trigram tokenizer needs
+        >=3 CJK chars per token) and as the fallback when the trigram index
+        is unavailable — e.g. disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or
+        not yet created. Orders by timestamp DESC and ignores ``sort`` (same
+        as the historical short-CJK path).
+
+        For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江") build one
+        LIKE condition per non-operator token so each term matches
+        independently (#20494).
+        """
+        non_op_tokens = [
+            t for t in raw_query.split()
+            if t.upper() not in {"AND", "OR", "NOT"}
+        ] or [raw_query]
+        token_clauses = []
+        like_params: list = []
+        for tok in non_op_tokens:
+            esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            token_clauses.append(
+                "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+            )
+            like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+        like_where = [f"({' OR '.join(token_clauses)})"]
+        if source_filter is not None:
+            like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+            like_params.extend(source_filter)
+        if exclude_sources is not None:
+            like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+            like_params.extend(exclude_sources)
+        if role_filter:
+            like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+            like_params.extend(role_filter)
+        like_sql = f"""
+            SELECT m.id, m.session_id, m.role,
+                   substr(m.content,
+                          max(1, instr(m.content, ?) - 40),
+                          120) AS snippet,
+                   m.content, m.timestamp, m.tool_name,
+                   s.source, s.model, s.started_at AS session_started
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(like_where)}
+            ORDER BY m.timestamp DESC
+            LIMIT ? OFFSET ?
+        """
+        like_params.extend([limit, offset])
+        # instr() for snippet uses first search token
+        like_params = [non_op_tokens[0]] + like_params
+        with self._lock:
+            like_cursor = self._conn.execute(like_sql, like_params)
+            return [dict(row) for row in like_cursor.fetchall()]
+
     def search_messages(
         self,
         query: str,
@@ -3419,60 +3540,31 @@ class SessionDB:
                     LIMIT ? OFFSET ?
                 """
                 tri_params.extend([limit, offset])
+                trigram_unavailable = False
                 with self._lock:
                     try:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
                     except sqlite3.OperationalError:
+                        # Trigram table missing (disabled via
+                        # HERMES_DISABLE_FTS_TRIGRAM or not yet created).
+                        trigram_unavailable = True
                         matches = []
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
+                if trigram_unavailable:
+                    # Degrade to LIKE so CJK search still works without the
+                    # trigram index.
+                    matches = self._cjk_like_search(
+                        raw_query, source_filter, exclude_sources,
+                        role_filter, limit, offset,
+                    )
             else:
                 # Short / mixed CJK query: trigram cannot match tokens with
                 # <3 CJK chars. Fall back to LIKE substring search.
-                # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
-                # build one LIKE condition per non-operator token so each term
-                # is matched independently (#20494).
-                non_op_tokens = [
-                    t for t in raw_query.split()
-                    if t.upper() not in {"AND", "OR", "NOT"}
-                ] or [raw_query]
-                token_clauses = []
-                like_params: list = []
-                for tok in non_op_tokens:
-                    esc = tok.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                    token_clauses.append(
-                        "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
-                    )
-                    like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
-                like_where = [f"({' OR '.join(token_clauses)})"]
-                if source_filter is not None:
-                    like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
-                    like_params.extend(source_filter)
-                if exclude_sources is not None:
-                    like_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
-                    like_params.extend(exclude_sources)
-                if role_filter:
-                    like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
-                    like_params.extend(role_filter)
-                like_sql = f"""
-                    SELECT m.id, m.session_id, m.role,
-                           substr(m.content,
-                                  max(1, instr(m.content, ?) - 40),
-                                  120) AS snippet,
-                           m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
-                    FROM messages m
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(like_where)}
-                    ORDER BY m.timestamp DESC
-                    LIMIT ? OFFSET ?
-                """
-                like_params.extend([limit, offset])
-                # instr() for snippet uses first search token
-                like_params = [non_op_tokens[0]] + like_params
-                with self._lock:
-                    like_cursor = self._conn.execute(like_sql, like_params)
-                    matches = [dict(row) for row in like_cursor.fetchall()]
+                matches = self._cjk_like_search(
+                    raw_query, source_filter, exclude_sources,
+                    role_filter, limit, offset,
+                )
         else:
             with self._lock:
                 try:

@@ -653,6 +653,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `SESSION_IDLE_MINUTES` | Reset sessions after N minutes of inactivity (default: 1440) |
 | `SESSION_RESET_HOUR` | Daily reset hour in 24h format (default: 4 = 4am) |
 | `HERMES_SESSION_ID` | **Exported automatically into every tool subprocess** Hermes spawns (`terminal`, `execute_code`, persistent shell, Docker/Singularity backends, delegated subagent runs). Set by the agent to the current session ID; user scripts called from tools can read it to correlate their output, telemetry, or side effects with the originating Hermes session. **You should not set this manually** — overriding it from a parent shell only takes effect outside an agent run, and is overwritten the moment the agent starts a session. |
+| `HERMES_DISABLE_FTS_TRIGRAM` | Set to `1`/`true`/`yes`/`on` to skip the trigram FTS5 index in `state.db`. The trigram index mirrors every message into a second full-text table to support CJK substring search, roughly doubling FTS storage. When disabled, it is dropped on next open (reclaim space with a VACUUM) and CJK queries fall back to LIKE substring search; English/keyword search is unaffected. Re-enable by unsetting the variable — the index is rebuilt and backfilled on the next open. |
 
 ## Context Compression (config.yaml only)
 

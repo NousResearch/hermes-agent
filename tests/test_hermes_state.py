@@ -4082,3 +4082,73 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestDisableFtsTrigram:
+    """HERMES_DISABLE_FTS_TRIGRAM skips/drops the trigram FTS5 index."""
+
+    def test_trigram_built_by_default(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="项目进展顺利 docker")
+        assert db._fts_table_exists("messages_fts_trigram") is True
+
+    def test_flag_skips_trigram_on_fresh_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="项目进展顺利 docker")
+            assert db._fts_table_exists("messages_fts_trigram") is False
+            # The main FTS index is untouched — English search still works.
+            assert len(db.search_messages("docker")) == 1
+        finally:
+            db.close()
+
+    def test_cjk_search_falls_back_to_like_when_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="记忆系统设计文档")
+            # A 3+ CJK-char query normally uses the trigram MATCH path; with
+            # the index gone it must degrade to LIKE, not return empty.
+            results = db.search_messages("记忆系统")
+            assert len(results) == 1
+            assert results[0]["session_id"] == "s1"
+        finally:
+            db.close()
+
+    def test_flag_drops_existing_trigram_on_open(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        seeded.create_session(session_id="s1", source="cli")
+        seeded.append_message("s1", role="user", content="测试内容 hello")
+        assert seeded._fts_table_exists("messages_fts_trigram") is True
+        seeded.close()
+
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_table_exists("messages_fts_trigram") is False
+            assert len(reopened.search_messages("hello")) == 1
+            assert len(reopened.search_messages("测试内容")) == 1
+        finally:
+            reopened.close()
+
+    def test_reenabling_rebuilds_trigram_populated(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        seeded = SessionDB(db_path=db_path)
+        seeded.create_session(session_id="s1", source="cli")
+        seeded.append_message("s1", role="user", content="记忆系统设计文档")
+        assert seeded._fts_table_exists("messages_fts_trigram") is False
+        seeded.close()
+
+        monkeypatch.delenv("HERMES_DISABLE_FTS_TRIGRAM", raising=False)
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_table_exists("messages_fts_trigram") is True
+            # Trigram is backfilled from existing rows → CJK MATCH works again.
+            assert len(reopened.search_messages("记忆系统")) == 1
+        finally:
+            reopened.close()

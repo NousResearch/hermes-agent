@@ -50,6 +50,51 @@ def _ra():
     return run_agent
 
 
+def _build_partial_stream_stub(
+    agent,
+    partial_text: Optional[str],
+    dropped_tool_names: Optional[list[str]] = None,
+):
+    """Return a provider-shaped stub for streams that died after delivery."""
+    dropped_tool_names = dropped_tool_names or None
+
+    if agent.api_mode == "anthropic_messages":
+        if not partial_text:
+            partial_text = (
+                "⚠ Stream interrupted before a complete response arrived. "
+                "Ask me to retry if you want to continue."
+            )
+        return SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            type="message",
+            role="assistant",
+            model=getattr(agent, "model", "unknown"),
+            content=[SimpleNamespace(type="text", text=partial_text)],
+            stop_reason="max_tokens",
+            stop_sequence=None,
+            usage=None,
+            _dropped_tool_names=dropped_tool_names,
+        )
+
+    stub_msg = SimpleNamespace(
+        role="assistant",
+        content=partial_text,
+        tool_calls=None,
+        reasoning_content=None,
+    )
+    return SimpleNamespace(
+        id=PARTIAL_STREAM_STUB_ID,
+        model=getattr(agent, "model", "unknown"),
+        choices=[SimpleNamespace(
+            index=0,
+            message=stub_msg,
+            finish_reason=FINISH_REASON_LENGTH,
+        )],
+        usage=None,
+        _dropped_tool_names=dropped_tool_names,
+    )
+
+
 def estimate_request_context_tokens(api_payload: Any) -> int:
     """Estimate context/load tokens from an API payload, dict or messages list.
 
@@ -2640,7 +2685,6 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "of text; surfaced warning to user: %s",
                     _partial_names, len(_partial_text or ""), result["error"],
                 )
-                _stub_finish_reason = FINISH_REASON_LENGTH
             else:
                 logger.warning(
                     "Partial stream delivered before error; returning "
@@ -2650,19 +2694,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     len(_partial_text or ""),
                     result["error"],
                 )
-                _stub_finish_reason = FINISH_REASON_LENGTH
-            _stub_msg = SimpleNamespace(
-                role="assistant", content=_partial_text, tool_calls=None,
-                reasoning_content=None,
-            )
-            return SimpleNamespace(
-                id=PARTIAL_STREAM_STUB_ID,
-                model=getattr(agent, "model", "unknown"),
-                choices=[SimpleNamespace(
-                    index=0, message=_stub_msg, finish_reason=_stub_finish_reason,
-                )],
-                usage=None,
-                _dropped_tool_names=_partial_names or None,
+            return _build_partial_stream_stub(
+                agent,
+                _partial_text,
+                dropped_tool_names=_partial_names,
             )
         raise result["error"]
     return result["response"]

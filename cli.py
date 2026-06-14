@@ -3890,6 +3890,15 @@ class HermesCLI:
         t0 = getattr(self, "_tool_start_time", 0) or 0
         if t0 > 0:
             elapsed = time.monotonic() - t0
+            # Guard against a torn read across the unlocked UI fields: _spinner_text
+            # and _tool_start_time are best-effort UI state updated by different
+            # events without a lock, so a render can briefly observe a fresh label
+            # paired with a stale start timestamp from a prior turn. A negative
+            # value (reset/clock-edge race) or an implausibly large one (>24h for a
+            # single tool) means the pairing is untrustworthy this frame; show the
+            # label without a timer rather than flashing an absurd number.
+            if elapsed < 0 or elapsed > 86400:
+                return f"  {txt}"
             if elapsed >= 60:
                 _m, _s = int(elapsed // 60), int(elapsed % 60)
                 # Fixed-width timer to avoid status-line wrap jitter while
@@ -15045,7 +15054,15 @@ class HermesCLI:
                 if not self._app:
                     time.sleep(0.1)
                     continue
-                if self._command_running:
+                # Repaint on a fixed cadence whenever a live timer is on screen:
+                # slow slash commands (_command_running) OR an agent turn with a
+                # running tool (_agent_running + non-empty _spinner_text). The old
+                # condition only checked _command_running, so during agent tool
+                # calls the elapsed timer was never repainted on a clock — it only
+                # advanced when an agent event happened to fire _invalidate(),
+                # which is why the seconds appeared to "jump" by whole tool
+                # durations instead of ticking smoothly.
+                if self._command_running or (self._agent_running and self._spinner_text):
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:

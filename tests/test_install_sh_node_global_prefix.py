@@ -25,15 +25,31 @@ def test_install_sh_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
     # The redirect must target the link dir's PARENT so global bins resolve to
     # <parent>/bin == the command link dir (node/npm/npx live there and it is
     # guaranteed on PATH by the installer's PATH setup).
-    assert 'printf \'prefix=%s\\n\' "$(dirname "$node_link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
+    assert "configure_managed_node_npm_prefix()" in text
+    assert 'printf \'prefix=%s\\n\' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
 
-    # The npmrc lives under the bundled Node so it only affects this npm, not
-    # the user's other Node installs or their ~/.npmrc.
-    assert '"$HERMES_HOME/node/etc/npmrc"' in text
+
+def test_install_sh_repairs_existing_managed_node_on_rerun() -> None:
+    """The redirect must run on every install (not just fresh Node installs),
+    so re-running the installer repairs pre-existing managed installs whose
+    Node is already up to date and would otherwise skip install_node."""
+    text = INSTALL_SH.read_text()
+
+    check_node_body = text.split("check_node()", 1)[1].split("\ninstall_node()", 1)[0]
+    assert "configure_managed_node_npm_prefix" in check_node_body
+
+    # No-op guard so it's safe to call when there is no managed Node.
+    assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text
 
 
 def test_node_bootstrap_redirects_bundled_npm_global_prefix_to_link_dir() -> None:
     text = NODE_BOOTSTRAP.read_text()
 
+    assert "_nb_configure_npm_prefix()" in text
     assert 'printf \'prefix=%s\\n\' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"' in text
-    assert '"$HERMES_HOME/node/etc/npmrc"' in text
+
+    # Runs at the top of ensure_node so existing managed installs are repaired
+    # even when a modern Node is already present (early return path).
+    ensure_node_body = text.split("ensure_node()", 1)[1]
+    assert "_nb_configure_npm_prefix" in ensure_node_body
+    assert '[ -x "$HERMES_HOME/node/bin/npm" ] || return 0' in text

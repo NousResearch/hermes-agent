@@ -24,7 +24,6 @@ from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipel
 from plugins.teams_pipeline.subscriptions import (
     build_graph_client,
     maintain_graph_subscriptions,
-    sync_graph_subscription_record,
 )
 from tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraphTokenProvider
 
@@ -99,15 +98,15 @@ def teams_pipeline_command(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        if action in ("list", "ls"):
+        if action in {"list", "ls"}:
             _cmd_list(args)
         elif action == "show":
             _cmd_show(args)
-        elif action in ("run", "replay"):
+        elif action in {"run", "replay"}:
             _cmd_run(args)
-        elif action in ("fetch", "test"):
+        elif action in {"fetch", "test"}:
             _cmd_fetch(args)
-        elif action in ("subscriptions", "subs"):
+        elif action in {"subscriptions", "subs"}:
             _cmd_subscriptions(args)
         elif action == "subscribe":
             _cmd_subscribe(args)
@@ -117,7 +116,7 @@ def teams_pipeline_command(args: argparse.Namespace) -> int:
             _cmd_delete_subscription(args)
         elif action == "maintain-subscriptions":
             _cmd_maintain_subscriptions(args)
-        elif action in ("token-health", "token"):
+        elif action in {"token-health", "token"}:
             _cmd_token_health(args)
         elif action == "validate":
             _cmd_validate(args)

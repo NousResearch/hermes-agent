@@ -12,7 +12,6 @@ messages.  The fix adds ``history_offset`` (the filtered history length)
 to ``_run_agent``'s return dict and uses it for the slice.
 """
 
-import pytest
 
 from gateway.run import _preserve_queued_followup_history_offset
 
@@ -31,7 +30,7 @@ def _filter_history(history: list) -> list:
         role = msg.get("role")
         if not role:
             continue
-        if role in ("session_meta",):
+        if role in {"session_meta",}:
             continue
         if role == "system":
             continue

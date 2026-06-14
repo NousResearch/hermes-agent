@@ -60,6 +60,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set, Tuple
 
+from utils import env_int
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -139,7 +141,7 @@ DEFAULT_EXCLUDES = [
 ]
 
 # Git subprocess timeout (seconds).
-_GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("HERMES_CHECKPOINT_TIMEOUT", "30"))))
+_GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
 # Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
@@ -305,6 +307,7 @@ def _run_git(
             timeout=timeout,
             env=env,
             cwd=str(normalized_working_dir),
+            stdin=subprocess.DEVNULL,
         )
         ok = result.returncode == 0
         stdout = result.stdout.strip()
@@ -424,6 +427,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             ["git", "init", "--bare", str(store)],
             capture_output=True, text=True,
             env=init_env, timeout=_GIT_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             return f"Shadow store init failed: {result.stderr.strip()}"

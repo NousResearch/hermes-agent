@@ -83,10 +83,10 @@ def test_cancel_secret_capture_marks_setup_skipped():
     assert cli._secret_deadline == 0
 
 
-def test_secret_capture_uses_getpass_without_tui():
+def test_secret_capture_uses_masked_prompt_without_tui():
     cli = _make_cli_stub()
 
-    with patch("hermes_cli.callbacks.getpass.getpass", return_value="secret-value"), patch(
+    with patch("hermes_cli.callbacks.masked_secret_prompt", return_value="secret-value"), patch(
         "hermes_cli.callbacks.save_env_value_secure"
     ) as save_secret:
         save_secret.return_value = {

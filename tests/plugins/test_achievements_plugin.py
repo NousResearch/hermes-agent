@@ -62,8 +62,9 @@ def plugin_api(tmp_path, monkeypatch):
 class _FakeSessionDB:
     """Stand-in for hermes_state.SessionDB that records scan calls."""
 
-    def __init__(self, session_count: int):
+    def __init__(self, session_count: int, scan_delay: float = 0):
         self.session_count = session_count
+        self.scan_delay = scan_delay
         self.last_limit: Optional[int] = None
         self.last_include_children: Optional[bool] = None
         self.list_calls = 0
@@ -78,6 +79,8 @@ class _FakeSessionDB:
         include_children: bool = False,
         project_compression_tips: bool = True,
     ) -> List[Dict[str, Any]]:
+        if self.scan_delay:
+            time.sleep(self.scan_delay)
         self.last_limit = limit
         self.last_include_children = include_children
         self.list_calls += 1
@@ -225,10 +228,8 @@ def test_evaluate_all_stale_cache_serves_stale_and_refreshes_in_background(plugi
     the stale data immediately and kicks a background refresh. Users don't
     stare at a loading spinner every time TTL expires.
     """
-    fake_db = _FakeSessionDB(session_count=10)
+    fake_db = _FakeSessionDB(session_count=10, scan_delay=2.0)
     _install_fake_session_db(plugin_api, fake_db)
-
-    # Seed a stale snapshot on disk.
     stale_generated_at = int(time.time()) - plugin_api.SNAPSHOT_TTL_SECONDS - 60
     stale_payload = {
         "achievements": [],
@@ -271,7 +272,7 @@ def test_evaluate_all_force_runs_synchronously(plugin_api):
 
     # Synchronous — snapshot is fresh on return.
     assert result["scan_meta"].get("sessions_total") == 25
-    assert result["scan_meta"]["mode"] in ("full", "incremental")
+    assert result["scan_meta"]["mode"] in {"full", "incremental"}
 
 
 def test_start_background_scan_is_idempotent_while_running(plugin_api):

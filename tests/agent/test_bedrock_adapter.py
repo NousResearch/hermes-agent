@@ -10,11 +10,9 @@ Covers:
 """
 
 import json
-import os
-import time
 from contextlib import contextmanager
-from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from types import ModuleType
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -129,7 +127,7 @@ class TestResolveBedrocRegion:
 
     def test_defaults_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
         with _mock_botocore_session(return_value=mock_session):
@@ -137,7 +135,7 @@ class TestResolveBedrocRegion:
 
     def test_falls_back_to_botocore_profile_region(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
         with _mock_botocore_session(return_value=mock_session):
@@ -145,7 +143,6 @@ class TestResolveBedrocRegion:
 
     def test_botocore_failure_falls_back_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
-        from unittest.mock import patch
         with _mock_botocore_session(side_effect=Exception("no botocore")):
             assert resolve_bedrock_region({}) == "us-east-1"
 
@@ -607,6 +604,74 @@ class TestBuildConverseKwargs:
         )
         assert kwargs["inferenceConfig"]["temperature"] == 0.7
         assert kwargs["inferenceConfig"]["topP"] == 0.9
+
+    def test_omits_sampling_params_for_bedrock_opus_4_7(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-opus-4-7-20260101-v1:0",
+            "us.anthropic.claude-opus-4-7",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+            assert "temperature" not in kwargs["inferenceConfig"]
+            assert "topP" not in kwargs["inferenceConfig"]
+
+    def test_omits_sampling_params_for_bedrock_opus_4_8_variants(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-opus-4-8-20270101-v1:0",
+            "us.anthropic.claude-opus-4-8",
+            "anthropic.claude-opus-4.8",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.5,
+                top_p=0.95,
+            )
+
+            assert "temperature" not in kwargs["inferenceConfig"]
+            assert "topP" not in kwargs["inferenceConfig"]
+
+    def test_keeps_sampling_params_for_bedrock_non_restricted_models(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-sonnet-4-6-20250514-v1:0",
+            "anthropic.claude-haiku-4-5",
+            "test-model",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+                temperature=0.7,
+                top_p=0.9,
+            )
+
+            assert kwargs["inferenceConfig"].get("temperature") == 0.7
+            assert kwargs["inferenceConfig"].get("topP") == 0.9
+
+    def test_bedrock_opus_strips_sampling_params_but_keeps_stop_sequences(self):
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-opus-4-8",
+            messages=[{"role": "user", "content": "Hi"}],
+            temperature=0.7,
+            top_p=0.9,
+            stop_sequences=["END"],
+        )
+
+        assert "temperature" not in kwargs["inferenceConfig"]
+        assert "topP" not in kwargs["inferenceConfig"]
+        assert kwargs["inferenceConfig"]["stopSequences"] == ["END"]
 
     def test_includes_guardrail_config(self):
         from agent.bedrock_adapter import build_converse_kwargs
@@ -1474,3 +1539,127 @@ class TestCallConverseInvalidatesOnStaleError:
         )
 
         assert _bedrock_runtime_client_cache.get("us-east-1") is live_client
+
+
+class TestStreamingAccessDeniedDetection:
+    """is_streaming_access_denied_error() recognizes IAM denials of
+    bedrock:InvokeModelWithResponseStream (InvokeModel-only policies)."""
+
+    def _denied_client_error(self):
+        from botocore.exceptions import ClientError
+        return ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User: arn:aws:iam::123456789012:user/x is not "
+                        "authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream on resource: "
+                        "arn:aws:bedrock:us-east-1::foundation-model/"
+                        "anthropic.claude-3-sonnet-20240229-v1:0"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+
+    def test_matches_access_denied_client_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        assert is_streaming_access_denied_error(self._denied_client_error()) is True
+
+    def test_ignores_access_denied_for_other_actions(self):
+        """AccessDenied on InvokeModel itself is NOT a streaming-only denial."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from botocore.exceptions import ClientError
+        exc = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: bedrock:InvokeModel"
+                    ),
+                }
+            },
+            operation_name="Converse",
+        )
+        assert is_streaming_access_denied_error(exc) is False
+
+    def test_ignores_validation_error_mentioning_action(self):
+        """Non-authz ClientErrors don't match even if the action name appears."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from botocore.exceptions import ClientError
+        exc = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "ValidationException",
+                    "Message": "InvokeModelWithResponseStream input malformed",
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        assert is_streaming_access_denied_error(exc) is False
+
+    def test_matches_wrapped_sdk_permission_error(self):
+        """Non-ClientError wrappers (AnthropicBedrock SDK) match on message."""
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        exc = RuntimeError(
+            "PermissionDeniedError: user is not authorized to perform: "
+            "bedrock:InvokeModelWithResponseStream"
+        )
+        assert is_streaming_access_denied_error(exc) is True
+
+    def test_ignores_unrelated_errors(self):
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        assert is_streaming_access_denied_error(ValueError("boom")) is False
+        assert is_streaming_access_denied_error(
+            RuntimeError("stream not supported")
+        ) is False
+
+
+class TestCallConverseStreamIamFallback:
+    """call_converse_stream() falls back to converse() when IAM denies the
+    streaming action — InvokeModel-only policies keep working."""
+
+    def test_falls_back_to_converse_on_streaming_denial(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse_stream,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ClientError
+
+        reset_client_cache()
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+        _bedrock_runtime_client_cache["us-east-1"] = client
+
+        result = call_converse_stream(
+            region="us-east-1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        client.converse.assert_called_once()
+        assert result.choices[0].message.content == "hi"
+        # Not a stale connection — client stays cached.
+        assert _bedrock_runtime_client_cache.get("us-east-1") is client

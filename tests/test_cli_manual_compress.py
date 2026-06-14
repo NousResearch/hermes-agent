@@ -10,13 +10,14 @@ class DummyAgent:
         self.session_id = "new-session"
         self.calls = []
 
-    def _compress_context(self, messages, system_message, *, approx_tokens=None, focus_topic=None):
+    def _compress_context(self, messages, system_message, *, approx_tokens=None, focus_topic=None, force=False):
         self.calls.append(
             {
                 "messages": messages,
                 "system_message": system_message,
                 "approx_tokens": approx_tokens,
                 "focus_topic": focus_topic,
+                "force": force,
             }
         )
         return ([{"role": "user", "content": "[CONTEXT SUMMARY]: compacted"}], "new system prompt")

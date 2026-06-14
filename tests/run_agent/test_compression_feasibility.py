@@ -222,7 +222,14 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
 
 
 def test_init_feasibility_check_uses_aux_context_override_from_config():
-    """Real AIAgent init should cache and forward auxiliary.compression.context_length."""
+    """Lazy feasibility check should cache and forward auxiliary.compression.context_length.
+
+    NB: feasibility check is deferred from AIAgent.__init__ to the first
+    actual compression attempt (saves ~400ms cold startup on short sessions
+    that never trigger compression). The test drives the check explicitly
+    via ``agent._check_compression_model_feasibility()`` to assert the
+    config-override threading.
+    """
 
     class _StubCompressor:
         def __init__(self, *args, **kwargs):
@@ -264,7 +271,15 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
             skip_memory=True,
         )
 
-    assert agent._aux_compression_context_length_config == 1_000_000
+        # Config override is captured eagerly in __init__ (still needed
+        # because the threshold-derivation logic at construction time
+        # consults it).
+        assert agent._aux_compression_context_length_config == 1_000_000
+
+        # The expensive feasibility probe is deferred. Drive it manually
+        # to validate the call shape still forwards the override correctly.
+        agent._check_compression_model_feasibility()
+
     mock_ctx_len.assert_called_once_with(
         "custom/big-model",
         base_url="http://custom-endpoint:8080/v1",

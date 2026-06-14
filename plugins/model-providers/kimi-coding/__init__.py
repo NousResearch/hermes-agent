@@ -14,19 +14,28 @@ from providers.base import OMIT_TEMPERATURE, ProviderProfile
 
 
 class KimiProfile(ProviderProfile):
-    """Kimi/Moonshot — temperature omitted, thinking + reasoning_effort."""
+    """Kimi/Moonshot — temperature omitted, thinking xor reasoning_effort."""
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Kimi uses extra_body.thinking + top-level reasoning_effort."""
+        """Kimi reasoning controls.
+
+        Moonshot's wire shape treats ``extra_body.thinking`` (a binary toggle)
+        and a top-level ``reasoning_effort`` as mutually exclusive — sending
+        both is at best redundant and risks "cannot specify both 'thinking' and
+        'reasoning_effort'" (HTTP 400). This mirrors the kimi-k2 handling on the
+        opencode-go relay: send effort when one is requested, otherwise fall
+        back to ``extra_body.thinking`` — never both.
+        """
         extra_body = {}
         top_level = {}
 
         if not reasoning_config or not isinstance(reasoning_config, dict):
-            # No config → thinking enabled, default effort
+            # No config → thinking enabled, let the server pick the depth.
+            # (Previously also sent reasoning_effort="medium", which paired
+            # thinking + effort on every default call.)
             extra_body["thinking"] = {"type": "enabled"}
-            top_level["reasoning_effort"] = "medium"
             return extra_body, top_level
 
         enabled = reasoning_config.get("enabled", True)
@@ -34,13 +43,13 @@ class KimiProfile(ProviderProfile):
             extra_body["thinking"] = {"type": "disabled"}
             return extra_body, top_level
 
-        # Enabled
-        extra_body["thinking"] = {"type": "enabled"}
+        # Enabled: prefer an explicit effort; only fall back to extra_body
+        # thinking when no recognized effort is requested.
         effort = (reasoning_config.get("effort") or "").strip().lower()
-        if effort in ("low", "medium", "high"):
+        if effort in {"low", "medium", "high"}:
             top_level["reasoning_effort"] = effort
         else:
-            top_level["reasoning_effort"] = "medium"
+            extra_body["thinking"] = {"type": "enabled"}
 
         return extra_body, top_level
 

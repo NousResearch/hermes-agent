@@ -18,7 +18,6 @@ together at the end. Script exits 0 iff every scenario passed or was
 cleanly SKIPPED (with reason).
 """
 
-import json
 import multiprocessing as mp
 import os
 import shutil
@@ -902,7 +901,7 @@ def _(home, kb):
             pass
         # Empty body → accept (legitimate: just title says it all)
         tid = kb.create_task(conn, title="empty body ok", body="", assignee="w")
-        assert kb.get_task(conn, tid).body in ("", None)
+        assert kb.get_task(conn, tid).body in {"", None}
         # Empty summary on complete → accept
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, summary="")
@@ -994,7 +993,7 @@ def _(home, kb):
 
     # Empty title
     r = client.post("/api/plugins/kanban/tasks", json={"title": ""})
-    assert r.status_code in (400, 422), f"empty title should 4xx, got {r.status_code}"
+    assert r.status_code in {400, 422}, f"empty title should 4xx, got {r.status_code}"
 
     # Title only
     r = client.post("/api/plugins/kanban/tasks", json={"title": "x"})
@@ -1019,7 +1018,7 @@ def _(home, kb):
     r = client.post("/api/plugins/kanban/tasks", json={
         "title": "fine", "nonexistent_field": "whatever",
     })
-    assert r.status_code in (200, 422)
+    assert r.status_code in {200, 422}
 
     # Priority as non-int
     r = client.post("/api/plugins/kanban/tasks", json={"title": "prio", "priority": "high"})
@@ -1028,7 +1027,7 @@ def _(home, kb):
     # PATCH with empty body (no changes requested)
     r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={})
     # Accept either success-no-op or 400
-    assert r.status_code in (200, 400)
+    assert r.status_code in {200, 400}
     print("  dashboard REST handles weird inputs correctly")
 
 # =============================================================================

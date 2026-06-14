@@ -20,7 +20,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from gateway.config import Platform, PlatformConfig, GatewayConfig
 from gateway.platforms.yuanbao import YuanbaoAdapter
 
@@ -108,7 +108,6 @@ class TestGatewayRunnerRegistration:
     def _make_minimal_runner(self, config):
         """通过 __new__ + 最小初始化绕过 run.py 的模块级 dotenv/ssl 副作用"""
         import sys
-        from unittest.mock import MagicMock
 
         # Stub out heavy dependencies if not already present
         stubs = [
@@ -141,7 +140,6 @@ class TestGatewayRunnerRegistration:
     def test_runner_creates_yuanbao_adapter(self):
         """GatewayRunner._create_adapter 能为 YUANBAO 返回 YuanbaoAdapter 实例"""
         from gateway.config import GatewayConfig
-        from unittest.mock import patch
         config = make_config(enabled=True)
         gw_config = GatewayConfig(platforms={Platform.YUANBAO: config})
 
@@ -159,7 +157,6 @@ class TestGatewayRunnerRegistration:
     def test_runner_adapter_platform_attr(self):
         """创建的 adapter.PLATFORM 为 Platform.YUANBAO"""
         from gateway.config import GatewayConfig
-        from unittest.mock import patch
         config = make_config(enabled=True)
         gw_config = GatewayConfig(platforms={Platform.YUANBAO: config})
 

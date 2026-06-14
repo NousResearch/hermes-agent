@@ -6,15 +6,13 @@ the main group chat.
 
 Covers: #6969, #9916, #7355
 """
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 
 import pytest
 
 from gateway.stream_consumer import (
     GatewayStreamConsumer,
-    StreamConsumerConfig,
 )
 
 
@@ -105,7 +103,8 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Test")
 
         call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == metadata
+        assert call_kwargs["metadata"] == {**metadata, "expect_edits": True}
+        assert metadata == {"thread_id": "omt_topic789"}
 
 
 class TestOverflowFirstMessage:

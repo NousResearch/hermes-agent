@@ -1,0 +1,333 @@
+---
+name: web-pentest
+description: |
+  Authorized web application penetration testing — reconnaissance, vulnerability
+  analysis, proof-based exploitation, and professional reporting. Adapts
+  Shannon's "No Exploit, No Report" methodology with hard guardrails for
+  scope, authorization, and aux-client leakage. Active testing against running
+  applications you own or have written authorization to test.
+platforms: [linux, macos]
+category: security
+triggers:
+  - "pentest [URL]"
+  - "pentest this app"
+  - "penetration test [URL]"
+  - "security test this web app"
+  - "test [URL] for vulnerabilities"
+  - "find vulns in [URL]"
+  - "OWASP test [URL]"
+toolsets:
+  - terminal
+  - web
+  - browser
+  - file
+  - delegation
+---
+
+# Web Application Penetration Testing
+
+A phased pentesting workflow for running web applications. Adapted from
+Shannon's pipeline (Keygraph, AGPL — concepts only, no code borrowed).
+Built around three rules:
+
+1. No exploit, no report — every finding requires reproducible evidence.
+2. Bounded scope — every active request goes against a target the operator
+   pre-declared. Off-scope hosts are refused.
+3. Bypass exhaustion before false-positive dismissal — a "blocked" payload
+   is not a clean bill of health until you've tried the bypass set.
+
+---
+
+## ⚠️ Hard Guardrails — Read Before Every Engagement
+
+Violating any of these invalidates the engagement and may be illegal.
+
+1. **Authorization gate.** Before the first active scan in a session, you
+   MUST confirm with the user, in writing, that they own or have written
+   authorization to test the target. Record the acknowledgement in
+   `engagement/authorization.md` (see template). No acknowledgement → no
+   active scanning. Reading public pages with `curl` is fine; sending
+   payloads is not.
+
+2. **Scope allowlist.** Maintain `engagement/scope.txt` — one hostname or
+   CIDR per line. Every `nmap`, `curl`, `whatweb`, browser navigation, or
+   payload-bearing request MUST be against an entry in scope. If a target
+   redirects you off-scope (3xx to a different host, a link in HTML),
+   STOP and confirm with the user before following.
+
+3. **No production systems without paper.** If the user hasn't told you
+   "yes, prod is in scope and I have written sign-off," assume not. Default
+   targets are staging, local docker, dedicated test instances.
+
+4. **Cloud metadata is off by default.** Do not probe `169.254.169.254`,
+   `metadata.google.internal`, `100.100.100.200`, `[fd00:ec2::254]`, or
+   equivalent unless the engagement explicitly includes SSRF-to-metadata
+   as a goal AND the target is one you control. The agent's browser tool
+   can reach these from inside your own infrastructure — don't.
+
+5. **Destructive payloads need approval.** SQLi payloads that DROP/DELETE,
+   filesystem-write SSTI, command injection with `rm`/`shutdown`/`mkfs`,
+   anything that mutates beyond a single test row → ASK FIRST. The
+   `approval.py` system catches some; don't rely on it alone.
+
+6. **Aux-client leakage risk (Hermes-specific).** This skill produces
+   sessions full of SQLi/XSS/RCE payloads, captured credentials, JWT
+   tokens. Hermes' compression and title-generation paths replay history
+   through the auxiliary client (often the main model). Anything sensitive
+   you write to the conversation can leave the box on the next compress.
+   Mitigation:
+   - Redact captured tokens/credentials to the LAST 6 CHARS before logging
+     them in any message. Full values go to `engagement/evidence/` files,
+     never into chat history.
+   - If the engagement is sensitive, set `auxiliary.title_generation.enabled: false`
+     in `~/.hermes/config.yaml` for the session.
+
+7. **Rate limit yourself.** Default 200ms between active requests against
+   any single host. The recon-scan.sh script enforces this. Don't bypass
+   it without operator approval.
+
+8. **Authority of the report.** This skill produces a security
+   assessment, not a "PASS." Even a clean run is "no exploitable issues
+   FOUND in scope X within time T using methods Y" — not "the application
+   is secure." Mirror that language in the report.
+
+---
+
+## Phase 0: Engagement Setup
+
+Before any scanning happens, create the engagement directory and
+authorization acknowledgement.
+
+```bash
+ENGAGEMENT=engagement-$(date +%Y%m%d-%H%M%S)
+mkdir -p "$ENGAGEMENT"/{evidence,findings,reports}
+cd "$ENGAGEMENT"
+```
+
+1. **Ask the user (verbatim):**
+   > "Confirm: (a) the target URL is [X], (b) you own this application
+   > or have written authorization to test it, and (c) the engagement
+   > may run for up to [N] hours starting now. Reply 'authorized' to
+   > proceed."
+
+2. **Wait for explicit `authorized` response.** Any other answer means STOP.
+
+3. **Record authorization** to `engagement/authorization.md` using the
+   template in `templates/authorization.md`. Include:
+   - Target URL(s) and IP(s)
+   - Authorization basis (ownership / written authz from $name)
+   - Engagement window
+   - Out-of-scope items (production, third-party services, etc.)
+   - Operator name (the user driving this session)
+
+4. **Build scope.txt:**
+   ```
+   localhost
+   127.0.0.1
+   staging.example.com
+   192.168.1.0/24    # internal lab only, with operator OK
+   ```
+
+5. **Read** `references/scope-enforcement.md` before issuing the first
+   active request — that doc has the host-extraction rules you apply
+   to every command/URL before it goes out.
+
+---
+
+## Phase 1: Pre-Recon (Code Analysis, optional)
+
+Skip if no source access (black-box engagement).
+
+If you have read access to the application source:
+
+1. **Map the architecture** — framework, routing, middleware stack
+2. **Inventory sinks** — every `execute(`, `os.system(`, `eval(`,
+   template render, file read/write, redirect target
+3. **Map auth** — session cookie vs JWT, OAuth flows, password reset,
+   privileged endpoints
+4. **Identify trust boundaries** — what's authenticated, what's not,
+   what comes from `request.*`
+5. **Backward taint** from each sink to a request source. Early-terminate
+   when proper sanitization is found (parameterized queries, allowlists,
+   `shlex.quote`, well-known escapers).
+
+Output: `evidence/pre-recon.md` — architecture map, sink inventory,
+suspected vulnerable code paths.
+
+This is OFFLINE work. No traffic to the target.
+
+---
+
+## Phase 2: Recon (Live, Read-Only)
+
+Maps the attack surface. All requests are GETs of public pages, no
+payloads yet. Still scope-bounded.
+
+1. **Verify scope.** Resolve every target hostname → IP. Confirm IPs are
+   in scope (avoids the "DNS points somewhere unexpected" trap).
+
+2. **Network surface** (only if scope permits port scanning):
+   ```bash
+   nmap -sT -T3 --top-ports 100 -oN evidence/nmap.txt $TARGET
+   ```
+   Use `-T3` (default), not `-T4/-T5`. Stealthier and avoids tripping
+   IDS/IPS in shared environments.
+
+3. **Tech fingerprint:**
+   ```bash
+   whatweb -v $TARGET_URL > evidence/whatweb.txt
+   curl -sIk $TARGET_URL > evidence/headers.txt
+   ```
+
+4. **Endpoint discovery:**
+   - Crawl the app with the browser tool (`browser_navigate`,
+     `browser_get_images`, follow links).
+   - Inspect `robots.txt`, `sitemap.xml`, `.well-known/*`.
+   - Use the developer tools network panel via browser tool to capture
+     XHR/fetch calls.
+
+5. **Auth surface:** Identify login, registration, password reset,
+   session cookie names, token formats. Do NOT send credentials yet —
+   just observe.
+
+6. **Correlate with pre-recon** (if you have source). For each
+   `evidence/pre-recon.md` finding, mark whether the live surface
+   confirms it's reachable.
+
+Output: `evidence/recon.md` — endpoints, technologies, auth model,
+input vectors.
+
+---
+
+## Phase 3: Vulnerability Analysis
+
+One delegate_task per vulnerability class. Each agent reads
+`evidence/recon.md` (+ `evidence/pre-recon.md` if present), produces
+`findings/<class>-queue.json` using `templates/exploitation-queue.json`.
+
+Use `delegate_task` with these focused subagents (parallel where possible):
+
+| Class | Goal | Reference |
+|-------|------|-----------|
+| `injection` | SQLi, command, path traversal, SSTI, LFI/RFI, deserialization | `references/vuln-taxonomy.md` (slot types) |
+| `xss` | Reflected, stored, DOM-based | `references/vuln-taxonomy.md` (render contexts) |
+| `auth` | Login bypass, JWT confusion, session fixation, OAuth flaws | `references/exploitation-techniques.md` |
+| `authz` | IDOR, vertical/horizontal escalation, business logic | `references/exploitation-techniques.md` |
+| `ssrf` | Internal reachability, metadata, protocol smuggling | Skip metadata unless explicitly authorized |
+| `infra` | Misconfig, info disclosure, default creds, exposed admin | `references/exploitation-techniques.md` |
+
+Each queue entry has: id, vuln class, source (file:line if known),
+endpoint, parameter, slot type, suspected defense, verdict
+(`identified` / `partial` / `confirmed` / `critical`), witness payload,
+confidence (0-1), notes.
+
+The analysis phase doesn't send malicious payloads yet — it stages them.
+The exploitation phase actually fires them.
+
+---
+
+## Phase 4: Exploitation (Proof-Based, Conditional)
+
+Only run a sub-agent per class where the analysis queue has actionable
+entries (`identified` or `partial`).
+
+For each candidate:
+
+1. **Pre-send check** — host in scope? auth gate satisfied? payload
+   approved if destructive?
+2. **Send the witness payload** — minimal proof. SQLi: `' AND 1=1--`
+   then `' AND 1=2--`. XSS: a benign marker like
+   `<svg/onload=console.log("HERMES-PENTEST-XSS")>`. Never `alert(1)` in
+   stored XSS — it'll fire for other users in shared environments.
+3. **Verify the witness fires** — for blind injection, use a sleep
+   probe (`SLEEP(5)`) and time the response. For SSRF, use a
+   tester-controlled callback host you own (NOT a public service like
+   webhook.site for sensitive engagements — exfil paths).
+4. **Promote level:**
+   - **L1 Identified** — pattern matched, no behavior change
+   - **L2 Partial** — sink reached, but defense in place
+   - **L3 Confirmed** — payload changed app behavior in observable way
+   - **L4 Critical** — data extracted, code executed, access escalated
+5. **Bypass exhaustion before classifying as FP.** For each candidate
+   that blocks: try at least the bypass set in
+   `references/bypass-techniques.md` for that class. Only after the set
+   is exhausted may you write `verdict: false_positive`.
+6. **Record evidence** for every L3/L4:
+   - Full request (method, URL, headers, body)
+   - Response (status, headers, relevant body excerpt)
+   - Reproducer command (curl one-liner)
+   - Impact statement
+
+Output: `findings/exploitation-evidence.md`
+
+**Redact in evidence files:**
+- Any captured credentials/tokens → last 6 chars only in chat;
+  full value to `findings/secrets-vault.md` (gitignored).
+- Other users' PII → redact.
+- Your test credentials → fine to keep.
+
+---
+
+## Phase 5: Reporting
+
+Generate the final report using `templates/pentest-report.md`. Sections:
+
+1. Executive summary
+2. Engagement scope (from `engagement/scope.txt`)
+3. Authorization (from `engagement/authorization.md`)
+4. Findings (L3/L4 only — proof-required). Per finding:
+   - Title, severity (CVSS 3.1), CWE
+   - Affected endpoint(s)
+   - Proof (request + response excerpt)
+   - Reproduction steps
+   - Impact
+   - Remediation
+5. Not-exploited candidates (L1/L2 with notes on what blocked them)
+6. Out-of-scope observations
+7. Methodology / tools used
+8. Limitations and what was NOT tested
+
+**Severity policy:** CVSS only for L3/L4. L1/L2 are "candidates pending
+verification" — don't assign CVSS to unverified findings.
+
+---
+
+## When to Stop
+
+- The user revokes authorization.
+- A candidate finding clearly impacts production data and you don't have
+  approval for destructive testing — STOP and ask.
+- The target starts returning 503/429 storms — back off, reconvene with
+  the operator.
+- You discover something *outside* the contracted scope (e.g. an exposed
+  customer database while testing an unrelated endpoint). STOP, document,
+  report to the operator. Do not pivot without explicit approval — that
+  pivot is what makes pentesting illegal.
+
+---
+
+## What This Skill Does NOT Cover
+
+- Network-layer pentesting beyond port scanning (no Metasploit,
+  Cobalt Strike, AD attacks, network protocol fuzzing).
+- Reverse engineering / binary analysis (see issue #383).
+- Source-only static analysis (see issue #382).
+- Active social engineering / phishing.
+- Anything against systems the operator hasn't pre-authorized.
+
+If the engagement needs any of these, escalate to a professional
+pentester. This skill complements professional pentesting; it does
+not replace it.
+
+---
+
+## Further Reading
+
+- `references/scope-enforcement.md` — how to bound every active request
+- `references/vuln-taxonomy.md` — slot types, render contexts, OWASP map
+- `references/exploitation-techniques.md` — per-class payload patterns
+- `references/bypass-techniques.md` — common WAF/filter bypasses
+- `templates/authorization.md` — engagement authorization template
+- `templates/pentest-report.md` — final report template
+- `templates/exploitation-queue.json` — per-class finding queue schema
+- `scripts/recon-scan.sh` — rate-limited nmap+whatweb+headers wrapper

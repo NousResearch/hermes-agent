@@ -29,6 +29,7 @@ from agent.image_gen_provider import (
     error_response,
     resolve_aspect_ratio,
     save_b64_image,
+    save_url_image,
     success_response,
 )
 from tools.xai_http import hermes_xai_user_agent, resolve_xai_http_credentials
@@ -281,7 +282,24 @@ class XAIImageGenProvider(ImageGenProvider):
                 )
             image_ref = str(saved_path)
         elif url:
-            image_ref = url
+            # xAI's grok-imagine-image returns ephemeral ``imgen.x.ai/xai-tmp-*``
+            # URLs that 404 within minutes — by the time Telegram's
+            # ``send_photo`` or any downstream consumer fetches them, the
+            # asset is gone (#26942).  Materialise the bytes locally at
+            # tool-completion time so the gateway has a stable file path to
+            # upload, mirroring the b64 branch above and the audio_cache
+            # pattern used by text_to_speech.
+            try:
+                saved_path = save_url_image(url, prefix=f"xai_{model_id}")
+            except Exception as exc:
+                logger.warning(
+                    "xAI image URL %s could not be cached (%s); falling back to bare URL.",
+                    url,
+                    exc,
+                )
+                image_ref = url
+            else:
+                image_ref = str(saved_path)
         else:
             return error_response(
                 error="xAI response contained neither b64_json nor URL",

@@ -269,7 +269,7 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
                     and isinstance(func.value.value, ast.Name)
                     and func.value.value.id == "sys"
                     and func.value.attr == "path"
-                    and func.attr in ("insert", "append", "extend")
+                    and func.attr in {"insert", "append", "extend"}
                 ):
                     target_name = f"sys.path.{func.attr}"
 
@@ -313,19 +313,30 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
     return offenses
 
 
-def pytest_configure(config):
-    """Reject plugin-adapter tests that use the sys.path anti-pattern.
+def _fingerprint_gateway_tests() -> str:
+    """Return a short fingerprint that changes when any gateway test file changes.
 
-    Runs once per pytest session on the controller, BEFORE any xdist
-    worker is spawned. If any file under ``tests/gateway/`` matches the
-    anti-pattern, we fail the whole session with a clear message —
-    before a polluted ``sys.path`` can cascade across workers.
+    Uses (mtime, size) pairs instead of content hashing — fast to compute
+    (stat-only, no reads) and sufficient for cache invalidation across
+    per-file subprocess runs.
     """
-    # Only run on the xdist controller (or in non-xdist runs). Skip on
-    # worker subprocesses so we don't scan the filesystem N times.
-    if hasattr(config, "workerinput"):
-        return
+    import hashlib
 
+    h = hashlib.sha256()
+    for path in sorted(_GATEWAY_DIR.rglob("test_*.py")):
+        try:
+            st = path.stat()
+            h.update(f"{path.name}:{st.st_mtime_ns}:{st.st_size}".encode())
+        except OSError:
+            h.update(f"{path.name}:missing".encode())
+    return h.hexdigest()[:16]
+
+
+def _run_adapter_antipattern_scan() -> list[str]:
+    """Scan gateway test files for the plugin-adapter anti-pattern.
+
+    Returns a list of violation strings (empty if clean).
+    """
     violations: list[str] = []
     for path in _GATEWAY_DIR.rglob("test_*.py"):
         if path.name in {"_plugin_adapter_loader.py", "conftest.py"}:
@@ -334,7 +345,16 @@ def pytest_configure(config):
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
+        # Fast string pre-filter: skip files that can't possibly violate.
+        # A violating file MUST contain both (a) an adapter/plugins/platforms
+        # reference AND (b) either sys.path manipulation or a bare adapter import.
         if "adapter" not in source and "plugins/platforms" not in source:
+            continue
+        if not (
+            "sys.path" in source
+            or "import adapter" in source
+            or "from adapter import" in source
+        ):
             continue
         offenses = _scan_for_plugin_adapter_antipattern(source)
         if offenses:
@@ -342,12 +362,90 @@ def pytest_configure(config):
                 f"  {path.relative_to(_GATEWAY_DIR.parent.parent)}:\n    "
                 + "\n    ".join(offenses)
             )
+    return violations
 
-    if violations:
-        raise pytest.UsageError(
-            "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
-            + "\n".join(violations)
-            + "\n\n"
-            + _GUARD_HINT
-        )
+
+def pytest_configure(config):
+    """Reject plugin-adapter tests that use the sys.path anti-pattern.
+
+    Runs once per pytest session on the controller, BEFORE any xdist
+    worker is spawned. If any file under ``tests/gateway/`` matches the
+    anti-pattern, we fail the whole session with a clear message —
+    before a polluted ``sys.path`` can cascade across workers.
+
+    **Performance**: in the per-file subprocess isolation model (no xdist),
+    every subprocess is a "controller" — so the naive scan would run 257
+    times, each costing ~1s of AST walking.  We avoid this with two
+    strategies:
+
+    1. **Tight string pre-filter**: a file can only violate if it contains
+       *both* an adapter/plugins/platforms reference *and* a sys.path
+       manipulation or bare ``import adapter``.  This drops ~95% of files
+       from needing AST parsing.
+    2. **File-locked cache**: the scan result is cached in
+       ``.pytest-cache/gw-adapter-guard-<fingerprint>`` keyed on a
+       fingerprint of the gateway test file mtimes/sizes.  Concurrent
+       subprocesses acquire a lock; only the first performs the scan;
+       the rest wait and read the cached result.
+    """
+    # Only run on the xdist controller (or in non-xdist runs). Skip on
+    # worker subprocesses so we don't scan the filesystem N times.
+    if hasattr(config, "workerinput"):
+        return
+
+    fp = _fingerprint_gateway_tests()
+    cache_dir = Path.cwd() / ".pytest-cache"
+    cache_file = cache_dir / f"gw-adapter-guard-{fp}"
+    lock_file = cache_dir / f".gw-adapter-guard-{fp}.lock"
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Evict stale cache entries from previous fingerprints (best-effort).
+    try:
+        for old in cache_dir.glob("gw-adapter-guard-*"):
+            if old.name != f"gw-adapter-guard-{fp}":
+                old.unlink(missing_ok=True)
+        for old in cache_dir.glob(".gw-adapter-guard-*.lock"):
+            if old.name != f".gw-adapter-guard-{fp}.lock":
+                old.unlink(missing_ok=True)
+    except OSError:
+        pass  # Non-critical; old files are harmless.
+
+    # Use filelock to ensure only one process scans at a time.
+    # Concurrent subprocesses all hit pytest_configure simultaneously;
+    # without a lock they'd all find no cache and all run the scan.
+    try:
+        from filelock import FileLock
+        lock = FileLock(str(lock_file), timeout=120)
+    except ImportError:
+        # Fallback: no locking (still correct, just slower under contention).
+
+        class _NoLock:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+        lock = _NoLock()
+
+    with lock:
+        if cache_file.exists():
+            cached = cache_file.read_text(encoding="utf-8")
+            if cached == "clean":
+                return
+            raise pytest.UsageError(cached)
+
+        # Slow path: this process is the first to acquire the lock.
+        violations = _run_adapter_antipattern_scan()
+
+        if violations:
+            msg = (
+                "Plugin-adapter-import anti-pattern detected in gateway tests:\n"
+                + "\n".join(violations)
+                + "\n\n"
+                + _GUARD_HINT
+            )
+            cache_file.write_text(msg, encoding="utf-8")
+            raise pytest.UsageError(msg)
+        else:
+            cache_file.write_text("clean", encoding="utf-8")
 

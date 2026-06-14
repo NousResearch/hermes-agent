@@ -39,6 +39,10 @@ Optional / Phase-3+:
 - WHATSAPP_CLOUD_API_VERSION      (default v20.0)
 - WHATSAPP_CLOUD_CALLING_SIDECAR_URL      (optional WebRTC SDP bridge)
 - WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT  (default 10.0 seconds)
+- WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND
+                                     (optional raw pcm_s16le TTS command)
+- WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT
+                                     (default 180.0 seconds)
 """
 
 from __future__ import annotations
@@ -54,6 +58,7 @@ import os
 import re
 import shutil
 import struct
+import tempfile
 import wave
 import uuid
 from collections import OrderedDict
@@ -98,6 +103,7 @@ DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 DEFAULT_CALLING_SIDECAR_TIMEOUT = 10.0
+DEFAULT_CALLING_SIDECAR_TTS_STREAM_TIMEOUT = 180.0
 CALLING_PCM_SAMPLE_RATE = 48_000
 CALLING_PCM_CHANNELS = 1
 CALLING_PCM_FRAME_MS = 20
@@ -343,6 +349,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             or extra.get("callingSidecarTimeout")
             or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT"),
             DEFAULT_CALLING_SIDECAR_TIMEOUT,
+        )
+        self._calling_sidecar_tts_stream_command: str = str(
+            extra.get("calling_sidecar_tts_stream_command")
+            or extra.get("callingSidecarTtsStreamCommand")
+            or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND")
+            or ""
+        ).strip()
+        self._calling_sidecar_tts_stream_timeout: float = self._coerce_positive_float(
+            extra.get("calling_sidecar_tts_stream_timeout")
+            or extra.get("callingSidecarTtsStreamTimeout")
+            or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT"),
+            DEFAULT_CALLING_SIDECAR_TTS_STREAM_TIMEOUT,
         )
 
         # Behavior-mixin contract: these names are read by the mixin's
@@ -863,6 +881,226 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "audio": audio,
             },
         )
+
+    async def _send_calling_sidecar_tts_stream_command(
+        self,
+        call_id: str,
+        text: str,
+    ) -> SendResult:
+        """Run a raw-PCM TTS stream command and post frames to the sidecar."""
+        command_template = str(
+            getattr(self, "_calling_sidecar_tts_stream_command", "") or ""
+        ).strip()
+        if not command_template:
+            return SendResult(
+                success=False,
+                error="Calling sidecar TTS stream command not configured",
+            )
+
+        normalized_call_id = str(call_id or "").strip()
+        text = str(text or "").strip()
+        if not normalized_call_id or not text:
+            return SendResult(success=False, error="Missing call_id or TTS text")
+
+        audio = self._calling_sidecar_audio_contract()
+        frame_bytes = int(audio["frame_bytes"])
+        frame_ms = int(audio["frame_ms"])
+        timeout = float(
+            getattr(
+                self,
+                "_calling_sidecar_tts_stream_timeout",
+                DEFAULT_CALLING_SIDECAR_TTS_STREAM_TIMEOUT,
+            )
+        )
+
+        async def terminate_process(proc: Any) -> None:
+            if getattr(proc, "returncode", None) is not None:
+                return
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                return
+            except Exception:
+                logger.debug(
+                    "[whatsapp_cloud] failed to kill TTS stream command",
+                    exc_info=True,
+                )
+                return
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except Exception:
+                pass
+
+        async def send_frame(frame: bytes, sequence: int) -> SendResult:
+            result = await self._send_calling_sidecar_audio(
+                normalized_call_id,
+                frame,
+                sequence=sequence,
+            )
+            if not result.success and result.retryable:
+                await asyncio.sleep(frame_ms / 1_000)
+                result = await self._send_calling_sidecar_audio(
+                    normalized_call_id,
+                    frame,
+                    sequence=sequence,
+                )
+            return result
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            text_path = Path(tmpdir) / "input.txt"
+            text_path.write_text(text, encoding="utf-8")
+
+            try:
+                from tools.tts_tool import _render_command_tts_template
+
+                command = _render_command_tts_template(
+                    command_template,
+                    {
+                        "input_path": str(text_path),
+                        "text_path": str(text_path),
+                        "text": text,
+                        "sample_rate": str(int(audio["sample_rate"])),
+                        "channels": str(int(audio["channels"])),
+                        "frame_ms": str(frame_ms),
+                        "encoding": str(audio["encoding"]),
+                        "voice": "",
+                        "speed": "",
+                    },
+                )
+            except Exception as exc:
+                return SendResult(
+                    success=False,
+                    error=f"Failed to render TTS stream command: {exc}",
+                )
+
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except Exception as exc:
+                logger.exception("[whatsapp_cloud] failed to start TTS stream command")
+                return SendResult(success=False, error=str(exc), retryable=True)
+
+            if proc.stdout is None:
+                await terminate_process(proc)
+                return SendResult(
+                    success=False,
+                    error="TTS stream command did not expose stdout",
+                )
+
+            stderr_task = (
+                asyncio.create_task(proc.stderr.read())
+                if proc.stderr is not None
+                else None
+            )
+
+            async def cancel_stderr_task() -> None:
+                if stderr_task is None or stderr_task.done():
+                    return
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+
+            pending = bytearray()
+            sequence = 0
+            accepted_bytes = 0
+
+            try:
+                while True:
+                    chunk = await asyncio.wait_for(
+                        proc.stdout.read(frame_bytes * 8),
+                        timeout=timeout,
+                    )
+                    if not chunk:
+                        break
+                    pending.extend(chunk)
+                    while len(pending) >= frame_bytes:
+                        frame = bytes(pending[:frame_bytes])
+                        del pending[:frame_bytes]
+                        result = await send_frame(frame, sequence)
+                        if not result.success:
+                            await terminate_process(proc)
+                            await cancel_stderr_task()
+                            return result
+                        sequence += 1
+                        accepted_bytes += len(frame)
+
+                if pending:
+                    frame = bytes(pending)
+                    frame += b"\x00" * (frame_bytes - len(frame))
+                    result = await send_frame(frame, sequence)
+                    if not result.success:
+                        await terminate_process(proc)
+                        await cancel_stderr_task()
+                        return result
+                    sequence += 1
+                    accepted_bytes += len(pending)
+
+                returncode = await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                await terminate_process(proc)
+                await cancel_stderr_task()
+                return SendResult(
+                    success=False,
+                    error=f"TTS stream command timed out after {timeout:g}s",
+                    retryable=True,
+                )
+
+            stderr = b""
+            if stderr_task is not None:
+                try:
+                    stderr = await stderr_task
+                except Exception:
+                    stderr = b""
+
+            if returncode != 0:
+                detail = stderr.decode("utf-8", errors="replace").strip()
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"TTS stream command exited with code {returncode}"
+                        + (f": {detail[:500]}" if detail else "")
+                    ),
+                )
+            if sequence == 0:
+                return SendResult(
+                    success=False,
+                    error="TTS stream command produced no PCM frames",
+                )
+
+        return SendResult(
+            success=True,
+            raw_response={
+                "call_id": normalized_call_id,
+                "queued_pcm_bytes": accepted_bytes,
+                "frames": sequence,
+                "audio": audio,
+            },
+        )
+
+    async def play_tts_text(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Stream synthesized reply text directly into an active sidecar call."""
+        call_id = self._calling_sidecar_call_id_from_metadata(metadata)
+        if not call_id:
+            return SendResult(
+                success=False,
+                error="No active calling sidecar call for TTS text",
+            )
+        return await self._send_calling_sidecar_tts_stream_command(call_id, text)
 
     async def _receive_calling_sidecar_audio(
         self,
@@ -2352,6 +2590,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "calling_sidecar_contract_loaded": isinstance(
                     getattr(self, "_calling_sidecar_contract", None),
                     dict,
+                ),
+                "calling_sidecar_tts_stream_configured": bool(
+                    getattr(self, "_calling_sidecar_tts_stream_command", ""),
                 ),
                 "ffmpeg_present": _FFMPEG_PATH is not None,
                 "accepted": self._accepted_count,

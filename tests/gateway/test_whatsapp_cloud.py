@@ -15,7 +15,7 @@ from __future__ import annotations
 import base64
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -52,6 +52,14 @@ def _make_adapter(**overrides):
     adapter._api_version = overrides.pop("api_version", "v20.0")
     adapter._calling_sidecar_url = overrides.pop("calling_sidecar_url", "")
     adapter._calling_sidecar_timeout = overrides.pop("calling_sidecar_timeout", 10.0)
+    adapter._calling_sidecar_tts_stream_command = overrides.pop(
+        "calling_sidecar_tts_stream_command",
+        "",
+    )
+    adapter._calling_sidecar_tts_stream_timeout = overrides.pop(
+        "calling_sidecar_tts_stream_timeout",
+        180.0,
+    )
     adapter._runner = None
     adapter._http_client = None
     adapter._calling_sidecar_contract = overrides.pop("calling_sidecar_contract", None)
@@ -102,6 +110,7 @@ def _make_adapter(**overrides):
     adapter._auto_tts_default = False
     adapter._auto_tts_enabled_chats = set()
     adapter._auto_tts_disabled_chats = set()
+    adapter._typing_paused = set()
 
     # Apply any leftover overrides directly
     for key, value in overrides.items():
@@ -314,6 +323,14 @@ class TestCallingSidecarClient:
 
         monkeypatch.delenv("WHATSAPP_CLOUD_CALLING_SIDECAR_URL", raising=False)
         monkeypatch.delenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT", raising=False)
+        monkeypatch.delenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND",
+            raising=False,
+        )
+        monkeypatch.delenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT",
+            raising=False,
+        )
 
         config = MagicMock()
         config.extra = {
@@ -321,12 +338,18 @@ class TestCallingSidecarClient:
             "access_token": "tok",
             "calling_sidecar_url": "http://127.0.0.1:8787/",
             "calling_sidecar_timeout": "2.5",
+            "calling_sidecar_tts_stream_command": (
+                "voice stream --raw-output - --input-file {input_path}"
+            ),
+            "calling_sidecar_tts_stream_timeout": "30",
         }
 
         adapter = WhatsAppCloudAdapter(config)
 
         assert adapter._calling_sidecar_url == "http://127.0.0.1:8787"
         assert adapter._calling_sidecar_timeout == 2.5
+        assert adapter._calling_sidecar_tts_stream_command.startswith("voice stream")
+        assert adapter._calling_sidecar_tts_stream_timeout == 30.0
         assert adapter._calling_sidecar_enabled() is True
 
     def test_gateway_env_overrides_populate_calling_sidecar(self, monkeypatch):
@@ -339,6 +362,14 @@ class TestCallingSidecarClient:
             "http://127.0.0.1:8787",
         )
         monkeypatch.setenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT", "4.25")
+        monkeypatch.setenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND",
+            "voice stream --raw-output - --input-file {input_path}",
+        )
+        monkeypatch.setenv(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT",
+            "45.5",
+        )
 
         config = GatewayConfig()
         _apply_env_overrides(config)
@@ -348,6 +379,8 @@ class TestCallingSidecarClient:
         assert extra["access_token"] == "token-123"
         assert extra["calling_sidecar_url"] == "http://127.0.0.1:8787"
         assert extra["calling_sidecar_timeout"] == 4.25
+        assert extra["calling_sidecar_tts_stream_command"].startswith("voice stream")
+        assert extra["calling_sidecar_tts_stream_timeout"] == 45.5
 
     @pytest.mark.asyncio
     async def test_disabled_without_url(self):
@@ -792,6 +825,133 @@ class TestCallingSidecarClient:
         assert result.error == "outbound PCM queue is full"
         assert result.raw_response == {"error": "outbound PCM queue is full"}
         assert result.retryable is True
+
+    @pytest.mark.asyncio
+    async def test_play_tts_text_stream_command_posts_pcm_frames(self, monkeypatch):
+        from gateway.platforms.base import SendResult
+
+        frame = b"\x01\x00" * 960
+        chunks = [frame + frame[:100], frame[100:], b""]
+        commands = []
+
+        class FakeStream:
+            def __init__(self, values):
+                self._values = list(values)
+
+            async def read(self, _n=-1):
+                if self._values:
+                    return self._values.pop(0)
+                return b""
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = FakeStream(chunks)
+                self.stderr = FakeStream([b""])
+                self.returncode = None
+                self.killed = False
+
+            async def wait(self):
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+        async def fake_create_subprocess_shell(command, **_kwargs):
+            commands.append(command)
+            return FakeProc()
+
+        monkeypatch.setattr(
+            "gateway.platforms.whatsapp_cloud.asyncio.create_subprocess_shell",
+            fake_create_subprocess_shell,
+        )
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_tts_stream_command=(
+                "voice stream --quiet --sample-rate {sample_rate} "
+                "--frame-ms {frame_ms} --raw-output - --input-file {input_path}"
+            ),
+        )
+        adapter._calling_sidecar_call_ids.add("call-1")
+        adapter._send_calling_sidecar_audio = AsyncMock(
+            return_value=SendResult(success=True)
+        )
+
+        result = await adapter.play_tts_text(
+            "15551234567",
+            "Hello from the call",
+            metadata={"thread_id": "call-1"},
+        )
+
+        assert result.success is True
+        assert result.raw_response["frames"] == 2
+        assert result.raw_response["queued_pcm_bytes"] == len(frame) * 2
+        assert commands
+        assert "--sample-rate 48000" in commands[0]
+        assert "--frame-ms 20" in commands[0]
+        assert adapter._send_calling_sidecar_audio.await_count == 2
+        first = adapter._send_calling_sidecar_audio.await_args_list[0]
+        second = adapter._send_calling_sidecar_audio.await_args_list[1]
+        assert first.args == ("call-1", frame)
+        assert first.kwargs["sequence"] == 0
+        assert second.args == ("call-1", frame)
+        assert second.kwargs["sequence"] == 1
+
+    @pytest.mark.asyncio
+    async def test_play_tts_text_without_stream_command_falls_back(self, monkeypatch):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("call-1")
+
+        result = await adapter.play_tts_text(
+            "15551234567",
+            "Hello from the call",
+            metadata={"thread_id": "call-1"},
+        )
+
+        assert result.success is False
+        assert "not configured" in result.error
+
+    @pytest.mark.asyncio
+    async def test_base_auto_tts_uses_direct_text_stream_before_file_tts(self):
+        from gateway.platforms.base import MessageEvent, MessageType, SendResult
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+        from gateway.session import SessionSource, build_session_key
+
+        config = MagicMock()
+        config.extra = {
+            "phone_number_id": "123",
+            "access_token": "tok",
+            "calling_sidecar_url": "http://127.0.0.1:8787",
+            "calling_sidecar_tts_stream_command": "voice stream --raw-output -",
+        }
+        adapter = WhatsAppCloudAdapter(config)
+        adapter._message_handler = AsyncMock(return_value="Hello **there**")
+        adapter._auto_tts_enabled_chats.add("15551234567")
+        adapter.play_tts_text = AsyncMock(return_value=SendResult(success=True))
+        adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="text-1")
+        )
+        event = MessageEvent(
+            source=SessionSource(
+                platform=Platform.WHATSAPP_CLOUD,
+                chat_id="15551234567",
+                chat_type="dm",
+            ),
+            text="voice input",
+            message_type=MessageType.VOICE,
+        )
+
+        with patch("tools.tts_tool.text_to_speech_tool") as tts_tool:
+            await adapter._process_message_background(
+                event,
+                build_session_key(event.source),
+            )
+
+        adapter.play_tts_text.assert_awaited_once()
+        assert adapter.play_tts_text.await_args.kwargs["text"] == "Hello there"
+        tts_tool.assert_not_called()
+        adapter.send.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_receive_calling_sidecar_audio_drains_pcm_payload(self):
@@ -2090,6 +2250,7 @@ class TestHealth:
         assert body["app_secret_configured"] is True
         assert body["calling_sidecar_configured"] is False
         assert body["calling_sidecar_contract_loaded"] is False
+        assert body["calling_sidecar_tts_stream_configured"] is False
         assert body["accepted"] == 0
         assert body["duplicates"] == 0
         assert body["rejected_signature"] == 0

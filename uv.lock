@@ -773,6 +773,17 @@ wheels = [
 ]
 
 [[package]]
+name = "daily-python"
+version = "0.29.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e4/bb/cb99be4a63cd826d6de9f5feb399edb809b6240285204f4f727ad3fb0907/daily_python-0.29.1-cp37-abi3-macosx_10_15_x86_64.whl", hash = "sha256:96dd5cf04a786e00e47cdb15fe0e1ccbe29c3ff7bdca1a9d0566aaab950d9727", size = 13362191, upload-time = "2026-06-09T22:14:35.277Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/f1/5fe6c1adf502938da5164c5895734cdbc48fecb1c715b0df99e9155e1dbd/daily_python-0.29.1-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:998940878c4a4539aa5588f2132debb474f3feee9afe04beda9bb03f225998e9", size = 11888238, upload-time = "2026-06-09T22:14:37.554Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/10/e02d145a272e56e8023782b74d6108680fcf09ae2e07cdc09ff5f44eaa1f/daily_python-0.29.1-cp37-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:e43265f6ec8b4b9e672b868eb0e9fead7b262f33173f3c08e8d4de4d55e7b3da", size = 13957031, upload-time = "2026-06-09T22:14:39.519Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/b8/5c360f0d1e28db8acdb3f01a03134d1a5b98966c0f78dfca6748efcae5e3/daily_python-0.29.1-cp37-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:7edac330712b6d4e3600fd31af7f6f0d180ab7dcad823b962039a6d9bbf5446f", size = 14493172, upload-time = "2026-06-09T22:14:41.313Z" },
+]
+
+[[package]]
 name = "darabonba-core"
 version = "1.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1614,6 +1625,10 @@ voice = [
     { name = "numpy" },
     { name = "sounddevice" },
 ]
+voice-platform = [
+    { name = "daily-python" },
+    { name = "websockets" },
+]
 web = [
     { name = "fastapi" },
     { name = "python-multipart" },
@@ -1646,6 +1661,7 @@ requires-dist = [
     { name = "certifi", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", specifier = "==6.0.0" },
+    { name = "daily-python", marker = "extra == 'voice-platform'", specifier = "==0.29.1" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
     { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
@@ -1743,9 +1759,10 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
     { name = "websockets", specifier = "==15.0.1" },
+    { name = "websockets", marker = "extra == 'voice-platform'", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "voice-platform", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"

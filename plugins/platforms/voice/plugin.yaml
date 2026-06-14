@@ -1,0 +1,32 @@
+name: voice-platform
+label: Voice
+kind: platform
+version: 0.1.0
+description: >
+  Realtime voice-call gateway adapter. Joins a Daily (WebRTC) room as a
+  participant, streams caller audio to Deepgram Flux (streaming STT with
+  model-integrated turn detection), runs one fresh agent turn per utterance
+  with token streaming, and speaks replies through Cartesia (streaming TTS)
+  with sentence-level latency and in-process barge-in.
+
+  Standalone mode: this agent holds DAILY_API_KEY and creates its own private
+  room + single-use meeting token at startup, then logs a shareable URL.
+author: Supernal Technology
+requires_env:
+  - name: DAILY_API_KEY
+    description: "Daily API key (WebRTC transport — agent creates its own room)"
+    prompt: "Daily API key"
+    password: true
+  - name: DEEPGRAM_API_KEY
+    description: "Deepgram API key (Flux streaming STT + turn detection)"
+    prompt: "Deepgram API key"
+    password: true
+  - name: CARTESIA_API_KEY
+    description: "Cartesia API key (streaming TTS)"
+    prompt: "Cartesia API key"
+    password: true
+optional_env:
+  - name: CARTESIA_VOICE_ID
+    description: "Cartesia TTS voice id (or set platforms.voice.extra.cartesia_voice_id)"
+    prompt: "Cartesia voice id (or empty for default)"
+    password: false

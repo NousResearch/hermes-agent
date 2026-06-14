@@ -51,6 +51,16 @@ CALLING_AUDIO_CONTRACT = {
     "max_inbound_queue_bytes": 960_000,
     "max_drain_wait_ms": 5_000,
 }
+CALLING_READY_STATE = {
+    "ready_for_accept": True,
+    "readiness": {
+        "not_closed": True,
+        "local_sdp_answer": True,
+        "signaling_stable": True,
+        "ice_gathering_complete": True,
+        "outbound_audio_track": True,
+    },
+}
 
 
 @dataclass
@@ -118,6 +128,7 @@ class RecordingHttpClient:
                     "type": "answer",
                     "sdp": self.answer_sdp,
                     "audio": CALLING_AUDIO_CONTRACT,
+                    "state": CALLING_READY_STATE,
                 },
             )
 
@@ -353,6 +364,7 @@ async def run_control_plane_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "sidecar_close_url": sidecar_close["url"] if sidecar_close else None,
         "drain_starts": drain_starts,
         "audio": CALLING_AUDIO_CONTRACT,
+        "sidecar_ready_for_accept": True,
     }
 
 

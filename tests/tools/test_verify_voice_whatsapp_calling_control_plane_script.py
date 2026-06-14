@@ -91,6 +91,7 @@ async def test_fake_http_client_records_contract_offer_graph_and_close():
     assert contract.json()["contract"] == "voice.webrtc_sidecar"
     assert offer.json()["type"] == "answer"
     assert offer.json()["sdp"] == "v=0\r\nanswer\r\n"
+    assert offer.json()["state"]["ready_for_accept"] is True
     assert graph.json()["action"] == "pre_accept"
     assert closed.json()["closed"] is True
     assert [request["method"] for request in client.requests] == [
@@ -112,6 +113,7 @@ async def test_control_plane_smoke_proves_accept_and_terminate_sequence():
     assert result["contract_loaded"] is True
     assert result["sidecar_offer_url"] == "http://127.0.0.1:8787/offer"
     assert result["graph_actions"] == ["pre_accept", "accept"]
+    assert result["sidecar_ready_for_accept"] is True
     assert result["sidecar_close_url"] == (
         "http://127.0.0.1:8787/calls/wacid.call-1/close"
     )

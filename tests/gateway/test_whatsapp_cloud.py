@@ -127,6 +127,42 @@ def _mock_httpx_response(status_code: int, json_body: dict):
     return resp
 
 
+def _calling_sidecar_ready_state(**overrides):
+    checks = {
+        "not_closed": True,
+        "local_sdp_answer": True,
+        "signaling_stable": True,
+        "ice_gathering_complete": True,
+        "outbound_audio_track": True,
+    }
+    checks.update(overrides)
+    return {
+        "ready_for_accept": all(checks.values()),
+        "readiness": checks,
+    }
+
+
+def _calling_sidecar_answer_body(
+    *,
+    call_id="wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+    sdp="v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+    audio=None,
+    state=None,
+):
+    return {
+        "call_id": call_id,
+        "type": "answer",
+        "sdp": sdp,
+        "audio": audio or {
+            "sample_rate": 48000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+        },
+        "state": _calling_sidecar_ready_state() if state is None else state,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Outbound send via Graph API
 # ---------------------------------------------------------------------------
@@ -403,17 +439,7 @@ class TestCallingSidecarClient:
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(
                 200,
-                {
-                    "call_id": "call-1",
-                    "type": "answer",
-                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-                    "audio": {
-                        "sample_rate": 48000,
-                        "channels": 1,
-                        "frame_ms": 20,
-                        "encoding": "pcm_s16le",
-                    },
-                },
+                _calling_sidecar_answer_body(call_id="call-1"),
             )
         )
 
@@ -423,6 +449,7 @@ class TestCallingSidecarClient:
         assert answer.call_id == "call-1"
         assert answer.sdp.startswith("v=0")
         assert answer.audio["encoding"] == "pcm_s16le"
+        assert answer.state["ready_for_accept"] is True
         adapter._http_client.post.assert_awaited_once()
         call = adapter._http_client.post.call_args
         assert call.args[0] == "http://127.0.0.1:8787/offer"
@@ -536,12 +563,11 @@ class TestCallingSidecarClient:
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
-                {
-                    "call_id": "call/1",
-                    "type": "answer",
-                    "sdp": "v=0\r\n",
-                    "audio": contract["audio"],
-                },
+                _calling_sidecar_answer_body(
+                    call_id="call/1",
+                    sdp="v=0\r\n",
+                    audio=contract["audio"],
+                ),
             ),
             _mock_httpx_response(
                 200,
@@ -2072,17 +2098,7 @@ class TestWebhookDispatch:
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
-                {
-                    "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
-                    "type": "answer",
-                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-                    "audio": {
-                        "sample_rate": 48000,
-                        "channels": 1,
-                        "frame_ms": 20,
-                        "encoding": "pcm_s16le",
-                    },
-                },
+                _calling_sidecar_answer_body(),
             ),
             _mock_httpx_response(200, {"success": True}),
             _mock_httpx_response(200, {"success": True}),
@@ -2130,6 +2146,53 @@ class TestWebhookDispatch:
         )
 
     @pytest.mark.asyncio
+    async def test_call_connect_not_ready_sidecar_answer_closes_and_rejects(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter.handle_message = AsyncMock()
+        adapter._start_calling_sidecar_drain = MagicMock()
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "not found"})
+        )
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_httpx_response(
+                200,
+                _calling_sidecar_answer_body(
+                    state=_calling_sidecar_ready_state(
+                        ice_gathering_complete=False,
+                    ),
+                ),
+            ),
+            _mock_httpx_response(200, {"closed": True}),
+            _mock_httpx_response(200, {"success": True}),
+        ])
+        body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        adapter.handle_message.assert_not_called()
+        adapter._start_calling_sidecar_drain.assert_not_called()
+        assert adapter._http_client.post.call_count == 3
+        sidecar_call = adapter._http_client.post.call_args_list[0]
+        close_call = adapter._http_client.post.call_args_list[1]
+        reject_call = adapter._http_client.post.call_args_list[2]
+        assert sidecar_call.args[0] == "http://127.0.0.1:8787/offer"
+        assert close_call.args[0] == (
+            "http://127.0.0.1:8787/calls/"
+            "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
+        )
+        assert reject_call.args[0].endswith("/calls")
+        assert reject_call.kwargs["json"]["action"] == "reject"
+        assert adapter._calling_sidecar_call_ids == set()
+
+    @pytest.mark.asyncio
     async def test_call_connect_sidecar_failure_rejects_graph_call(self):
         adapter = _make_adapter(
             app_secret="key",
@@ -2174,17 +2237,7 @@ class TestWebhookDispatch:
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
-                {
-                    "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
-                    "type": "answer",
-                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-                    "audio": {
-                        "sample_rate": 48000,
-                        "channels": 1,
-                        "frame_ms": 20,
-                        "encoding": "pcm_s16le",
-                    },
-                },
+                _calling_sidecar_answer_body(),
             ),
             _mock_httpx_response(500, {"error": {"message": "pre_accept failed"}}),
             _mock_httpx_response(200, {"closed": True}),
@@ -2218,17 +2271,7 @@ class TestWebhookDispatch:
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
-                {
-                    "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
-                    "type": "answer",
-                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
-                    "audio": {
-                        "sample_rate": 48000,
-                        "channels": 1,
-                        "frame_ms": 20,
-                        "encoding": "pcm_s16le",
-                    },
-                },
+                _calling_sidecar_answer_body(),
             ),
             _mock_httpx_response(200, {"success": True}),
             _mock_httpx_response(500, {"error": {"message": "accept failed"}}),

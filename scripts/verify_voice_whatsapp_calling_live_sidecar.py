@@ -362,6 +362,13 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(
                 f"sidecar did not return an SDP answer: {http_client.sidecar_offer_response}"
             )
+        sidecar_state = http_client.sidecar_offer_response.get("state")
+        if not isinstance(sidecar_state, dict):
+            raise RuntimeError(
+                f"sidecar answer did not include call state: {http_client.sidecar_offer_response}"
+            )
+        if sidecar_state.get("ready_for_accept") is not True:
+            raise RuntimeError(f"sidecar was not ready for accept: {sidecar_state}")
         if args.call_id not in adapter._calling_sidecar_call_ids:  # noqa: SLF001
             raise RuntimeError("adapter did not track the active sidecar call id")
 
@@ -433,6 +440,8 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "drain_starts": drain_starts,
             "sidecar_offer_url": f"{sidecar_url}/offer",
             "sidecar_close_url": close_requests[-1]["url"],
+            "sidecar_ready_for_accept": sidecar_state["ready_for_accept"],
+            "sidecar_readiness": sidecar_state.get("readiness"),
             "outbound_webrtc_bytes": outbound_webrtc_bytes,
             "inbound_drain_bytes": inbound_audio.returned_bytes,
             "queued_rx_ms": inbound_audio.queued_rx_ms,

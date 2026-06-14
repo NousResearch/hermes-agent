@@ -282,6 +282,7 @@ class CallingSidecarAnswer:
     call_id: str
     sdp: str
     audio: Dict[str, Any]
+    state: Dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -658,9 +659,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         The sidecar contract mirrors the voice repo's prototype:
         POST /offer with {"call_id", "type": "offer", "sdp"} and expect
-        {"type": "answer", "sdp": "...", "audio": {...}}. Full Meta
-        Calling webhook handling can call this once it has extracted the
-        inbound offer.
+        {"type": "answer", "sdp": "...", "audio": {...}, "state": {...}}.
+        Full Meta Calling webhook handling can call this once it has extracted
+        the inbound offer. The connect handler requires state.ready_for_accept
+        before sending Graph pre_accept/accept actions.
         """
         if not self._calling_sidecar_enabled():
             return None
@@ -743,10 +745,33 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 answer_call_id,
             )
             return None
+
+        state = data.get("state")
+        if not isinstance(state, dict):
+            state = {}
         return CallingSidecarAnswer(
             call_id=normalized_call_id,
             sdp=sdp,
             audio=audio,
+            state=dict(state),
+        )
+
+    @staticmethod
+    def _calling_sidecar_accept_readiness_error(state: Any) -> Optional[str]:
+        """Return a human-readable readiness error, or None when accept is safe."""
+        if not isinstance(state, dict):
+            return "sidecar answer missing call state"
+        if state.get("ready_for_accept") is True:
+            return None
+
+        readiness = state.get("readiness")
+        if isinstance(readiness, dict):
+            failed = sorted(str(key) for key, value in readiness.items() if value is not True)
+            if failed:
+                return "sidecar not ready for accept; failed checks: " + ", ".join(failed)
+        return (
+            "sidecar not ready for accept; ready_for_accept="
+            f"{state.get('ready_for_accept')!r}"
         )
 
     async def _send_calling_sidecar_audio(
@@ -3181,6 +3206,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 )
             return
         self._calling_sidecar_call_ids.add(call_id)
+
+        readiness_error = self._calling_sidecar_accept_readiness_error(answer.state)
+        if readiness_error is not None:
+            logger.warning(
+                "[whatsapp_cloud] sidecar answer for %s is not ready for accept: %s",
+                call_id,
+                readiness_error,
+            )
+            await self._close_calling_sidecar_session(call_id)
+            reject = await self._send_call_action(call_id, "reject")
+            if not reject.success:
+                logger.warning(
+                    "[whatsapp_cloud] reject failed for %s after sidecar readiness "
+                    "failure: %s",
+                    call_id,
+                    reject.error,
+                )
+            return
 
         pre_accept = await self._send_call_action(
             call_id,

@@ -51,6 +51,46 @@ async def test_reference_model_retry_warnings_avoid_exc_info_until_terminal_fail
 
 
 @pytest.mark.asyncio
+async def test_moa_continues_when_reference_model_raises(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    run_reference = AsyncMock(
+        side_effect=[
+            RuntimeError("reference boom"),
+            ("model-b", "useful answer", True),
+        ]
+    )
+    run_aggregator = AsyncMock(return_value="final answer")
+    debug_log = MagicMock()
+
+    monkeypatch.setattr(moa, "_run_reference_model_safe", run_reference)
+    monkeypatch.setattr(moa, "_run_aggregator_model", run_aggregator)
+    monkeypatch.setattr(
+        moa,
+        "_debug",
+        SimpleNamespace(log_call=debug_log, save=MagicMock(), active=False),
+    )
+
+    result = json.loads(
+        await moa.mixture_of_agents_tool(
+            "solve this",
+            reference_models=["model-a", "model-b"],
+            aggregator_model="aggregator-model",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["response"] == "final answer"
+    assert run_reference.await_count == 2
+    run_aggregator.assert_awaited_once()
+    assert "useful answer" in run_aggregator.await_args.args[0]
+
+    debug_call_data = debug_log.call_args.args[1]
+    assert debug_call_data["reference_responses_count"] == 1
+    assert debug_call_data["failed_models_count"] == 1
+    assert debug_call_data["failed_models"] == ["model-a"]
+
+
+@pytest.mark.asyncio
 async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(

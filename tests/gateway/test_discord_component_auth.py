@@ -25,6 +25,7 @@ from plugins.platforms.discord.adapter import (  # noqa: E402
     SlashConfirmView,
     UpdatePromptView,
     _component_check_auth,
+    _read_discord_prompt_timeout,
 )
 
 
@@ -58,6 +59,49 @@ def _interaction(user_id, role_ids=None, *, drop_user=False, drop_roles=False):
     if not drop_roles:
         user_kwargs["roles"] = [SimpleNamespace(id=r) for r in (role_ids or [])]
     return SimpleNamespace(user=SimpleNamespace(**user_kwargs))
+
+
+def _set_raw_config(monkeypatch, cfg):
+    import hermes_cli.config as cfg_mod
+    monkeypatch.setattr(cfg_mod, "read_raw_config", lambda: cfg, raising=True)
+
+
+def test_discord_prompt_timeout_defaults_and_clamps(monkeypatch):
+    _set_raw_config(monkeypatch, {})
+    assert _read_discord_prompt_timeout() == 300.0
+
+    _set_raw_config(monkeypatch, {"approvals": {"discord_prompt_timeout": "12"}})
+    assert _read_discord_prompt_timeout() == 30.0
+
+    _set_raw_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 600}})
+    assert _read_discord_prompt_timeout() == 600.0
+
+    _set_raw_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 1200}})
+    assert _read_discord_prompt_timeout() == 900.0
+
+    _set_raw_config(monkeypatch, {"approvals": {"discord_prompt_timeout": "not-a-number"}})
+    assert _read_discord_prompt_timeout() == 300.0
+
+
+@pytest.mark.parametrize(
+    "view_factory",
+    [
+        lambda: ExecApprovalView(session_key="s", allowed_user_ids={"11111"}),
+        lambda: SlashConfirmView(session_key="s", confirm_id="c", allowed_user_ids={"11111"}),
+        lambda: UpdatePromptView(session_key="s", allowed_user_ids={"11111"}),
+        lambda: ClarifyChoiceView(
+            choices=["one"],
+            clarify_id="c",
+            allowed_user_ids={"11111"},
+        ),
+    ],
+)
+def test_discord_prompt_views_use_configured_timeout(monkeypatch, view_factory):
+    _set_raw_config(monkeypatch, {"approvals": {"discord_prompt_timeout": 720}})
+
+    view = view_factory()
+
+    assert view.timeout == 720.0
 
 
 # ── no policy configured -> deny unless allow-all is explicit ──────────────

@@ -1219,6 +1219,36 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     setFocusRequestId(id => id + 1)
   }, [])
 
+  const safeSetEditComposerText = useCallback(
+    (text: string) => {
+      try {
+        aui.composer().setText(text)
+      } catch (error) {
+        console.warn('[hermes] edit composer text mirror unavailable', error)
+      }
+    },
+    [aui]
+  )
+
+  const safeCancelEditComposer = useCallback(() => {
+    try {
+      aui.composer().cancel()
+    } catch (error) {
+      console.warn('[hermes] edit composer cancel unavailable', error)
+    }
+  }, [aui])
+
+  const safeSendEditComposer = useCallback(() => {
+    try {
+      aui.composer().send()
+      return true
+    } catch (error) {
+      console.warn('[hermes] edit composer send unavailable', error)
+      setSubmitting(false)
+      return false
+    }
+  }, [aui])
+
   const appendExternalText = useCallback(
     (text: string, mode: ComposerInsertMode) => {
       const value = text.trim()
@@ -1232,7 +1262,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       const next = `${base}${sep}${value}`
 
       draftRef.current = next
-      aui.composer().setText(next)
+      safeSetEditComposerText(next)
 
       const editor = editorRef.current
 
@@ -1243,7 +1273,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       setFocusRequestId(id => id + 1)
     },
-    [aui]
+    [safeSetEditComposerText]
   )
 
   useEffect(() => {
@@ -1292,12 +1322,12 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       if (nextDraft !== draftRef.current) {
         draftRef.current = nextDraft
-        aui.composer().setText(nextDraft)
+        safeSetEditComposerText(nextDraft)
       }
 
       return nextDraft
     },
-    [aui]
+    [safeSetEditComposerText]
   )
 
   const refreshTrigger = useCallback(() => {
@@ -1369,7 +1399,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       const finish = () => {
         draftRef.current = composerPlainText(editor)
-        aui.composer().setText(draftRef.current)
+        safeSetEditComposerText(draftRef.current)
         requestEditFocus()
         starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
       }
@@ -1429,7 +1459,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
       }
 
       draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      safeSetEditComposerText(nextDraft)
       requestEditFocus()
 
       return true
@@ -1598,7 +1628,9 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     }
 
     setSubmitting(true)
-    aui.composer().send()
+    if (!safeSendEditComposer()) {
+      return
+    }
   }
 
   const handleEditBlur = useCallback(
@@ -1618,7 +1650,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
         }
 
         closeTrigger()
-        aui.composer().cancel()
+        safeCancelEditComposer()
       }, 80)
     },
     [aui, closeTrigger, submitting]
@@ -1665,7 +1697,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
     if (event.key === 'Escape') {
       event.preventDefault()
-      aui.composer().cancel()
+      safeCancelEditComposer()
 
       return
     }

@@ -1533,6 +1533,9 @@ AUTHOR_MAP = {
     "adalsteinnhelgason@users.noreply.github.com": "AIalliAI",
     "bsmith@bramarstrategicservices.com": "bcsmith528",  # PR #20589 salvage (register_slack_action_handler plugin API)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #45494 salvage (claim session slot before auto-resume task; #45456)
+    "aialli@users.noreply.github.com": "AIalliAI",
+    "adalsteinnhelgason@Aalsteinns-MacBook-Pro-3.local": "AIalliAI",
+    "jvsantos.cunha@gmail.com": "plcunha",  # PR #44460 (bound CDP reconnect loop)
 }
 
 

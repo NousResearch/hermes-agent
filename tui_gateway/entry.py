@@ -213,6 +213,17 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
 def main():
     _install_sidecar_publisher()
 
+    # Seed bundled skills before accepting requests so the first
+    # commands.catalog / complete.slash call sees all skills on disk.
+    # The dashboard backend (cmd_dashboard) also calls this, but the TUI
+    # gateway is a separate subprocess — it needs its own sync.  Idempotent;
+    # skipped skills cost ~milliseconds on repeat calls.  (#46166)
+    try:
+        from hermes_cli.main import _sync_bundled_skills_quietly
+        _sync_bundled_skills_quietly()
+    except Exception:
+        pass
+
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran
     # inline before ``gateway.ready``, which meant any configured-but-down

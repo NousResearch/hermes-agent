@@ -378,12 +378,14 @@ class TestCacheDirectoryMounts:
         hermes_home.mkdir()
         (hermes_home / "cache" / "documents").mkdir(parents=True)
         (hermes_home / "cache" / "audio").mkdir(parents=True)
+        (hermes_home / "cache" / "videos").mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         mounts = get_cache_directory_mounts()
         paths = {m["container_path"] for m in mounts}
         assert "/root/.hermes/cache/documents" in paths
         assert "/root/.hermes/cache/audio" in paths
+        assert "/root/.hermes/cache/videos" in paths
 
     def test_skips_nonexistent_dirs(self, tmp_path, monkeypatch):
         """Dirs that don't exist on disk are not returned."""

@@ -90,7 +90,7 @@ jobs:
       # (see `_SKIP_PARTS` in scripts/run_tests_parallel.py) because each
       # shard would otherwise reach the session-scoped ``built_image``
       # fixture in ``tests/docker/conftest.py`` and start a 3-7min
-      # ``docker build`` under a 180s pytest-timeout cap — guaranteed to
+      # ``docker build`` — guaranteed to
       # die in fixture setup.
       #
       # Piggybacking here avoids a second image build: the smoke test
@@ -114,7 +114,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          # ``dev`` extra pulls in pytest, pytest-asyncio, pytest-timeout —
+          # ``dev`` extra pulls in pytest, pytest-asyncio —
           # everything tests/docker/ needs.  We deliberately avoid ``all``
           # here because the docker tests only drive the container via
           # subprocess and don't import hermes_agent's optional deps.

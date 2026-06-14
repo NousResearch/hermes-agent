@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import logging
 import os
@@ -32,7 +33,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
-from gateway.session import build_session_key
+from gateway.session import SessionSource, build_session_key
 from hermes_cli.config import cfg_get
 from utils import (
     atomic_json_write,
@@ -46,6 +47,19 @@ logger = logging.getLogger("gateway.run")
 
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
+
+    def _typed_command_prefix_for(self, platform) -> str:
+        """Return the prefix users can always type to reach Hermes commands.
+
+        Reads the adapter's ``typed_command_prefix`` capability flag
+        (default "/"). Slack and Matrix return "!" because typed "/"
+        commands are blocked in Slack threads / reserved by Matrix clients;
+        their adapters rewrite "!command" to "/command" on receive.
+        Instruction text built for those platforms must show the prefix
+        that actually works when typed.
+        """
+        adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
+        return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
@@ -434,12 +448,59 @@ class GatewaySlashCommandsMixin:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+        if source.platform == Platform.MATRIX:
+            adapter = self.adapters.get(Platform.MATRIX)
+            scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
+            thread = source.thread_id or "none"
+            lines.extend([
+                "",
+                t("gateway.status.matrix_scope_header"),
+                t("gateway.status.matrix_scope_room", room=source.chat_name or source.chat_id),
+                t("gateway.status.matrix_scope_room_id", room_id=source.chat_id),
+                t("gateway.status.matrix_scope_thread", thread_id=thread),
+                t("gateway.status.matrix_scope_mode", scope=scope),
+                t(
+                    "gateway.status.matrix_scope_key",
+                    session_key=self._redact_matrix_session_key(session_key),
+                ),
+            ])
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _redact_matrix_session_key(session_key: str) -> str:
+        """Return a stable Matrix session-key fingerprint for shared room status."""
+        text = str(session_key or "")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        return f"sha256:{digest}"
+
+    def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:
+        """Best-effort origin lookup for gateway session IDs."""
+        lookup = getattr(type(self.session_store), "lookup_by_session_id", None)
+        if callable(lookup):
+            entry = lookup(self.session_store, session_id)
+            return getattr(entry, "origin", None) if entry is not None else None
+
+        # Test doubles and older stores may not expose the public lookup helper.
+        # Keep the Matrix resume guard fail-closed if no origin can be resolved.
+        entries = getattr(self.session_store, "_entries", {}) or {}
+        for entry in entries.values():
+            if getattr(entry, "session_id", None) == session_id:
+                return getattr(entry, "origin", None)
+        return None
+
+    @staticmethod
+    def _same_matrix_room(current: SessionSource, origin: Optional[SessionSource]) -> bool:
+        return (
+            origin is not None
+            and origin.platform == Platform.MATRIX
+            and current.platform == Platform.MATRIX
+            and origin.chat_id == current.chat_id
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -1328,13 +1389,14 @@ class GatewaySlashCommandsMixin:
                 # an explicit decision).
                 return await _finish_switch()
 
+            _p = self._typed_command_prefix_for(event.source.platform)
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
                 title="Expensive Model Warning",
                 message=(
                     f"⚠️ **Expensive Model Warning**\n\n{_cost_warning.message}\n\n"
-                    "_Text fallback: reply `/approve` to switch or `/cancel` to keep "
+                    f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),
                 handler=_on_cost_confirm,
@@ -2048,6 +2110,64 @@ class GatewaySlashCommandsMixin:
                    "reject <id>, approval <on|off>.")
         return out
 
+    async def _handle_skills_command(self, event: MessageEvent) -> str:
+        """Handle /skills on the gateway — pending skill-write review only.
+
+        The full skills hub (search/browse/install) stays CLI-only; this
+        handler covers the write-approval review surface (pending / approve /
+        reject / diff / approval) so a skill staged from a gateway session can
+        be reviewed from that same session. Gated by ``skills.write_approval``
+        via the CommandDef's ``gateway_config_gate``; also answers when staged
+        writes still exist after the gate was turned off (so they are never
+        stranded).
+
+        ``diff`` output is truncated for chat bubbles — the full diff lives in
+        the CLI (``/skills diff <id>``) and the pending JSON file.
+        """
+        from gateway.run import _hermes_home
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+
+        raw_args = event.get_command_args().strip()
+        args = raw_args.split() if raw_args else []
+        session_key = self._session_key_for_source(event.source)
+        config_path = _hermes_home / "config.yaml"
+
+        gate_on = wa.write_approval_enabled(wa.SKILLS)
+        wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
+        if not gate_on and not wants_toggle and wa.pending_count(wa.SKILLS) == 0:
+            return ("Skill write approval is off (skills.write_approval). "
+                    "Enable it with /skills approval on, then review staged "
+                    "writes here with /skills pending.")
+
+        def _set_approval(enabled: bool):
+            import yaml
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+            atomic_yaml_write(config_path, user_config)
+            # New setting must take effect next message → drop cached agent.
+            self._evict_cached_agent(session_key)
+
+        out = handle_pending_subcommand(
+            wa.SKILLS, args, set_mode_fn=_set_approval,
+        )
+        if out is None:
+            return ("Unknown /skills subcommand on this platform. Use: pending, "
+                    "approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                    "(Search/install are CLI-only.)")
+
+        # Chat bubbles can't hold a full skill diff — truncate and point at
+        # the real review surfaces.
+        if args and args[0].lower() == "diff" and len(out) > 3000:
+            pending_id = args[1] if len(args) > 1 else "<id>"
+            out = (out[:3000]
+                   + f"\n… (truncated — full diff: `/skills diff {pending_id}` "
+                     f"on the CLI, or ~/.hermes/pending/skills/{pending_id}.json)")
+        return out
+
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
         from gateway.run import _hermes_home, _load_gateway_config, _resolve_gateway_model
@@ -2584,7 +2704,14 @@ class GatewaySlashCommandsMixin:
 
         source = event.source
         session_key = self._session_key_for_source(source)
-        name = event.get_command_args().strip()
+        raw_args = event.get_command_args().strip()
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError as exc:
+            return t("gateway.resume.parse_error", error=exc)
+        allow_all = "--all" in parts
+        allow_cross_room = "--cross-room" in parts
+        name = " ".join(p for p in parts if p not in {"--all", "--cross-room"}).strip()
 
         # Strip common outer brackets/quotes users may type literally from the
         # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
@@ -2605,11 +2732,24 @@ class GatewaySlashCommandsMixin:
             # List recent titled sessions for this user/platform
             try:
                 titled = _list_titled_sessions()
+                if source.platform == Platform.MATRIX and not allow_all:
+                    scoped = []
+                    for s in titled:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if self._same_matrix_room(source, origin):
+                            scoped.append(s)
+                    titled = scoped
                 if not titled:
+                    if source.platform == Platform.MATRIX and not allow_all:
+                        return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
+                    if source.platform == Platform.MATRIX and allow_all:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if origin:
+                            title = f"{title} — {origin.chat_name or origin.chat_id}"
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
@@ -2623,6 +2763,13 @@ class GatewaySlashCommandsMixin:
         if name.isdigit():
             try:
                 titled = _list_titled_sessions()
+                if source.platform == Platform.MATRIX and not allow_all:
+                    scoped = []
+                    for s in titled:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if self._same_matrix_room(source, origin):
+                            scoped.append(s)
+                    titled = scoped
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
@@ -2648,6 +2795,17 @@ class GatewaySlashCommandsMixin:
             target_id = self._session_db.resolve_resume_session_id(target_id)
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
+
+        if source.platform == Platform.MATRIX:
+            target_origin = self._gateway_session_origin_for_id(target_id)
+            if not self._same_matrix_room(source, target_origin) and not allow_cross_room:
+                if target_origin is None:
+                    return t("gateway.resume.matrix_blocked_no_origin", name=name)
+                return t(
+                    "gateway.resume.matrix_blocked_other_room",
+                    room=target_origin.chat_name or target_origin.chat_id,
+                    name=name,
+                )
 
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)
@@ -2676,6 +2834,15 @@ class GatewaySlashCommandsMixin:
         # Count messages for context
         history = self.session_store.load_transcript(target_id)
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+
+        if source.platform == Platform.MATRIX and allow_cross_room:
+            return t(
+                "gateway.resume.matrix_cross_room_success",
+                title=title,
+                room=source.chat_name or source.chat_id,
+                msg_part=msg_part,
+            )
         if not msg_count:
             return t("gateway.resume.resumed_no_count", title=title)
         if msg_count == 1:
@@ -2778,6 +2945,40 @@ class GatewaySlashCommandsMixin:
         msg_count = len([m for m in history if m.get("role") == "user"])
         key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
         return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+
+    async def _handle_credits_command(self, event: MessageEvent) -> str:
+        """Handle /credits -- show Nous credit balance and the top-up handoff.
+
+        Renders the balance block + identity line + a tappable top-up URL that
+        opens the portal billing page with the modal open. The terminal does NOT
+        confirm, poll, or track payment (billing phase 2a) — checkout happens in
+        the browser and the next /credits shows the new balance. The tappable URL
+        is the affordance: it works on every platform (button-capable or plain
+        text like SMS/email). Fetched off the event loop; fail-open.
+        """
+        from agent.account_usage import build_credits_view
+
+        try:
+            view = await asyncio.to_thread(build_credits_view, markdown=True)
+        except Exception:
+            view = None
+
+        if view is None or not view.logged_in:
+            return t("gateway.credits.not_logged_in")
+
+        lines: list[str] = ["💳 **Nous credits**"]
+        for line in view.balance_lines:
+            if line.lstrip().startswith("📈"):
+                continue  # drop the helper's header; we print our own
+            lines.append(line)
+        if view.identity_line:
+            lines.append("")
+            lines.append(view.identity_line)
+        if view.topup_url:
+            lines.append("")
+            lines.append(f"Top up: {view.topup_url}")
+            lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
+        return "\n".join(lines)
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.

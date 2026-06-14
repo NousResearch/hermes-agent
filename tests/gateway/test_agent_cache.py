@@ -1410,6 +1410,38 @@ class TestCachedAgentInactivityReset:
 
         assert agent._last_activity_ts == old_ts
 
+    def test_fresh_turn_resets_flush_cursor(self):
+        """interrupt_depth=0: _last_flushed_db_idx resets so new-turn
+        messages are fully persisted to the session DB (#44327)."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42  # stale from previous turn
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_flushed_db_idx == 0, (
+            "_last_flushed_db_idx must be reset on a fresh turn so that "
+            "_flush_messages_to_session_db starts from index 0"
+        )
+
+    def test_interrupt_turn_preserves_flush_cursor(self):
+        """interrupt_depth=1: _last_flushed_db_idx preserved so an
+        in-progress flush is not disrupted by interrupt re-entry."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42
+
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
+
+        assert agent._last_flushed_db_idx == 42, (
+            "_last_flushed_db_idx must not be reset on interrupt-recursive "
+            "turns — the flush cursor tracks in-progress writes"
+        )
+
     def test_api_call_count_reset_regardless_of_depth(self):
         """_api_call_count is always reset to 0 for the new turn, at any depth."""
         from gateway.run import GatewayRunner

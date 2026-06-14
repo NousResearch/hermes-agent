@@ -88,7 +88,7 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
       label: r.export,
       onSelect: () => {
         triggerHaptic('selection')
-        void exportSession(sessionId, { title })
+        void exportSession(sessionId, { profile, title })
       }
     },
     {

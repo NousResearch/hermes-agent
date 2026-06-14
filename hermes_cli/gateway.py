@@ -3865,22 +3865,24 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
     is expensive: it pulls in model_tools/plugin discovery first. On small
     instances, a supervisor or dashboard loop repeatedly running bare
     ``hermes gateway run`` can burn memory/CPU just to fail with "already
-    running" after plugin discovery. This cheap CLI-side preflight preserves the
-    same user-facing contract while avoiding that startup work.
+    running" after plugin discovery. This cheap PID-file preflight preserves the
+    same user-facing contract while avoiding that startup work without scanning
+    unrelated gateway processes from other HERMES_HOME roots.
     """
     if replace or _running_under_gateway_supervisor():
         return
     try:
-        snapshot = get_gateway_runtime_snapshot()
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid()
     except Exception:
         logger.debug("Existing-gateway process probe failed", exc_info=True)
         return
-    if not snapshot.gateway_pids:
+    if pid is None:
         return
 
-    pid_text = _format_gateway_pids(snapshot.gateway_pids, limit=1)
     print_error(
-        f"Another gateway instance is already running (PID {pid_text})."
+        f"Another gateway instance is already running (PID {pid})."
     )
     print("  Use 'hermes gateway restart' to replace it,")
     print("  or 'hermes gateway stop' first.")

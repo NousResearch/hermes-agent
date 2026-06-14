@@ -129,13 +129,6 @@ def _running_snapshot(manager="systemd (user)"):
     )
 
 
-def _process_snapshot(*pids: int, manager="manual process"):
-    return gateway.GatewayRuntimeSnapshot(
-        manager=manager,
-        gateway_pids=tuple(pids),
-    )
-
-
 def test_run_gateway_refuses_when_service_supervising(monkeypatch, capsys):
     """A shell `gateway run --replace` must not become a second writer."""
     calls = []
@@ -230,11 +223,7 @@ def test_run_gateway_refuses_existing_process_before_importing_gateway_run(monke
 
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     _clear_supervisor_markers(monkeypatch)
-    monkeypatch.setattr(
-        gateway,
-        "get_gateway_runtime_snapshot",
-        lambda: _process_snapshot(17907),
-    )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 17907)
 
     with pytest.raises(SystemExit) as exc_info:
         gateway.run_gateway()
@@ -255,11 +244,7 @@ def test_run_gateway_replace_skips_existing_process_preflight(monkeypatch):
 
     _install_fake_gateway_run(monkeypatch, fake_start_gateway)
     _clear_supervisor_markers(monkeypatch)
-    monkeypatch.setattr(
-        gateway,
-        "get_gateway_runtime_snapshot",
-        lambda: _process_snapshot(17907),
-    )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 17907)
     monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
 
     gateway.run_gateway(replace=True)

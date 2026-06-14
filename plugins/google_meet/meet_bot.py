@@ -54,6 +54,7 @@ MEET_URL_RE = re.compile(
 SAY_QUEUE_FILENAME = "say_queue.jsonl"
 SAY_PCM_FILENAME = "speaker.pcm"
 CALL_ERROR_STRIKE_LIMIT = 3
+MAX_TRANSCRIPT_TEXT_LEN = 500
 
 
 def _is_safe_meet_url(url: str) -> bool:
@@ -132,6 +133,7 @@ class _BotState:
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
         self._transcript_entries: list[tuple[str, str, str]] = []
+        self._last_caption_text_by_speaker: dict[str, str] = {}
         out_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_path = out_dir / "transcript.txt"
         self.caption_debug_path = out_dir / "caption_debug.jsonl"
@@ -179,6 +181,46 @@ class _BotState:
         with self.transcript_path.open("w", encoding="utf-8") as f:
             for ts, speaker, text in self._transcript_entries:
                 f.write(f"[{ts}] {speaker}: {text}\n")
+        self.transcript_lines = len(self._transcript_entries)
+
+    @staticmethod
+    def _caption_suffix(previous: str, current: str) -> str:
+        if not current.startswith(previous):
+            return ""
+        return current[len(previous):].lstrip(" \t\r\n,.;:!?-")
+
+    def _record_caption_segment(
+        self,
+        speaker: str,
+        text: str,
+        ts: str,
+        *,
+        combine_with_previous: bool = False,
+    ) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+
+        if self._transcript_entries:
+            _, previous_speaker, previous_text = self._transcript_entries[-1]
+            if previous_speaker == speaker:
+                if self._is_caption_revision(previous_text, text) and len(text) <= MAX_TRANSCRIPT_TEXT_LEN:
+                    self._transcript_entries[-1] = (ts, speaker, text)
+                    self._rewrite_transcript()
+                    return
+                if combine_with_previous:
+                    combined = f"{previous_text} {text}".strip()
+                    if len(combined) <= MAX_TRANSCRIPT_TEXT_LEN:
+                        self._transcript_entries[-1] = (ts, speaker, combined)
+                        self._rewrite_transcript()
+                        return
+
+        self._transcript_entries.append((ts, speaker, text))
+        self.transcript_lines = len(self._transcript_entries)
+        line = f"[{ts}] {speaker}: {text}\n"
+        # Atomic-ish append — good enough for a single-writer.
+        with self.transcript_path.open("a", encoding="utf-8") as f:
+            f.write(line)
 
     def record_caption(
         self,
@@ -213,20 +255,21 @@ class _BotState:
             return
         self._seen.add(key)
         ts = self._touch_caption_progress()
-        if self._transcript_entries:
-            _, previous_speaker, previous_text = self._transcript_entries[-1]
-            if previous_speaker == speaker and self._is_caption_revision(previous_text, text):
-                self._transcript_entries[-1] = (ts, speaker, text)
-                self._rewrite_transcript()
+        previous_full = self._last_caption_text_by_speaker.get(speaker, "")
+        self._last_caption_text_by_speaker[speaker] = text
+
+        if previous_full:
+            suffix = self._caption_suffix(previous_full, text)
+            if suffix:
+                self._record_caption_segment(speaker, suffix, ts, combine_with_previous=True)
+                self._flush()
+                return
+            if self._is_caption_revision(previous_full, text):
+                self._record_caption_segment(speaker, text, ts)
                 self._flush()
                 return
 
-        self.transcript_lines += 1
-        self._transcript_entries.append((ts, speaker, text))
-        line = f"[{ts}] {speaker}: {text}\n"
-        # Atomic-ish append — good enough for a single-writer.
-        with self.transcript_path.open("a", encoding="utf-8") as f:
-            f.write(line)
+        self._record_caption_segment(speaker, text, ts)
         self._flush()
 
     # -------- status file ----------------------------------------------

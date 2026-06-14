@@ -140,6 +140,33 @@ def test_bot_state_rewrites_similar_same_speaker_caption_edit(tmp_path):
     assert status["transcriptLines"] == 1
 
 
+def test_bot_state_splits_growing_same_speaker_caption_before_it_gets_too_long(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    first_segment = " ".join(["alpha"] * 70)
+    second_segment = " ".join(["beta"] * 45)
+    third_segment = " ".join(["gamma"] * 10)
+
+    state.record_caption("Alex Rivera", first_segment)
+    state.record_caption("Alex Rivera", f"{first_segment} {second_segment}")
+    state.record_caption("Alex Rivera", f"{first_segment} {second_segment} {third_segment}")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    stripped = [line.split("] ", 1)[1] for line in transcript]
+    assert stripped == [
+        f"Alex Rivera: {first_segment}",
+        f"Alex Rivera: {second_segment} {third_segment}",
+    ]
+    assert all(len(line.split(": ", 1)[1]) <= 500 for line in stripped)
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 2
+
+
 def test_bot_state_flushes_local_media_state(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 

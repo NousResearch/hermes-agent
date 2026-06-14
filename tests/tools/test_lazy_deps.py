@@ -94,6 +94,14 @@ class TestAllowlist:
                 assert ld._spec_is_safe(spec), \
                     f"{feature}: spec {spec!r} fails safety check"
 
+    def test_discord_lazy_dep_does_not_eager_install_voice_stack(self):
+        specs = ld.LAZY_DEPS["platform.discord"]
+
+        assert "discord.py==2.7.1" in specs
+        assert not any("discord.py[voice]" in spec for spec in specs)
+        assert not any(spec.lower().startswith("pynacl") for spec in specs)
+        assert not any(spec.lower().startswith("davey") for spec in specs)
+
     def test_feature_install_command_returns_pip_invocation(self):
         cmd = ld.feature_install_command("memory.honcho")
         assert cmd is not None

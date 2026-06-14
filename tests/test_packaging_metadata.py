@@ -301,3 +301,17 @@ def test_optional_mcps_manifests_ship_in_both_wheel_and_sdist():
     assert "graft optional-mcps" in manifest, (
         "MANIFEST.in must `graft optional-mcps` so the sdist ships MCP manifests"
     )
+
+
+def test_uv_lock_excludes_discord_voice_only_dependency_stack():
+    """The lockfile must not keep PyNaCl/davey after [messaging] drops voice.
+
+    Both packages are pulled by the Discord voice extra, not by Discord text
+    messaging. PyNaCl 1.5.0 is below the GHSA-mrfv-m5wm-5w6w patched version
+    and discord.py 2.7.1 currently prevents resolving PyNaCl 1.6.2.
+    """
+    data = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    names = {pkg["name"].lower() for pkg in data["package"]}
+
+    assert "pynacl" not in names
+    assert "davey" not in names

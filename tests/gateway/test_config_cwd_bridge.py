@@ -32,6 +32,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             "backend": "TERMINAL_ENV",
             "cwd": "TERMINAL_CWD",
             "timeout": "TERMINAL_TIMEOUT",
+            "home_mode": "TERMINAL_HOME_MODE",
             "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
             "container_cpu": "TERMINAL_CONTAINER_CPU",
             "container_memory": "TERMINAL_CONTAINER_MEMORY",
@@ -214,6 +215,11 @@ class TestNestedTerminalCwdPlaceholderSkip:
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
         assert result["TERMINAL_CWD"] == "/from/env"
+
+    def test_terminal_home_mode_bridges_to_env(self):
+        cfg = {"terminal": {"home_mode": "profile"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["TERMINAL_HOME_MODE"] == "profile"
 
 
 class TestTildeExpansion:

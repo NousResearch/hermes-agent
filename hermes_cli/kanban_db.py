@@ -90,6 +90,8 @@ from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
 
+from hermes_cli import spawn_worker
+
 _log = logging.getLogger(__name__)
 
 
@@ -6814,51 +6816,41 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Auto-load the kanban-worker skill so every dispatched worker
-    # has the pattern library (good summary/metadata shapes, retry
-    # diagnostics, block-reason examples) in its context, even if
-    # the profile hasn't wired it into skills config. The MANDATORY
-    # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
-    # this skill is the deeper reference. Users can point a profile
-    # at a different/additional skill via config if they want —
-    # --skills is additive to the profile's default skill set.
-    #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
-    if task.skills:
-        for sk in task.skills:
-            if sk and sk != "kanban-worker":
-                cmd.extend(["--skills", sk])
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    cmd = spawn_worker.build_spawn_cmd(
+        profile=profile_arg,
+        prompt=prompt,
+        model=task.model_override,
+        skills=task.skills,
+    )
+    # Auto-load the kanban-worker skill if the home under which the
+    # worker runs actually ships it (the bundled skill is missing from
+    # many profile-scoped skills dirs; preloading a missing skill is
+    # fatal at CLI startup). Only add when the per-task skills list
+    # does not already ask for it (avoid duplicate --skills flags).
+    if (
+        _kanban_worker_skill_available(env.get("HERMES_HOME"))
+        and "kanban-worker" not in (task.skills or [])
+    ):
+        # Inject before ``chat -q <prompt>`` (the helper appended those
+        # at the end). One ``--skills X`` pair, mirrors the original
+        # dispatcher shape.
+        idx = next(
+            (i for i, tok in enumerate(cmd) if tok == "chat"),
+            len(cmd) - 2,
+        )
+        cmd = cmd[:idx] + ["--skills", "kanban-worker"] + cmd[idx:]
+    # Worker toolsets come from the assigned profile's config.yaml; append
+    # after the standard shape so a future change to the dispatcher's
+    # per-profile toolset rules does not have to touch the public helper.
     if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
+        # Inject ``--toolsets X`` before ``chat -q <prompt>`` (which
+        # build_spawn_cmd appended at the end). The kanban CLI accepts
+        # ``--toolsets`` anywhere in the flag region.
+        idx = next(
+            (i for i, tok in enumerate(cmd) if tok == "chat"),
+            len(cmd) - 2,
+        )
+        cmd = cmd[:idx] + ["--toolsets", ",".join(worker_toolsets)] + cmd[idx:]
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

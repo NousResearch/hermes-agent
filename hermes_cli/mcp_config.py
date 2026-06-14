@@ -116,7 +116,6 @@ def _remove_mcp_server(name: str) -> bool:
     save_config(config)
     return True
 
-
 def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
     """Replace the WHOLE ``mcp_servers`` map in config.yaml.
 
@@ -148,8 +147,6 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
         config.pop("mcp_servers", None)
     save_config(config)
     return True, []
-
-
 def _env_key_for_server(name: str) -> str:
     """Convert server name to an env-var key like ``MCP_MYSERVER_API_KEY``."""
     suffix = re.sub(r"[^A-Za-z0-9_]", "_", name.upper()).strip("_")

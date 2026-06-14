@@ -567,3 +567,37 @@ def _normalize_responses_request(
         store=store,
         history_from_input_messages=history_from_input_messages,
     ), None
+
+from typing import Any, Dict
+
+def clean_log_value(value: Any, *, max_len: int = 200) -> str:
+    """Sanitize request metadata before it reaches security logs."""
+    if value is None:
+        return ""
+    text = str(value).replace("\r", " ").replace("\n", " ").strip()
+    return text[:max_len]
+
+def extract_request_audit_context(request: Any) -> Dict[str, str]:
+    """Return non-secret source metadata for security/audit warnings."""
+    peer_ip = ""
+    try:
+        peer = request.transport.get_extra_info("peername") if request.transport else None
+        if isinstance(peer, (tuple, list)) and peer:
+            peer_ip = str(peer[0])
+    except Exception:
+        peer_ip = ""
+
+    return {
+        "remote": clean_log_value(getattr(request, "remote", "") or peer_ip),
+        "peer_ip": clean_log_value(peer_ip),
+        "forwarded_for": clean_log_value(request.headers.get("X-Forwarded-For", "")),
+        "real_ip": clean_log_value(request.headers.get("X-Real-IP", "")),
+        "method": clean_log_value(request.method, max_len=16),
+        "path": clean_log_value(getattr(request, "path_qs", ""), max_len=500),
+        "user_agent": clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+    }
+
+def extract_request_audit_log_suffix(request: Any) -> str:
+    ctx = extract_request_audit_context(request)
+    fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
+    return " ".join(fields) if fields else "source='unknown'"

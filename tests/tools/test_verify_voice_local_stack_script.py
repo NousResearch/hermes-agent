@@ -33,8 +33,11 @@ def _args(**overrides):
         "calling_control_plane_timeout": 10.0,
         "full_duplex_timeout": 90.0,
         "command_text": "command smoke",
+        "voice_contract_text": "contract smoke",
+        "voice_contract_timeout": 240.0,
         "stream_text": "stream smoke",
         "stream_command_template": None,
+        "skip_voice_contract": False,
         "skip_calling_control_plane": False,
         "skip_full_duplex": False,
         "voice_repo": Path("/voice"),
@@ -80,6 +83,58 @@ def test_stream_tts_command_can_use_custom_template():
     assert "/tmp/voice" in command
     assert "--command-template" in command
     assert "voice stream --raw-output -" in command
+
+
+def test_voice_contract_command_requires_daemon_and_passes_text():
+    script = _load_script_module()
+
+    command = script.voice_contract_command(
+        _args(voice_contract_text="contract text"),
+        voice_bin="/tmp/voice",
+        script=Path("/voice/scripts/verify_whatsapp_voice_contract.sh"),
+    )
+
+    assert command == [
+        "/voice/scripts/verify_whatsapp_voice_contract.sh",
+        "--voice-bin",
+        "/tmp/voice",
+        "--text",
+        "contract text",
+        "--require-daemon",
+    ]
+
+
+def test_resolve_voice_contract_script_uses_voice_checkout(tmp_path: Path):
+    script = _load_script_module()
+    verifier = tmp_path / "scripts" / "verify_whatsapp_voice_contract.sh"
+    verifier.parent.mkdir(parents=True)
+    verifier.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    verifier.chmod(0o755)
+
+    resolved = script.resolve_voice_contract_script(_args(voice_repo=tmp_path))
+
+    assert resolved == verifier
+
+
+def test_resolve_voice_contract_script_can_skip_or_fail(tmp_path: Path):
+    script = _load_script_module()
+
+    assert (
+        script.resolve_voice_contract_script(
+            _args(skip_voice_contract=True, voice_repo=None)
+        )
+        is None
+    )
+    assert script.resolve_voice_contract_script(_args(voice_repo=None)) is None
+    with pytest.raises(SystemExit, match="contract verifier not found"):
+        script.resolve_voice_contract_script(_args(voice_repo=tmp_path))
+
+    verifier = tmp_path / "scripts" / "verify_whatsapp_voice_contract.sh"
+    verifier.parent.mkdir(parents=True)
+    verifier.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    verifier.chmod(0o644)
+    with pytest.raises(SystemExit, match="not executable"):
+        script.resolve_voice_contract_script(_args(voice_repo=tmp_path))
 
 
 def test_full_duplex_command_passes_voice_repo_and_python():

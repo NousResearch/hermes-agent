@@ -323,9 +323,13 @@ scripts/verify_voice_local_stack.py \
 ```
 
 That aggregate check starts the local Hermes CLI, verifies command-provider
-Ogg/Opus output, verifies the raw `voice stream` PCM contract, and then runs
-the WhatsApp Calling control-plane smoke plus the full-duplex sidecar smoke
-from the `voice` checkout. The control-plane smoke is synthetic and local: it
+Ogg/Opus output, runs the `voice` checkout's own WhatsApp contract verifier,
+verifies the raw `voice stream` PCM contract, and then runs the WhatsApp
+Calling control-plane smoke plus the full-duplex sidecar smoke from the `voice`
+checkout. The voice contract step proves `voice stream-contract`, direct
+Ogg/Opus voice-note output, extension inference, misleading-extension
+rejection, raw PCM daemon streaming, and streamed Ogg/Opus agree before Hermes
+adds its own routing. The control-plane smoke is synthetic and local: it
 feeds Hermes a representative Meta `calls` webhook and verifies the sidecar
 offer, Graph `pre_accept`, Graph `accept`, drain startup, and terminate cleanup
 without contacting Meta. Pass `--skip-calling-control-plane` or

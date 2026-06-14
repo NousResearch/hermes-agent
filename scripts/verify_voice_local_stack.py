@@ -4,10 +4,12 @@
 This aggregate preflight runs the existing focused verifiers in a safe order:
 
 1. The local Hermes CLI entrypoint starts with an isolated HERMES_HOME.
-2. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
-3. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
-4. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
-5. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
+2. The voice checkout's own WhatsApp contract verifier proves the installed
+   voice binary can emit Ogg/Opus and WebRTC-shaped PCM frames.
+3. Hermes command-provider TTS returns WhatsApp-ready Ogg/Opus from voice.
+4. Hermes' stream command path returns raw 48 kHz mono 20 ms pcm_s16le frames.
+5. Hermes' WhatsApp Calling control plane accepts a synthetic SDP offer.
+6. Optionally, the voice WebRTC sidecar full-duplex smoke passes locally.
 
 By default the script creates a temporary Hermes home and removes it after a
 passing or failing run. Pass --keep-home to inspect the generated config.
@@ -30,6 +32,7 @@ from typing import Any
 
 
 DEFAULT_COMMAND_TEXT = "Hermes local voice command preflight."
+DEFAULT_VOICE_CONTRACT_TEXT = "Hermes voice contract preflight."
 DEFAULT_STREAM_TEXT = "Hermes local voice stream preflight."
 DEFAULT_FULL_DUPLEX_INBOUND_TEXT = "hello world"
 DEFAULT_FULL_DUPLEX_OUTBOUND_TEXT = "Hello from Hermes through the local voice sidecar."
@@ -195,6 +198,7 @@ def run_plain_step(
     *,
     timeout: float,
     env: dict[str, str],
+    include_stdout_lines: bool = False,
 ) -> dict[str, Any]:
     completed = run_process(command, timeout=timeout, env=env)
     if completed.returncode != 0:
@@ -207,11 +211,14 @@ def run_plain_step(
         (line for line in completed.stdout.splitlines() if line.strip()),
         "",
     )
-    return {
+    result: dict[str, Any] = {
         "success": True,
         "command": shell_join(command),
         "stdout_first_line": first_line,
     }
+    if include_stdout_lines:
+        result["stdout_lines"] = completed.stdout.splitlines()
+    return result
 
 
 def run_json_step(
@@ -297,6 +304,44 @@ def stream_tts_command(
     return command
 
 
+def resolve_voice_contract_script(args: argparse.Namespace) -> Path | None:
+    if args.skip_voice_contract:
+        return None
+    if args.voice_repo is None:
+        return None
+
+    script = (
+        args.voice_repo.expanduser().resolve()
+        / "scripts"
+        / "verify_whatsapp_voice_contract.sh"
+    )
+    if not script.is_file():
+        raise SystemExit(
+            f"voice WhatsApp contract verifier not found: {script}; "
+            "update the voice checkout or pass --skip-voice-contract"
+        )
+    if not os.access(script, os.X_OK):
+        raise SystemExit(f"voice WhatsApp contract verifier is not executable: {script}")
+    return script
+
+
+def voice_contract_command(
+    args: argparse.Namespace,
+    *,
+    voice_bin: str,
+    script: Path,
+) -> list[str]:
+    command = [
+        str(script),
+        "--voice-bin",
+        voice_bin,
+        "--text",
+        args.voice_contract_text,
+        "--require-daemon",
+    ]
+    return command
+
+
 def calling_control_plane_command(args: argparse.Namespace) -> list[str]:
     return [
         sys.executable,
@@ -367,6 +412,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--full-duplex-timeout", type=float, default=90.0)
     parser.add_argument("--cli-timeout", type=float, default=10.0)
     parser.add_argument("--command-text", default=DEFAULT_COMMAND_TEXT)
+    parser.add_argument("--voice-contract-text", default=DEFAULT_VOICE_CONTRACT_TEXT)
+    parser.add_argument("--voice-contract-timeout", type=float, default=240.0)
     parser.add_argument("--stream-text", default=DEFAULT_STREAM_TEXT)
     parser.add_argument("--stream-command-template")
     parser.add_argument(
@@ -380,6 +427,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voice-repo", type=Path, default=default_voice_repo())
     parser.add_argument("--webrtc-python-bin", default=os.environ.get("VOICE_WEBRTC_PYTHON"))
+    parser.add_argument("--skip-voice-contract", action="store_true")
     parser.add_argument("--skip-calling-control-plane", action="store_true")
     parser.add_argument("--skip-full-duplex", action="store_true")
     parser.add_argument(
@@ -406,6 +454,7 @@ def main() -> int:
     args = parse_args()
     voice_bin = resolve_executable(args.voice_bin, label="voice binary")
     hermes_bin = resolve_executable(args.hermes_bin, label="Hermes CLI")
+    voice_contract_script = resolve_voice_contract_script(args)
     voice_repo = resolve_voice_repo_for_full_duplex(args)
 
     temporary_home = args.hermes_home is None
@@ -431,6 +480,28 @@ def main() -> int:
             timeout=args.cli_timeout,
             env=env,
         )
+        if voice_contract_script is None:
+            checks["voice_contract"] = {
+                "success": True,
+                "skipped": True,
+                "reason": (
+                    "--skip-voice-contract was provided"
+                    if args.skip_voice_contract
+                    else "--voice-repo or VOICE_REPO was not provided"
+                ),
+            }
+        else:
+            checks["voice_contract"] = run_plain_step(
+                "voice WhatsApp contract verifier",
+                voice_contract_command(
+                    args,
+                    voice_bin=voice_bin,
+                    script=voice_contract_script,
+                ),
+                timeout=args.voice_contract_timeout,
+                env=env,
+                include_stdout_lines=True,
+            )
         checks["command_tts"] = run_json_step(
             "command TTS verifier",
             command_tts_command(args, voice_bin=voice_bin, hermes_home=hermes_home),

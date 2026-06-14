@@ -1659,6 +1659,26 @@ except Exception:
             }
         }
     }
+
+    if (-not $NoVenv) {
+        $launcherPaths = @(
+            "$InstallDir\venv\Scripts\hermes.exe",
+            "$InstallDir\venv\Scripts\hermes-gateway.exe"
+        )
+        $missingLaunchers = @($launcherPaths | Where-Object { -not (Test-Path $_) })
+        if ($missingLaunchers.Count -gt 0) {
+            Write-Warn "Hermes command launcher missing from venv; repairing editable install..."
+            & $UvCmd pip install -e .
+            if ($LASTEXITCODE -ne 0) {
+                throw "Launcher repair failed. Run manually: cd '$InstallDir'; uv pip install -e ."
+            }
+            $stillMissing = @($launcherPaths | Where-Object { -not (Test-Path $_) })
+            if ($stillMissing.Count -gt 0) {
+                throw "Launcher repair completed but still missing: $($stillMissing -join ', ')"
+            }
+            Write-Success "Hermes command launchers repaired"
+        }
+    }
     
     Pop-Location
     
@@ -1991,11 +2011,55 @@ function Install-NodeDeps {
         }
     }
 
+    function _Run-NpmBuild([string]$label, [string]$buildDir, [string]$logPath, [string]$npmPath) {
+        Push-Location $buildDir
+        $prevEAP = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $npmPath run build 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = $prevEAP
+            if ($code -eq 0) {
+                Write-Success "$label built"
+                Remove-Item -Force $logPath -ErrorAction SilentlyContinue
+                return $true
+            }
+            Write-Warn "$label build failed -- exit code $code"
+            if (Test-Path $logPath) {
+                $errText = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
+                if ($errText) {
+                    $snippet = if ($errText.Length -gt 1200) { $errText.Substring(0, 1200) + "..." } else { $errText }
+                    Write-Info "  npm output:"
+                    foreach ($line in $snippet -split "`n") {
+                        Write-Host "    $line" -ForegroundColor DarkGray
+                    }
+                    Write-Info "  Full log: $logPath"
+                    Show-NpmCertHint $errText | Out-Null
+                }
+            }
+            Write-Info "Run manually later: cd `"$buildDir`"; npm run build"
+            return $false
+        } catch {
+            if ($prevEAP) { $ErrorActionPreference = $prevEAP }
+            Write-Warn "$label build could not be launched: $_"
+            return $false
+        } finally {
+            Pop-Location
+        }
+    }
+
     # Browser tools
     if (Test-Path "$InstallDir\package.json") {
         Write-Info "Installing Node.js dependencies (browser tools)..."
         $browserLog = "$env:TEMP\hermes-npm-browser-$(Get-Random).log"
         $browserNpmOk = _Run-NpmInstall "Browser tools" $InstallDir $browserLog $npmExe
+
+        $webDir = "$InstallDir\web"
+        if ($browserNpmOk -and (Test-Path "$webDir\package.json")) {
+            Write-Info "Building dashboard web UI..."
+            $webLog = "$env:TEMP\hermes-npm-web-build-$(Get-Random).log"
+            [void](_Run-NpmBuild "Dashboard web UI" $webDir $webLog $npmExe)
+        }
 
         # Install Playwright Chromium (mirrors scripts/install.sh behaviour for
         # Linux).  Without this, tools/browser_tool.py::check_browser_requirements

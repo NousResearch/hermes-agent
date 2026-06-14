@@ -343,6 +343,38 @@ class TestBackup:
             pid_files = [n for n in names if n.endswith(".pid")]
             assert pid_files == []
 
+    def test_excludes_update_audits(self, tmp_path, monkeypatch):
+        """Backup does NOT include the daily auto-update audit folders.
+
+        Regression for 2x/day backup growth: the pre-update zip is written
+        *inside* update-audits/daily-auto-*/, so without this exclusion each
+        morning's backup bundles all previous mornings' zips.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        # Simulate yesterday's and today's pre-update zips
+        audits = hermes_home / "update-audits"
+        (audits / "daily-auto-2026-06-13").mkdir(parents=True)
+        (audits / "daily-auto-2026-06-13" / "pre-update.zip").write_bytes(b"x" * 64)
+        (audits / "daily-auto-2026-06-14").mkdir(parents=True)
+        (audits / "daily-auto-2026-06-14" / "pre-update.zip").write_bytes(b"y" * 64)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            audit_files = [n for n in names if "update-audits" in n]
+            assert audit_files == [], f"update-audits leaked into backup: {audit_files}"
+
     def test_default_output_path(self, tmp_path, monkeypatch):
         """When no output path given, zip goes to ~/hermes-backup-*.zip."""
         hermes_home = tmp_path / ".hermes"

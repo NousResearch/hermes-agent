@@ -42,6 +42,11 @@ _EXCLUDED_DIRS = {
     "backups",          # prior auto-backups — don't nest backups exponentially
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
+    "update-audits",    # daily-update audit folders — same recursion hazard as
+                        # "backups"; the daily auto-update writes a pre-update
+                        # zip *inside* update-audits/daily-auto-*/, and if that
+                        # folder is scanned, each morning's backup includes all
+                        # previous mornings' zips (2×/day growth).
 }
 
 # File-name suffixes to skip

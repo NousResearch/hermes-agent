@@ -211,12 +211,30 @@ class WhatsAppBehaviorMixin:
             )
         return compiled
 
+    @staticmethod
+    def _whatsapp_id_variants(value: Optional[str]) -> set[str]:
+        """Return comparable WhatsApp JID variants for Baileys device IDs.
+
+        Baileys can surface the bot's own multi-device JID with a device
+        suffix (``15551230000:10@s.whatsapp.net`` / normalized here to
+        ``15551230000@10@s.whatsapp.net``), while quoted-message participants
+        often arrive without that suffix (``15551230000@s.whatsapp.net``).
+        Include both forms so reply-to-bot checks don't depend on which shape
+        a particular field used.
+        """
+        normalized = WhatsAppBehaviorMixin._normalize_whatsapp_id(value)
+        if not normalized:
+            return set()
+        variants = {normalized}
+        parts = normalized.split("@")
+        if len(parts) > 2 and parts[0] and parts[-1]:
+            variants.add(f"{parts[0]}@{parts[-1]}")
+        return variants
+
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
-            normalized = self._normalize_whatsapp_id(candidate)
-            if normalized:
-                bot_ids.add(normalized)
+            bot_ids.update(self._whatsapp_id_variants(candidate))
         return bot_ids
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:

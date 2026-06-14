@@ -208,15 +208,22 @@ class Mem0MemoryProvider(MemoryProvider):
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
         self._agent_id = self._config.get("agent_id", "hermes")
+        self._app_id = self._config.get("app_id", "")
         self._rerank = self._config.get("rerank", True)
 
     def _read_filters(self) -> Dict[str, Any]:
-        """Filters for search/get_all — scoped to user only for cross-session recall."""
-        return {"user_id": self._user_id}
+        """Filters for search/get_all — scoped to user + app for cross-session recall."""
+        filters = {"user_id": self._user_id}
+        if self._app_id:
+            filters["app_id"] = self._app_id
+        return filters
 
     def _write_filters(self) -> Dict[str, Any]:
-        """Filters for add — scoped to user + agent for attribution."""
-        return {"user_id": self._user_id, "agent_id": self._agent_id}
+        """Filters for add — scoped to user + agent + app for attribution."""
+        filters = {"user_id": self._user_id, "agent_id": self._agent_id}
+        if self._app_id:
+            filters["app_id"] = self._app_id
+        return filters
 
     @staticmethod
     def _unwrap_results(response: Any) -> list:
@@ -230,7 +237,7 @@ class Mem0MemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         return (
             "# Mem0 Memory\n"
-            f"Active. User: {self._user_id}.\n"
+            f"Active. User: {self._user_id}, App: {self._app_id or '(none)'}.\n"
             "Use mem0_search to find memories, mem0_conclude to store facts, "
             "mem0_profile for a full overview."
         )

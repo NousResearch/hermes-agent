@@ -300,3 +300,11 @@ python -m pytest tests/gateway/ -q -o 'addopts='
 - No API server transport rewrite yet
 - No shared approval/session executor yet
 - No dashboard/control-plane contract changes yet
+
+## Next Migration Seam (Phase 2)
+
+To safely continue the unified router migration without breaking SSE streams, approval waits, or session continuity headers, the next implementer must adhere to this strict sequence:
+
+1. **Extract API-server request parsing:** Move the parsing logic out of `_handle_chat_completions`, `_handle_session_chat`, and `_handle_runs` into pure, testable helpers (similar to the `/v1/responses` slice).
+2. **Normalize Request Models:** Converge `NormalizedSessionChatRequest`, `NormalizedRunRequest`, and `NormalizedChatCompletionsRequest` into a single, cohesive internal request model inside `gateway/ingress.py`.
+3. **Shared Executor Layer:** Only after parsing and normalization are fully shared and proven green, attempt to converge on a shared router/executor layer that safely handles the gateway's active-session queue.

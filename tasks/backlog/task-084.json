@@ -1,0 +1,14 @@
+{
+  "id": "task-084",
+  "title": "Implement architecture artifact reader",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Planning Engine",
+  "summary": "Read PROJECT, DOMAIN, WORKFLOWS, DASHBOARD, METRICS, APPROVALS, and AGENTS artifacts for planning.",
+  "acceptanceCriteria": [
+    "Reader supports root and docs directory layouts",
+    "Reader reports missing architecture artifacts",
+    "Reader normalizes artifact content for compiler input",
+    "Reader has tests with temporary project fixtures"
+  ]
+}

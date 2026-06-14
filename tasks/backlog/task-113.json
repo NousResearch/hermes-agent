@@ -1,0 +1,14 @@
+{
+  "id": "task-113",
+  "title": "Add Kalshi dashboard metrics for work graph execution",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Kalshi Work Graph Expansion",
+  "summary": "Expose Kalshi experiment history, promotion rate, bucket performance, evidence quality, and portfolio performance from work graph execution.",
+  "acceptanceCriteria": [
+    "Metrics map to Kalshi graph nodes",
+    "Metrics include promotion rate and evidence quality",
+    "Metrics include bucket and portfolio performance",
+    "Metrics feed dashboard panel contracts"
+  ]
+}

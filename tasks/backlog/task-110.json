@@ -1,0 +1,14 @@
+{
+  "id": "task-110",
+  "title": "Model Kalshi research-to-portfolio work graph",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Kalshi Work Graph Expansion",
+  "summary": "Represent Kalshi research, evidence collection, validation, experiment, promotion decision, and portfolio assignment as a work graph.",
+  "acceptanceCriteria": [
+    "Graph includes research-to-portfolio workflow nodes",
+    "Graph includes dependencies and approvals",
+    "Graph includes agent assignments",
+    "Graph can emit dashboard metrics"
+  ]
+}

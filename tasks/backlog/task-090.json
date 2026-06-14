@@ -1,0 +1,14 @@
+{
+  "id": "task-090",
+  "title": "Add execution queue builder",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Graph Execution Orchestration",
+  "summary": "Build an execution queue from dependency-resolved work graph nodes.",
+  "acceptanceCriteria": [
+    "Queue includes executable nodes only",
+    "Queue preserves dependency order",
+    "Queue includes agent assignment and approval metadata",
+    "Queue supports dry-run planning"
+  ]
+}

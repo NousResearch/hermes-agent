@@ -1,0 +1,14 @@
+{
+  "id": "task-111",
+  "title": "Add evidence quality and validation nodes",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Kalshi Work Graph Expansion",
+  "summary": "Add Kalshi-specific evidence quality and validation nodes to the work graph model.",
+  "acceptanceCriteria": [
+    "Evidence quality nodes track source coverage and confidence",
+    "Validation nodes track pass/fail criteria",
+    "Nodes feed promotion decision readiness",
+    "Nodes feed dashboard metrics"
+  ]
+}

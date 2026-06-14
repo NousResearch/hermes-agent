@@ -1,0 +1,14 @@
+{
+  "id": "task-085",
+  "title": "Build architecture-to-work-graph compiler",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Planning Engine",
+  "summary": "Compile architecture artifacts into an executable work graph.",
+  "acceptanceCriteria": [
+    "Compiler creates project, workflow, task, dependency, approval, metric, and agent assignment nodes",
+    "Compiler identifies missing work",
+    "Compiler preserves source artifact traceability",
+    "Compiler emits a valid work graph"
+  ]
+}

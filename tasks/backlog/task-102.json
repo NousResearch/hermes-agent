@@ -1,0 +1,14 @@
+{
+  "id": "task-102",
+  "title": "Add portfolio scanner and aggregate model",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Portfolio Control Plane",
+  "summary": "Aggregate project health, architecture score, work graph status, blockers, approvals, and runtime usage across all workspace projects.",
+  "acceptanceCriteria": [
+    "Scanner aggregates known workspace projects",
+    "Aggregate includes architecture score and blockers",
+    "Aggregate includes approvals and runtime usage",
+    "Model has tests"
+  ]
+}

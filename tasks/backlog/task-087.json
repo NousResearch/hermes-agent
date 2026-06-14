@@ -1,0 +1,14 @@
+{
+  "id": "task-087",
+  "title": "Add missing-work detection",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Planning Engine",
+  "summary": "Detect missing tasks, approvals, validation rules, metrics, and agent assignments during graph compilation.",
+  "acceptanceCriteria": [
+    "Missing work is represented as graph findings",
+    "Findings include severity and recommended fix",
+    "Findings can generate roadmap items",
+    "Findings are visible in dashboard data"
+  ]
+}

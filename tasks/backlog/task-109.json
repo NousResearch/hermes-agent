@@ -1,0 +1,14 @@
+{
+  "id": "task-109",
+  "title": "Add autonomous review safety and approval policy",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Autonomous Review Loops",
+  "summary": "Prevent autonomous review loops from making high-risk changes without human approval.",
+  "acceptanceCriteria": [
+    "Policy distinguishes read-only, proposal, and write modes",
+    "High-risk writes require approval",
+    "Autonomous changes are audited",
+    "Policy is enforced by tests"
+  ]
+}

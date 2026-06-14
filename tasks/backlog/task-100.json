@@ -1,0 +1,14 @@
+{
+  "id": "task-100",
+  "title": "Add execution progress and validation panels",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Work Graph Dashboards",
+  "summary": "Create dashboard panel contracts for graph execution progress and validation outcomes.",
+  "acceptanceCriteria": [
+    "Panel shows queued, running, completed, failed, and blocked counts",
+    "Panel shows validation pass and fail counts",
+    "Panel links failures to artifacts and errors",
+    "Panel can be generated from graph state"
+  ]
+}

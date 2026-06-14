@@ -1,0 +1,14 @@
+{
+  "id": "task-093",
+  "title": "Add graph execution result ingestion",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Graph Execution Orchestration",
+  "summary": "Ingest runtime execution results back into work graph state.",
+  "acceptanceCriteria": [
+    "Execution results update graph node status",
+    "Artifacts link to graph nodes",
+    "Validation results update dashboard data",
+    "Failures preserve retry and error metadata"
+  ]
+}

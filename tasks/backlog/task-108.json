@@ -1,0 +1,14 @@
+{
+  "id": "task-108",
+  "title": "Add continuous architecture score history",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Autonomous Review Loops",
+  "summary": "Track architecture score history over time for each project.",
+  "acceptanceCriteria": [
+    "Score records include timestamp and review reference",
+    "History supports latest and trend queries",
+    "History feeds architecture and portfolio dashboards",
+    "Persistence has tests"
+  ]
+}

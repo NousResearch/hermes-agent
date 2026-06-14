@@ -1,0 +1,14 @@
+{
+  "id": "task-106",
+  "title": "Add scheduled architecture review contract",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Autonomous Review Loops",
+  "summary": "Define scheduled project review behavior for continuous architecture governance.",
+  "acceptanceCriteria": [
+    "Contract defines schedule, project scope, and outputs",
+    "Contract supports nightly review loops",
+    "Contract records review artifacts and score history",
+    "Contract includes safety limits"
+  ]
+}

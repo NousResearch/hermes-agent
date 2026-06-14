@@ -1,0 +1,14 @@
+{
+  "id": "task-096",
+  "title": "Add assignment confidence and fallback behavior",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Intelligent Agent Assignment",
+  "summary": "Represent assignment confidence and fallback behavior when no ideal agent exists.",
+  "acceptanceCriteria": [
+    "Assignments include confidence score",
+    "Low confidence assignments require review",
+    "Fallback agent behavior is explicit",
+    "Unassignable work is reported as blocked"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "task-092",
+  "title": "Add validation rule generation",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Graph Execution Orchestration",
+  "summary": "Generate validation rules for work graph nodes from architecture artifacts.",
+  "acceptanceCriteria": [
+    "Rules can be generated for tasks and workflows",
+    "Rules reference source architecture artifacts",
+    "Validation failures produce structured results",
+    "Rules are testable without runtime execution"
+  ]
+}

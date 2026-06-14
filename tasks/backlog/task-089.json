@@ -1,0 +1,14 @@
+{
+  "id": "task-089",
+  "title": "Add dependency resolver",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Graph Execution Orchestration",
+  "summary": "Resolve work graph dependencies into executable layers.",
+  "acceptanceCriteria": [
+    "Resolver returns dependency-ordered work",
+    "Resolver detects cycles",
+    "Resolver identifies blocked nodes",
+    "Resolver has tests"
+  ]
+}

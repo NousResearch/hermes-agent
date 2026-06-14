@@ -1,0 +1,14 @@
+{
+  "id": "task-101",
+  "title": "Add agent assignment dashboard panels",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Work Graph Dashboards",
+  "summary": "Create dashboard panel contracts for agent assignments and runtime usage.",
+  "acceptanceCriteria": [
+    "Panel shows assigned work by agent kind",
+    "Panel shows confidence and fallback assignments",
+    "Panel shows runtime success, failures, retries, cost, latency, and tokens",
+    "Panel degrades when runtime usage data is missing"
+  ]
+}

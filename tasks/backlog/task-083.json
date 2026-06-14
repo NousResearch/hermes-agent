@@ -1,0 +1,14 @@
+{
+  "id": "task-083",
+  "title": "Add work graph JSON serialization contract",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Work Graph Schema",
+  "summary": "Define deterministic `workgraph.json` serialization and validation behavior.",
+  "acceptanceCriteria": [
+    "Serializer emits stable JSON",
+    "Deserializer validates required graph fields",
+    "Invalid graphs return structured errors",
+    "Contract is covered by tests"
+  ]
+}

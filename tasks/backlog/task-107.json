@@ -1,0 +1,14 @@
+{
+  "id": "task-107",
+  "title": "Add review loop roadmap update behavior",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Autonomous Review Loops",
+  "summary": "Allow autonomous reviews to propose roadmap updates from missing documents, workflows, dashboards, and approvals.",
+  "acceptanceCriteria": [
+    "Loop proposes roadmap updates without overwriting user edits",
+    "Updates preserve review traceability",
+    "High-risk updates require approval",
+    "Behavior has tests"
+  ]
+}

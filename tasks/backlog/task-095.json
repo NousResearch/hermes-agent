@@ -1,0 +1,14 @@
+{
+  "id": "task-095",
+  "title": "Add task-to-agent assignment rules",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Intelligent Agent Assignment",
+  "summary": "Assign graph nodes to appropriate agents based on capability, risk, and validation needs.",
+  "acceptanceCriteria": [
+    "Research work maps to research agents",
+    "Testing work maps to validation or testing agents",
+    "Documentation work maps to documentation agents",
+    "Assignments include reason and confidence"
+  ]
+}

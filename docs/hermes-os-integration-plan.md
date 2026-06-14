@@ -401,3 +401,154 @@ Examples:
 - `task-077`: Add runtime artifact capture and ingestion.
 - `task-078`: Add runtime timeout, retry, and failure policy.
 - `task-079`: Add live delegation integration tests with dry-run fallback.
+
+## Hermes OS v3 Control Plane Roadmap
+
+Hermes OS v3 shifts the center of gravity from architecture review alone to a control plane that compiles architecture into executable work graphs.
+
+North star:
+
+```text
+Idea
+  -> Architecture
+  -> Specification
+  -> Work Graph
+  -> Execution
+  -> Validation
+  -> Dashboard
+  -> Continuous Improvement
+```
+
+### Work Graph Model
+
+The work graph replaces flat task lists. It models:
+
+- Project.
+- Epics.
+- Workflows.
+- Tasks.
+- Subtasks.
+- Dependencies.
+- Approvals.
+- Artifacts.
+- Metrics.
+- Agent assignments.
+- Execution results.
+- Validation results.
+
+### `hermes plan`
+
+`hermes plan` reads architecture artifacts and emits `workgraph.json`.
+
+Inputs:
+
+- `PROJECT.md`
+- `DOMAIN.md`
+- `WORKFLOWS.md`
+- `DASHBOARD.md`
+- `METRICS.md`
+- `APPROVALS.md`
+- `AGENTS.md`
+
+Responsibilities:
+
+- Read architecture.
+- Generate work graph.
+- Identify missing work.
+- Generate execution order.
+- Assign agents.
+- Generate validation rules.
+- Generate approvals.
+- Generate dashboard metrics.
+
+### Execution Evolution
+
+Execution moves from task-by-task execution to:
+
+```text
+Work Graph
+  -> Dependency Resolution
+  -> Execution Queue
+  -> Agent Assignment
+  -> Validation
+  -> Artifacts
+  -> Dashboard Update
+```
+
+### Dashboard Evolution
+
+Add:
+
+- Architecture dashboard: missing documents, score, workflow completeness, approval coverage, governance status.
+- Work graph dashboard: epics, tasks, dependencies, blocked work, execution progress, agent assignments, approval queue.
+- Agent dashboard: availability, success, failures, retries, cost, latency, token usage.
+- Portfolio dashboard: all projects, all work, all reviews, all approvals, all agents.
+
+### Cross-Project Control Plane
+
+`hermes portfolio` gives one screen for every project and reports:
+
+- Architecture score.
+- Task health.
+- Execution status.
+- Blockers.
+- Approvals.
+- Runtime usage.
+
+### Phase 27 - Work Graph Schema
+
+- `task-080`: Define work graph core schema.
+- `task-081`: Add dependency and execution-order model.
+- `task-082`: Add validation result and execution result schemas.
+- `task-083`: Add work graph JSON serialization contract.
+
+### Phase 28 - Planning Engine
+
+- `task-084`: Implement architecture artifact reader.
+- `task-085`: Build architecture-to-work-graph compiler.
+- `task-086`: Add `hermes plan` CLI entrypoint.
+- `task-087`: Add missing-work detection.
+- `task-088`: Add work graph persistence.
+
+### Phase 29 - Graph Execution Orchestration
+
+- `task-089`: Add dependency resolver.
+- `task-090`: Add execution queue builder.
+- `task-091`: Add graph-aware execution gate integration.
+- `task-092`: Add validation rule generation.
+- `task-093`: Add graph execution result ingestion.
+
+### Phase 30 - Intelligent Agent Assignment
+
+- `task-094`: Add agent capability model.
+- `task-095`: Add task-to-agent assignment rules.
+- `task-096`: Add assignment confidence and fallback behavior.
+- `task-097`: Add runtime usage tracking for assignments.
+
+### Phase 31 - Work Graph Dashboards
+
+- `task-098`: Add work graph dashboard data model.
+- `task-099`: Add dependency and blocked-work panels.
+- `task-100`: Add execution progress and validation panels.
+- `task-101`: Add agent assignment dashboard panels.
+
+### Phase 32 - Portfolio Control Plane
+
+- `task-102`: Add portfolio scanner and aggregate model.
+- `task-103`: Add `hermes portfolio` CLI entrypoint.
+- `task-104`: Add portfolio dashboard contract.
+- `task-105`: Add cross-project blocker and approval summaries.
+
+### Phase 33 - Autonomous Review Loops
+
+- `task-106`: Add scheduled architecture review contract.
+- `task-107`: Add review loop roadmap update behavior.
+- `task-108`: Add continuous architecture score history.
+- `task-109`: Add autonomous review safety and approval policy.
+
+### Phase 34 - Kalshi Work Graph Expansion
+
+- `task-110`: Model Kalshi research-to-portfolio work graph.
+- `task-111`: Add evidence quality and validation nodes.
+- `task-112`: Add experiment and promotion decision graph nodes.
+- `task-113`: Add Kalshi dashboard metrics for work graph execution.

@@ -1,0 +1,14 @@
+{
+  "id": "task-091",
+  "title": "Add graph-aware execution gate integration",
+  "status": "backlog",
+  "priority": "high",
+  "phase": "Graph Execution Orchestration",
+  "summary": "Apply architecture and approval gates to work graph execution.",
+  "acceptanceCriteria": [
+    "Gate checks node prerequisites",
+    "Gate blocks nodes missing approvals",
+    "Gate records blocked-work reasons",
+    "Gate integrates with dashboard panel data"
+  ]
+}

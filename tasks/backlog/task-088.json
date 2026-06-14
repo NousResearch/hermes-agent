@@ -1,0 +1,14 @@
+{
+  "id": "task-088",
+  "title": "Add work graph persistence",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Planning Engine",
+  "summary": "Persist compiled work graphs and graph history for projects.",
+  "acceptanceCriteria": [
+    "Compiled graph can be saved as workgraph.json",
+    "Graph history can be stored under Hermes records",
+    "Latest graph can be retrieved",
+    "Persistence has tests"
+  ]
+}

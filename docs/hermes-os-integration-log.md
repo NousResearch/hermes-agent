@@ -23,3 +23,5 @@
 - Implemented tasks `task-023` through `task-050` with a global constitution, architecture review contracts, grill-me contracts, project document templates, workflow/dashboard gates, agent-boundary policies, artifact ingestion validation, runtime delegation readiness checks, and existing-project review targets.
 - Generated operational architecture-first backlog tasks `task-051` through `task-079` covering CLI implementation, project scanners, generated docs, dashboard panels, execution gates, persistence, and real Official Hermes Agent invocation.
 - Implemented tasks `task-051` through `task-079` with an architect review CLI entrypoint, workspace project scanners, safe missing-doc generation, review artifacts, dashboard panel contracts, execution gates, local persistence, and real `hermes-agent --oneshot` command assembly with dry-run fallback.
+- Reviewed Hermes OS v3 Control Plane + Governance + Work Graph Architecture roadmap.
+- Updated the plan around the new Work Graph Compiler north star and generated backlog tasks `task-080` through `task-113`.

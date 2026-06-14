@@ -1,0 +1,14 @@
+{
+  "id": "task-099",
+  "title": "Add dependency and blocked-work panels",
+  "status": "backlog",
+  "priority": "medium",
+  "phase": "Work Graph Dashboards",
+  "summary": "Create dashboard panel contracts for dependency status and blocked work.",
+  "acceptanceCriteria": [
+    "Panel shows blocked nodes and reasons",
+    "Panel shows dependency chains",
+    "Panel highlights cycles or missing approvals",
+    "Panel links blocked work to remediation tasks"
+  ]
+}

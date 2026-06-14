@@ -140,6 +140,19 @@ def finalize_turn(
     # can replay assistant("(empty)") / recovery nudges and fall into the
     # same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
+
+    # Some recovery/fallback paths return a real final_response without adding
+    # a closing assistant message to the transcript. If persisted as-is, the
+    # durable session can end at a tool/user message even though the caller saw
+    # a completed assistant response. Close the durable turn at the source.
+    if final_response and not interrupted:
+        try:
+            _tail_role = messages[-1].get("role") if messages else None
+        except Exception:
+            _tail_role = None
+        if _tail_role != "assistant":
+            messages.append({"role": "assistant", "content": final_response})
+
     agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────

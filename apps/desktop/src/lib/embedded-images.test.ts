@@ -32,4 +32,35 @@ describe('extractEmbeddedImages', () => {
     expect(result.cleanedText).toBe('first  mid  tail')
     expect(result.images).toEqual([SAMPLE_PNG_DATA_URL, second])
   })
+
+  it('caps extracted images and removes overflow data URLs from visible text', () => {
+    const urls = Array.from({ length: 4 }, (_, index) => `data:image/png;base64,${String(index).repeat(96)}`)
+    const result = extractEmbeddedImages(urls.join(' '), { maxImages: 2 })
+
+    expect(result.images).toEqual(urls.slice(0, 2))
+    expect(result.cleanedText).toBe('')
+  })
+
+  it('leaves short invalid data:image URLs untouched', () => {
+    const short = 'data:image/png;base64,AAAA'
+
+    expect(extractEmbeddedImages(`show ${short}`)).toEqual({ cleanedText: `show ${short}`, images: [] })
+  })
+
+  it('handles multi-megabyte image data URLs without recursive regex overflow', () => {
+    const large = 'data:image/jpeg;base64,' + 'A'.repeat(6_000_000)
+    const result = extractEmbeddedImages(`before ${large} after`)
+
+    expect(result.cleanedText).toBe('before  after')
+    expect(result.images).toHaveLength(1)
+    expect(result.images[0]).toHaveLength(large.length)
+  })
+
+  it('handles multi-megabyte JSON-wrapped image_url data URLs', () => {
+    const large = 'data:image/jpeg;base64,' + 'A'.repeat(6_000_000)
+    const result = extractEmbeddedImages(`before {"type":"image_url","image_url":{"url":"${large}"}} after`)
+
+    expect(result.cleanedText).toBe('before  after')
+    expect(result.images).toEqual([large])
+  })
 })

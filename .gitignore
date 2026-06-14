@@ -33,6 +33,8 @@ __pycache__/
 compose.hermes.local.yml
 export*
 !scripts/windows/export-hermes-host-migration.ps1
+!scripts/export_training_corpus.py
+!scripts/export_gguf.ps1
 __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/

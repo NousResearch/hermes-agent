@@ -24,7 +24,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
-$LlamaScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1")
+$LlamaScript = Resolve-Path (Join-Path $ScriptDir "start-llama-secretary.ps1")
 $GatewayScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-gateway.ps1")
 $StackScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-stack.ps1")
 
@@ -196,7 +196,7 @@ if (-not $GatewayOnly) {
             $eq = $line.IndexOf('=')
             if ($eq -lt 1) { return }
             $key = $line.Substring(0, $eq).Trim()
-            if ($key -notin @('HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_SERVER_EXE')) { return }
+            if ($key -notin @('HERMES_LLAMA_MODEL', 'HERMES_LLAMA_ALIAS', 'HERMES_LLAMA_MODEL_PATH', 'HERMES_LLAMA_SERVER_EXE', 'HERMES_LLAMA_CTX', 'HERMES_LLAMA_GPU_LAYERS')) { return }
             $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
             if ($value) { $llamaEnv[$key] = $value }
         }
@@ -204,7 +204,7 @@ if (-not $GatewayOnly) {
 
     $registered += Register-HermesScheduledTask `
         -TaskName $LlamaTaskName `
-        -Description "Auto-start llama.cpp fallback (RTX 3060, port 8080, 64K context) at logon" `
+        -Description "Auto-start llama.cpp secretary (HF -hf, port 8080, 64K context) at logon" `
         -ScriptPath $LlamaScript `
         -Env $llamaEnv `
         -DelaySeconds 10

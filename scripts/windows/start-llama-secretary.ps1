@@ -1,5 +1,5 @@
 # Local secretary runtime — llama.cpp primary launcher (RTX 3060 profile)
-# Starts Qwen3.5-9B via HuggingFace repo id with --jinja for tool calling.
+# Loads Huihui Gemma 4 12B via llama-server -hf/--hf-repo with --jinja for tool calling.
 
 param(
     [switch]$SkipFallbackOnFailure,
@@ -17,7 +17,7 @@ function Import-HermesDotEnvKeys {
         $eq = $line.IndexOf('=')
         if ($eq -lt 1) { return }
         $key = $line.Substring(0, $eq).Trim().Trim([char]0xFEFF)
-        if ($key -notlike 'HERMES_LLAMA_*') { return }
+        if ($key -notlike 'HERMES_LLAMA_*' -and $key -notin @('HF_HUB_CACHE', 'HF_HOME')) { return }
         if (-not [string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$key" -ErrorAction SilentlyContinue).Value)) { return }
         $value = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
         if ($value) { Set-Item -Path "Env:$key" -Value $value }
@@ -44,9 +44,15 @@ function Test-HelpFlag {
 
 Import-HermesDotEnvKeys
 
+if (-not $env:HF_HUB_CACHE) {
+    $env:HF_HUB_CACHE = "H:\elt_data\hf-cache"
+}
+New-Item -ItemType Directory -Path $env:HF_HUB_CACHE -Force | Out-Null
+
 $ServerExe = Resolve-Default "HERMES_LLAMA_SERVER_EXE" (Join-Path $env:LOCALAPPDATA "Programs\llama-turboquant\bin\llama-server.exe")
-$ModelRepo = Resolve-Default "HERMES_LLAMA_MODEL" "unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL"
-$Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "qwen35-9b-secretary"
+$ModelRepo = Resolve-Default "HERMES_LLAMA_MODEL" "mradermacher/Huihui-gemma-4-12B-it-abliterated-GGUF:Q4_K_M"
+$ModelPath = Resolve-Default "HERMES_LLAMA_GGUF_PATH" ""
+$Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "huihui-gemma-4-12b"
 $HostName = Resolve-Default "HERMES_LLAMA_HOST" "127.0.0.1"
 $Port = [int](Resolve-Default "HERMES_LLAMA_PORT" "8080")
 $Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "65536")
@@ -97,11 +103,13 @@ function Build-ServerArgs {
         [bool]$IncludeCache
     )
     $args = @()
-    if ($supportsHfRepo) {
+    if ($ModelPath -and (Test-Path -LiteralPath $ModelPath)) {
+        $args += @("-m", $ModelPath)
+    } elseif ($supportsHfRepo) {
         $hfFlag = if ($supportsHfRepoLong) { "--hf-repo" } else { "-hf" }
         $args += @($hfFlag, $ModelRepo)
     } else {
-        throw "This llama-server build lacks -hf/--hf-repo; cannot load $ModelRepo"
+        throw "Set HERMES_LLAMA_GGUF_PATH to a local .gguf or use a llama-server build with -hf/--hf-repo (model=$ModelRepo)"
     }
     $args += @(
         "--alias", $Alias,
@@ -143,6 +151,7 @@ function Start-LlamaAttempt {
         [bool]$IncludeCache
     )
     $attemptArgs = Build-ServerArgs -GpuLayers $GpuLayers -IncludeSpec $IncludeSpec -IncludeCache $IncludeCache
+    $env:HF_HOME = if ($env:HF_HOME) { $env:HF_HOME } else { $env:HF_HUB_CACHE }
     $proc = Start-Process `
         -FilePath $ServerExe `
         -ArgumentList $attemptArgs `

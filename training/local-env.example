@@ -1,0 +1,10 @@
+# Copy to training/local.env and fill in local paths. Do not commit local.env.
+
+# HF checkpoint or merged HF model that corresponds to the currently served GGUF.
+HERMES_OPERATOR_BASE_MODEL=<HF_CHECKPOINT_FOR_CURRENT_GGUF>
+
+# Current served GGUF, used only as a reference and final replacement target.
+HERMES_OPERATOR_CURRENT_GGUF=<CURRENT_GGUF_PATH>
+
+# llama.cpp checkout used by scripts/export_gguf.ps1.
+LLAMA_CPP_ROOT=<LLAMA_CPP_CHECKOUT>

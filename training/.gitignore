@@ -1,0 +1,9 @@
+corpora/
+runs/
+.prepared/
+local.env
+local_*.yaml
+*.safetensors
+*.gguf
+*.pt
+*.bin

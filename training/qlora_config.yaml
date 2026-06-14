@@ -1,0 +1,56 @@
+# Axolotl QLoRA template for the redacted Hermes operator SFT corpus.
+#
+# Replace base_model with the HF checkpoint that corresponds to the GGUF you
+# currently serve locally. Train/merge in HF format first, then export a new
+# GGUF with scripts/export_gguf.ps1.
+
+base_model: Qwen/Qwen2.5-7B-Instruct
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+is_llama_derived_model: false
+
+load_in_4bit: true
+strict: false
+
+datasets:
+  - path: training/corpora/hermes_operator_sft.jsonl
+    type: chat_template
+    field_messages: messages
+    message_field_role: role
+    message_field_content: content
+
+chat_template: tokenizer_default
+dataset_prepared_path: training/.prepared/hermes_operator
+output_dir: training/runs/hermes-operator-qlora
+
+sequence_len: 8192
+sample_packing: true
+pad_to_sequence_len: true
+
+adapter: qlora
+lora_model_dir:
+lora_r: 32
+lora_alpha: 64
+lora_dropout: 0.05
+lora_target_linear: true
+
+gradient_accumulation_steps: 8
+micro_batch_size: 1
+num_epochs: 2
+optimizer: paged_adamw_8bit
+lr_scheduler: cosine
+learning_rate: 0.00015
+warmup_ratio: 0.03
+weight_decay: 0.0
+
+bf16: auto
+tf32: true
+gradient_checkpointing: true
+
+logging_steps: 10
+evals_per_epoch: 2
+saves_per_epoch: 2
+save_total_limit: 3
+
+special_tokens:
+  pad_token: "<|endoftext|>"

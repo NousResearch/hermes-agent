@@ -69,7 +69,10 @@ if ($DelaySeconds -gt 0) {
     Start-Sleep -Seconds $DelaySeconds
 }
 
-$llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1"
+$llamaScript = Join-Path $ScriptDir "start-llama-secretary.ps1"
+if (-not (Test-Path -LiteralPath $llamaScript)) {
+    $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1"
+}
 if (-not (Test-Path -LiteralPath $llamaScript)) {
     $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback.ps1"
 }

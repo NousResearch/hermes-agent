@@ -1,0 +1,45 @@
+# Axolotl DPO template for correcting failed Hermes operator responses.
+#
+# Use after SFT only when you have reviewed preference pairs in
+# training/dpo_seed.jsonl or another redacted DPO file.
+
+base_model: training/runs/hermes-operator-qlora/merged
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+datasets:
+  - path: training/corpora/hermes_operator_dpo.jsonl
+    type: chat_template
+    field_prompt: prompt
+    field_chosen: chosen
+    field_rejected: rejected
+
+chat_template: tokenizer_default
+output_dir: training/runs/hermes-operator-dpo
+
+sequence_len: 8192
+sample_packing: false
+
+adapter: lora
+lora_model_dir:
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_linear: true
+
+rl: dpo
+beta: 0.1
+micro_batch_size: 1
+gradient_accumulation_steps: 8
+num_epochs: 1
+learning_rate: 0.00001
+optimizer: adamw_torch
+lr_scheduler: cosine
+warmup_ratio: 0.03
+
+bf16: auto
+tf32: true
+gradient_checkpointing: true
+
+logging_steps: 5
+saves_per_epoch: 1

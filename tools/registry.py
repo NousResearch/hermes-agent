@@ -81,11 +81,13 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        "override_protected",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 override_protected=False):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -104,6 +106,10 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        # True for explicit plugin/user replacements.  Prevents a later
+        # built-in import from silently re-overwriting the override when plugin
+        # discovery happened first and builtin discovery runs afterward.
+        self.override_protected = bool(override_protected)
 
 
 # ---------------------------------------------------------------------------
@@ -252,10 +258,21 @@ class ToolRegistry:
         replace an existing built-in tool implementation (e.g. swap the
         default browser tool for a headed-Chrome CDP backend). Without it,
         registrations that would shadow an existing tool from a different
-        toolset are rejected to prevent accidental overwrites.
+        toolset are rejected to prevent accidental overwrites. Once an
+        explicit override lands, later non-override registrations for the same
+        name are rejected too; this preserves plugin override semantics even
+        when plugin discovery happens before built-in discovery.
         """
         with self._lock:
             existing = self._tools.get(name)
+            if existing and existing.override_protected and not override:
+                logger.warning(
+                    "Tool registration REJECTED: '%s' (toolset '%s') would "
+                    "overwrite protected override from toolset '%s'. Pass "
+                    "override=True to replace it intentionally.",
+                    name, toolset, existing.toolset,
+                )
+                return
             if existing and existing.toolset != toolset:
                 # Allow MCP-to-MCP overwrites (legitimate: server refresh,
                 # or two MCP servers with overlapping tool names).
@@ -299,6 +316,9 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                override_protected=override or (
+                    bool(existing.override_protected) if existing else False
+                ),
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn

@@ -1,14 +1,16 @@
 """Tests for the hermes-tools-as-MCP server module surface.
 
-We don't run a live MCP session in unit tests — that requires the codex
-subprocess + client + an event loop. These tests pin the static
-contract: the module imports, the EXPOSED_TOOLS list is sane, and the
-build helper assembles a server when the SDK is present.
+We don't run a live MCP session in most unit tests — that requires the codex
+subprocess + client + an event loop. These tests pin both the static contract
+and the plugin-override export contract for the bridge.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 
+import pytest
 
 
 class TestModuleSurface:
@@ -95,6 +97,129 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+
+class TestPluginOverrideExport:
+    def _restore_entry(self, entry):
+        from tools.registry import registry
+
+        # Remove the protected override first so the original registration is
+        # restored as a normal built-in-style entry, not as another protected
+        # override that can leak into later tests.
+        registry.deregister(entry.name)
+        registry.register(
+            name=entry.name,
+            toolset=entry.toolset,
+            schema=entry.schema,
+            handler=entry.handler,
+            check_fn=entry.check_fn,
+            requires_env=entry.requires_env,
+            is_async=entry.is_async,
+            description=entry.description,
+            emoji=entry.emoji,
+            max_result_size_chars=entry.max_result_size_chars,
+            dynamic_schema_overrides=entry.dynamic_schema_overrides,
+        )
+
+    def test_resolve_exposed_tool_names_includes_plugin_tools_in_exposed_toolsets(self):
+        """Plugin tools in an exposed toolset are included by the bridge resolver."""
+        from agent.transports import hermes_tools_mcp_server as server_mod
+        from tools.registry import discover_builtin_tools, registry
+
+        discover_builtin_tools()
+        name = "web_mcp_plugin_probe_resolver"
+        registry.register(
+            name=name,
+            toolset="web",
+            schema={
+                "name": name,
+                "description": "Plugin probe tool in web toolset",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            override=True,
+        )
+        try:
+            assert name in server_mod._resolve_exposed_tool_names()
+        finally:
+            registry.deregister(name)
+
+    def test_codex_mcp_bridge_exports_plugin_tools_in_exposed_toolsets(self):
+        """Plugin tools added to an already-exposed toolset should reach Codex MCP."""
+        pytest.importorskip("mcp.server.fastmcp")
+
+        from agent.transports import hermes_tools_mcp_server as server_mod
+        from tools.registry import discover_builtin_tools, registry
+
+        discover_builtin_tools()
+        name = "web_mcp_plugin_probe"
+        registry.register(
+            name=name,
+            toolset="web",
+            schema={
+                "name": name,
+                "description": "Plugin probe tool in web toolset",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"probe": {"type": "string"}},
+                    "required": ["probe"],
+                },
+            },
+            handler=lambda args, **kw: json.dumps({"ok": True}),
+            override=True,
+        )
+        try:
+            assert name in server_mod._resolve_exposed_tool_names()
+
+            async def _list():
+                mcp = server_mod._build_server()
+                return await mcp.list_tools()
+
+            tools = asyncio.run(_list())
+            tool = next(t for t in tools if t.name == name)
+            assert tool.inputSchema["properties"]["probe"]["type"] == "string"
+            assert tool.inputSchema["required"] == ["probe"]
+        finally:
+            registry.deregister(name)
+
+    def test_codex_mcp_bridge_exports_plugin_override_schema_for_builtin_tool(self):
+        """An override=True plugin registration should replace built-in schema in MCP."""
+        pytest.importorskip("mcp.server.fastmcp")
+
+        from agent.transports import hermes_tools_mcp_server as server_mod
+        from tools.registry import discover_builtin_tools, registry
+
+        discover_builtin_tools()
+        original = registry.get_entry("web_search")
+        assert original is not None
+
+        registry.register(
+            name="web_search",
+            toolset="web",
+            schema={
+                "name": "web_search",
+                "description": "OVERRIDE PROBE DESCRIPTION",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"override_probe": {"type": "boolean"}},
+                    "required": ["override_probe"],
+                },
+            },
+            handler=lambda args, **kw: json.dumps({"source": "override"}),
+            override=True,
+        )
+        try:
+            async def _list():
+                mcp = server_mod._build_server()
+                return await mcp.list_tools()
+
+            tools = asyncio.run(_list())
+            tool = next(t for t in tools if t.name == "web_search")
+            assert tool.description == "OVERRIDE PROBE DESCRIPTION"
+            assert "override_probe" in tool.inputSchema["properties"]
+            assert tool.inputSchema["required"] == ["override_probe"]
+        finally:
+            self._restore_entry(original)
 
 
 class TestMain:

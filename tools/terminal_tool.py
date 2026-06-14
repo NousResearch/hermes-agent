@@ -268,7 +268,7 @@ def _check_all_guards(command: str, env_type: str) -> dict:
 # Covers alphanumeric (Unicode-aware), path separators, Windows drive/UNC separators, tilde,
 # dot, hyphen, underscore, space, plus, at, equals, and comma.  Everything
 # else is rejected.
-_WORKDIR_SAFE_RE = re.compile(r'^[\\w/\\:_\-.~ +@=,]+$')
+_WORKDIR_SAFE_RE = re.compile(r'^[\w/\\:_\-.~ +@=,]+$')
 
 
 def _validate_workdir(workdir: str) -> str | None:
@@ -459,7 +459,7 @@ def _looks_like_env_assignment(token: str) -> bool:
     if "=" not in token or token.startswith("="):
         return False
     name, _value = token.split("=", 1)
-    return bool(re.match(r"^[A-Za-z_][\\w_]*$", name))
+    return bool(re.match(r"^[A-Za-z_][\w_]*$", name))
 
 
 def _read_shell_token(command: str, start: int) -> tuple[str, int]:

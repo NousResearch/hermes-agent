@@ -112,6 +112,15 @@ _SKILL_REVIEW_PROMPT = (
     "skill that governs that task needs to carry the lesson.\n\n"
     "If you notice two existing skills that overlap, note it in your "
     "reply — the background curator handles consolidation at scale.\n\n"
+    "Protected skills (DO NOT edit these):\n"
+    "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
+    "  • Hub-installed skills (installed via 'hermes skills install').\n"
+    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
+    "pin only blocks deletion/archive/consolidation by the curator, not "
+    "content updates. Patch them when a pitfall or missing step turns up, "
+    "same as any other agent-created skill.\n"
+    "If the only skills that need updating are protected, say\n"
+    "'Nothing to save.' and stop.\n\n"
     "Do NOT capture (these become persistent self-imposed constraints "
     "that bite you later when the environment changes):\n"
     "  • Environment-dependent failures: missing binaries, fresh-install "
@@ -189,6 +198,15 @@ _COMBINED_REVIEW_PROMPT = (
     "should carry user-preference lessons when relevant.\n\n"
     "If you notice overlapping existing skills, mention it — the "
     "background curator handles consolidation.\n\n"
+    "Protected skills (DO NOT edit these):\n"
+    "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
+    "  • Hub-installed skills (installed via 'hermes skills install').\n"
+    "Pinned skills (marked via 'hermes curator pin') CAN be improved — "
+    "pin only blocks deletion/archive/consolidation by the curator, not "
+    "content updates. Patch them when a pitfall or missing step turns up, "
+    "same as any other agent-created skill.\n"
+    "If the only skills that need updating are protected, say\n"
+    "'Nothing to save.' and stop.\n\n"
     "Do NOT capture as skills (these become persistent self-imposed "
     "constraints that bite you later when the environment changes):\n"
     "  • Environment-dependent failures: missing binaries, fresh-install "
@@ -378,6 +396,9 @@ def _run_review_in_thread(
             # parent below so memory(action="add") writes from
             # the review still land on disk; the review just
             # has zero side effects on external providers.
+            # Match parent's toolset config so ``tools[]`` is byte-identical
+            # in the request body — Anthropic's cache key includes it.
+            # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
                 model=agent.model,
                 max_iterations=16,
@@ -389,6 +410,8 @@ def _run_review_in_thread(
                 api_key=_parent_runtime.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"
@@ -426,6 +449,17 @@ def _run_review_in_thread(
             # if a future code path bypasses the cache.
             review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            # Never let the review fork compress. It shares the parent's
+            # session_id, so if it won a compression race it would rotate the
+            # parent into a NEW child that the gateway never adopts (the fork
+            # is single-lifecycle and dies right after this run_conversation).
+            # The foreground turn would then start from the stale parent and
+            # compress it again, leaving the same parent with two sibling
+            # children (issue #38727). Review also needs full context to
+            # produce a good memory/skill summary — compressing would strip
+            # detail. Both compression triggers in conversation_loop.py gate on
+            # agent.compression_enabled, so this short-circuits both paths.
+            review_agent.compression_enabled = False
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (
@@ -460,6 +494,11 @@ def _run_review_in_thread(
             finally:
                 clear_thread_tool_whitelist()
 
+            # Snapshot review actions before teardown. close() is allowed to
+            # clean per-session state, but the user-visible self-improvement
+            # summary still needs the completed review agent's tool results.
+            review_messages = list(getattr(review_agent, "_session_messages", []))
+
             # Tear down memory providers while stdout is still
             # redirected so background thread teardown (Honcho flush,
             # Hindsight sync, etc.) stays silent.  The finally block
@@ -472,7 +511,6 @@ def _run_review_in_thread(
                 review_agent.close()
             except Exception:
                 pass
-            review_messages = list(getattr(review_agent, "_session_messages", []))
             review_agent = None
 
         # Scan the review agent's messages for successful tool actions

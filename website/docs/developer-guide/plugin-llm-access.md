@@ -462,4 +462,4 @@ own model call — for any reason, structured or not — `ctx.llm`.
   * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — sync structured extraction with image input
   * [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) — async with `asyncio.gather()`
 * Auxiliary client (the engine under the hood): see
-  [Provider Runtime](/docs/developer-guide/provider-runtime).
+  [Provider Runtime](/developer-guide/provider-runtime).

@@ -16,8 +16,8 @@ def _would_warn():
                    "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
                    "GATEWAY_ALLOWED_USERS")
     )
-    _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
-        os.getenv(v, "").lower() in ("true", "1", "yes")
+    _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"} or any(
+        os.getenv(v, "").lower() in {"true", "1", "yes"}
         for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
                    "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
                    "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",

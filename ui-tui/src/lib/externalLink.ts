@@ -1,5 +1,4 @@
 import { isIP } from 'node:net'
-
 import { useEffect, useMemo, useState } from 'react'
 
 const titleCache = new Map<string, string>()
@@ -21,6 +20,8 @@ const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#
 const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
 const LOCAL_HOSTNAME_RE = /^(?:localhost|localhost\.localdomain)$/i
 const LOCAL_HOST_SUFFIXES = ['.corp', '.home', '.internal', '.lan', '.local', '.localdomain']
+const STATUS_PERMALINK_HOST_RE = /^(?:mobile\.)?(?:x|twitter)\.com$/i
+const STATUS_PERMALINK_PATH_RE = /^\/[^/]+\/status\/\d+\/?$/i
 
 const HTML_ENTITIES: Record<string, string> = {
   '#39': "'",
@@ -100,6 +101,10 @@ function cleanSlug(segment: string): string {
 
 export function urlSlugTitleLabel(value: string): string {
   const url = parseUrl(value)
+
+  if (url && STATUS_PERMALINK_HOST_RE.test(url.hostname) && STATUS_PERMALINK_PATH_RE.test(url.pathname)) {
+    return hostPathLabel(value)
+  }
 
   for (const segment of url?.pathname.split('/').filter(Boolean).reverse() ?? []) {
     const cleaned = cleanSlug(segment)

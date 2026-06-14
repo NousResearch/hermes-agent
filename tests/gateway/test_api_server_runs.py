@@ -9,10 +9,8 @@ Covers:
 """
 
 import asyncio
-import json
 import threading
-import time as _time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -468,9 +466,17 @@ class TestStopRun:
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
-                mock_agent, agent_ready, _ = _make_slow_agent()
-                # Override the interrupt side_effect to raise
-                mock_agent.interrupt = MagicMock(side_effect=RuntimeError("interrupt failed"))
+                mock_agent, agent_ready, interrupted = _make_slow_agent()
+
+                # Override the interrupt side_effect to raise. Still trip
+                # ``interrupted`` so the slow_run thread unblocks at teardown
+                # — without this the agent thread blocks the full 10s
+                # timeout and the test teardown waits the same amount.
+                def _raising_interrupt(message=None):
+                    interrupted.set()
+                    raise RuntimeError("interrupt failed")
+
+                mock_agent.interrupt = MagicMock(side_effect=_raising_interrupt)
                 mock_create.return_value = mock_agent
 
                 resp = await cli.post("/v1/runs", json={"input": "hello"})

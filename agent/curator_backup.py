@@ -21,6 +21,8 @@ It DOES include:
     pointer — otherwise the curator would immediately re-fire on the next
     tick)
   - ``.bundled_manifest`` (so protection markers stay consistent)
+  - ``.curator_suppressed`` (so rollback restores the set of pruned built-ins
+    the re-seeder must leave archived)
 
 Alongside the skills tarball, each snapshot also captures a copy of
 ``~/.hermes/cron/jobs.json`` as ``cron-jobs.json`` when it exists. Cron
@@ -39,17 +41,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import tarfile
-import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +176,9 @@ def get_keep() -> int:
 
 def _count_skill_files(base: Path) -> int:
     try:
-        return sum(1 for _ in base.rglob("SKILL.md"))
+        return sum(
+            1 for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)
+        )
     except OSError:
         return 0
 

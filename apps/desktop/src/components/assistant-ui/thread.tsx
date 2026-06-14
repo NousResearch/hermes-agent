@@ -588,10 +588,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
 
   return (
     <MarkdownTextContent
-      containerClassName={cn(
-        'text-xs leading-snug text-muted-foreground/85',
-        isRunning && 'shimmer text-muted-foreground/55'
-      )}
+      containerClassName="text-xs leading-snug text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       isRunning={isRunning}
       text={displayText}

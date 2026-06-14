@@ -18,6 +18,7 @@ import {
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { TerminalSyntaxHighlighter } from './syntax-highlighting'
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
 
@@ -242,10 +243,13 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   // never touches transparency.
   const ansiPalette = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
   const activeTheme = useMemo(() => terminalTheme(renderedMode, ansiPalette), [renderedMode, ansiPalette])
+  const activeThemeRef = useRef(activeTheme)
+  activeThemeRef.current = activeTheme
   const initialThemeRef = useRef(activeTheme)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
+  const syntaxHighlighterRef = useRef<TerminalSyntaxHighlighter | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
@@ -359,8 +363,17 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     })
 
     const fit = new FitAddon()
+    const syntaxHighlighter = new TerminalSyntaxHighlighter(term, () => activeThemeRef.current)
 
     termRef.current = term
+    syntaxHighlighterRef.current = syntaxHighlighter
+    cleanup.push(() => {
+      syntaxHighlighter.dispose()
+
+      if (syntaxHighlighterRef.current === syntaxHighlighter) {
+        syntaxHighlighterRef.current = null
+      }
+    })
     term.loadAddon(fit)
     term.loadAddon(new Unicode11Addon())
     term.loadAddon(new WebLinksAddon())
@@ -423,9 +436,17 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     // resize cleanup doesn't reintroduce the blank line.
     let stripLeading = true
 
+    const writeTerminalData = (data: string) => {
+      term.write(data)
+      // The user's keystrokes reach xterm through the PTY echo, not local echo.
+      // Refresh after terminal output so decorations line up with the actual
+      // rendered cursor position instead of the pre-echo input event.
+      syntaxHighlighter.refresh()
+    }
+
     const armedWrite = (data: string) => {
       if (!stripLeading) {
-        term.write(data)
+        writeTerminalData(data)
 
         return
       }
@@ -439,14 +460,14 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
         const controls = keepEscapeSequences(next)
 
         if (controls) {
-          term.write(controls)
+          writeTerminalData(controls)
         }
 
         return
       }
 
       stripLeading = false
-      term.write(next)
+      writeTerminalData(next)
     }
 
     const scheduleGapCleanup = () => {
@@ -531,6 +552,8 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       const id = sessionIdRef.current
 
       if (id) {
+        syntaxHighlighter.handleUserInput(data)
+
         // Once the user submits a line, real output may follow — stop the
         // pristine-prompt gap cleanup so we never clear command scrollback.
         if (promptPristine && data.includes('\r')) {
@@ -670,6 +693,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       // light/dark switch leaves already-drawn cells stale until the atlas is
       // cleared. No-op for the DOM fallback.
       webglRef.current?.clearTextureAtlas()
+      syntaxHighlighterRef.current?.refresh()
     })
 
     return () => cancelAnimationFrame(raf)

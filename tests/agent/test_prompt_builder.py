@@ -838,6 +838,7 @@ class TestPromptBuilderConstants:
         assert "whatsapp_cloud" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
+        assert "signal" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
@@ -918,6 +919,32 @@ class TestPromptBuilderConstants:
         assert "MEDIA:" in hint
         assert "Markdown" in hint
         assert "absolute" in hint
+
+    def test_platform_hints_signal_lists_supported_styles(self):
+        # signal-cli's textStyles wire format supports BOLD, ITALIC,
+        # STRIKETHROUGH, MONOSPACE, and SPOILER (see TextStyle.java in
+        # AsamK/signal-cli). _markdown_to_signal converts standard
+        # markdown syntax to these styles, so the hint must advertise
+        # the supported set rather than telling the model to avoid
+        # markdown entirely.
+        hint = PLATFORM_HINTS["signal"]
+        assert "Signal" in hint
+        assert "MEDIA:" in hint
+        assert "**bold**" in hint
+        assert "*italic*" in hint
+        assert "~~strikethrough~~" in hint
+        assert "||spoiler||" in hint
+        assert "`inline code`" in hint
+
+    def test_platform_hints_signal_no_stale_no_markdown_claim(self):
+        # Regression guard: the prior hint said "Please do not use
+        # markdown as it does not render", but _markdown_to_signal
+        # always ran on outbound text, so markdown DID render — the
+        # hint just made the model emit literal asterisks. Make sure
+        # we don't reintroduce a blanket "no markdown" claim.
+        hint = PLATFORM_HINTS["signal"].lower()
+        assert "do not use markdown" not in hint
+        assert "does not render" not in hint
 
 
 # =========================================================================

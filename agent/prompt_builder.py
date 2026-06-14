@@ -546,7 +546,13 @@ PLATFORM_HINTS = {
     ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown is automatically converted to Signal's native "
+        "text styles. Supported: **bold**, *italic*, ~~strikethrough~~, "
+        "||spoiler||, `inline code`, ```code blocks```, and ## headers "
+        "(rendered as bold). Signal has NO link syntax — [text](url) "
+        "renders as literal text, so include URLs directly. No underline. "
+        "No table syntax — prefer bullet lists or labeled key: value pairs "
+        "over pipe tables. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio as attachments, and other "

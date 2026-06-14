@@ -102,6 +102,51 @@ class TestMarkdownToSignalBasic:
         assert text == ""
         assert styles == []
 
+    def test_spoiler_double_pipe(self):
+        text, styles = _m2s("hello ||world||")
+        assert text == "hello world"
+        assert len(styles) == 1
+        assert styles[0].endswith(":SPOILER")
+
+    def test_spoiler_offset_correct(self):
+        text, styles = _m2s("||hidden||")
+        assert text == "hidden"
+        assert styles == ["0:6:SPOILER"]
+
+    def test_spoiler_inside_sentence(self):
+        text, styles = _m2s("the answer is ||42||.")
+        assert text == "the answer is 42."
+        spoilers = _find_style(styles, "SPOILER")
+        assert len(spoilers) == 1
+        # 14 UTF-16 code units before "42" ("the answer is "), spoiler length 2
+        assert spoilers[0] == "14:2:SPOILER"
+
+    def test_spoiler_multi_word(self):
+        text, styles = _m2s("||two words||")
+        assert text == "two words"
+        spoilers = _find_style(styles, "SPOILER")
+        assert spoilers == ["0:9:SPOILER"]
+
+    def test_spoiler_multiple_in_one_message(self):
+        text, styles = _m2s("||a|| and ||b||")
+        assert text == "a and b"
+        spoilers = _find_style(styles, "SPOILER")
+        assert len(spoilers) == 2
+
+    def test_single_pipe_not_spoiler(self):
+        # Pipe tables and math notation must not trip the spoiler pattern.
+        text, styles = _m2s("5 | 3 | 2")
+        assert text == "5 | 3 | 2"
+        assert _find_style(styles, "SPOILER") == []
+
+    def test_spoiler_with_other_styles(self):
+        text, styles = _m2s("**bold** ||hidden|| `code`")
+        assert text == "bold hidden code"
+        types = _style_types(styles)
+        assert "BOLD" in types
+        assert "SPOILER" in types
+        assert "MONOSPACE" in types
+
 
 # ===========================================================================
 # Italic false-positive regressions

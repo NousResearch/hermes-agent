@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import hmac
 import logging
@@ -97,6 +98,14 @@ DEFAULT_CALLING_SIDECAR_TIMEOUT = 10.0
 CALLING_PCM_SAMPLE_RATE = 48_000
 CALLING_PCM_CHANNELS = 1
 CALLING_PCM_FRAME_MS = 20
+CALLING_PCM_BYTES_PER_SAMPLE = 2
+CALLING_PCM_FRAME_BYTES = (
+    CALLING_PCM_SAMPLE_RATE
+    * CALLING_PCM_CHANNELS
+    * CALLING_PCM_BYTES_PER_SAMPLE
+    * CALLING_PCM_FRAME_MS
+    // 1_000
+)
 CALLING_PCM_ENCODING = "pcm_s16le"
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
@@ -181,6 +190,17 @@ class CallingSidecarAnswer:
 
     call_id: str
     sdp: str
+    audio: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CallingSidecarAudio:
+    """Decoded inbound PCM drained from the local WhatsApp Calling sidecar."""
+
+    call_id: str
+    pcm_s16le: bytes
+    returned_bytes: int
+    queued_rx_bytes: int
     audio: Dict[str, Any]
 
 
@@ -507,6 +527,117 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=False, error=error_msg, raw_response=body)
 
         return SendResult(success=True, raw_response=body)
+
+    async def _receive_calling_sidecar_audio(
+        self,
+        call_id: str,
+        *,
+        max_bytes: int = CALLING_PCM_FRAME_BYTES,
+    ) -> Optional[CallingSidecarAudio]:
+        """Drain decoded inbound 48 kHz PCM from a local WebRTC sidecar call."""
+        if not self._calling_sidecar_enabled():
+            return None
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return None
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return None
+        if not isinstance(max_bytes, int) or max_bytes <= 0:
+            logger.warning(
+                "[whatsapp_cloud] invalid sidecar audio max_bytes=%r",
+                max_bytes,
+            )
+            return None
+        if max_bytes % CALLING_PCM_BYTES_PER_SAMPLE:
+            logger.warning(
+                "[whatsapp_cloud] sidecar audio max_bytes must preserve s16le samples"
+            )
+            return None
+
+        encoded_call_id = quote(normalized_call_id, safe="")
+        url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/audio"
+        try:
+            resp = await self._http_client.get(
+                url,
+                params={"max_bytes": max_bytes},
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio drain failed for %s",
+                normalized_call_id,
+            )
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain returned invalid JSON"
+            )
+            return None
+        if not isinstance(data, dict):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain response is not an object"
+            )
+            return None
+
+        try:
+            pcm = base64.b64decode(
+                str(data.get("pcm_s16le_base64") or ""),
+                validate=True,
+            )
+        except (binascii.Error, ValueError):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain had invalid base64"
+            )
+            return None
+
+        try:
+            returned_bytes = int(data.get("returned_bytes") or 0)
+            queued_rx_bytes = int(data.get("queued_rx_bytes") or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain had invalid byte counts"
+            )
+            return None
+        if returned_bytes != len(pcm):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain byte count mismatch "
+                "(reported=%d, decoded=%d)",
+                returned_bytes,
+                len(pcm),
+            )
+            return None
+        if len(pcm) % CALLING_PCM_BYTES_PER_SAMPLE:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain returned partial s16le sample"
+            )
+            return None
+
+        audio = data.get("audio")
+        answer_call_id = str(data.get("call_id") or "").strip() or normalized_call_id
+        return CallingSidecarAudio(
+            call_id=answer_call_id,
+            pcm_s16le=pcm,
+            returned_bytes=returned_bytes,
+            queued_rx_bytes=queued_rx_bytes,
+            audio=audio if isinstance(audio, dict) else {},
+        )
 
     async def _send_call_action(
         self,

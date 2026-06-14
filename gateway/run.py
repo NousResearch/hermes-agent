@@ -677,13 +677,15 @@ def _build_gateway_agent_history(
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
         elif content:
-            # Skip gateway-injected auto-continue / background-process notes
-            # that were persisted as user messages during interrupted turns.
-            # Replaying them tells the LLM to re-process old work instead of
-            # addressing the user's new message — which is the root cause of
-            # infinite re-transcription / re-analysis loops.
-            if role == "user" and _is_auto_continue_noise(content):
-                continue
+            # Strip gateway-injected auto-continue notes that were persisted
+            # as part of user messages during interrupted turns.  Keep the
+            # user's real text after the note, but never replay the recovery
+            # instruction itself — that is what caused infinite re-execution
+            # loops for interrupted long-running tools.
+            if role == "user":
+                content = _strip_auto_continue_noise(content)
+                if not content:
+                    continue
             # Simple text message - just need role and content.
             if msg.get("mirror"):
                 mirror_src = msg.get("mirror_source", "another session")
@@ -766,77 +768,92 @@ def _is_interrupted_tool_result(content: Any) -> bool:
     """Return True if a tool result indicates the tool was interrupted."""
     if not isinstance(content, str):
         return False
-    if "[Command interrupted]" in content:
+    lowered = content.lower()
+    if "[command interrupted]" in lowered:
         return True
-    if '"exit_code": 130' in content or '"exit_code": -1' in content:
-        if "interrupt" in content.lower() or "Command interrupted" in content:
-            return True
+    if "exit_code" in lowered and ("130" in lowered or "-1" in lowered):
+        return "interrupt" in lowered
     return False
 
 
 def _strip_interrupted_tool_tails(
     agent_history: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Strip trailing tool-call sequences whose results were all interrupted.
+    """Strip interrupted assistant→tool sequences from replay history.
 
-    When the gateway interrupts a turn mid-tool-execution, the session DB stores
-    the tool_calls + tool results (which contain "[Command interrupted]" /
-    exit_code 130).  Replaying these to the LLM on the next turn causes it to
-    re-execute the same tools — this function detects those tail sequences and
-    removes them before they reach the model.
+    Older interrupted gateway turns can be followed by a queued real user
+    message, so the interrupted assistant/tool block is not necessarily the
+    final tail by the time we rebuild replay history.  Remove any contiguous
+    assistant(tool_calls) + tool-result block that contains an interrupted tool
+    result, while preserving successful tool-call sequences intact.
     """
     if not agent_history:
         return agent_history
 
+    cleaned: List[Dict[str, Any]] = []
+    i = 0
     n = len(agent_history)
-    tool_tail_end = n
-    while tool_tail_end > 0 and agent_history[tool_tail_end - 1].get("role") == "tool":
-        tool_tail_end -= 1
+    while i < n:
+        msg = agent_history[i]
+        if msg.get("role") == "assistant" and "tool_calls" in msg:
+            j = i + 1
+            tool_results: List[Dict[str, Any]] = []
+            while j < n and agent_history[j].get("role") == "tool":
+                tool_results.append(agent_history[j])
+                j += 1
+            if tool_results and any(
+                _is_interrupted_tool_result(m.get("content", ""))
+                for m in tool_results
+            ):
+                logger.debug(
+                    "Stripping interrupted assistant→tool replay block "
+                    "(indices %d–%d, tool_results=%d)",
+                    i, j - 1, len(tool_results),
+                )
+                i = j
+                continue
+        if msg.get("role") == "tool" and _is_interrupted_tool_result(msg.get("content", "")):
+            logger.debug("Stripping orphan interrupted tool result from replay history")
+            i += 1
+            continue
+        cleaned.append(msg)
+        i += 1
 
-    if tool_tail_end == n:
-        return agent_history
-
-    tail_tool_results = agent_history[tool_tail_end:]
-    if not all(
-        _is_interrupted_tool_result(m.get("content", ""))
-        for m in tail_tool_results
-    ):
-        return agent_history
-
-    assistant_idx = tool_tail_end - 1
-    if assistant_idx < 0:
-        return agent_history
-
-    if (
-        agent_history[assistant_idx].get("role") != "assistant"
-        or "tool_calls" not in agent_history[assistant_idx]
-    ):
-        return agent_history
-
-    logger.debug(
-        "Stripping %d interrupted tool result(s) + triggering assistant from "
-        "replay history (indices %d–%d)",
-        len(tail_tool_results), assistant_idx, n - 1,
-    )
-    return agent_history[:assistant_idx]
+    return cleaned
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
-_BG_PROCESS_NOTE_PREFIX = "[IMPORTANT: Background process"
 _AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
 
 
 def _is_auto_continue_noise(content: Any) -> bool:
     """Return True if this user-message content is a gateway-injected
-    auto-continue or background-process note that should NOT be replayed
-    as a real user turn."""
+    auto-continue note that should NOT be replayed as a real user turn."""
     if not isinstance(content, str):
         return False
     return (
         content.startswith(_AUTO_CONTINUE_NOTE_PREFIX)
-        or content.startswith(_BG_PROCESS_NOTE_PREFIX)
         or content.startswith(_AUTO_CONTINUE_FALLBACK_PREFIX)
     )
+
+
+def _strip_auto_continue_noise(content: Any) -> Any:
+    """Remove persisted gateway auto-continue note prefix from user text.
+
+    Older gateway builds prepended the recovery note directly to the user
+    message, so the transcript row can contain both the synthetic note and
+    the user's real question.  Strip one or more leading synthetic notes while
+    preserving any real text that follows.
+    """
+    if not _is_auto_continue_noise(content):
+        return content
+    text = str(content)
+    while _is_auto_continue_noise(text):
+        end = text.find("]")
+        if end < 0:
+            return ""
+        text = text[end + 1 :].lstrip()
+    return text
 
 # Tools in this set return their deliverable artifact as a JSON payload with a
 # local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
@@ -14655,6 +14672,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
+            # Keep real user text separate from API-only recovery guidance.  If
+            # an auto-continue note is prepended below, persist the original
+            # message so stale guidance never replays as user-authored text.
+            _persist_user_message_override: Optional[Any] = None
+
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
@@ -14715,6 +14737,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _reason == "shutdown_timeout"
                     else "a gateway interruption"
                 )
+                _persist_user_message_override = message
                 message = (
                     f"[System note: A new message has arrived. The previous turn "
                     f"was interrupted by {_reason_phrase}. "
@@ -14725,6 +14748,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     + message
                 )
             elif _has_fresh_tool_tail:
+                _persist_user_message_override = message
                 message = (
                     "[System note: A new message has arrived. The conversation "
                     "history contains pending tool outputs from an interrupted turn. "
@@ -14787,7 +14811,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "conversation_history": agent_history,
                     "task_id": session_id,
                 }
-                if observed_group_context:
+                if _persist_user_message_override is not None:
+                    _conversation_kwargs["persist_user_message"] = _persist_user_message_override
+                elif observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:

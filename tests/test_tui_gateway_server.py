@@ -8447,3 +8447,273 @@ class TestResolveRuntimeWithFallback:
 
         assert agent.model == "gpt-5.5"
         assert captured["provider"] == "deepseek"
+
+# ---------------------------------------------------------------------------
+# /prompts command in TUI command.dispatch
+# ---------------------------------------------------------------------------
+
+def test_pending_input_commands_includes_prompts():
+    """prompts must be in _PENDING_INPUT_COMMANDS so slash.exec rejects it
+    and the TUI falls through to command.dispatch for prefill support."""
+    assert "prompts" in server._PENDING_INPUT_COMMANDS
+
+
+def test_prompts_dispatch_no_session_returns_error(monkeypatch):
+    resp = server._methods["command.dispatch"]("r1", {"name": "prompts"})
+    assert resp["error"]["code"] == 4001
+
+
+def test_prompts_dispatch_no_db_returns_error(monkeypatch):
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "session_id": sid}
+        )
+        assert resp["error"]["code"] == 5008
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_prompts_dispatch_no_prompts_returns_error(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "session_id": sid}
+        )
+        assert resp["error"]["code"] == 4018
+        assert "no user prompts" in resp["error"]["message"]
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_list_returns_exec(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    test_db.append_message("pk1", role="user", content="first prompt")
+    test_db.append_message("pk1", role="assistant", content="answer")
+    test_db.append_message("pk1", role="user", content="second prompt")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "session_id": sid}
+        )
+        assert "result" in resp
+        result = resp["result"]
+        assert result["type"] == "exec"
+        output = result["output"]
+        assert "Recent prompts" in output
+        assert "second prompt" in output
+        assert "first prompt" in output
+        assert "/prompts <number>" in output
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_list_newest_first(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    test_db.append_message("pk1", role="user", content="oldest")
+    test_db.append_message("pk1", role="user", content="middle")
+    test_db.append_message("pk1", role="user", content="newest")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "session_id": sid}
+        )
+        output = resp["result"]["output"]
+        # newest (1.) should appear before oldest (3.)
+        assert output.index("1. newest") < output.index("3. oldest")
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_select_returns_prefill(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    test_db.append_message("pk1", role="user", content="first prompt")
+    test_db.append_message("pk1", role="assistant", content="answer")
+    test_db.append_message("pk1", role="user", content="second prompt full text")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "arg": "2", "session_id": sid}
+        )
+        assert "result" in resp
+        result = resp["result"]
+        assert result["type"] == "prefill"
+        assert result["message"] == "first prompt"
+        assert "Loaded prompt #2" in result["notice"]
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_select_1_returns_most_recent(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    test_db.append_message("pk1", role="user", content="first")
+    test_db.append_message("pk1", role="user", content="most recent")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "arg": "1", "session_id": sid}
+        )
+        result = resp["result"]
+        assert result["type"] == "prefill"
+        assert result["message"] == "most recent"
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_invalid_arg_returns_error(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    test_db.append_message("pk1", role="user", content="prompt")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "arg": "abc", "session_id": sid}
+        )
+        assert resp["error"]["code"] == 4004
+        assert "usage" in resp["error"]["message"]
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_out_of_range_returns_error(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    test_db.append_message("pk1", role="user", content="only prompt")
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "arg": "5", "session_id": sid}
+        )
+        assert resp["error"]["code"] == 4004
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()
+
+
+def test_prompts_dispatch_multimodal_content_prefill(monkeypatch, tmp_path):
+    """Multimodal content (list of parts) should extract text parts."""
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    test_db = SessionDB(db_path=db_path)
+    test_db.create_session("pk1", "cli")
+    content = [
+        {"type": "text", "text": "hello"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        {"type": "text", "text": "world"},
+    ]
+    test_db.append_message("pk1", role="user", content=content)
+
+    sid = "prompts-sid"
+    server._sessions[sid] = {
+        "session_key": "pk1",
+        "history_lock": threading.Lock(),
+        "history": [],
+    }
+    try:
+        monkeypatch.setattr(server, "_db", test_db)
+        monkeypatch.setattr(server, "_db_error", None)
+        resp = server._methods["command.dispatch"](
+            "r1", {"name": "prompts", "arg": "1", "session_id": sid}
+        )
+        result = resp["result"]
+        assert result["type"] == "prefill"
+        assert result["message"] == "hello\nworld"
+    finally:
+        server._sessions.pop(sid, None)
+        test_db.close()

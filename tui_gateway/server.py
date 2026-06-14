@@ -10966,6 +10966,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "moa",
         "undo",
         "learn",
+        "prompts",
     }
 )
 
@@ -11420,6 +11421,65 @@ def _(rid, params: dict) -> dict:
             rid,
             {"type": "send", "notice": notice, "message": state.goal},
         )
+
+    if name == "prompts":
+        # /prompts [N]: list recent user prompts or prefill the composer
+        # with a selected one. Mirrors classic CLI /prompts behavior.
+        if not session:
+            return _err(rid, 4001, "no active session")
+        db = _get_db()
+        if db is None:
+            return _db_unavailable_error(rid, code=5008)
+        session_key = session.get("session_key", "")
+        if not session_key:
+            return _err(rid, 4001, "no session key")
+        try:
+            recents = db.list_recent_user_messages(session_key, limit=10)
+        except Exception as e:
+            return _err(rid, 5008, f"prompts: failed to load history: {e}")
+        if not recents:
+            return _err(rid, 4018, "no user prompts in this session")
+        # Numeric arg: select one-based index and prefill the composer.
+        arg_str = (arg or "").strip()
+        if arg_str:
+            try:
+                idx = int(arg_str.split()[0])
+            except (ValueError, IndexError):
+                return _err(rid, 4004, f"usage: /prompts [number]")
+            if idx < 1 or idx > len(recents):
+                return _err(rid, 4004, f"usage: /prompts [1-{len(recents)}]")
+            selected = recents[idx - 1]
+            msg_id = selected["id"]
+            # Fetch the full message text for the selected prompt.
+            msg = db.get_user_message(session_key, msg_id)
+            if msg is None:
+                return _err(rid, 4018, f"prompt #{idx} not found")
+            content = msg.get("content")
+            if isinstance(content, list):
+                parts = [
+                    p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = "\n".join(t for t in parts if t)
+            elif isinstance(content, str):
+                text = content
+            else:
+                text = ""
+            if not text:
+                return _err(rid, 4018, f"prompt #{idx} has no editable text")
+            notice = (
+                f"Loaded prompt #{idx} into the composer. "
+                "Edit and press Enter to send."
+            )
+            return _ok(rid, {"type": "prefill", "message": text, "notice": notice})
+        # No arg: return formatted list of recent prompts.
+        lines = ["Recent prompts in this session:"]
+        for i, r in enumerate(recents, 1):
+            preview = r.get("preview", "")
+            lines.append(f"{i}. {preview}")
+        lines.append("")
+        lines.append("Use /prompts <number> to load one into the composer.")
+        return _ok(rid, {"type": "exec", "output": "\n".join(lines)})
 
     if name == "undo":
         # /undo [N]: back up N user turns (default 1), soft-delete the

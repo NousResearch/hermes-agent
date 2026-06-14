@@ -2,32 +2,28 @@ import { atom, computed } from 'nanostores'
 
 import { $activeSessionId } from './session'
 
-// Status line for sessions whose agent is mid context-compaction, keyed by the
-// runtime session id. Auto-compaction fires mid-turn and rewrites history to a
-// summary — without a visible signal the transcript looks like it reset itself.
-// Per-session (like clarify) so a background chat compacting can't clobber the
-// foreground view; cleared when the turn starts, completes, or errors.
+// Per-session flag while auto-compaction runs mid-turn. Without it the
+// transcript looks like it reset; per-session so a background chat can't
+// clobber the foreground view.
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
-export const $compactingSessions = atom<Record<string, string>>({})
+export const $compactingSessions = atom<Record<string, true>>({})
 
-// The compaction status for the currently-viewed session, or null. The thread
-// loading indicator reads this focus-scoped view to swap to "Summarizing…".
-export const $compactionStatus = computed(
+export const $compactionActive = computed(
   [$compactingSessions, $activeSessionId],
-  (sessions, activeId) => sessions[keyFor(activeId)] ?? null
+  (sessions, activeId) => keyFor(activeId) in sessions
 )
 
-export function setSessionCompacting(sessionId: string | null | undefined, status: string | null): void {
+export function setSessionCompacting(sessionId: string | null | undefined, active: boolean): void {
   const key = keyFor(sessionId)
   const sessions = $compactingSessions.get()
 
-  if (status) {
-    if (sessions[key] === status) {
+  if (active) {
+    if (key in sessions) {
       return
     }
 
-    $compactingSessions.set({ ...sessions, [key]: status })
+    $compactingSessions.set({ ...sessions, [key]: true })
 
     return
   }

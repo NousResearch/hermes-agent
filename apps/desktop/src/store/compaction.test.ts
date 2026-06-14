@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { $compactingSessions, $compactionStatus, setSessionCompacting } from './compaction'
+import { $compactingSessions, $compactionActive, setSessionCompacting } from './compaction'
 import { $activeSessionId } from './session'
 
 describe('compaction store', () => {
@@ -14,41 +14,39 @@ describe('compaction store', () => {
     $activeSessionId.set(null)
   })
 
-  it('tracks compaction status per session independently', () => {
-    setSessionCompacting('session-a', 'Summarizing a…')
-    setSessionCompacting('session-b', 'Summarizing b…')
+  it('tracks compaction per session independently', () => {
+    setSessionCompacting('session-a', true)
+    setSessionCompacting('session-b', true)
 
-    expect($compactingSessions.get()['session-a']).toBe('Summarizing a…')
-    expect($compactingSessions.get()['session-b']).toBe('Summarizing b…')
+    expect($compactingSessions.get()).toEqual({ 'session-a': true, 'session-b': true })
   })
 
   it('exposes only the active session via the focus-scoped view', () => {
-    setSessionCompacting('session-a', 'Summarizing a…')
+    setSessionCompacting('session-a', true)
 
-    expect($compactionStatus.get()).toBeNull()
+    expect($compactionActive.get()).toBe(false)
 
     $activeSessionId.set('session-a')
-    expect($compactionStatus.get()).toBe('Summarizing a…')
+    expect($compactionActive.get()).toBe(true)
 
     $activeSessionId.set('session-b')
-    expect($compactionStatus.get()).toBeNull()
+    expect($compactionActive.get()).toBe(false)
   })
 
   it('clears a session without disturbing the others', () => {
-    setSessionCompacting('session-a', 'Summarizing a…')
-    setSessionCompacting('session-b', 'Summarizing b…')
+    setSessionCompacting('session-a', true)
+    setSessionCompacting('session-b', true)
 
-    setSessionCompacting('session-a', null)
+    setSessionCompacting('session-a', false)
 
-    expect($compactingSessions.get()['session-a']).toBeUndefined()
-    expect($compactingSessions.get()['session-b']).toBe('Summarizing b…')
+    expect($compactingSessions.get()).toEqual({ 'session-b': true })
   })
 
   it('is a no-op when clearing an unknown session', () => {
-    setSessionCompacting('session-a', 'Summarizing a…')
+    setSessionCompacting('session-a', true)
     const before = $compactingSessions.get()
 
-    setSessionCompacting('session-missing', null)
+    setSessionCompacting('session-missing', false)
 
     expect($compactingSessions.get()).toBe(before)
   })

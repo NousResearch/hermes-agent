@@ -334,6 +334,8 @@ export function useMessageStream({
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
+  // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
+  const compactedTurnRef = useRef<Set<string>>(new Set())
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -640,6 +642,10 @@ export function useMessageStream({
 
       void refreshSessions().catch(() => undefined)
 
+      if (compactedTurnRef.current.delete(sessionId)) {
+        shouldHydrate = false
+      }
+
       if (shouldHydrate) {
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
@@ -826,7 +832,8 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
-        setSessionCompacting(sessionId, null)
+        setSessionCompacting(sessionId, false)
+        compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
 
         if (isActiveEvent) {
@@ -872,7 +879,7 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
-        setSessionCompacting(sessionId, null)
+        setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
 
@@ -1062,10 +1069,8 @@ export function useMessageStream({
         }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
-          // Auto-compaction is rewriting history to a summary mid-turn — surface
-          // it so the transcript doesn't look like it silently reset. Cleared
-          // when the turn ends (message.complete / error) or a new one starts.
-          setSessionCompacting(sessionId, coerceGatewayText(payload?.text))
+          setSessionCompacting(sessionId, true)
+          compactedTurnRef.current.add(sessionId)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
@@ -1080,7 +1085,8 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
-          setSessionCompacting(sessionId, null)
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         }
 
         dispatchNativeNotification({

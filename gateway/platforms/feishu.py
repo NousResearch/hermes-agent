@@ -561,12 +561,14 @@ def _build_markdown_post_payload(content: str) -> str:
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
-    """Build Feishu post rows while isolating fenced code blocks.
+    """Build Feishu post rows with native code_block elements for fenced blocks.
 
-    Feishu's `md` renderer can swallow trailing content when a fenced code block
-    appears inside one large markdown element. Split the reply at real fence
-    lines so prose before/after the code block remains visible while code stays
-    in a dedicated row.
+    Feishu's `md` renderer cannot render fenced code blocks — the triple
+    backtick markers appear as literal text and swallow trailing content when
+    a code block sits inside a single large md element.  This function splits
+    the reply at real fence lines and emits `code_block` elements (with the
+    language tag) for code content, keeping prose before/after in `md`
+    elements so both render correctly.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
@@ -576,14 +578,22 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     rows: List[List[Dict[str, str]]] = []
     current: List[str] = []
     in_code_block = False
+    code_block_language: str = ""
+    _pending_code_block = False  # True when current holds code content to flush as code_block
 
     def _flush_current() -> None:
-        nonlocal current
+        nonlocal current, code_block_language, _pending_code_block
         if not current:
             return
         segment = "\n".join(current)
         if segment.strip():
-            rows.append([{"tag": "md", "text": segment}])
+            if _pending_code_block:
+                code_text = segment.lstrip("\n")
+                rows.append([{"tag": "code_block", "language": code_block_language, "text": code_text}])
+                _pending_code_block = False
+            else:
+                rows.append([{"tag": "md", "text": segment}])
+            code_block_language = ""
         current = []
 
     for raw_line in content.splitlines():
@@ -597,14 +607,18 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         if is_fence:
             if not in_code_block:
                 _flush_current()
-            current.append(raw_line)
-            in_code_block = not in_code_block
-            if not in_code_block:
+                m = _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+                code_block_language = (m.group(1) or "").strip() if m else ""
+                in_code_block = True
+            else:
+                _pending_code_block = True
+                in_code_block = False
                 _flush_current()
             continue
 
         current.append(raw_line)
 
+    # Content after the last code block (or unclosed fence — render as md)
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
 
@@ -1409,7 +1423,7 @@ def check_feishu_requirements() -> bool:
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
-    supports_code_blocks = True  # Feishu renders fenced code blocks
+    supports_code_blocks = False  # Feishu post md elements don't support code fences; forces fallback to PLAIN_TEXT
 
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.

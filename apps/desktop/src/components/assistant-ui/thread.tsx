@@ -878,6 +878,7 @@ const UserMessage: FC<{
   const { t } = useI18n()
   const copy = t.assistant.thread
   const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
+  const messageRuntime = useMessageRuntime()
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -987,6 +988,25 @@ const UserMessage: FC<{
     </div>
   )
 
+  const openEditComposer = useCallback(() => {
+    try {
+      messageRuntime.composer.beginEdit()
+      notifyThreadEditOpen()
+      triggerHaptic('selection')
+    } catch (error) {
+      // assistant-ui throws when the same message's edit composer is already
+      // open. A rapid double-click or stale click during a render transition must
+      // not bubble an uncaught renderer error; it can abort later submit plumbing
+      // and leave the chat showing only the running timer.
+      if (error instanceof Error && /edit already in progress/i.test(error.message)) {
+        console.warn('[hermes] edit composer already open', error)
+        return
+      }
+
+      console.warn('[hermes] edit composer unavailable', error)
+    }
+  }, [messageRuntime])
+
   return (
     <MessagePrimitive.Root asChild>
       <StickyHumanMessageContainer
@@ -1005,19 +1025,18 @@ const UserMessage: FC<{
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
               {/* Always editable — clicking opens the edit composer even while a
-                  turn streams; sending the edit reverts (interrupt + rewind). */}
-              <ActionBarPrimitive.Edit asChild>
-                <button
-                  aria-label={copy.editMessage}
-                  className={bubbleClassName}
-                  onClick={() => triggerHaptic('selection')}
-                  onPointerDown={() => notifyThreadEditOpen()}
-                  title={copy.editMessage}
-                  type="button"
-                >
-                  {bubbleContent}
-                </button>
-              </ActionBarPrimitive.Edit>
+                  turn streams; sending the edit reverts (interrupt + rewind).
+                  Use a guarded runtime call instead of ActionBarPrimitive.Edit:
+                  the primitive throws on duplicate edit-open clicks. */}
+              <button
+                aria-label={copy.editMessage}
+                className={bubbleClassName}
+                onClick={openEditComposer}
+                title={copy.editMessage}
+                type="button"
+              >
+                {bubbleContent}
+              </button>
               {(showStop || showRestore) && (
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (

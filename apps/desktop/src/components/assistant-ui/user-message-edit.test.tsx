@@ -138,4 +138,21 @@ describe('click-to-edit user message', () => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
   })
+
+  it('ignores duplicate edit clicks instead of throwing an uncaught renderer error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { container } = render(<IncrementalHarness onEdit={async () => {}} />)
+
+    const bubble = await screen.findByRole('button', { name: 'Edit message' })
+
+    expect(() => {
+      fireEvent.click(bubble)
+      fireEvent.click(bubble)
+    }).not.toThrow()
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
+    })
+    expect(warn).toHaveBeenCalledWith('[hermes] edit composer already open', expect.any(Error))
+  })
 })

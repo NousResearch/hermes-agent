@@ -1406,6 +1406,88 @@ class TestWebhookDispatch:
         assert adapter._http_client.post.call_args.args[0].endswith("/offer")
 
     @pytest.mark.asyncio
+    async def test_call_connect_pre_accept_failure_closes_sidecar(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_httpx_response(
+                200,
+                {
+                    "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+                    "type": "answer",
+                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            ),
+            _mock_httpx_response(500, {"error": {"message": "pre_accept failed"}}),
+            _mock_httpx_response(200, {"closed": True}),
+        ])
+        body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        assert adapter._http_client.post.call_count == 3
+        assert adapter._http_client.post.call_args_list[1].kwargs["json"]["action"] == "pre_accept"
+        assert adapter._http_client.post.call_args_list[2].args[0] == (
+            "http://127.0.0.1:8787/calls/"
+            "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
+        )
+
+    @pytest.mark.asyncio
+    async def test_call_connect_accept_failure_closes_sidecar(self):
+        adapter = _make_adapter(
+            app_secret="key",
+            calling_sidecar_url="http://127.0.0.1:8787",
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_httpx_response(
+                200,
+                {
+                    "call_id": "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+                    "type": "answer",
+                    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            ),
+            _mock_httpx_response(200, {"success": True}),
+            _mock_httpx_response(500, {"error": {"message": "accept failed"}}),
+            _mock_httpx_response(200, {"closed": True}),
+        ])
+        body = json.dumps(_SAMPLE_CALL_CONNECT_PAYLOAD).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+
+        assert response.status == 200
+        assert adapter._http_client.post.call_count == 4
+        assert adapter._http_client.post.call_args_list[1].kwargs["json"]["action"] == "pre_accept"
+        assert adapter._http_client.post.call_args_list[2].kwargs["json"]["action"] == "accept"
+        assert adapter._http_client.post.call_args_list[3].args[0] == (
+            "http://127.0.0.1:8787/calls/"
+            "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
+        )
+
+    @pytest.mark.asyncio
     async def test_call_connect_malformed_offer_skips_sidecar(self):
         adapter = _make_adapter(
             app_secret="key",

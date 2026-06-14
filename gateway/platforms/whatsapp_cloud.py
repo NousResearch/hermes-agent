@@ -2234,6 +2234,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 call_id,
                 pre_accept.error,
             )
+            await self._close_calling_sidecar_session(call_id)
             return
 
         accept = await self._send_call_action(call_id, "accept", sdp=answer.sdp)
@@ -2243,6 +2244,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 call_id,
                 accept.error,
             )
+            await self._close_calling_sidecar_session(call_id)
             return
 
         logger.info("[whatsapp_cloud] accepted call %s via calling sidecar", call_id)

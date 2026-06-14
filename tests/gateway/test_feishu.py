@@ -2584,7 +2584,9 @@ class TestAdapterBehavior(unittest.TestCase):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
+        # Use render_mode="raw" to test post-type row splitting (the default
+        # "auto" mode would render code blocks as interactive cards instead).
+        adapter = FeishuAdapter(PlatformConfig(enabled=True, extra={"render_mode": "raw"}))
         captured = {}
 
         class _MessageAPI:

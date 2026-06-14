@@ -1,0 +1,86 @@
+---
+name: streaming-content
+description: >
+  Fetch transcripts from live-streaming clips and VODs (Twitch, Kick, Rumble, and other
+  yt-dlp-supported platforms) and transform them into structured content (summaries,
+  threads, blog posts, quotes). Use when the user shares a Twitch / Kick / Rumble clip or
+  VOD link, asks to summarize a stream, or wants a transcript from a live-streaming
+  platform. For YouTube, use the youtube-content skill instead — it reads served captions
+  and is cheaper.
+---
+
+# Streaming Content
+
+Transcribe clips and VODs from live-streaming platforms and convert them into useful
+formats. Unlike YouTube, these platforms don't serve caption tracks, so this skill
+downloads the audio and transcribes it.
+
+## How it works
+
+1. `yt-dlp` downloads the clip/VOD audio.
+2. The shared `transcribe_audio()` tool transcribes it (local faster-whisper, Groq, or
+   OpenAI — whichever the environment is configured for).
+3. The transcript is returned as JSON, ready to reshape.
+
+## Setup
+
+```bash
+pip install yt-dlp     # ffmpeg must also be on PATH (brew install ffmpeg / apt install ffmpeg)
+```
+
+Requires Python 3.10+ (older interpreters silently fail Twitch's GraphQL — run inside the
+Hermes venv).
+
+## Helper Script
+
+`SKILL_DIR` is the directory containing this SKILL.md.
+
+```bash
+# JSON with metadata + transcript
+python3 SKILL_DIR/scripts/fetch_transcript.py "https://www.twitch.tv/<channel>/clip/<slug>"
+
+# Plain text (good for piping into further processing)
+python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
+```
+
+Accepts any single clip or VOD URL yt-dlp supports.
+
+## Supported platforms
+
+- **Twitch** — clips and VODs. Note: VODs auto-expire after ~2 weeks unless saved as
+  Highlights; clips are permanent.
+- **Kick** — clips and VODs (Cloudflare can occasionally require cookies; pass them via
+  yt-dlp's `--cookies` if a fetch is blocked).
+- **Rumble** — standard video URLs (`rumble.com/v…-….html`, via yt-dlp's RumbleEmbed extractor).
+  Note: `rumble.com/shorts/` URLs are not yet supported by yt-dlp — they fall back to unreliable
+  generic extraction, so pass the standard video URL instead.
+- Any other yt-dlp-supported site is handled by the same path.
+
+## Output Formats
+
+After fetching the transcript, format it based on what the user asks for:
+
+- **Summary**: Concise 5-10 sentence overview.
+- **Thread**: Twitter/X thread — numbered posts, each under 280 chars.
+- **Blog post**: Full article with title, sections, and key takeaways.
+- **Quotes**: Notable lines from the stream.
+- **Chapters**: Topic-shift breakdown. Stream transcripts are un-timestamped, so chapters
+  are grouped by topic rather than timecode.
+
+## Workflow
+
+1. **Fetch** the transcript with the helper script.
+2. **Validate**: confirm the output is non-empty. An `audio download failed` error usually
+   means the URL is private, sub-only, or an expired VOD — ask the user to verify it.
+3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping
+   ~40K chunks (2K overlap) and summarize each before merging.
+4. **Transform** into the requested format. Default to a summary if unspecified.
+5. **Verify**: re-read the output for coherence before presenting.
+
+## Error Handling
+
+- **Audio download failed**: the clip/VOD is private, sub-only, expired (Twitch VODs), or
+  the URL is wrong. Relay and ask the user to verify the link.
+- **Transcription failed**: confirm `ffmpeg` is installed and a transcription backend is
+  configured (`transcribe_audio` falls back across local / Groq / OpenAI).
+- **Dependency missing**: `pip install yt-dlp` and make sure `ffmpeg` is on PATH.

@@ -1,8 +1,18 @@
 # Hermes ↔ Time (Т‑Банк) — безопасная корпоративная интеграция
 
 **Дата:** 2026-06-12
-**Статус:** Дизайн на согласовании
+**Статус:** Реализовано (с поправкой по транспорту)
 **Автор:** densin
+
+> **ПОПРАВКА (по итогам живого запуска против `time.tbank.ru`):** Time
+> оказался **Mattermost‑based**, а не Slack‑совместимым (REST = Mattermost
+> v4 `/api/v4/`; сигнатура ошибки `api.context.404.app_error`). Поэтому
+> `TimeAdapter` подклассирует `MattermostAdapter`, а не Slack. WebSocket у
+> Time заблокирован прокси (HTTP 403), поэтому входящие идут через
+> **REST long‑polling** — это и есть «long‑polling‑фолбэк», заложенный ниже.
+> **Модель безопасности (corp_safe + hard‑deny + cron) не изменилась** —
+> она транспортно‑независима и ключуется по идентичности `Platform("time")`.
+> См. `plugins/platforms/time/README.md` и память `time-is-mattermost`.
 
 ## 1. Цель
 

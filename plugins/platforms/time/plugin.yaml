@@ -4,21 +4,18 @@ kind: platform
 version: 1.0.0
 description: >
   Time (Т‑Банк) corporate messenger adapter for Hermes Agent.
-  Time is Slack-API-compatible; this adapter subclasses the Slack
-  adapter and points it at Time's endpoints.
+  Time is Mattermost-based; this adapter subclasses the Mattermost adapter
+  and points it at Time's server. Inbound uses REST long-polling because
+  Time's proxy blocks the Mattermost WebSocket.
 author: densin
 requires_env:
   - name: TIME_BOT_TOKEN
-    description: "Bot token for Time (Slack xoxb-equivalent)"
+    description: "Mattermost bot/personal-access token for Time"
     prompt: "Time bot token"
     password: true
-  - name: TIME_APP_TOKEN
-    description: "Socket Mode app token (Slack xapp-equivalent)"
-    prompt: "Time app token"
-    password: true
   - name: TIME_API_BASE_URL
-    description: "Time Web API base URL (e.g. https://time.tbank.ru/api/)"
-    prompt: "Time API base URL"
+    description: "Time server base URL (e.g. https://time.tbank.ru)"
+    prompt: "Time server URL"
     password: false
 optional_env:
   - name: TIME_ALLOWED_USERS
@@ -30,6 +27,10 @@ optional_env:
     prompt: "Allow all users? (true/false)"
     password: false
   - name: TIME_HOME_CHANNEL
-    description: "Channel for cron / notification delivery"
-    prompt: "Home channel (or empty)"
+    description: "Channel ID for cron / notification delivery"
+    prompt: "Home channel ID (or empty)"
+    password: false
+  - name: TIME_POLL_INTERVAL
+    description: "REST poll interval in seconds (default 3)"
+    prompt: "Poll interval seconds"
     password: false

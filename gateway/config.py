@@ -236,13 +236,11 @@ class Platform(Enum):
 _BUILTIN_PLATFORM_VALUES = frozenset(m.value for m in Platform.__members__.values())
 
 
-# Platforms whose adapter speaks the Slack wire protocol. Time (Т‑Банк) is
-# Slack-API-compatible and its adapter subclasses SlackAdapter, so Slack-
-# protocol behaviors (slash-command dispatch via a single `/hermes` parent,
-# thread_ts progress-threading fallback, etc.) apply to it too. Compared by
-# ``.value`` so the dynamically-resolved ``Platform("time")`` member matches
-# regardless of enum identity.
-_SLACK_COMPATIBLE_PLATFORM_VALUES = frozenset({"slack", "time"})
+# Platforms whose adapter speaks the Slack wire protocol (slash-command
+# dispatch via a single `/hermes` parent, thread_ts progress-threading
+# fallback, etc.). NOTE: Time (Т‑Банк) is Mattermost-based, not Slack —
+# it has its own threading model and is intentionally NOT listed here.
+_SLACK_COMPATIBLE_PLATFORM_VALUES = frozenset({"slack"})
 
 
 def is_slack_compatible(platform: "Platform") -> bool:

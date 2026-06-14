@@ -221,10 +221,21 @@ class MattermostAdapter(BasePlatformAdapter):
             self._base_url,
         )
 
-        # Start WebSocket in background.
-        self._ws_task = asyncio.create_task(self._ws_loop())
+        # Start the inbound receive loop in the background (WS by default).
+        self._ws_task = self._start_receive_loop()
         self._mark_connected()
         return True
+
+    def _start_receive_loop(self) -> "asyncio.Task":
+        """Start the inbound event loop and return its Task.
+
+        Default transport is the Mattermost WebSocket. Subclasses deployed
+        behind a proxy that blocks the WS upgrade (e.g. Т‑Банк's Time, which
+        returns HTTP 403 on ``/api/v4/websocket``) override this to start a
+        REST long-polling loop instead. The returned task is stored as
+        ``self._ws_task`` so ``disconnect()`` tears it down uniformly.
+        """
+        return asyncio.create_task(self._ws_loop())
 
     async def disconnect(self) -> None:
         """Disconnect from Mattermost."""
@@ -249,6 +260,18 @@ class MattermostAdapter(BasePlatformAdapter):
 
         logger.info("Mattermost: disconnected")
 
+
+    def _ws_handshake_headers(self) -> Dict[str, str]:
+        """Headers to send on the WebSocket upgrade request.
+
+        Vanilla Mattermost authenticates via the post-connect
+        ``authentication_challenge`` message, so no auth header is needed on
+        the upgrade itself (returns ``{}``). Subclasses fronted by an
+        auth-enforcing reverse proxy / API gateway (e.g. Т‑Банк's Time) must
+        override this to send the bearer token on the upgrade request, or the
+        proxy rejects the handshake with HTTP 403 before the challenge runs.
+        """
+        return {}
 
     async def _resolve_root_id(self, post_id: str) -> str:
         """Resolve a post_id to the thread root_id for Mattermost.
@@ -655,7 +678,9 @@ class MattermostAdapter(BasePlatformAdapter):
         ws_url = re.sub(r"^http", "ws", self._base_url) + "/api/v4/websocket"
         logger.info("Mattermost: connecting to %s", ws_url)
 
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30.0)
+        self._ws = await self._session.ws_connect(
+            ws_url, heartbeat=30.0, headers=self._ws_handshake_headers()
+        )
 
         # Authenticate via the WebSocket.
         auth_msg = {

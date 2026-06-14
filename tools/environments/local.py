@@ -191,6 +191,14 @@ def _build_provider_env_blocklist() -> frozenset:
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
 
 
+def _load_hermes_env_vars() -> dict[str, str]:
+    try:
+        from hermes_cli.config import load_env
+        return load_env() or {}
+    except Exception:
+        return {}
+
+
 def _inject_context_hermes_home(env: dict) -> None:
     """Bridge the context-local Hermes home override into subprocess env."""
     try:
@@ -366,8 +374,12 @@ def _path_env_key(run_env: dict) -> str | None:
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        from tools.env_passthrough import (
+            get_all_passthrough as _get_all_passthrough,
+            is_env_passthrough as _is_passthrough,
+        )
     except Exception:
+        _get_all_passthrough = lambda: frozenset()  # noqa: E731
         _is_passthrough = lambda _: False  # noqa: E731
 
     merged = dict(os.environ | env)
@@ -378,6 +390,14 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+
+    passthrough_keys = set(_get_all_passthrough())
+    if passthrough_keys:
+        hermes_env = _load_hermes_env_vars()
+        for key in sorted(passthrough_keys):
+            if key not in run_env and key in hermes_env:
+                run_env[key] = hermes_env[key]
+
     path_key = _path_env_key(run_env)
     if path_key is not None:
         run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))

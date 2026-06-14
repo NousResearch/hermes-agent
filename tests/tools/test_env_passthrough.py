@@ -228,3 +228,34 @@ class TestTerminalIntegration:
         # Arbitrary skill-specific var
         register_env_passthrough(["MY_SKILL_CUSTOM_CONFIG"])
         assert is_env_passthrough("MY_SKILL_CUSTOM_CONFIG")
+
+    def test_make_run_env_loads_passthrough_from_dotenv(self, monkeypatch):
+        """terminal.env_passthrough should work for vars loaded from .env only."""
+        import tools.environments.local as local
+
+        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.setattr(
+            local,
+            "_load_hermes_env_vars",
+            lambda: {"TENOR_API_KEY": "dotenv-secret"},
+        )
+        register_env_passthrough(["TENOR_API_KEY"])
+
+        result = local._make_run_env({})
+
+        assert result["TENOR_API_KEY"] == "dotenv-secret"
+
+    def test_make_run_env_does_not_load_unregistered_dotenv_vars(self, monkeypatch):
+        """Unregistered .env secrets must not leak into local terminal runs."""
+        import tools.environments.local as local
+
+        monkeypatch.delenv("UNREGISTERED_DOTENV_TOKEN", raising=False)
+        monkeypatch.setattr(
+            local,
+            "_load_hermes_env_vars",
+            lambda: {"UNREGISTERED_DOTENV_TOKEN": "dotenv-secret"},
+        )
+
+        result = local._make_run_env({})
+
+        assert "UNREGISTERED_DOTENV_TOKEN" not in result

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import sys
 import time
@@ -107,6 +108,33 @@ def _oauth_default_label(provider: str, count: int) -> str:
 
 def _api_key_default_label(count: int) -> str:
     return f"api-key-{count}"
+
+
+def _token_fingerprint(token: str) -> str:
+    """Return a short non-secret fingerprint for duplicate-token detection."""
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _find_duplicate_token_entry(entries, token: str):
+    """Find an existing pool entry with the exact same access token.
+
+    OAuth device-code flows can accidentally authorize the browser's current
+    account while the user supplies a different label.  If the resulting access
+    token is byte-for-byte identical to an existing pool entry, the new entry is
+    not an independent fallback account.  Return a 1-based index and entry so
+    the CLI can warn without printing token material.
+    """
+    if not token:
+        return None
+    for idx, existing in enumerate(entries, start=1):
+        # The public warning is about an exact duplicate credential.  Do not
+        # use the short fingerprint for the decision itself: it is only a
+        # non-secret display aid after byte-for-byte equality is established.
+        if (getattr(existing, "access_token", "") or "") == token:
+            return idx, existing, _token_fingerprint(token)
+    return None
 
 
 def _display_source(source: str) -> str:
@@ -334,7 +362,9 @@ def auth_add_command(args) -> None:
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
         )
-        first_credential = not pool.entries()
+        existing_entries = pool.entries()
+        duplicate = _find_duplicate_token_entry(existing_entries, entry.access_token)
+        first_credential = not existing_entries
         pool.add_entry(entry)
         # Adding the first Codex credential should make it the active provider
         # (the old singleton save path did this implicitly via
@@ -342,6 +372,15 @@ def auth_add_command(args) -> None:
         if first_credential:
             auth_mod.mark_provider_active_if_unset(provider)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        if duplicate:
+            dup_index, dup_entry, dup_fp = duplicate
+            dup_label = getattr(dup_entry, "label", "") or f"credential #{dup_index}"
+            print(
+                f'Warning: this OAuth token matches existing {provider} credential '
+                f'#{dup_index} "{dup_label}" (fingerprint {dup_fp}). '
+                "If you intended to add a different account, switch browser "
+                "accounts and run auth add again."
+            )
         return
 
     if provider == "xai-oauth":

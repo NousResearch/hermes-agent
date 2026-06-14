@@ -122,6 +122,21 @@ export function applyPrintableInsert(
 }
 
 export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+const HANGUL_JAMO_RE = /[\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]/
+
+export function normalizeComposerInputState(value: string, cursor: number): TextInsertResult {
+  if (!HANGUL_JAMO_RE.test(value)) {
+    return { cursor, value }
+  }
+
+  const boundedCursor = Math.max(0, Math.min(cursor, value.length))
+  const normalizedValue = value.normalize('NFC')
+
+  return {
+    cursor: value.slice(0, boundedCursor).normalize('NFC').length,
+    value: normalizedValue
+  }
+}
 
 export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
   if (env.WT_SESSION) {
@@ -665,6 +680,9 @@ export function TextInput({
     nextLineWidth?: number
   ) => {
     const prev = vRef.current
+    const normalized = normalizeComposerInputState(next, nextCur)
+    next = normalized.value
+    nextCur = normalized.cursor
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
 

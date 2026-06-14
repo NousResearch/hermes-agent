@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyPrintableInsert, shouldRouteMultiCharInputAsPaste } from '../components/textInput.js'
+import { applyPrintableInsert, normalizeComposerInputState, shouldRouteMultiCharInputAsPaste } from '../components/textInput.js'
 
 describe('applyPrintableInsert', () => {
   it('applies non-bracketed multi-character bursts immediately', () => {
@@ -25,6 +25,27 @@ describe('applyPrintableInsert', () => {
   it('rejects control or escape-bearing input', () => {
     expect(applyPrintableInsert('abc', 3, '\x1b[200~pasted')).toBeNull()
     expect(applyPrintableInsert('abc', 3, '\t')).toBeNull()
+  })
+})
+
+describe('normalizeComposerInputState', () => {
+  it('normalizes decomposed Hangul jamo to NFC and preserves cursor position', () => {
+    const decomposed = '\u1112\u1161\u11AB\u1100\u1173\u11AF'
+    const result = normalizeComposerInputState(decomposed, decomposed.length)
+
+    expect(result).toEqual({ cursor: 2, value: '한글' })
+  })
+
+  it('keeps non-Hangul combining marks untouched', () => {
+    const value = 'Cafe\u0301'
+
+    expect(normalizeComposerInputState(value, value.length)).toEqual({ cursor: value.length, value })
+  })
+
+  it('updates cursor from the normalized prefix', () => {
+    const value = 'A\u1112\u1161B\u1102\u1161'
+
+    expect(normalizeComposerInputState(value, 3)).toEqual({ cursor: 2, value: 'A하B나' })
   })
 })
 

@@ -2,6 +2,7 @@
 import asyncio
 import json
 
+import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -103,6 +104,44 @@ class TestBlueBubblesHelpers:
 
         assert result.success is True
         assert sent == ["first thought\n\nsecond thought"]
+
+    @pytest.mark.asyncio
+    async def test_text_send_read_timeout_assumes_delivered_to_avoid_fallback_duplicate(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            calls.append(payload["message"])
+            raise httpx.ReadTimeout("")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter._send_with_retry("user@example.com", "hello")
+
+        assert result.success is True
+        assert result.message_id == "timeout-assumed-delivered"
+        assert calls == ["hello"]
+
+    @pytest.mark.asyncio
+    async def test_create_chat_read_timeout_assumes_delivered(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_post(path, payload):
+            calls.append((path, payload["message"]))
+            raise httpx.ReadTimeout("")
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter._create_chat_for_handle("user@example.com", "hello")
+
+        assert result.success is True
+        assert result.message_id == "timeout-assumed-delivered"
+        assert calls == [("/api/v1/chat/new", "hello")]
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

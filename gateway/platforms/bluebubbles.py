@@ -557,8 +557,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             data = res.get("data") or {}
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
+        except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+            return self._assume_delivered_after_send_timeout("create-chat send", exc)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _assume_delivered_after_send_timeout(action: str, exc: Exception) -> SendResult:
+        logger.warning(
+            "[bluebubbles] %s timed out; assuming delivered to avoid duplicate fallback: %s",
+            action,
+            type(exc).__name__,
+        )
+        return SendResult(success=True, message_id="timeout-assumed-delivered")
 
     # ------------------------------------------------------------------
     # Text sending
@@ -616,6 +627,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 last = SendResult(
                     success=True, message_id=str(msg_id), raw_response=res
                 )
+            except (httpx.ReadTimeout, httpx.WriteTimeout) as exc:
+                return self._assume_delivered_after_send_timeout("text send", exc)
             except Exception as exc:
                 return SendResult(success=False, error=str(exc))
         return last

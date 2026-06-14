@@ -3776,6 +3776,15 @@ class TestBuildSchemaFromConfig:
         for cat, count in cats.items():
             assert count >= 2, f"Category '{cat}' has only {count} field(s) — should be merged"
 
+    def test_file_browser_hover_reveal_toggle_in_schema(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert DEFAULT_CONFIG["display"]["hover_reveal_file_browser"] is True
+        entry = CONFIG_SCHEMA["display.hover_reveal_file_browser"]
+        assert entry["type"] == "boolean"
+        assert entry["category"] == "display"
+
 
 # ---------------------------------------------------------------------------
 # Config round-trip tests

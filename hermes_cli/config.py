@@ -1823,6 +1823,10 @@ DEFAULT_CONFIG = {
         #   "verbose" — include a compact content preview of what changed
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        # Desktop file-browser pane: reveal the collapsed pane when the cursor
+        # approaches the window edge. Set false to keep manual keyboard reveal
+        # while disabling pointer-hover activation.
+        "hover_reveal_file_browser": True,
         "streaming": False,
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")

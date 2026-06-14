@@ -26,6 +26,7 @@ import os
 import socket
 import sys
 import time
+from collections import deque
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use.backend import (
@@ -655,6 +656,63 @@ class WindowsUIABackend(ComputerUseBackend):
             png_bytes_len=png_bytes_len,
         )
 
+    def _iter_interactable(
+        self,
+        hwnd: int,
+        win_rect: Tuple[int, int, int, int],
+        max_nodes: int = 1500,
+        max_depth: int = 60,
+        time_budget: float = 4.0,
+    ):
+        """Yield (ctrl, role, label, rect) for interactable controls under
+        `hwnd`, in breadth-first discovery order.
+
+        This is the single source of element discovery order *and* the
+        interactability/visibility filter. Both the capture walk
+        (`_walk_elements`) and set_value's re-find (`_control_at_index`)
+        consume it, so element #N resolves to the same control in both — if
+        the two ever drifted, set_value would act on a different control than
+        the capture advertised under that index. The caller owns the
+        UIAutomation COM apartment (the live `ctrl`/`rect` are only valid for
+        the duration of the iteration).
+        """
+        wx, wy, ww, wh = win_rect
+        root = _auto.ControlFromHandle(hwnd)
+        if root is None:
+            return
+        deadline = time.monotonic() + time_budget
+        queue: deque = deque([(root, 0)])
+        yielded = 0
+        while queue and yielded < max_nodes and time.monotonic() < deadline:
+            ctrl, depth = queue.popleft()
+            try:
+                role = ctrl.ControlTypeName
+                if role.endswith("Control"):
+                    role = role[: -len("Control")]
+                interactable = role in _INTERACTABLE_TYPES
+                if not interactable and role == "Text":
+                    interactable = any(
+                        ctrl.GetPattern(pid) is not None
+                        for pid in (_auto.PatternId.ValuePattern,
+                                    _auto.PatternId.InvokePattern))
+                if interactable and ctrl.IsEnabled and not ctrl.IsOffscreen:
+                    r = ctrl.BoundingRectangle
+                    if (r.right > r.left and r.bottom > r.top
+                            and r.left < wx + ww and r.right > wx
+                            and r.top < wy + wh and r.bottom > wy):
+                        label = (ctrl.Name or ctrl.AutomationId or "")
+                        if len(label) > 120:
+                            label = label[:120]
+                        yielded += 1
+                        yield ctrl, role, label, r
+            except Exception:
+                pass
+            if depth < max_depth:
+                try:
+                    queue.extend((c, depth + 1) for c in ctrl.GetChildren())
+                except Exception:
+                    pass
+
     def _walk_elements(
         self,
         hwnd: int,
@@ -663,62 +721,27 @@ class WindowsUIABackend(ComputerUseBackend):
         max_depth: int = 60,
         time_budget: float = 4.0,
     ) -> List[UIElement]:
-        """BFS the UIA tree under `hwnd`, collecting interactable elements.
+        """Collect interactable elements under `hwnd` for a capture.
 
-        Deterministic discovery order — set_value relies on a re-walk
-        producing the same indices as the capture that advertised them.
+        Indices follow `_iter_interactable`'s discovery order, which
+        set_value re-walks (via `_control_at_index`) to resolve an element
+        back to a live control.
         """
-        wx, wy, ww, wh = win_rect
         elements: List[UIElement] = []
         try:
             with _auto.UIAutomationInitializerInThread():
-                root = _auto.ControlFromHandle(hwnd)
-                if root is None:
-                    return elements
-                deadline = time.monotonic() + time_budget
-                queue: List[Tuple[Any, int]] = [(root, 0)]
-                visited = 0
-                while queue and len(elements) < max_nodes and time.monotonic() < deadline:
-                    ctrl, depth = queue.pop(0)
-                    visited += 1
-                    try:
-                        role = ctrl.ControlTypeName
-                        if role.endswith("Control"):
-                            role = role[: -len("Control")]
-                        interactable = role in _INTERACTABLE_TYPES
-                        if not interactable and role == "Text":
-                            interactable = any(
-                                ctrl.GetPattern(pid) is not None
-                                for pid in (_auto.PatternId.ValuePattern,
-                                            _auto.PatternId.InvokePattern))
-                        if interactable and ctrl.IsEnabled and not ctrl.IsOffscreen:
-                            r = ctrl.BoundingRectangle
-                            bw, bh = r.right - r.left, r.bottom - r.top
-                            if (bw > 0 and bh > 0
-                                    and r.left < wx + ww and r.right > wx
-                                    and r.top < wy + wh and r.bottom > wy):
-                                label = (ctrl.Name or ctrl.AutomationId or "")
-                                if len(label) > 120:
-                                    label = label[:120]
-                                elements.append(UIElement(
-                                    index=len(elements) + 1,
-                                    role=role,
-                                    label=label,
-                                    bounds=(r.left, r.top, bw, bh),
-                                    app=self._last_app or "",
-                                    pid=self._target_pid or 0,
-                                    window_id=hwnd,
-                                ))
-                    except Exception:
-                        pass
-                    if depth < max_depth:
-                        try:
-                            queue.extend((c, depth + 1) for c in ctrl.GetChildren())
-                        except Exception:
-                            pass
-                if queue:
-                    logger.debug("element walk stopped early: %d visited, %d queued",
-                                 visited, len(queue))
+                for ctrl, role, label, r in self._iter_interactable(
+                        hwnd, win_rect, max_nodes=max_nodes,
+                        max_depth=max_depth, time_budget=time_budget):
+                    elements.append(UIElement(
+                        index=len(elements) + 1,
+                        role=role,
+                        label=label,
+                        bounds=(r.left, r.top, r.right - r.left, r.bottom - r.top),
+                        app=self._last_app or "",
+                        pid=self._target_pid or 0,
+                        window_id=hwnd,
+                    ))
         except Exception as e:
             logger.warning("UIA element walk failed: %s", e)
         return elements
@@ -813,16 +836,21 @@ class WindowsUIABackend(ComputerUseBackend):
             self._overlay.send({"cmd": "flash", "text": f"click · {what}", "ttl": 1.5})
             self._ensure_target_foreground()
             old_pos = win32api.GetCursorPos()
-            _send_inputs(mods_down)
-            _mouse_move(px, py)
-            time.sleep(0.03)
-            for i in range(max(1, click_count)):
-                _mouse_button(button, True)
-                _mouse_button(button, False)
-                if i + 1 < click_count:
-                    time.sleep(0.05)
-            _send_inputs(mods_up)
-            _mouse_move(*old_pos)
+            try:
+                _send_inputs(mods_down)
+                _mouse_move(px, py)
+                time.sleep(0.03)
+                for i in range(max(1, click_count)):
+                    _mouse_button(button, True)
+                    _mouse_button(button, False)
+                    if i + 1 < click_count:
+                        time.sleep(0.05)
+            finally:
+                # Release modifiers + restore the cursor even if an injection
+                # above raised — otherwise a failed click strands Ctrl/Alt/Shift
+                # in the held-down state for the user at the keyboard.
+                _send_inputs(mods_up)
+                _mouse_move(*old_pos)
             return ActionResult(ok=True, action="click",
                                 message=f"{button}-clicked {what}"
                                         + (f" x{click_count}" if click_count > 1 else ""))
@@ -855,17 +883,23 @@ class WindowsUIABackend(ComputerUseBackend):
             self._overlay.send({"cmd": "flash", "text": f"drag · {src} → {dst}", "ttl": 1.5})
             self._ensure_target_foreground()
             old_pos = win32api.GetCursorPos()
-            _send_inputs(mods_down)
-            _mouse_move(fx, fy)
-            time.sleep(0.05)
-            _mouse_button(button, True)
-            steps = 12
-            for i in range(1, steps + 1):
-                _mouse_move(fx + (tx - fx) * i // steps, fy + (ty - fy) * i // steps)
-                time.sleep(0.01)
-            _mouse_button(button, False)
-            _send_inputs(mods_up)
-            _mouse_move(*old_pos)
+            try:
+                _send_inputs(mods_down)
+                _mouse_move(fx, fy)
+                time.sleep(0.05)
+                _mouse_button(button, True)
+                steps = 12
+                for i in range(1, steps + 1):
+                    _mouse_move(fx + (tx - fx) * i // steps, fy + (ty - fy) * i // steps)
+                    time.sleep(0.01)
+                _mouse_button(button, False)
+            finally:
+                # A mid-drag failure must not strand the button or modifiers
+                # held down — a stuck primary button turns every later move
+                # into a drag-select. The button-up is idempotent on success.
+                _mouse_button(button, False)
+                _send_inputs(mods_up)
+                _mouse_move(*old_pos)
             return ActionResult(ok=True, action="drag",
                                 message=f"dragged {src} -> {dst}")
         except Exception as e:
@@ -903,16 +937,20 @@ class WindowsUIABackend(ComputerUseBackend):
                                 "text": f"scroll {direction} x{amount}", "ttl": 1.2})
             self._ensure_target_foreground()
             old_pos = win32api.GetCursorPos()
-            _send_inputs(mods_down)
-            _mouse_move(px, py)
-            time.sleep(0.03)
-            if direction in ("up", "down"):
-                _mouse_wheel(amount if direction == "up" else -amount)
-            else:
-                _mouse_wheel(amount if direction == "right" else -amount,
-                             horizontal=True)
-            _send_inputs(mods_up)
-            _mouse_move(*old_pos)
+            try:
+                _send_inputs(mods_down)
+                _mouse_move(px, py)
+                time.sleep(0.03)
+                if direction in ("up", "down"):
+                    _mouse_wheel(amount if direction == "up" else -amount)
+                else:
+                    _mouse_wheel(amount if direction == "right" else -amount,
+                                 horizontal=True)
+            finally:
+                # Release modifiers + restore the cursor even if the wheel
+                # injection raised, so a failed scroll can't strand a modifier.
+                _send_inputs(mods_up)
+                _mouse_move(*old_pos)
             return ActionResult(ok=True, action="scroll",
                                 message=f"scrolled {direction} x{amount} at {what}")
         except Exception as e:
@@ -1005,41 +1043,16 @@ class WindowsUIABackend(ComputerUseBackend):
         return ctrl
 
     def _control_at_index(self, hwnd: int, index: int) -> Optional[Any]:
-        """Return the live control at 1-based `index` in discovery order."""
-        count = 0
-        root = _auto.ControlFromHandle(hwnd)
-        if root is None:
-            return None
-        wx, wy, ww, wh = _window_rect(hwnd)
-        deadline = time.monotonic() + 4.0
-        queue: List[Tuple[Any, int]] = [(root, 0)]
-        while queue and time.monotonic() < deadline:
-            ctrl, depth = queue.pop(0)
-            try:
-                role = ctrl.ControlTypeName
-                if role.endswith("Control"):
-                    role = role[: -len("Control")]
-                interactable = role in _INTERACTABLE_TYPES
-                if not interactable and role == "Text":
-                    interactable = any(
-                        ctrl.GetPattern(pid) is not None
-                        for pid in (_auto.PatternId.ValuePattern,
-                                    _auto.PatternId.InvokePattern))
-                if interactable and ctrl.IsEnabled and not ctrl.IsOffscreen:
-                    r = ctrl.BoundingRectangle
-                    if (r.right > r.left and r.bottom > r.top
-                            and r.left < wx + ww and r.right > wx
-                            and r.top < wy + wh and r.bottom > wy):
-                        count += 1
-                        if count == index:
-                            return ctrl
-            except Exception:
-                pass
-            if depth < 60:
-                try:
-                    queue.extend((c, depth + 1) for c in ctrl.GetChildren())
-                except Exception:
-                    pass
+        """Return the live control at 1-based `index` in capture discovery order.
+
+        Re-walks via the same `_iter_interactable` traversal the capture used,
+        so `index` resolves to the control capture advertised under that
+        number. The caller owns the UIAutomation COM apartment.
+        """
+        for pos, (ctrl, _role, _label, _rect) in enumerate(
+                self._iter_interactable(hwnd, _window_rect(hwnd)), start=1):
+            if pos == index:
+                return ctrl
         return None
 
     @staticmethod

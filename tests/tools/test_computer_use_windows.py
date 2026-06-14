@@ -373,3 +373,188 @@ class TestIdleGuard:
         t0 = _t.monotonic()
         wb._wait_for_user_idle()
         assert _t.monotonic() - t0 < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Input-state safety: a failed pointer action must never strand modifiers
+# (or, for drag, the mouse button) in the held-down state. Regression guard
+# for the try/finally release in click/drag/scroll.
+# ---------------------------------------------------------------------------
+
+def _raise(*_a, **_k):
+    raise RuntimeError("synthetic injection failure")
+
+
+class TestInputStateReleasedOnFailure:
+    def _backend(self, monkeypatch):
+        from tools.computer_use import windows_backend as wb
+        b = wb.WindowsUIABackend()
+        b._elements[1] = UIElement(index=1, role="Button", label="OK",
+                                   bounds=(110, 220, 100, 50), window_id=777)
+        b._capture_rect = (100, 200, 640, 480)
+        # Window present and unmoved -> _resolve_point yields the cached center.
+        monkeypatch.setattr(wb, "win32gui",
+                            types.SimpleNamespace(IsWindow=lambda h: True),
+                            raising=False)
+        monkeypatch.setattr(wb, "_window_rect", lambda h: (100, 200, 640, 480),
+                            raising=False)
+        monkeypatch.setattr(wb, "win32api",
+                            types.SimpleNamespace(GetCursorPos=lambda: (5, 5)),
+                            raising=False)
+        monkeypatch.setattr(b, "_overlay",
+                            types.SimpleNamespace(send=lambda *a, **k: None, pid=0))
+        monkeypatch.setattr(b, "_ensure_target_foreground", lambda: None)
+        # Tag the modifier down/up batches so we can assert both were sent.
+        monkeypatch.setattr(b, "_with_modifiers",
+                            lambda modifiers=None: (["DOWN"], ["UP"]))
+        return wb, b
+
+    def test_click_releases_modifiers_when_action_fails(self, monkeypatch):
+        wb, b = self._backend(monkeypatch)
+        sent = []
+        monkeypatch.setattr(wb, "_send_inputs", lambda batch: sent.append(batch))
+        monkeypatch.setattr(wb, "_mouse_move", lambda *a, **k: None)
+        monkeypatch.setattr(wb, "_mouse_button", _raise)
+        res = b.click(element=1, modifiers=["ctrl"])
+        assert not res.ok
+        assert sent == [["DOWN"], ["UP"]], "mods_up must run in the finally"
+
+    def test_click_releases_modifiers_on_success(self, monkeypatch):
+        wb, b = self._backend(monkeypatch)
+        sent = []
+        monkeypatch.setattr(wb, "_send_inputs", lambda batch: sent.append(batch))
+        monkeypatch.setattr(wb, "_mouse_move", lambda *a, **k: None)
+        monkeypatch.setattr(wb, "_mouse_button", lambda *a, **k: None)
+        res = b.click(element=1, modifiers=["ctrl"])
+        assert res.ok
+        assert sent == [["DOWN"], ["UP"]]
+
+    def test_drag_releases_button_and_modifiers_midway(self, monkeypatch):
+        wb, b = self._backend(monkeypatch)
+        sent, buttons = [], []
+        calls = {"moves": 0}
+
+        def _mv(*_a, **_k):
+            calls["moves"] += 1
+            if calls["moves"] == 2:        # 1 = move to start, 2 = first drag step
+                raise RuntimeError("boom mid-drag")
+
+        monkeypatch.setattr(wb, "_send_inputs", lambda batch: sent.append(batch))
+        monkeypatch.setattr(wb, "_mouse_move", _mv)
+        monkeypatch.setattr(wb, "_mouse_button",
+                            lambda button, down: buttons.append((button, down)))
+        res = b.drag(from_element=1, to_xy=(300, 400), modifiers=["alt"])
+        assert not res.ok
+        # Primary button was pressed, then released in the finally; mods released.
+        assert ("left", True) in buttons
+        assert buttons[-1] == ("left", False)
+        assert sent == [["DOWN"], ["UP"]]
+
+    def test_scroll_releases_modifiers_when_wheel_fails(self, monkeypatch):
+        wb, b = self._backend(monkeypatch)
+        sent = []
+        monkeypatch.setattr(wb, "_send_inputs", lambda batch: sent.append(batch))
+        monkeypatch.setattr(wb, "_mouse_move", lambda *a, **k: None)
+        monkeypatch.setattr(wb, "_mouse_wheel", _raise)
+        res = b.scroll(direction="down", element=1, modifiers=["shift"])
+        assert not res.ok
+        assert sent == [["DOWN"], ["UP"]]
+
+
+# ---------------------------------------------------------------------------
+# Shared tree-walk: capture (_walk_elements) and set_value (_control_at_index)
+# consume one generator (_iter_interactable), so an element index resolves to
+# the same control in both, discovery is breadth-first, and the filter is
+# applied identically. Guards findings #2 (deque) and #3 (single walk).
+# ---------------------------------------------------------------------------
+
+class _FakeRect:
+    def __init__(self, left, top, right, bottom):
+        self.left, self.top, self.right, self.bottom = left, top, right, bottom
+
+
+class _FakeCtrl:
+    def __init__(self, role, name="", rect=(0, 0, 10, 10), enabled=True,
+                 offscreen=False, children=None, automation_id="", patterns=None):
+        self.ControlTypeName = role
+        self.Name = name
+        self.AutomationId = automation_id
+        self.IsEnabled = enabled
+        self.IsOffscreen = offscreen
+        self.BoundingRectangle = _FakeRect(*rect)
+        self._children = list(children or [])
+        self._patterns = patterns or {}
+
+    def GetChildren(self):
+        return list(self._children)
+
+    def GetPattern(self, pid):
+        return self._patterns.get(pid)
+
+
+class _FakeInitializer:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def _fake_auto(root):
+    return types.SimpleNamespace(
+        ControlFromHandle=lambda hwnd: root,
+        UIAutomationInitializerInThread=_FakeInitializer,
+        PatternId=types.SimpleNamespace(ValuePattern=1, InvokePattern=2),
+    )
+
+
+_WIDE = (0, 0, 1000, 1000)
+
+
+class TestSharedTreeWalk:
+    def _install(self, monkeypatch, root):
+        from tools.computer_use import windows_backend as wb
+        monkeypatch.setattr(wb, "_auto", _fake_auto(root), raising=False)
+        monkeypatch.setattr(wb, "_window_rect", lambda hwnd: _WIDE, raising=False)
+        return wb, wb.WindowsUIABackend()
+
+    def test_capture_and_set_value_resolve_same_control(self, monkeypatch):
+        beta = _FakeCtrl("EditControl", name="Beta", rect=(10, 40, 60, 70))
+        gamma = _FakeCtrl("ButtonControl", name="Gamma", offscreen=True)
+        mid = _FakeCtrl("PaneControl", children=[gamma, beta])
+        alpha = _FakeCtrl("ButtonControl", name="Alpha", rect=(10, 10, 60, 30))
+        delta = _FakeCtrl("ButtonControl", name="Delta", enabled=False)
+        root = _FakeCtrl("PaneControl", children=[alpha, mid, delta])
+        wb, b = self._install(monkeypatch, root)
+
+        els = b._walk_elements(123, _WIDE)
+        # Offscreen Gamma + disabled Delta filtered; BFS order Alpha then Beta.
+        assert [e.label for e in els] == ["Alpha", "Beta"]
+        assert [e.index for e in els] == [1, 2]
+        # Every advertised index re-resolves to the SAME control.
+        for e in els:
+            ctrl = b._control_at_index(123, e.index)
+            assert ctrl is not None and ctrl.Name == e.label
+        assert b._control_at_index(123, 99) is None
+
+    def test_discovery_order_is_breadth_first(self, monkeypatch):
+        # BFS yields the shallow button before the nested one; a LIFO queue or
+        # DFS would invert these, so this pins deque.popleft() ordering.
+        deep = _FakeCtrl("ButtonControl", name="Second")
+        sub = _FakeCtrl("PaneControl", children=[deep])
+        first = _FakeCtrl("ButtonControl", name="First", rect=(20, 20, 40, 40))
+        root = _FakeCtrl("PaneControl", children=[first, sub])
+        wb, b = self._install(monkeypatch, root)
+        assert [e.label for e in b._walk_elements(1, _WIDE)] == ["First", "Second"]
+
+    def test_text_node_counts_only_with_value_pattern(self, monkeypatch):
+        # A Text control is non-interactable unless it exposes Value/Invoke —
+        # the special case must apply identically in the shared walk.
+        plain = _FakeCtrl("TextControl", name="label")
+        editable = _FakeCtrl("TextControl", name="field", rect=(0, 20, 30, 40),
+                             patterns={1: object()})  # PatternId.ValuePattern
+        root = _FakeCtrl("PaneControl", children=[plain, editable])
+        wb, b = self._install(monkeypatch, root)
+        els = b._walk_elements(1, _WIDE)
+        assert [e.label for e in els] == ["field"]
+        assert b._control_at_index(1, 1).Name == "field"

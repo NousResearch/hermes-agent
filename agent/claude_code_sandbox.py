@@ -249,53 +249,65 @@ def build_session_sandbox(
 ) -> Path:
     """Build (or rebuild if stale) a Claude Code sandbox for *session_id*.
 
-    Orchestrates the four sandbox stages: manifest cache check, CLAUDE.md
-    composition + skill flatten, MCP pointer, manifest stamp. Returns the
-    absolute path to the sandbox cwd.
+    Resolves the *agent*'s three flags (``skip_context_files`` /
+    ``load_soul_identity`` / ``skip_memory``) into a preset name via
+    :func:`_resolve_preset`, looks up the corresponding
+    :class:`SandboxComponents` in :data:`SANDBOX_PRESETS`, then serializes
+    manifest digest + CLAUDE.md + .mcp.json + settings.local.json +
+    flattened skills according to those components. Because the manifest
+    digest folds the components in, switching presets for the same session
+    automatically forces a rebuild.
+
+    Returns the absolute path to the sandbox cwd.
     """
     sandbox = session_sandbox_path(session_id, hermes_home=hermes_home)
     sandbox.mkdir(parents=True, exist_ok=True)
 
-    # --- Subagent fast-path ---
-    # When both skip_context_files and skip_memory are True, the caller
-    # is a subagent that doesn't need project context.  Build a minimal
-    # sandbox with only settings.local.json (bypassPermissions) and a
-    # short preamble CLAUDE.md — skip SOUL.md, memory, skills, .mcp.json,
-    # and manifest cache.
-    if getattr(agent, "skip_context_files", False) and getattr(agent, "skip_memory", False):
-        _write_settings_local(sandbox, model=model)
-        minimal_claude_md = _PREAMBLE.strip() + "\n"
-        (sandbox / "CLAUDE.md").write_text(minimal_claude_md, encoding="utf-8")
-        logger.info("Built minimal Claude Code sandbox %s (subagent fast-path)", sandbox)
-        return sandbox
+    # 1. Resolve preset → components
+    preset_name = _resolve_preset(agent)
+    components = SANDBOX_PRESETS[preset_name]
 
+    # 2. Manifest digest reflects components (preset 变了 → digest 变 → 强制重建)
     manifest_path = sandbox / SANDBOX_MANIFEST
-    # The digest covers every input that should invalidate the cache —
-    # SOUL.md mtime, memory snippets, enabled skills, platform, model. Any
-    # input change here produces a new digest, forcing a rebuild on next
-    # call. See :func:`_collect_manifest_inputs`.
     inputs = _collect_manifest_inputs(
         hermes_home=hermes_home, platform=platform, model=model,
+        components=components,
     )
     digest = _hash_inputs(inputs)
+
+    # 3. Cache check
     if _manifest_is_current(manifest_path, digest, sandbox):
         logger.debug("Sandbox %s is up-to-date; skipping rebuild", sandbox)
         return sandbox
 
-    # Fresh build — nuke any pre-existing skills dir (files from prior layout
-    # could otherwise accrete). Keep CLAUDE.md / .mcp.json for simpler diffs.
+    # 4. Build CLAUDE.md composition parts (None / "" = skip)
+    tool_names = _resolve_tool_names()
+    toolbelt_hint = (
+        _build_toolbelt_hint(tool_names) if components.include_toolbelt else ""
+    )
+    platform_block = (
+        _build_platform_block(platform) if components.include_platform else None
+    )
+    soul_text = _load_soul(hermes_home, include=components.include_soul)
+    memory_block = _build_memory_block(agent, include=components.include_memory)
+
+    # 5. Skills: include=False 时清理 stale dir,include=True 时扁平化写入
     skills_out = sandbox / ".claude" / "skills"
     if skills_out.exists():
         shutil.rmtree(skills_out, ignore_errors=True)
-    skills_out.mkdir(parents=True, exist_ok=True)
+    if components.include_skills:
+        skills_out.mkdir(parents=True, exist_ok=True)
+        flattened = _flatten_skills_into(
+            include=True,
+            hermes_home=hermes_home,
+            target=skills_out,
+            available_tools=available_tools,
+            available_toolsets=available_toolsets,
+        )
+    else:
+        flattened = 0
 
-    tool_names = _resolve_tool_names()
-    toolbelt_hint = _build_toolbelt_hint(tool_names)
-
-    memory_block = _build_memory_block(agent)
-    soul_text = _load_soul(hermes_home)
-    platform_block = _build_platform_block(platform)
-
+    # 6. Compose CLAUDE.md
     claude_md = _compose_claude_md(
         soul_text=soul_text,
         memory_block=memory_block,
@@ -305,31 +317,44 @@ def build_session_sandbox(
     )
     (sandbox / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
 
-    _write_settings_local(sandbox, model=model)
+    # 7. settings.local.json (include_settings=False 时清理 stale)
+    if components.include_settings:
+        # _write_settings_local writes <sandbox>/.claude/settings.local.json
+        # without mkdir-ing the parent. The old code always implicitly
+        # created .claude via skills_out.mkdir, but include_skills=False
+        # paths (e.g. minimal preset) skip that — so we mkdir here.
+        (sandbox / ".claude").mkdir(parents=True, exist_ok=True)
+        _write_settings_local(sandbox, model=model)
+    else:
+        stale_settings = sandbox / ".claude" / "settings.local.json"
+        if stale_settings.exists():
+            stale_settings.unlink()
 
-    flattened = _flatten_skills_into(
-        hermes_home=hermes_home,
-        target=skills_out,
-        available_tools=available_tools,
-        available_toolsets=available_toolsets,
-    )
+    # 8. .mcp.json (include_mcp=False 时清理 stale;子 agent 永远保留 mcp)
+    if components.include_mcp:
+        _write_mcp_json(
+            sandbox,
+            session_id=session_id,
+            hermes_home=hermes_home,
+            platform=platform,
+            include=True,
+        )
+    else:
+        stale_mcp = sandbox / ".mcp.json"
+        if stale_mcp.exists():
+            stale_mcp.unlink()
 
-    _write_mcp_json(
-        sandbox,
-        session_id=session_id,
-        hermes_home=hermes_home,
-        platform=platform,
-    )
-
+    # 9. Manifest stamp
     _write_sandbox_manifest(
         manifest_path,
         digest=digest,
         session_id=session_id,
         skill_count=flattened,
     )
+
     logger.info(
-        "Built Claude Code sandbox %s (%d skills, %d tools)",
-        sandbox, flattened, len(tool_names),
+        "Built Claude Code sandbox %s (preset=%s, %d skills, %d tools)",
+        sandbox, preset_name, flattened, len(tool_names),
     )
     return sandbox
 

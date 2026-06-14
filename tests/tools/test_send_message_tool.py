@@ -726,7 +726,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, rich_messages=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -1091,6 +1091,255 @@ class TestSendTelegramThreadIdMapping:
         # Second call (retry): should NOT include message_thread_id
         call2_kwargs = bot.send_document.await_args_list[1].kwargs
         assert "message_thread_id" not in call2_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Tests for Telegram Bot API 10.1 rich-message support in the standalone
+# send_message tool. Mirrors tests/gateway/test_telegram_rich_messages.py
+# but covers the MCP/cron delivery path (tools/send_message_tool._send_telegram).
+# ---------------------------------------------------------------------------
+
+def _install_telegram_mock_with_rich(monkeypatch, bot):
+    """Install a telegram module shim whose Bot.do_api_request is a
+    coroutine function (mirrors real PTB 22.x), so the rich path is
+    eligible. The shim's Bot() returns a thin wrapper that delegates
+    ALL attribute access to the test's ``bot`` mock — so existing
+    AsyncMock patches (bot.send_message, bot.send_photo, ...) keep
+    working unchanged, while bot.do_api_request is the AsyncMock the
+    test uses to assert or fail the rich path.
+    """
+    parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
+    constants_mod = SimpleNamespace(ParseMode=parse_mode)
+    _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
+
+    class _BotStub:
+        """Wrapper that delegates every attribute to the test's bot mock.
+
+        The real ``bot.do_api_request`` is an AsyncMock the test controls.
+        The wrapper's *class-level* ``do_api_request`` is a coroutine
+        function so the capability check
+        ``inspect.iscoroutinefunction(Bot.do_api_request)`` returns True
+        — which is what makes the rich path eligible in production.
+        """
+        def __init__(self, *_args, **_kwargs):
+            # Production passes Bot(token=token, request=..., get_updates_request=...).
+            # We ignore all of that — the wrapper delegates to the test mock.
+            pass
+
+        async def do_api_request(self, *args, **kwargs):
+            return await bot.do_api_request(*args, **kwargs)
+
+        def __getattr__(self, name):
+            # Everything else (send_message, send_photo, ...) goes to the
+            # test's mock bot.
+            return getattr(bot, name)
+
+    telegram_mod = SimpleNamespace(
+        Bot=_BotStub, MessageEntity=_MessageEntity, constants=constants_mod
+    )
+    monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
+    monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+
+
+class TestSendTelegramRichMessages:
+    """The standalone MCP ``_send_telegram`` should use Bot API 10.1
+    ``sendRichMessage`` when the operator has opted in via
+    ``platforms.telegram.extra.rich_messages: true`` (mirroring the
+    gateway adapter's opt-in policy in PR #46206) and fall back to
+    legacy MarkdownV2 on capability / permanent errors. The default
+    is OFF — the rich path must be explicitly enabled per platform.
+    """
+
+    def test_rich_disabled_by_default_skips_rich_path(self, monkeypatch):
+        """Default policy: ``rich_messages`` is False (opt-in, matches
+        PR #46206). The rich path MUST NOT be attempted even when the
+        bot exposes ``do_api_request``."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(
+            return_value={"message_id": 999}
+        )
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        # NOTE: rich_messages not passed → defaults to False.
+        result = asyncio.run(
+            _send_telegram("tok", "123", "| col | col |\n|---|---|")
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "1"
+        # Rich path MUST NOT have been attempted.
+        bot.do_api_request.assert_not_awaited()
+        # Legacy MarkdownV2 send was used instead.
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_plain_text_uses_send_rich_message(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(
+            return_value={"message_id": 999}
+        )
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "| col | col |\n|---|---|", rich_messages=True)
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "999"
+        bot.do_api_request.assert_awaited_once()
+        call = bot.do_api_request.await_args
+        assert call.args[0] == "sendRichMessage"
+        # Raw markdown is passed through (NO format_message conversion).
+        assert call.kwargs["api_kwargs"]["chat_id"] == 123
+        assert "|" in call.kwargs["api_kwargs"]["rich_message"]["markdown"]
+        # Legacy send_message MUST NOT be called when rich succeeded.
+        bot.send_message.assert_not_awaited()
+
+    def test_rich_message_includes_thread_id_when_set(self, monkeypatch):
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 42})
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "hi", thread_id="17585", rich_messages=True)
+        )
+
+        kwargs = bot.do_api_request.await_args.kwargs["api_kwargs"]
+        assert kwargs["message_thread_id"] == 17585
+
+    def test_rich_message_omits_none_thread_id(self, monkeypatch):
+        """The General-topic '1' maps to None — never send a stray None."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 1})
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "hi", thread_id="1", rich_messages=True)
+        )
+
+        kwargs = bot.do_api_request.await_args.kwargs["api_kwargs"]
+        assert "message_thread_id" not in kwargs
+
+    def test_html_payload_skips_rich_path(self, monkeypatch):
+        """HTML is a legacy concept — rich takes raw markdown, not HTML.
+        Even with rich_messages=True, an HTML payload falls through to
+        legacy HTML parse mode."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 1})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("tok", "123", "<b>bold</b>", rich_messages=True))
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["parse_mode"] == "HTML"
+
+    def test_media_payload_skips_rich_path(self, monkeypatch, tmp_path):
+        """Rich text has no attachment slot — media always uses legacy."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(return_value={"message_id": 1})
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        img = tmp_path / "a.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "123", "caption",
+                media_files=[(str(img), False)],
+                rich_messages=True,
+            )
+        )
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        bot.send_photo.assert_awaited_once()
+
+    def test_rich_falls_back_to_legacy_on_bad_request(self, monkeypatch):
+        """BadRequest from sendRichMessage must fall through to legacy
+        sendMessage, NOT propagate (so users still get their message)."""
+        from telegram.error import BadRequest
+
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(
+            side_effect=BadRequest("Bad Request: message is too long")
+        )
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=5))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "hello", rich_messages=True))
+
+        assert result["success"] is True
+        assert result["message_id"] == "5"
+        bot.do_api_request.assert_awaited_once()
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_rich_falls_back_on_capability_error(self, monkeypatch):
+        """AttributeError on do_api_request = capability missing → legacy."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(side_effect=AttributeError("no such attr"))
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=7))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "hello", rich_messages=True))
+
+        assert result["success"] is True
+        assert result["message_id"] == "7"
+        bot.send_message.assert_awaited_once()
+
+    def test_rich_transient_timeout_propagates(self, monkeypatch):
+        """Transient errors (timeouts, network) must NOT legacy-resend:
+        the rich request may have reached Telegram, so a fallback would
+        create a duplicate. We propagate so the caller can decide."""
+        from telegram.error import TimedOut
+
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(side_effect=TimedOut("read timed out"))
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        with pytest.raises(TimedOut):
+            asyncio.run(_send_telegram("tok", "123", "hello", rich_messages=True))
+
+        # Legacy MUST NOT have been called on transient.
+        bot.send_message.assert_not_awaited()
+
+    def test_rich_disabled_when_bot_lacks_do_api_request(self, monkeypatch):
+        """Old PTB without do_api_request → skip rich, use legacy directly,
+        even when rich_messages=True (the capability check is authoritative)."""
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        # NOTE: no do_api_request attribute on bot, AND Bot shim has none
+        _install_telegram_mock(monkeypatch, bot)  # the legacy-style installer
+
+        result = asyncio.run(
+            _send_telegram("tok", "123", "hello", rich_messages=True)
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "1"
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_rich_extracts_message_id_from_nested_result(self, monkeypatch):
+        """Some PTB versions return {"ok": true, "result": {"message_id": N}};
+        we read from both shapes."""
+        bot = MagicMock()
+        bot.do_api_request = AsyncMock(
+            return_value={"ok": True, "result": {"message_id": 314}}
+        )
+        _install_telegram_mock_with_rich(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("tok", "123", "hello", rich_messages=True))
+
+        assert result["success"] is True
+        assert result["message_id"] == "314"
 
 
 # ---------------------------------------------------------------------------

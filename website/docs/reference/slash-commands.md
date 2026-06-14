@@ -39,7 +39,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/new [name]` (alias: `/reset`) | Start a new session (fresh session ID + history). Optional `[name]` sets the initial session title — e.g. `/new my-experiment` opens a fresh session already titled `my-experiment` so it's easy to find later with `/resume` or `/sessions`. Append `now`, `--yes`, or `-y` to skip the confirmation modal — e.g. `/reset now`, `/new --yes my-experiment`. |
 | `/clear` | Clear screen and start a new session |
 | `/history` | Show conversation history |
-| `/prompts [number]` | CLI-only: browse previous prompts in the current session and load one into the editable composer. Run `/prompts` to list recent prompts, then type a number or run `/prompts <number>` to edit that prompt before sending. |
+| `/prompts [number]` | CLI-only: list recent user prompts from the current session and load one into the editable composer. Run `/prompts` to browse, then type a number or run `/prompts <number>` to edit that prompt before sending. |
 | `/save` | Save the current conversation |
 | `/retry` | Retry the last message (resend to agent) |
 | `/undo` | Remove the last user/assistant exchange |

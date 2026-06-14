@@ -1,0 +1,38 @@
+name: vk-platform
+label: VK Messenger
+kind: platform
+version: 1.0.0
+description: >
+  VK Messenger gateway adapter for Hermes Agent.
+  Connects to a VK community bot via REST API polling
+  and relays messages between VK users and the Hermes agent.
+  No public URL or webhook needed — works entirely via API calls,
+  making it suitable for networks with restricted connectivity.
+author: Igor Borges
+license: MIT
+requires_env:
+  - name: VK_TOKEN
+    description: "VK community access token (from Manage → API → Create token, with Messages permission)"
+    prompt: "VK API token"
+    password: true
+  - name: VK_GROUP_ID
+    description: "VK community ID (numeric, e.g. 123456789)"
+    prompt: "VK community ID"
+    password: false
+optional_env:
+  - name: VK_API_VERSION
+    description: "VK API version (default: 5.199)"
+    prompt: "VK API version"
+    password: false
+  - name: VK_ALLOWED_USERS
+    description: "Comma-separated VK user IDs allowed to interact with the bot"
+    prompt: "Allowed user IDs (comma-separated)"
+    password: false
+  - name: VK_ALLOW_ALL_USERS
+    description: "Allow all users to interact with the bot (true/false)"
+    prompt: "Allow all users?"
+    password: false
+  - name: VK_HOME_CHANNEL
+    description: "Peer ID for cron / notification delivery via this platform"
+    prompt: "Home channel peer ID"
+    password: false

@@ -2174,6 +2174,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         import collections as _collections
         self._shadow_clone_inbox: Dict[str, Any] = {}   # session_key → deque[ticket_id]
         self._shadow_clone_routing: Dict[str, Dict] = {}  # session_key → routing metadata
+        # Per-session drain lock: serialises concurrent watcher + post-turn drain calls
+        # so routing_meta is never popped by two simultaneous coroutines.
+        self._shadow_clone_drain_locks: Dict[str, asyncio.Lock] = {}
         # ──────────────────────────────────────────────────────────────────────
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
@@ -5477,18 +5480,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         v1 note: if the session enters permanent idle (user never sends another message),
         inbox entries persist in memory and are visible via Kanban dashboard.
         Proactive idle-timer drain is future work.
+
+        Race-condition fix: a per-session asyncio.Lock serialises concurrent callers
+        (watcher idle-drain vs post-turn drain).  routing_meta is captured BEFORE the
+        first await so it cannot be popped by a second concurrent drain.
         """
+        # Fast-path: nothing to drain (avoids lock acquisition overhead)
         inbox = self._shadow_clone_inbox.get(session_key)
         if not inbox:
             return
 
-        # Drain atomically
-        pending_ids: list = []
-        while inbox:
-            pending_ids.append(inbox.popleft())
+        # Acquire per-session lock — serialises watcher tick vs post-turn hook.
+        if session_key not in self._shadow_clone_drain_locks:
+            self._shadow_clone_drain_locks[session_key] = asyncio.Lock()
+        async with self._shadow_clone_drain_locks[session_key]:
+            # Re-check inside lock: a concurrent drain may have emptied the deque already.
+            inbox = self._shadow_clone_inbox.get(session_key)
+            if not inbox:
+                return
 
-        if not pending_ids:
-            return
+            # Drain atomically — deque.popleft is thread-safe from _shadow_clone_enqueue
+            pending_ids: list = []
+            while inbox:
+                pending_ids.append(inbox.popleft())
+
+            if not pending_ids:
+                return
+
+            # Capture routing_meta NOW, before the first await, so a concurrent drain
+            # cannot pop an empty dict after we yield in asyncio.to_thread().
+            routing_meta = self._shadow_clone_routing.pop(session_key, {})
 
         logger.info(
             "Shadow clone drain: %d ticket(s) ready for session %s",
@@ -5519,7 +5540,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         lines.append("\n[完整 decision_trail / insights 請至 Kanban 查閱]")
         synth_text = "\n".join(lines)
 
-        routing_meta = self._shadow_clone_routing.pop(session_key, {})
         routing_evt = {
             "session_key": session_key,
             "type": "shadow_clone_batch",

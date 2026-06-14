@@ -29,8 +29,15 @@ def _fmt_velocity_post(post: dict) -> str:
 
 
 def build_digest(date: str, top_terms: list[dict], new_clusters: list[dict],
-                  velocity_posts: list[dict], stats: dict) -> str:
+                  velocity_posts: list[dict], stats: dict,
+                  trending: dict[str, list[str]] = None) -> str:
     lines = [f"📡 *Trendscout — {date}*", '']
+
+    if trending:
+        lines.append("📈 *Trending now (X/Twitter)*")
+        for region, terms in trending.items():
+            lines.append(f"  - {region}: {', '.join(terms)}")
+        lines.append('')
 
     lines.append("🔥 *Emerging terms* (low volume, accelerating)")
     if top_terms:

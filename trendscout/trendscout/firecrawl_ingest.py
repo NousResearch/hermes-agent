@@ -12,19 +12,13 @@ Currently understands Hacker News-style listing pages (item?id=... links,
 skipped — add a new _PARSERS entry to support more sources.
 """
 
-import json
-import os
 import re
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta, timezone
 
-REQUEST_TIMEOUT = 60
-REQUEST_DELAY_SECONDS = 1.0
+from . import firecrawl_client
 
-FIRECRAWL_URL = os.getenv('FIRECRAWL_API_URL', 'http://localhost:3002')
-FIRECRAWL_KEY = os.getenv('FIRECRAWL_API_KEY', 'local_secret_key')
+REQUEST_DELAY_SECONDS = 1.0
 
 _HN_TITLE_RE = re.compile(
     r'^\|\s*\d+\.\s*\|\s*\[.*?\]\([^)]*\)\s*\|\s*\[(?P<title>.+?)\]\((?P<url>https?://[^)]+)\)'
@@ -35,28 +29,6 @@ _HN_META_RE = re.compile(
     r'\(https://news\.ycombinator\.com/item\?id=(?P<id>\d+)\)'
     r'(?:.*?\[(?P<comments>\d+)\s+comments?\])?'
 )
-
-
-def _scrape(url: str) -> str:
-    """Scrape a URL with Firecrawl, return markdown or empty string."""
-    try:
-        payload = json.dumps({'url': url, 'formats': ['markdown']}).encode()
-        req = urllib.request.Request(
-            f'{FIRECRAWL_URL}/v1/scrape',
-            data=payload,
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {FIRECRAWL_KEY}',
-            },
-            method='POST',
-        )
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            data = json.loads(resp.read())
-            if not data.get('success'):
-                return ''
-            return data.get('data', {}).get('markdown', '') or ''
-    except (urllib.error.URLError, Exception):
-        return ''
 
 
 def _age_to_created_utc(age: int, unit: str, now: datetime) -> float:
@@ -117,7 +89,7 @@ def fetch_url(url: str) -> list[dict]:
     if parser is None:
         return []
 
-    markdown = _scrape(url)
+    markdown = firecrawl_client.scrape(url)
     if not markdown:
         return []
     return parser(markdown)

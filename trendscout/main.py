@@ -22,6 +22,7 @@ from trendscout import digest as digest_mod
 from trendscout import firecrawl_ingest
 from trendscout import reddit_ingest
 from trendscout import scoring
+from trendscout import social_trends
 
 
 def main():
@@ -49,6 +50,21 @@ def main():
         if db.upsert_post(conn, post, now=now):
             new_count += 1
     conn.commit()
+
+    # Social trending topics (e.g. X/Twitter via trends24.in) — informational
+    # digest section + raw term-frequency signal, not stored as posts.
+    trending = {}
+    st_config = config.get('social_trends', {})
+    if st_config.get('enabled'):
+        trending = social_trends.fetch_trends(st_config['regions'], st_config.get('top_n', 10))
+        if trending:
+            sources_used.append('social_trends')
+            raw_terms = [
+                social_trends.normalize_term(term)
+                for terms in trending.values() for term in terms
+            ]
+            scoring.update_term_frequency_raw(conn, raw_terms, today)
+            conn.commit()
 
     # Term frequency / acceleration
     scoring.update_term_frequency(conn, posts, today)
@@ -88,7 +104,7 @@ def main():
     conn.commit()
     conn.close()
 
-    digest_text = digest_mod.build_digest(today, top_terms, new_clusters, velocity_posts, stats)
+    digest_text = digest_mod.build_digest(today, top_terms, new_clusters, velocity_posts, stats, trending)
 
     output = {
         'run_at': now,
@@ -97,6 +113,7 @@ def main():
         'top_terms': top_terms,
         'new_clusters': new_clusters,
         'velocity_posts': velocity_posts,
+        'trending': trending,
         'digest_text': digest_text,
         'sources': sources_used,
         'db_file': config['paths']['db'],

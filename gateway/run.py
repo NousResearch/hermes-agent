@@ -12742,6 +12742,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Post-stream media extraction failed: %s", e)
 
 
+    async def _send_queued_first_response(
+        self,
+        response: str,
+        event: MessageEvent,
+        adapter,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Deliver a queued-turn first response with normal media handling.
+
+        The queued follow-up path cannot hand the response back to
+        ``BasePlatformAdapter._process_message_background()``, so sending the raw
+        text through ``adapter.send()`` would expose MEDIA directives and skip
+        attachments. Mirror the normal response pipeline: send only display text,
+        then deliver extracted MEDIA/local files separately.
+        """
+        if not response:
+            return
+
+        text_content = response
+        try:
+            from gateway.platforms.base import _strip_media_directives
+
+            _, text_content = adapter.extract_media(text_content)
+            _, text_content = adapter.extract_images(text_content)
+            _, text_content = adapter.extract_local_files(text_content)
+            text_content = _strip_media_directives(text_content).strip()
+        except Exception as exc:
+            logger.warning(
+                "[%s] Queued follow-up response media cleanup failed: %s",
+                getattr(adapter, "name", "adapter"),
+                exc,
+            )
+            text_content = response
+
+        if text_content:
+            await adapter.send(
+                event.source.chat_id,
+                text_content,
+                metadata=metadata,
+            )
+
+        await self._deliver_media_from_response(response, event, adapter)
+
+
 
     async def _run_background_task(
         self,
@@ -19057,9 +19101,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
-                                source.chat_id,
+                            response_event = MessageEvent(
+                                text="",
+                                message_type=MessageType.TEXT,
+                                source=source,
+                                message_id=event_message_id,
+                            )
+                            await self._send_queued_first_response(
                                 first_response,
+                                response_event,
+                                adapter,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:

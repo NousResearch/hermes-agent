@@ -42,6 +42,7 @@ import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
+import { useEndVoiceOnSessionSwitch, useStopVoicePlaybackOnUnmount } from './hooks/use-voice-session-reset'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -665,6 +666,17 @@ export function ChatBar({
     onTranscribeAudio,
     sessionId
   })
+
+  // Tear down voice state when the user switches sessions so the prior
+  // session's listening + read-aloud playback status doesn't leak into the
+  // newly selected session's composer (#46194). The voice engine's
+  // `endConversation` clears the active conversation and stops recording /
+  // playback, including the read-aloud-only path.
+  useEndVoiceOnSessionSwitch(sessionId, endConversation)
+  // Cold switch unmounts the composer instead of re-rendering it, so the
+  // hook above never runs on that path; stop the surviving module-level
+  // read-aloud playback on unmount.
+  useStopVoicePlaybackOnUnmount()
 
   const contextMenu = (
     <ContextMenu

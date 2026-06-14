@@ -2,7 +2,7 @@
 
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState, type ComponentProps } from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
@@ -37,6 +37,22 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
 
 // Choice and "Other" rows share a layout; only color/hover differs.
 const OPTION_ROW_CLASS = 'flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
+
+const CLARIFY_SHELL_CLASS =
+  'relative mb-3 mt-2 rounded-[0.5rem] border border-border/70 bg-card/40 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]'
+
+function ClarifyShell({
+  children,
+  className,
+  ...props
+}: ComponentProps<'div'>) {
+  return (
+    <div className={cn(CLARIFY_SHELL_CLASS, className)} data-slot="clarify-inline" {...props}>
+      <span aria-hidden className="arc-border" />
+      {children}
+    </div>
+  )
+}
 
 function RadioDot({ selected }: { selected: boolean }) {
   return (
@@ -170,24 +186,18 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   if (loading) {
     return (
-      <div
+      <ClarifyShell
         aria-label={copy.loadingQuestion}
-        className="relative mb-3 mt-2 grid min-h-24 place-items-center rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-6 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
-        data-slot="clarify-inline"
+        className="grid min-h-24 place-items-center px-3 py-6"
         role="status"
       >
-        <span aria-hidden className="arc-border" />
         <Loader2 aria-hidden className="size-5 animate-spin text-muted-foreground/80" />
-      </div>
+      </ClarifyShell>
     )
   }
 
   return (
-    <div
-      className="relative mb-3 mt-2 grid gap-6 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-2.5 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
-      data-slot="clarify-inline"
-    >
-      <span aria-hidden className="arc-border" />
+    <ClarifyShell className="grid gap-6 px-3 py-2.5">
       <div className="flex items-start gap-2.5">
         <span
           aria-hidden
@@ -208,7 +218,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 selectedChoice === choice && 'bg-accent/60'
               )}
               data-choice
-              disabled={!ready || submitting}
+              disabled={submitting}
               key={`${index}-${choice}`}
               onClick={() => {
                 setSelectedChoice(choice)
@@ -268,16 +278,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                   {copy.back}
                 </Button>
               )}
-              <Button
-                disabled={!ready || submitting}
-                onClick={() => void respond('')}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
+              <Button disabled={submitting} onClick={() => void respond('')} size="sm" type="button" variant="ghost">
                 {copy.skip}
               </Button>
-              <Button disabled={!ready || submitting || !draft.trim()} size="sm" type="submit">
+              <Button disabled={submitting || !draft.trim()} size="sm" type="submit">
                 {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.send}
               </Button>
             </div>
@@ -289,7 +293,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         <div className="flex justify-end">
           <Button
             className="-mr-2"
-            disabled={!ready || submitting}
+            disabled={submitting}
             onClick={() => void respond('')}
             size="xs"
             type="button"
@@ -299,6 +303,6 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           </Button>
         </div>
       )}
-    </div>
+    </ClarifyShell>
   )
 }

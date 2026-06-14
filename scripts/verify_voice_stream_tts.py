@@ -40,6 +40,9 @@ class AudioContract:
     frame_ms: int = DEFAULT_FRAME_MS
     encoding: str = DEFAULT_ENCODING
     bytes_per_sample: int = DEFAULT_BYTES_PER_SAMPLE
+    raw_outbound_pcm_command: str = ""
+    raw_inbound_pcm_command: str = ""
+    completed_voice_note_command: str = ""
 
     @property
     def samples_per_frame(self) -> int:
@@ -108,6 +111,137 @@ def build_default_command_template(voice_bin: str) -> str:
         f"--raw-output - --input-file {{input_path}} "
         f"--voice {{voice}} --speed {{speed}}"
     )
+
+
+def load_voice_stream_contract(voice_bin: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    completed = subprocess.run(
+        [voice_bin, "stream-contract"],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=True,
+    )
+    parsed = json.loads(completed.stdout)
+    if not isinstance(parsed, dict):
+        raise ValueError("voice stream-contract root must be an object")
+    return parsed
+
+
+def audio_contract_from_voice(
+    voice_bin: str,
+    *,
+    fallback: AudioContract,
+) -> AudioContract:
+    try:
+        contract = load_voice_stream_contract(voice_bin)
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+        ValueError,
+    ) as exc:
+        raise SystemExit(f"failed to load `voice stream-contract`: {exc}") from exc
+
+    audio = contract.get("audio")
+    if not isinstance(audio, dict):
+        raise SystemExit("voice stream-contract audio section must be an object")
+
+    surface_commands = validate_voice_surfaces(contract.get("voice_surfaces"), audio)
+    return AudioContract(
+        sample_rate=int(audio.get("sample_rate") or fallback.sample_rate),
+        channels=int(audio.get("channels") or fallback.channels),
+        frame_ms=int(audio.get("frame_ms") or fallback.frame_ms),
+        encoding=str(audio.get("encoding") or fallback.encoding),
+        bytes_per_sample=int(audio.get("bytes_per_sample") or fallback.bytes_per_sample),
+        raw_outbound_pcm_command=surface_commands.get("raw_outbound_pcm", ""),
+        raw_inbound_pcm_command=surface_commands.get("raw_inbound_pcm", ""),
+        completed_voice_note_command=surface_commands.get("completed_voice_note", ""),
+    )
+
+
+def validate_voice_surfaces(
+    surfaces: object,
+    audio: dict[str, object],
+) -> dict[str, str]:
+    if surfaces is None:
+        raise SystemExit("voice stream-contract is missing voice_surfaces")
+    if not isinstance(surfaces, dict):
+        raise SystemExit("voice stream-contract voice_surfaces section must be an object")
+
+    frame_bytes = int(audio.get("frame_bytes") or 0)
+    encoding = str(audio.get("encoding") or "")
+    commands: dict[str, str] = {}
+
+    completed = surface_object(surfaces, "completed_voice_note")
+    if completed.get("output") != "audio/ogg; codecs=opus":
+        raise SystemExit("completed_voice_note output must be audio/ogg; codecs=opus")
+    if completed.get("transport") != "completed_file":
+        raise SystemExit("completed_voice_note transport must be completed_file")
+    completed_command = surface_command(completed, "completed_voice_note")
+    require_command_parts(
+        completed_command,
+        "completed_voice_note",
+        ["voice say", "--format ogg-opus", "--output"],
+    )
+    commands["completed_voice_note"] = completed_command
+
+    outbound = surface_object(surfaces, "raw_outbound_pcm")
+    if outbound.get("output") != encoding:
+        raise SystemExit("raw_outbound_pcm output must match audio.encoding")
+    if outbound.get("transport") != "stdout_pcm_frames":
+        raise SystemExit("raw_outbound_pcm transport must be stdout_pcm_frames")
+    if int(outbound.get("frame_bytes") or 0) != frame_bytes:
+        raise SystemExit("raw_outbound_pcm frame_bytes must match audio.frame_bytes")
+    outbound_command = surface_command(outbound, "raw_outbound_pcm")
+    require_command_parts(
+        outbound_command,
+        "raw_outbound_pcm",
+        ["voice stream", "--raw-output", "--sample-rate", "--frame-ms"],
+    )
+    commands["raw_outbound_pcm"] = outbound_command
+
+    inbound = surface_object(surfaces, "raw_inbound_pcm")
+    if inbound.get("input") != encoding:
+        raise SystemExit("raw_inbound_pcm input must match audio.encoding")
+    if inbound.get("transport") != "stdin_pcm_frames":
+        raise SystemExit("raw_inbound_pcm transport must be stdin_pcm_frames")
+    if int(inbound.get("frame_bytes") or 0) != frame_bytes:
+        raise SystemExit("raw_inbound_pcm frame_bytes must match audio.frame_bytes")
+    inbound_command = surface_command(inbound, "raw_inbound_pcm")
+    require_command_parts(
+        inbound_command,
+        "raw_inbound_pcm",
+        ["voice stream-transcribe", "--raw-input", "--sample-rate", "--frame-ms"],
+    )
+    commands["raw_inbound_pcm"] = inbound_command
+
+    return commands
+
+
+def surface_object(surfaces: dict[str, object], name: str) -> dict[str, object]:
+    surface = surfaces.get(name)
+    if not isinstance(surface, dict):
+        raise SystemExit(f"voice stream-contract voice_surfaces.{name} must be an object")
+    return surface
+
+
+def surface_command(surface: dict[str, object], name: str) -> str:
+    command = str(surface.get("command") or "")
+    if not command:
+        raise SystemExit(
+            f"voice stream-contract voice_surfaces.{name}.command must be non-empty"
+        )
+    return command
+
+
+def require_command_parts(command: str, name: str, parts: list[str]) -> None:
+    missing = [part for part in parts if part not in command]
+    if missing:
+        raise SystemExit(
+            f"voice stream-contract voice_surfaces.{name}.command is missing: "
+            + ", ".join(missing)
+        )
 
 
 def render_stream_command(
@@ -229,11 +363,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     voice_bin = resolve_executable(args.voice_bin, label="voice binary")
-    contract = AudioContract(
+    fallback_contract = AudioContract(
         sample_rate=args.sample_rate,
         channels=args.channels,
         frame_ms=args.frame_ms,
     )
+    contract = audio_contract_from_voice(voice_bin, fallback=fallback_contract)
     contract.validate()
     command_template = args.command_template or build_default_command_template(voice_bin)
 
@@ -272,6 +407,11 @@ def main() -> int:
                     "retained": retained,
                     "command_template": command_template,
                     "audio": contract.as_dict(),
+                    "voice_surfaces": {
+                        "raw_outbound_pcm_command": contract.raw_outbound_pcm_command,
+                        "raw_inbound_pcm_command": contract.raw_inbound_pcm_command,
+                        "completed_voice_note_command": contract.completed_voice_note_command,
+                    },
                     "pcm": stats,
                 },
                 indent=2,

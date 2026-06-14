@@ -51,6 +51,72 @@ def test_audio_contract_matches_voice_sidecar_pcm_shape():
     }
 
 
+def stream_contract_json(**surface_overrides):
+    raw_outbound = {
+        "command": 'voice stream --sample-rate 48000 --frame-ms 20 --raw-output - "hello"',
+        "output": "pcm_s16le",
+        "transport": "stdout_pcm_frames",
+        "frame_bytes": 1_920,
+    }
+    raw_outbound.update(surface_overrides)
+    return {
+        "audio": {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "bytes_per_sample": 2,
+            "frame_bytes": 1_920,
+        },
+        "voice_surfaces": {
+            "completed_voice_note": {
+                "command": 'voice say --format ogg-opus --output reply.ogg "hello"',
+                "output": "audio/ogg; codecs=opus",
+                "transport": "completed_file",
+            },
+            "raw_outbound_pcm": raw_outbound,
+            "raw_inbound_pcm": {
+                "command": "voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20",
+                "input": "pcm_s16le",
+                "transport": "stdin_pcm_frames",
+                "frame_bytes": 1_920,
+            },
+        },
+    }
+
+
+def test_audio_contract_from_voice_reads_stream_contract(monkeypatch):
+    script = _load_script_module()
+
+    def fake_load(_voice_bin):
+        return stream_contract_json()
+
+    monkeypatch.setattr(script, "load_voice_stream_contract", fake_load)
+
+    contract = script.audio_contract_from_voice(
+        "/tmp/voice",
+        fallback=script.AudioContract(sample_rate=16_000),
+    )
+
+    assert contract.sample_rate == 48_000
+    assert contract.frame_bytes == 1_920
+    assert "voice stream" in contract.raw_outbound_pcm_command
+    assert "--raw-input" in contract.raw_inbound_pcm_command
+    assert "--format ogg-opus" in contract.completed_voice_note_command
+
+
+def test_audio_contract_from_voice_rejects_surface_frame_drift(monkeypatch):
+    script = _load_script_module()
+
+    def fake_load(_voice_bin):
+        return stream_contract_json(frame_bytes=960)
+
+    monkeypatch.setattr(script, "load_voice_stream_contract", fake_load)
+
+    with pytest.raises(SystemExit, match="raw_outbound_pcm frame_bytes"):
+        script.audio_contract_from_voice("/tmp/voice", fallback=script.AudioContract())
+
+
 def test_validate_pcm_accepts_non_silent_whole_frames():
     script = _load_script_module()
     contract = script.AudioContract()

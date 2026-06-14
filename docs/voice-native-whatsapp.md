@@ -106,7 +106,7 @@ The installer prints seven verifier commands under `verify_commands`:
 | `local_stack` | Isolated local checks without touching the running gateway. |
 | `live_gateway` | Running-gateway checks only. |
 | `live_gateway_cloud_only` | Running-gateway checks only, skipping local Baileys bridge health. |
-| `live_gateway_cloud_ready` | Same as `live_gateway_cloud_only`, plus non-contacting WhatsApp Cloud credential, recipient-authorization, and local webhook health readiness. |
+| `live_gateway_cloud_ready` | Same as `live_gateway_cloud_only`, plus non-contacting WhatsApp Cloud credential, recipient-authorization, local webhook health, and verify-token handshake readiness. |
 | `local_stack_live_gateway` | Full local stack plus running-gateway checks. |
 | `local_stack_live_gateway_cloud_only` | Same as `local_stack_live_gateway`, but skips local Baileys bridge health. |
 | `local_stack_live_gateway_cloud_ready` | Same as `local_stack_live_gateway_cloud_only`, plus the WhatsApp Cloud readiness gate. |
@@ -137,8 +137,8 @@ Before pointing Meta webhooks at the host, run the generated
 `WHATSAPP_CLOUD_PHONE_NUMBER_ID`, `WHATSAPP_CLOUD_ACCESS_TOKEN`,
 `WHATSAPP_CLOUD_APP_SECRET`, `WHATSAPP_CLOUD_VERIFY_TOKEN`, and either
 `WHATSAPP_CLOUD_ALLOWED_USERS` or `WHATSAPP_CLOUD_ALLOW_ALL_USERS`, then probes
-the running local WhatsApp Cloud `/health` endpoint without printing secret
-values.
+the running local WhatsApp Cloud `/health` endpoint and local Meta subscription
+challenge handshake without printing secret values.
 
 That aggregate verifier proves:
 

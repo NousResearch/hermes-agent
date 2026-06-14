@@ -32,7 +32,7 @@ import subprocess
 import sys
 from typing import Any
 from urllib.error import URLError
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
 
 from verify_voice_local_stack import audit_live_hermes_root
@@ -51,6 +51,8 @@ WHATSAPP_CLOUD_REQUIRED_ENV = (
     "WHATSAPP_CLOUD_VERIFY_TOKEN",
 )
 DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT = 8090
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH = "/whatsapp/webhook"
+DEFAULT_WHATSAPP_CLOUD_VERIFY_CHALLENGE = "hermes-local-cloud-verify-smoke"
 CONTRACT_COMPARE_KEYS = (
     "contract",
     "version",
@@ -476,6 +478,26 @@ def whatsapp_cloud_health_url_from_env(
     return f"http://{host}:{port}/health"
 
 
+def whatsapp_cloud_webhook_url_from_env(
+    *,
+    file_env: dict[str, str],
+    process_env: dict[str, str],
+) -> str:
+    health_url = whatsapp_cloud_health_url_from_env(
+        file_env=file_env,
+        process_env=process_env,
+    )
+    parsed = urlparse(health_url)
+    path = configured_value(
+        "WHATSAPP_CLOUD_WEBHOOK_PATH",
+        file_env=file_env,
+        process_env=process_env,
+    )[0] or DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PATH
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
 def validate_whatsapp_cloud_health(
     health: dict[str, Any],
     *,
@@ -554,6 +576,66 @@ def check_whatsapp_cloud_health(
             expected_phone_number_id=expected_phone_number_id,
             expect_calling_sidecar=expect_calling_sidecar,
         ),
+    }
+
+
+def get_text_url(target: str, *, timeout: float, label: str) -> tuple[int, str]:
+    try:
+        with urlopen(target, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            status = int(getattr(response, "status", 200))
+    except URLError as exc:
+        raise SystemExit(f"request failed for {label}: {exc}") from exc
+    return status, body
+
+
+def check_whatsapp_cloud_verify_handshake(
+    *,
+    readiness: dict[str, Any],
+    webhook_url: str | None,
+    challenge: str,
+    timeout: float,
+) -> dict[str, Any]:
+    private = readiness.get("_private")
+    if not isinstance(private, dict):
+        raise SystemExit("WhatsApp Cloud readiness private data missing")
+    file_env = private.get("file_env")
+    process_env = private.get("process_env")
+    if not isinstance(file_env, dict) or not isinstance(process_env, dict):
+        raise SystemExit("WhatsApp Cloud readiness env data missing")
+    verify_token = configured_value(
+        "WHATSAPP_CLOUD_VERIFY_TOKEN",
+        file_env={str(k): str(v) for k, v in file_env.items()},
+        process_env={str(k): str(v) for k, v in process_env.items()},
+    )[0]
+    if not verify_token:
+        raise SystemExit("WHATSAPP_CLOUD_VERIFY_TOKEN is not configured")
+
+    target_base = webhook_url or whatsapp_cloud_webhook_url_from_env(
+        file_env={str(k): str(v) for k, v in file_env.items()},
+        process_env={str(k): str(v) for k, v in process_env.items()},
+    )
+    query = urlencode(
+        {
+            "hub.mode": "subscribe",
+            "hub.verify_token": verify_token,
+            "hub.challenge": challenge,
+        }
+    )
+    separator = "&" if "?" in target_base else "?"
+    status, body = get_text_url(
+        f"{target_base}{separator}{query}",
+        timeout=timeout,
+        label=target_base,
+    )
+    if status != 200:
+        raise SystemExit(f"WhatsApp Cloud verify handshake returned HTTP {status}")
+    if body != challenge:
+        raise SystemExit("WhatsApp Cloud verify handshake did not echo the challenge")
+    return {
+        "url": target_base,
+        "status": status,
+        "challenge_echoed": True,
     }
 
 
@@ -1476,6 +1558,28 @@ def parse_args() -> argparse.Namespace:
             "probe."
         ),
     )
+    parser.add_argument(
+        "--whatsapp-cloud-webhook-url",
+        help=(
+            "Override the local WhatsApp Cloud webhook URL used with "
+            "--require-whatsapp-cloud-readiness. Defaults to "
+            "http://127.0.0.1:8090/whatsapp/webhook, or the configured "
+            "webhook port/path."
+        ),
+    )
+    parser.add_argument(
+        "--skip-whatsapp-cloud-verify",
+        action="store_true",
+        help=(
+            "With --require-whatsapp-cloud-readiness, skip the local Meta "
+            "GET subscription verify-token handshake probe."
+        ),
+    )
+    parser.add_argument(
+        "--whatsapp-cloud-verify-challenge",
+        default=DEFAULT_WHATSAPP_CLOUD_VERIFY_CHALLENGE,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--run-tts-smoke", action="store_true")
     parser.add_argument("--tts-platform", default="whatsapp")
     parser.add_argument("--tts-text", default=DEFAULT_TTS_TEXT)
@@ -1618,6 +1722,21 @@ def main() -> int:
                 health_url=args.whatsapp_cloud_health_url,
                 timeout=args.timeout,
                 expect_calling_sidecar=bool(args.calling_sidecar_url),
+            )
+        if args.skip_whatsapp_cloud_verify:
+            checks["whatsapp_cloud_verify_handshake"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-whatsapp-cloud-verify was provided",
+            }
+        else:
+            checks["whatsapp_cloud_verify_handshake"] = (
+                check_whatsapp_cloud_verify_handshake(
+                    readiness=cloud_readiness,
+                    webhook_url=args.whatsapp_cloud_webhook_url,
+                    challenge=args.whatsapp_cloud_verify_challenge,
+                    timeout=args.timeout,
+                )
             )
 
     if args.calling_sidecar_url:

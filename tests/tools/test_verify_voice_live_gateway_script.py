@@ -273,6 +273,21 @@ def test_whatsapp_cloud_health_url_uses_loopback_for_wildcard_host():
     assert result == "http://127.0.0.1:8091/health"
 
 
+def test_whatsapp_cloud_webhook_url_uses_configured_path():
+    script = _load_script_module()
+
+    result = script.whatsapp_cloud_webhook_url_from_env(
+        file_env={
+            "WHATSAPP_CLOUD_WEBHOOK_HOST": "0.0.0.0",
+            "WHATSAPP_CLOUD_WEBHOOK_PORT": "8091",
+            "WHATSAPP_CLOUD_WEBHOOK_PATH": "whatsapp/webhook",
+        },
+        process_env={},
+    )
+
+    assert result == "http://127.0.0.1:8091/whatsapp/webhook"
+
+
 def test_validate_whatsapp_cloud_health_returns_redacted_summary():
     script = _load_script_module()
 
@@ -322,6 +337,55 @@ def test_validate_whatsapp_cloud_health_rejects_unloaded_calling_sidecar():
             expected_phone_number_id="7794189252778687",
             expect_calling_sidecar=True,
         )
+
+
+def test_check_whatsapp_cloud_verify_handshake_uses_token_without_reporting_it(
+    tmp_path: Path,
+    monkeypatch,
+):
+    script = _load_script_module()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    verify_token = "verify-token-value-long-enough"
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                "WHATSAPP_CLOUD_ACCESS_TOKEN=EAA" + ("x" * 120),
+                "WHATSAPP_CLOUD_APP_SECRET=0123456789abcdef0123456789abcdef",
+                f"WHATSAPP_CLOUD_VERIFY_TOKEN={verify_token}",
+                "WHATSAPP_CLOUD_ALLOWED_USERS=15551234567",
+                "WHATSAPP_CLOUD_WEBHOOK_PORT=8091",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    readiness = script.validate_whatsapp_cloud_readiness(
+        hermes_home=hermes_home,
+        process_env={},
+    )
+
+    def fake_get_text_url(target, *, timeout, label):
+        assert verify_token in target
+        assert verify_token not in label
+        assert label == "http://127.0.0.1:8091/whatsapp/webhook"
+        return 200, "challenge-ok"
+
+    monkeypatch.setattr(script, "get_text_url", fake_get_text_url)
+
+    result = script.check_whatsapp_cloud_verify_handshake(
+        readiness=readiness,
+        webhook_url=None,
+        challenge="challenge-ok",
+        timeout=1.0,
+    )
+
+    assert result == {
+        "url": "http://127.0.0.1:8091/whatsapp/webhook",
+        "status": 200,
+        "challenge_echoed": True,
+    }
+    assert verify_token not in json.dumps(result)
 
 
 def test_validate_whatsapp_cloud_readiness_rejects_missing_authorization(
@@ -1345,6 +1409,13 @@ def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
             "calling_sidecar_tts_stream_configured": False,
         },
     )
+
+    def fake_get_text_url(target, *, timeout, label):
+        assert verify_token in target
+        assert verify_token not in label
+        return 200, "hermes-local-cloud-verify-smoke"
+
+    monkeypatch.setattr(script, "get_text_url", fake_get_text_url)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1381,6 +1452,11 @@ def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
         "calling_sidecar_configured": False,
         "calling_sidecar_contract_loaded": False,
         "calling_sidecar_tts_stream_configured": False,
+    }
+    assert output["checks"]["whatsapp_cloud_verify_handshake"] == {
+        "url": "http://127.0.0.1:8090/whatsapp/webhook",
+        "status": 200,
+        "challenge_echoed": True,
     }
     assert access_token not in output_text
     assert app_secret not in output_text

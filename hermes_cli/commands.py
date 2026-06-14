@@ -125,6 +125,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
                args_hint="[model] [--provider name] [--global] [--refresh]"),
+    CommandDef("codex", "Codex cockpit readout and driver commands",
+               "Configuration",
+               args_hint="[status|launch|last|checks|context] ...",
+               subcommands=("status", "launch", "last", "checks", "context", "help")),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
@@ -1053,7 +1057,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
+#   - codex: cockpit subcommands can be long and remain reachable via
+#     /hermes codex ... without displacing existing native Slack commands.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "codex"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

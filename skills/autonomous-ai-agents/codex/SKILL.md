@@ -41,19 +41,26 @@ that Codex auth is missing.
 ## One-Shot Tasks
 
 ```
-terminal(command="codex exec 'Add dark mode toggle to settings'", workdir="~/project", pty=true)
+terminal(command="codex exec -C ~/project --sandbox workspace-write 'Add dark mode toggle to settings'", pty=true)
 ```
 
 For scratch work (Codex needs a git repo):
 ```
-terminal(command="cd $(mktemp -d) && git init && codex exec 'Build a snake game in Python'", pty=true)
+terminal(command="SCRATCH=$(mktemp -d) && git -C $SCRATCH init && codex exec -C $SCRATCH --sandbox workspace-write 'Build a snake game in Python'", pty=true)
 ```
 
 ## Background Mode (Long Tasks)
 
+Prefer the Hermes cockpit command when available:
+
 ```
-# Start in background with PTY
-terminal(command="codex exec --full-auto 'Refactor the auth module'", workdir="~/project", background=true, pty=true)
+/codex launch ~/project "Refactor the auth module"
+```
+
+Or start Codex manually in the background with a PTY:
+
+```
+terminal(command="codex exec -C ~/project --sandbox workspace-write 'Refactor the auth module'", background=true, pty=true)
 # Returns session_id
 
 # Monitor progress
@@ -72,8 +79,8 @@ process(action="kill", session_id="<id>")
 | Flag | Effect |
 |------|--------|
 | `exec "prompt"` | One-shot execution, exits when done |
-| `--full-auto` | Sandboxed but auto-approves file changes in workspace |
-| `--yolo` | No sandbox, no approvals (fastest, most dangerous) |
+| `-C <dir>` | Run Codex with a specific repository/worktree as cwd |
+| `--sandbox workspace-write` | Allow workspace writes while keeping Codex sandboxing on |
 | `--sandbox danger-full-access` | No Codex sandbox; useful when the host service context breaks bubblewrap |
 
 ## Hermes Gateway Caveat
@@ -110,8 +117,8 @@ terminal(command="git worktree add -b fix/issue-78 /tmp/issue-78 main", workdir=
 terminal(command="git worktree add -b fix/issue-99 /tmp/issue-99 main", workdir="~/project")
 
 # Launch Codex in each
-terminal(command="codex --yolo exec 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, pty=true)
-terminal(command="codex --yolo exec 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, pty=true)
+terminal(command="codex exec -C /tmp/issue-78 --sandbox workspace-write 'Fix issue #78: <description>. Commit when done.'", background=true, pty=true)
+terminal(command="codex exec -C /tmp/issue-99 --sandbox workspace-write 'Fix issue #99: <description>. Commit when done.'", background=true, pty=true)
 
 # Monitor
 process(action="list")
@@ -143,7 +150,7 @@ terminal(command="gh pr comment 86 --body '<review>'", workdir="~/project")
 1. **Always use `pty=true`** — Codex is an interactive terminal app and hangs without a PTY
 2. **Git repo required** — Codex won't run outside a git directory. Use `mktemp -d && git init` for scratch
 3. **Use `exec` for one-shots** — `codex exec "prompt"` runs and exits cleanly
-4. **`--full-auto` for building** — auto-approves changes within the sandbox
+4. **Prefer worktrees for feature work** — `/codex launch` creates a clean worktree and tracked background process
 5. **Background for long tasks** — use `background=true` and monitor with `process` tool
 6. **Don't interfere** — monitor with `poll`/`log`, be patient with long-running tasks
 7. **Parallel is fine** — run multiple Codex processes at once for batch work

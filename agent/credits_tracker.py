@@ -286,6 +286,16 @@ def evaluate_credits_notices(
         for band in CREDITS_USAGE_BANDS:  # ascending → last match wins = highest
             if uf >= band[0]:
                 current_band = band
+    # Top-up suppression: when the account holds purchased (top-up) credits,
+    # the subscription-cap gauge is the wrong denominator — warning "90% used"
+    # at a user sitting on $50 of top-up is noise (and it previously stuck
+    # PERMANENTLY alongside grant_spent at >=100%). Suppress the usage band
+    # entirely; the cap-reached case is covered by the grant_spent info notice
+    # below, which already names the remaining top-up balance. A top-up landing
+    # mid-session flips current_band → None and the clear path below removes
+    # any showing band line.
+    if state.purchased_micros > 0:
+        current_band = None
     grant_cond = (
         state.denominator_kind == "subscription_cap"
         and uf is not None
@@ -345,7 +355,7 @@ def evaluate_credits_notices(
     if show_depleted and "credits.depleted" not in active:
         to_show.append(
             AgentNotice(
-                text="✕ Credit access paused · run /usage for balance",
+                text="✕ Credit access paused · run /credits to top up",
                 level="error",
                 kind=CREDITS_NOTICE_KIND,
                 key="credits.depleted",

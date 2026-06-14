@@ -11,6 +11,7 @@ import {
   noteSessionActivity,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
@@ -51,6 +52,16 @@ interface SessionStateCacheOptions {
   setAwaitingResponse: (awaiting: boolean) => void
   setBusy: (busy: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+}
+
+function syncRuntimeMetadataToView(state: ClientSessionState) {
+  setCurrentModel(state.model ?? '')
+  setCurrentProvider(state.provider ?? '')
+  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  setCurrentServiceTier(state.serviceTier ?? '')
+  setCurrentFastMode(state.fast ?? false)
+  setYoloActive(state.yolo ?? false)
+  setCurrentPersonality(state.personality ?? '')
 }
 
 export function useSessionStateCache({
@@ -137,12 +148,7 @@ export function useSessionStateCache({
       setMessages(nextMessages)
     }
 
-    setCurrentModel(pending.state.model)
-    setCurrentProvider(pending.state.provider)
-    setCurrentReasoningEffort(pending.state.reasoningEffort)
-    setCurrentServiceTier(pending.state.serviceTier)
-    setCurrentFastMode(pending.state.fast)
-    setYoloActive(pending.state.yolo)
+    syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
@@ -167,6 +173,7 @@ export function useSessionStateCache({
         return
       }
 
+      syncRuntimeMetadataToView(state)
       pendingViewStateRef.current = { sessionId, state }
 
       // Terminal / attention transitions (turn finished, error, or the agent is

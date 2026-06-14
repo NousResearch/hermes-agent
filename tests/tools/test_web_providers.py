@@ -167,6 +167,21 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("TAVILY_API_KEY", "test-key")
         assert web_tools._get_search_backend() == "tavily"
 
+    def test_explicit_extract_backend_honored_when_unavailable(self, monkeypatch):
+        """An explicit per-capability backend is honored even with no creds, so
+        its setup error surfaces instead of silently rerouting to the keyless
+        Parallel default (which would send user URLs to a different provider)."""
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "extract_backend": "firecrawl",
+        })
+        for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False, raising=False)
+        # Resolves to firecrawl (not parallel) despite firecrawl being unavailable.
+        assert web_tools._get_extract_backend() == "firecrawl"
+
     def test_falls_back_to_generic_backend_when_extract_backend_empty(self, monkeypatch):
         from tools import web_tools
 
@@ -177,7 +192,7 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
         assert web_tools._get_extract_backend() == "parallel"
 
-    def test_search_backend_ignored_when_not_available(self, monkeypatch):
+    def test_explicit_search_backend_honored_when_unavailable(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
@@ -186,8 +201,10 @@ class TestPerCapabilityBackendSelection:
         })
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
-        # Should fall back to firecrawl since exa isn't configured
-        assert web_tools._get_search_backend() == "firecrawl"
+        # The explicit per-capability choice (exa) is honored even though it's
+        # unavailable, so its setup error surfaces — we don't silently reroute
+        # to the shared backend (or the keyless Parallel default).
+        assert web_tools._get_search_backend() == "exa"
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
@@ -291,25 +308,55 @@ class TestUnconfiguredErrorEnvelopeParity:
         ):
             monkeypatch.delenv(k, raising=False)
 
-    def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
-        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
-        — matching main's ``tool_error()`` envelope, not a per-result shape.
+    def test_extract_empty_urls_does_not_raise(self, monkeypatch):
+        """Regression: empty (or fully SSRF-blocked) URL sets skip the dispatch
+        branch; the free-Parallel flag must still be initialized so the tool
+        returns an error envelope instead of UnboundLocalError."""
+        import asyncio
+        from tools import web_tools
+        self._clear_web_creds(monkeypatch)
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        out = asyncio.run(web_tools.web_extract_tool([], "markdown"))
+        # The key assertion is that it returns a normal error envelope (a
+        # string) rather than raising UnboundLocalError.
+        assert isinstance(out, str)
+        result = json.loads(out)
+        assert "error" in result
+
+    def test_unconfigured_search_falls_back_to_free_parallel(self, monkeypatch):
+        """``web_search_tool`` with no creds routes to Parallel's free Search
+        MCP rather than erroring. The MCP transport is mocked so the test
+        stays offline; we assert dispatch landed on parallel and returned the
+        standard search envelope.
         """
         from tools import web_tools
+        import plugins.web.parallel.provider as parallel_provider
 
         self._clear_web_creds(monkeypatch)
-        # Reset firecrawl client cache so the unconfigured state is re-evaluated
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
 
+        captured = {}
+
+        def _fake_mcp(query, limit, api_key):
+            captured["query"] = query
+            captured["api_key"] = api_key
+            return {
+                "success": True,
+                "data": {"web": [
+                    {"url": "https://example.com", "title": "Example",
+                     "description": "hit", "position": 1},
+                ]},
+            }
+
+        monkeypatch.setattr(parallel_provider, "_mcp_web_search", _fake_mcp)
+
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
-        assert "error" in result, f"expected top-level 'error' key, got {result}"
-        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
-        assert "Error searching web:" in result["error"]
-        assert "FIRECRAWL_API_KEY" in result["error"]
-        # No per-result burying
-        assert "results" not in result
+        assert result.get("success") is True, f"expected success, got {result}"
+        assert result["data"]["web"][0]["url"] == "https://example.com"
+        # Keyless path: dispatched to parallel with no Bearer token.
+        assert captured == {"query": "hello world", "api_key": None}
 
 
 class TestDispatchersTriggerPluginDiscovery:

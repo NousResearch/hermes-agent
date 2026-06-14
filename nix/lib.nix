@@ -21,7 +21,7 @@ let
 
   # Single npm deps fetch from the workspace root lockfile.
   # All workspace packages share this derivation.
-  npmDepsHash = "sha256-mVWPJLIYa4EA0iNPiSVLAPzjjnWdky2HbG5mwApy1lo=";
+  npmDepsHash = "sha256-RLraluZYEWfg1cP4SFDlMo2qJ4eHWVkmQevMGThvxHA=";
 
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
@@ -65,11 +65,7 @@ in
       npmRoot = ".";
       npmDepsFetcherVersion = 2;
 
-      # --ignore-scripts: the workspace includes electron (apps/desktop)
-      # which has a postinstall that tries to download from github.com.
-      # nix builds are offline, so all scripts must be skipped.  Each
-      # package sets up its own build commands in buildPhase instead.
-      npmFlags = [ "--ignore-scripts" ];
+      ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
 
       patchPhase = ''
         runHook prePatch

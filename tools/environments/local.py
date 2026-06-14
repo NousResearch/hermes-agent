@@ -366,11 +366,34 @@ def _path_env_key(run_env: dict) -> str | None:
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        from tools.env_passthrough import (
+            get_all_passthrough,
+            is_env_passthrough as _is_passthrough,
+        )
     except Exception:
         _is_passthrough = lambda _: False  # noqa: E731
+        get_all_passthrough = lambda: set()
 
     merged = dict(os.environ | env)
+
+    # Inject passthrough variables from ~/.hermes/.env that aren't already in
+    # os.environ.  The Docker backend does this via _load_hermes_env_vars() at
+    # init_session time; the local backend needs the same fallback so that
+    # env_passthrough keys which only exist in .env (not exported to the shell)
+    # still reach subprocesses (#46152).
+    try:
+        passthrough_keys = set(get_all_passthrough())
+        if passthrough_keys:
+            from hermes_cli.config import load_env
+            hermes_env = load_env() or {}
+            for key in passthrough_keys:
+                if key not in merged:
+                    value = hermes_env.get(key)
+                    if value:
+                        merged[key] = value
+    except Exception:
+        pass
+
     run_env = {}
     for k, v in merged.items():
         if k.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):

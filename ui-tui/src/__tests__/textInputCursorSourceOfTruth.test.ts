@@ -47,4 +47,11 @@ describe('textInput cursor-layout source of truth', () => {
     const appendPattern = /stdout!\.write\(text\)[\s\S]{0,1000}?noteCursorAdvance\(text\.length\)/
     expect(source).toMatch(appendPattern)
   })
+
+  it('flushes deferred parent changes before TextInput unmount cleanup drops timers', () => {
+    const cleanupPattern =
+      /useEffect\(\s*\(\)\s*=>\s*\(\)\s*=>\s*{[\s\S]{0,500}?clearTimeout\(keyBurstTimer\.current\)[\s\S]{0,500}?keyBurstTimer\.current = null[\s\S]{0,500}?flushParentChange\(\)[\s\S]{0,500}?clearTimeout\(localRenderTimer\.current\)/
+
+    expect(source).toMatch(cleanupPattern)
+  })
 })

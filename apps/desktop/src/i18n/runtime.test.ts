@@ -37,6 +37,11 @@ describe('desktop i18n runtime translator', () => {
   })
 
   it('translates settings copy for newly supported locales', () => {
+    setRuntimeI18nLocale('de')
+    expect(translateNow('settings.appearance.title')).toBe('Darstellung')
+    expect(translateNow('settings.sections.appearance')).toBe('Darstellung')
+    expect(translateNow('language.label')).toBe('Sprache')
+
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')
     expect(translateNow('settings.nav.providers')).toBe('プロバイダー')
@@ -61,7 +66,7 @@ describe('desktop i18n runtime translator', () => {
       boot.ready = undefined
       setRuntimeI18nLocale('ja')
 
-      expect(translateNow('boot.ready')).toBe('Hermes Desktop is ready')
+      expect(translateNow('boot.ready')).toBe('xNova Desktop is ready')
     } finally {
       boot.ready = originalReady
     }

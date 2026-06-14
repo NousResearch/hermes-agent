@@ -45,6 +45,17 @@ export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | u
   )
 }
 
+export function isRemoteReauthErrorMessage(message: string | null | undefined): boolean {
+  const normalized = String(message || '').toLowerCase()
+
+  return (
+    normalized.includes('gateway uses oauth') ||
+    normalized.includes('gateway session has expired') ||
+    normalized.includes('oauth, but you are not signed in') ||
+    normalized.includes('needs oauth login')
+  )
+}
+
 // Derive the password flag + display label from the probed providers. A
 // gateway is treated as password-style only when EVERY advertised provider
 // supports password (a mixed deployment keeps the generic OAuth copy), so the

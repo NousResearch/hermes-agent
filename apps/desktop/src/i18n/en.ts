@@ -43,36 +43,36 @@ export const en: Translations = {
   },
 
   boot: {
-    ready: 'Hermes Desktop is ready',
+    ready: 'xNova Desktop is ready',
     desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
     steps: {
       connectingGateway: 'Connecting live desktop gateway',
-      loadingSettings: 'Loading Hermes settings',
+      loadingSettings: 'Loading xNova settings',
       loadingSessions: 'Loading recent sessions',
       startingDesktopConnection: 'Starting desktop connection',
-      startingHermesDesktop: 'Starting Hermes Desktop…'
+      startingHermesDesktop: 'Starting xNova Desktop…'
     },
     errors: {
-      backgroundExited: 'Hermes background process exited.',
-      backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
+      backgroundExited: 'xNova background process exited.',
+      backgroundExitedDuringStartup: 'xNova background process exited during startup.',
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
     failure: {
-      title: "Hermes couldn't start",
+      title: "xNova couldn't connect",
       description:
-        "The background gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
+        "The desktop gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.",
       remoteTitle: 'Remote gateway sign-in required',
       remoteDescription:
         'Your remote gateway session has expired. Sign in again to reconnect. Nothing here deletes your chats or settings.',
       retry: 'Retry',
       repairInstall: 'Repair install',
-      useLocalGateway: 'Use local gateway',
+      useLocalGateway: 'Use local backend',
       openLogs: 'Open logs',
       repairHint: 'Repair re-runs the installer and can take a few minutes on a fresh machine.',
-      remoteSignInHint: 'Opens the gateway login window. Use local gateway to switch to the bundled backend instead.',
+      remoteSignInHint: 'Opens the remote login window. Use local backend to switch to the bundled backend instead.',
       hideRecentLogs: 'Hide recent logs',
       showRecentLogs: 'Show recent logs',
       signedInTitle: 'Signed in',
@@ -98,8 +98,8 @@ export const en: Translations = {
     copyDetailFailed: 'Could not copy notification detail',
     backendOutOfDateTitle: 'Backend out of date',
     backendOutOfDateMessage:
-      'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
-    updateHermes: 'Update Hermes',
+      'Your xNova backend is older than this desktop build and may not work correctly. Update to align them.',
+    updateHermes: 'Update xNova',
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
     seeWhatsNew: "See what's new",
@@ -107,7 +107,7 @@ export const en: Translations = {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
       methodNotAllowed:
-        'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
+        'The desktop backend rejected that request (405 Method Not Allowed). Try restarting xNova Desktop.',
       microphonePermission: 'Microphone permission was denied.',
       openaiRejectedApiKey: 'OpenAI rejected the API key.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
@@ -276,7 +276,7 @@ export const en: Translations = {
       advanced: 'Advanced'
     },
     searchPlaceholder: {
-      about: 'About Hermes Desktop',
+      about: 'About xNova Desktop',
       config: 'Search settings...',
       gateway: 'Gateway connection...',
       keys: 'Search API keys...',
@@ -293,7 +293,7 @@ export const en: Translations = {
       intro:
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
       colorMode: 'Color Mode',
-      colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
+      colorModeDesc: 'Pick a fixed mode or let xNova follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       translucencyTitle: 'Window Translucency',
@@ -319,7 +319,7 @@ export const en: Translations = {
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
     about: {
-      heading: 'Hermes Desktop',
+      heading: 'xNova Desktop',
       version: value => `Version ${value}`,
       versionUnavailable: 'Version unavailable',
       updates: 'Updates',
@@ -387,7 +387,7 @@ export const en: Translations = {
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:
-        'Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control an already-running Hermes backend on another machine or behind a trusted proxy. Pick a profile below to give it its own remote host.',
+        'xNova Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control an already-running xNova backend on another machine or behind a trusted proxy. Pick a profile below to give it its own remote host.',
       appliesTo: 'Applies to',
       allProfiles: 'All profiles',
       defaultConnection: 'Default connection for every profile that has no override of its own.',
@@ -397,10 +397,10 @@ export const en: Translations = {
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
       localTitle: 'Local gateway',
-      localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
+      localDesc: 'Start a private xNova backend on localhost. This is the default and works offline.',
       remoteTitle: 'Remote gateway',
       remoteDesc:
-        'Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+        'Connect this desktop shell to a remote xNova backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
@@ -434,9 +434,9 @@ export const en: Translations = {
       enterUrlFirst: 'Enter a remote URL first.',
       restartingTitle: 'Gateway connection restarting',
       savedTitle: 'Gateway settings saved',
-      restartingMessage: 'Hermes Desktop will reconnect using the saved settings.',
+      restartingMessage: 'xNova Desktop will reconnect using the saved settings.',
       savedMessage: 'Saved for the next restart.',
-      connectedTo: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` · Hermes ${version}` : ''}`,
+      connectedTo: (baseUrl, version) => `Connected to ${baseUrl}${version ? ` · xNova ${version}` : ''}`,
       reachableTitle: 'Remote gateway reachable',
       signedOutTitle: 'Signed out',
       signedOutMessage: 'Cleared the remote gateway session.',
@@ -1499,7 +1499,7 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
-      desktopVersion: version => `Hermes Desktop v${version}`,
+      desktopVersion: version => `xNova Desktop v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,
       backendLabel: version => `backend v${version}`,
@@ -1785,8 +1785,8 @@ export const en: Translations = {
     sessionExportFailed: 'Could not export session',
     imageSaved: 'Image saved',
     downloadStarted: 'Download started',
-    restartToUseSaveImage: 'Restart Hermes Desktop to use Save Image.',
-    restartToSaveImages: 'Restart Hermes Desktop to save images',
+    restartToUseSaveImage: 'Restart xNova Desktop to use Save Image.',
+    restartToSaveImages: 'Restart xNova Desktop to save images',
     imageDownloadFailed: 'Image download failed',
     openImage: 'Open image',
     downloadImage: 'Download image',

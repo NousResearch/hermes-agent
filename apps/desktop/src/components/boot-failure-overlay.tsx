@@ -12,7 +12,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import type { RemoteReauth } from './boot-failure-reauth'
-import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { deriveProviderShape, isRemoteReauthErrorMessage, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
 type BusyAction = 'local' | 'repair' | 'retry' | 'signin' | null
 
@@ -80,7 +80,9 @@ export function BootFailureOverlay() {
         return
       }
 
-      if (cancelled || !isRemoteReauthFailure(config)) {
+      const needsRemoteReauth = isRemoteReauthFailure(config) || isRemoteReauthErrorMessage(boot.error)
+
+      if (cancelled || !needsRemoteReauth || config.mode !== 'remote' || !config.remoteUrl) {
         return
       }
 
@@ -104,7 +106,7 @@ export function BootFailureOverlay() {
     return () => {
       cancelled = true
     }
-  }, [visible])
+  }, [boot.error, visible])
 
   if (!visible || suppressed) {
     return null

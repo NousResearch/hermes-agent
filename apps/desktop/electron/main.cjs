@@ -275,6 +275,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const XNOVA_DEFAULT_REMOTE_URL = 'https://xgerrit.xnova-os.info'
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -320,7 +321,7 @@ const BOOT_FAKE_STEP_MS = (() => {
   if (!Number.isFinite(raw) || raw <= 0) return 650
   return Math.max(120, raw)
 })()
-const APP_NAME = 'Hermes'
+const APP_NAME = 'xNova'
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 const WINDOW_BUTTON_POSITION = {
@@ -582,7 +583,7 @@ app.setName(APP_NAME)
 app.setAboutPanelOptions({
   applicationName: APP_NAME,
   applicationVersion: resolveHermesVersion(),
-  copyright: 'Copyright © 2026 Nous Research'
+  copyright: 'Copyright © 2026 xNova'
 })
 
 // Custom scheme for streaming local media (video/audio) into the renderer.
@@ -3810,7 +3811,7 @@ function openOauthLoginWindow(baseUrl) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: 'Sign in to Hermes gateway',
+        title: 'Sign in to xNova gateway',
         autoHideMenuBar: true,
         webPreferences: {
           contextIsolation: true,
@@ -4042,7 +4043,14 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {}, profiles: {} }
+  let config = {
+    mode: 'remote',
+    remote: {
+      url: XNOVA_DEFAULT_REMOTE_URL,
+      authMode: 'oauth'
+    },
+    profiles: {}
+  }
 
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
@@ -4064,7 +4072,8 @@ function readDesktopConnectionConfig() {
       }
     }
   } catch {
-    // Missing or malformed connection settings should fall back to local.
+    // Missing or malformed connection settings should use the branded xNova
+    // remote default. Users can still switch to a local backend in Settings.
   }
 
   connectionConfigCache = config
@@ -4223,7 +4232,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     // the authoritative liveness check.
     if (!(await hasLiveOauthSession(baseUrl))) {
       const err = new Error(
-        'Remote Hermes gateway uses OAuth, but you are not signed in. ' +
+        'Remote xNova gateway uses OAuth, but you are not signed in. ' +
           'Open Settings → Gateway and click "Sign in", or switch back to Local.'
       )
       err.needsOauthLogin = true
@@ -4255,7 +4264,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
   if (!token) {
     throw new Error(
-      'Remote Hermes gateway is selected, but no session token is saved. ' +
+      'Remote xNova gateway is selected, but no session token is saved. ' +
         'Open Settings → Gateway and save a token, or switch back to Local.'
     )
   }

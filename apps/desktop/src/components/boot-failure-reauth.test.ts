@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopConnectionConfig } from '@/global'
 
-import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
+import { deriveProviderShape, isRemoteReauthErrorMessage, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
   return {
@@ -42,6 +42,25 @@ describe('isRemoteReauthFailure', () => {
   it('false for null/undefined config', () => {
     expect(isRemoteReauthFailure(null)).toBe(false)
     expect(isRemoteReauthFailure(undefined)).toBe(false)
+  })
+})
+
+describe('isRemoteReauthErrorMessage', () => {
+  it('true for OAuth login boot failures', () => {
+    expect(
+      isRemoteReauthErrorMessage(
+        'Remote xNova gateway uses OAuth, but you are not signed in. Open Settings -> Gateway and click "Sign in".'
+      )
+    ).toBe(true)
+  })
+
+  it('true for expired remote gateway sessions', () => {
+    expect(isRemoteReauthErrorMessage('Your remote gateway session has expired. Sign in again.')).toBe(true)
+  })
+
+  it('false for unrelated boot failures', () => {
+    expect(isRemoteReauthErrorMessage('The background gateway did not come up.')).toBe(false)
+    expect(isRemoteReauthErrorMessage(null)).toBe(false)
   })
 })
 

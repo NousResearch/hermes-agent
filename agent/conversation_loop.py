@@ -397,6 +397,42 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+# Shared recovery hint appended to every content-policy refusal message. Both
+# the HTTP-200 refusal path (``finish_reason=content_filter``) and the
+# exception path (a provider moderation error classified as
+# ``content_policy_blocked``) end with the same actionable next steps, so they
+# share one trailer to keep the guidance from drifting between the two sites.
+_CONTENT_POLICY_RECOVERY_HINT = (
+    "Try rephrasing the request, narrowing the context, or "
+    "adding a fallback provider with `hermes fallback add`."
+)
+
+
+def _content_policy_blocked_result(
+    messages: List[Dict],
+    api_call_count: int,
+    *,
+    final_response: str,
+    error_detail: str,
+) -> Dict[str, Any]:
+    """Build the terminal turn result for a content-policy block.
+
+    A content-policy refusal is deterministic for the unchanged prompt, so the
+    turn ends here (no retry). Both the HTTP-200 refusal handler and the
+    exception-path handler return the identical shape — a failed, non-completed
+    turn carrying the user-facing message and a ``content_policy_blocked:``
+    prefixed error — so they funnel through this one builder.
+    """
+    return {
+        "final_response": final_response,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "failed": True,
+        "error": f"content_policy_blocked: {error_detail}",
+    }
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -1347,6 +1383,106 @@ def run_conversation(
                             force=True,
                         )
                         finish_reason = "length"
+
+                # ── Content-policy refusal (HTTP 200) ──────────────────
+                # The model — or the provider's safety system — returned a
+                # *successful* response whose stop/finish reason is a refusal:
+                # Anthropic ``stop_reason="refusal"`` → ``content_filter``;
+                # OpenAI / portal ``finish_reason="content_filter"`` or a
+                # populated ``message.refusal`` (mapped in the chat_completions
+                # transport); Bedrock ``guardrail_intervened``. The content is
+                # typically empty, so without this branch the response falls
+                # through to the empty-response / invalid-response retry loops
+                # and is mis-surfaced as "rate limited" / "no content after
+                # retries" — burning paid attempts reproducing a deterministic
+                # refusal. Surface it clearly and stop. Mirrors the
+                # exception-based ``content_policy_blocked`` recovery: try a
+                # configured fallback once, otherwise return the refusal.
+                if finish_reason == "content_filter":
+                    _refusal_transport = agent._get_transport()
+                    if agent.api_mode == "anthropic_messages":
+                        _refusal_result = _refusal_transport.normalize_response(
+                            response, strip_tool_prefix=agent._is_anthropic_oauth
+                        )
+                    else:
+                        _refusal_result = _refusal_transport.normalize_response(response)
+                    _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
+                    # Some refusals carry the explanation only in the reasoning
+                    # channel; fall back to it so the user sees *something*.
+                    if not _refusal_text:
+                        _refusal_text = (agent._extract_reasoning(_refusal_result) or "").strip()
+
+                    agent._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type="ContentPolicyBlocked",
+                        error_message=_refusal_text or "model declined to respond (content_filter)",
+                        status_code=None,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=False,
+                        reason=FailoverReason.content_policy_blocked.value,
+                    )
+
+                    if thinking_spinner:
+                        thinking_spinner.stop("")
+                        thinking_spinner = None
+                    if agent.thinking_callback:
+                        agent.thinking_callback("")
+
+                    # Deterministic for the unchanged prompt — never retry.
+                    # Try a configured fallback once (a different model may not
+                    # refuse); otherwise surface the refusal terminally.
+                    if agent._has_pending_fallback():
+                        agent._buffer_status(
+                            "⚠️ Model declined to respond (safety refusal) — trying fallback..."
+                        )
+                    if agent._try_activate_fallback():
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
+
+                    agent._flush_status_buffer()
+                    _refusal_log = (
+                        _refusal_text[:500] + "..."
+                        if len(_refusal_text) > 500
+                        else _refusal_text
+                    )
+                    logger.warning(
+                        "%sModel declined to respond (finish_reason=content_filter). "
+                        "model=%s provider=%s refusal=%s",
+                        agent.log_prefix, agent.model, agent.provider,
+                        _refusal_log or "(no text)",
+                    )
+                    agent._emit_status(
+                        "⚠️ The model declined to respond to this request (safety refusal)."
+                    )
+
+                    _refusal_detail = (
+                        f"Model's explanation: {_refusal_text}"
+                        if _refusal_text
+                        else "The model returned no explanation."
+                    )
+                    _refusal_response = (
+                        "⚠️  The model declined to respond to this request "
+                        "(safety refusal — not a Hermes/gateway failure).\n\n"
+                        f"{_refusal_detail}\n\n"
+                        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+                    )
+
+                    agent._cleanup_task_resources(effective_task_id)
+                    agent._persist_session(messages, conversation_history)
+                    return _content_policy_blocked_result(
+                        messages,
+                        api_call_count,
+                        final_response=_refusal_response,
+                        error_detail=_refusal_text or "model declined (content_filter)",
+                    )
 
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
@@ -3119,20 +3255,17 @@ def run_conversation(
                     if classified.reason == FailoverReason.content_policy_blocked:
                         _summary = agent._summarize_api_error(api_error)
                         _policy_response = (
-                            f"⚠️  The model provider's safety filter blocked this request "
-                            f"(not a Hermes/gateway failure).\n\n"
+                            "⚠️  The model provider's safety filter blocked this request "
+                            "(not a Hermes/gateway failure).\n\n"
                             f"Provider message: {_summary}\n\n"
-                            f"Try rephrasing the request, narrowing the context, or "
-                            f"adding a fallback provider with `hermes fallback add`."
+                            f"{_CONTENT_POLICY_RECOVERY_HINT}"
                         )
-                        return {
-                            "final_response": _policy_response,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": f"content_policy_blocked: {_summary}",
-                        }
+                        return _content_policy_blocked_result(
+                            messages,
+                            api_call_count,
+                            final_response=_policy_response,
+                            error_detail=_summary,
+                        )
                     return {
                         "final_response": None,
                         "messages": messages,

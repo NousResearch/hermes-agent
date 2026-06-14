@@ -4660,6 +4660,47 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "Invalid API response" in result["error"]
 
+    def test_content_filter_refusal_surfaced_not_retried(self, agent):
+        """A model refusal must be surfaced immediately, NOT laundered into
+        the empty-response retry loop and reported as "rate limited" / "no
+        content after retries".
+
+        Regression: running a Claude refusal through an OpenAI-compatible
+        portal (Nous Portal fronting Anthropic) returns ``message.refusal``
+        with empty content. The transport now promotes that to a
+        ``content_filter`` finish reason and the loop surfaces it as a terminal
+        ``content_policy_blocked`` result instead of retrying a deterministic
+        refusal three times.
+        """
+        self._setup_agent(agent)
+        refusal_resp = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None, tool_calls=None, reasoning=None,
+                    reasoning_content=None, refusal="I won't help with that.",
+                ),
+                finish_reason="stop",
+            )],
+            model="test/model",
+            usage=None,
+            id="resp_1",
+        )
+        agent.client.chat.completions.create.return_value = refusal_resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("please do something disallowed")
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "content_policy_blocked" in result.get("error", "")
+        # The model's refusal text is surfaced to the user, not swallowed.
+        assert "I won't help with that." in (result.get("final_response") or "")
+        # Crucial regression guard: a deterministic refusal is NOT retried —
+        # exactly one API call, no empty-response retry loop.
+        assert agent.client.chat.completions.create.call_count == 1
+
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)

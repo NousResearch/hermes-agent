@@ -1,5 +1,9 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import glob
+from pathlib import Path
+from types import SimpleNamespace
+
 import tools.terminal_tool as terminal_tool
 
 
@@ -243,3 +247,39 @@ def test_get_env_config_still_rejects_bad_docker_json_for_docker_backend(monkeyp
         assert "TERMINAL_DOCKER_VOLUMES" in str(exc)
     else:
         raise AssertionError("Docker backend must validate TERMINAL_DOCKER_VOLUMES")
+
+
+def test_disk_usage_warning_short_circuits_after_threshold(monkeypatch):
+    """Avoid walking the full scratch tree after the warning threshold is crossed."""
+    stat_calls = []
+
+    class FakeFile:
+        def __init__(self, name, size):
+            self.name = name
+            self.size = size
+
+        def is_file(self):
+            return True
+
+        def stat(self):
+            stat_calls.append(self.name)
+            if self.name == "second":
+                raise AssertionError("second file should not be statted")
+            return SimpleNamespace(st_size=self.size)
+
+    class FakePath:
+        def __init__(self, path):
+            self.path = path
+
+        def rglob(self, pattern):
+            assert pattern == "*"
+            yield FakeFile("first", 2 * 1024 ** 3)
+            yield FakeFile("second", 1)
+
+    monkeypatch.setattr(terminal_tool, "_get_scratch_dir", lambda: Path("/scratch"))
+    monkeypatch.setattr(terminal_tool, "DISK_USAGE_WARNING_THRESHOLD_GB", 1.0)
+    monkeypatch.setattr(terminal_tool, "Path", FakePath)
+    monkeypatch.setattr(glob, "glob", lambda _pattern: ["/scratch/hermes-test"])
+
+    assert terminal_tool._check_disk_usage_warning() is True
+    assert stat_calls == ["first"]

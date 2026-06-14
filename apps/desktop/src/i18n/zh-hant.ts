@@ -219,7 +219,10 @@ export const zhHant = defineLocale({
       testTitle: 'Hermes',
       testBody: '通知運作正常。',
       testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
-      testUnsupported: '此系統不支援原生通知。'
+      testUnsupported: '此系統不支援原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
+      completionSoundPreview: '預覽'
     },
     sections: {
       model: '模型',
@@ -260,9 +263,6 @@ export const zhHant = defineLocale({
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
-      completionSoundTitle: '完成提示音',
-      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
-      completionSoundPreview: '預覽',
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
       installPlaceholder: 'publisher.extension',

@@ -311,7 +311,10 @@ export const en: Translations = {
       testTitle: 'Hermes',
       testBody: 'Notifications are working.',
       testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
-      testUnsupported: 'This system does not support native notifications.'
+      testUnsupported: 'This system does not support native notifications.',
+      completionSoundTitle: 'Completion Sound',
+      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
+      completionSoundPreview: 'Preview'
     },
     sections: {
       model: 'Model',
@@ -353,9 +356,6 @@ export const en: Translations = {
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
-      completionSoundTitle: 'Completion Sound',
-      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
-      completionSoundPreview: 'Preview',
       installTitle: 'Install from VS Code',
       installDesc:
         'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',

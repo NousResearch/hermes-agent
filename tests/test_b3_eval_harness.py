@@ -1,8 +1,11 @@
 import json
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+import eval_harness.b3 as b3
 from eval_harness.b3 import (
     EvalAttempt,
     EvalTask,
@@ -117,6 +120,239 @@ def test_repository_fixture_example_scores_without_network():
     assert summary["overall"]["pass^2"] == 1.0
     assert summary["agents"]["vera"]["vera"]["precision"] == 0.5
 
+
+def test_explicit_fixture_cost_wins_over_estimated_cost(tmp_path, monkeypatch):
+    def _unexpected_estimator(*args, **kwargs):
+        raise AssertionError("explicit fixture cost should bypass estimation")
+
+    monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _unexpected_estimator)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "explicit-cost",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "cost_usd": 0.99,
+                        "usage": {
+                            "input_tokens": 1000,
+                            "output_tokens": 200,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+
+    assert tasks[0].attempts[0].cost_usd == 0.99
+
+
+def test_load_fixture_estimates_cost_from_known_static_provider_when_cost_missing(tmp_path, monkeypatch):
+    seen = {}
+
+    def _fake_estimator(model_name, usage, *, provider=None, base_url=None):
+        seen["model_name"] = model_name
+        seen["provider"] = provider
+        seen["base_url"] = base_url
+        seen["usage"] = usage
+        return SimpleNamespace(amount_usd=Decimal("1.2345674"))
+
+    monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _fake_estimator)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "steve-live-1",
+                "agent": "steve",
+                "runs": [
+                    {
+                        "completed": True,
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 1000, "output_tokens": 200},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd == 1.234567
+    assert summary["overall"]["cost_usd"] == 1.234567
+    assert seen["model_name"] == "claude-sonnet-4-6"
+    assert seen["provider"] == "anthropic"
+    assert seen["usage"].input_tokens == 1000
+    assert seen["usage"].output_tokens == 200
+
+
+def test_remote_pricing_routes_do_not_fetch_metadata_and_return_zero(tmp_path, monkeypatch):
+    def _forbid_remote_fetch(*args, **kwargs):
+        raise AssertionError("offline B3 fixtures must not fetch remote pricing metadata")
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_model_metadata", _forbid_remote_fetch)
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", _forbid_remote_fetch)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "task_id": "openrouter-route",
+                        "agent": "steve",
+                        "attempts": [
+                            {
+                                "passed": True,
+                                "provider": "openrouter",
+                                "model": "anthropic/claude-sonnet-4-20250514",
+                                "usage": {"input_tokens": 1000, "output_tokens": 200},
+                            }
+                        ],
+                    },
+                    {
+                        "task_id": "nous-route",
+                        "agent": "steve",
+                        "attempts": [
+                            {
+                                "passed": True,
+                                "provider": "nous",
+                                "model": "openai/gpt-5.5-pro",
+                                "usage": {"input_tokens": 1000, "output_tokens": 200},
+                            }
+                        ],
+                    },
+                    {
+                        "task_id": "base-url-route",
+                        "agent": "steve",
+                        "attempts": [
+                            {
+                                "passed": True,
+                                "model": "zai-org/GLM-5-TEE",
+                                "base_url": "https://llm.chutes.ai/v1",
+                                "usage": {"input_tokens": 1000, "output_tokens": 200},
+                            }
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert [task.attempts[0].cost_usd for task in tasks] == [0.0, 0.0, 0.0]
+    assert summary["overall"]["cost_usd"] == 0.0
+
+
+def test_metadata_model_and_provider_are_accepted(tmp_path, monkeypatch):
+    seen = {}
+
+    def _fake_estimator(model_name, usage, *, provider=None, base_url=None):
+        seen["model_name"] = model_name
+        seen["provider"] = provider
+        return SimpleNamespace(amount_usd=Decimal("0.42"))
+
+    monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _fake_estimator)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "metadata-route",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "metadata": {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+                        "usage": {"input_tokens": 1000, "output_tokens": 200},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+
+    assert tasks[0].attempts[0].cost_usd == 0.42
+    assert seen == {"model_name": "claude-sonnet-4-6", "provider": "anthropic"}
+
+
+def test_cache_read_and_write_token_fields_are_passed_to_static_estimator(tmp_path, monkeypatch):
+    seen = {}
+
+    def _fake_estimator(model_name, usage, *, provider=None, base_url=None):
+        seen["usage"] = usage
+        return SimpleNamespace(amount_usd=Decimal("0.01"))
+
+    monkeypatch.setattr(b3, "estimate_usage_cost_from_static_pricing", _fake_estimator)
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "cache-tokens",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 20,
+                            "cache_read_input_tokens": 30,
+                            "cache_creation_input_tokens": 40,
+                            "request_count": 2,
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    load_fixture(fixture)
+
+    assert seen["usage"].input_tokens == 100
+    assert seen["usage"].output_tokens == 20
+    assert seen["usage"].cache_read_tokens == 30
+    assert seen["usage"].cache_write_tokens == 40
+    assert seen["usage"].request_count == 2
+
+
+def test_load_fixture_estimates_cost_from_static_pricing_when_cost_missing(tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "steve-live-1",
+                "agent": "steve",
+                "runs": [
+                    {
+                        "completed": True,
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd > 0.0
+    assert summary["overall"]["cost_usd"] == tasks[0].attempts[0].cost_usd
 
 
 def test_cli_writes_json_summary_for_fixture(tmp_path, capsys):

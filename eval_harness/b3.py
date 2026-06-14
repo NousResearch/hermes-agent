@@ -9,6 +9,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from agent.usage_pricing import CanonicalUsage, estimate_usage_cost_from_static_pricing
+
 
 @dataclass(frozen=True)
 class EvalAttempt:
@@ -88,13 +90,61 @@ def _usage_block(record: Mapping[str, Any]) -> Mapping[str, Any]:
     return {}
 
 
+def _extract_text_field(record: Mapping[str, Any], *keys: str) -> str:
+    usage = _usage_block(record)
+    metadata = record.get("metadata")
+    sources: tuple[Mapping[str, Any], ...]
+    if isinstance(metadata, Mapping):
+        sources = (usage, metadata, record)
+    else:
+        sources = (usage, record)
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if value:
+                return str(value).strip()
+    return ""
+
+
+def _extract_provider(record: Mapping[str, Any], model: str = "") -> str:
+    provider = _extract_text_field(record, "provider", "provider_name")
+    if not provider and "/" in model:
+        provider = model.split("/", 1)[0]
+    return provider.strip().lower()
+
+
+def _extract_base_url(record: Mapping[str, Any]) -> str:
+    return _extract_text_field(record, "base_url", "api_base", "endpoint", "endpoint_url")
+
+
 def _extract_cost(record: Mapping[str, Any]) -> float:
     usage = _usage_block(record)
     for source in (usage, record):
         for key in ("cost_usd", "actual_cost_usd", "estimated_cost_usd"):
             if key in source:
                 return _as_float(source.get(key))
-    return 0.0
+
+    model = _extract_model(record)
+    provider = _extract_provider(record, model)
+    canonical_usage = CanonicalUsage(
+        input_tokens=_extract_token_count(record, "input_tokens", "prompt_tokens"),
+        output_tokens=_extract_token_count(record, "output_tokens", "completion_tokens"),
+        cache_read_tokens=_extract_token_count(record, "cache_read_tokens", "cached_tokens", "cache_read_input_tokens"),
+        cache_write_tokens=_extract_token_count(record, "cache_write_tokens", "cache_creation_input_tokens"),
+        request_count=max(0, _extract_token_count(record, "api_calls", "request_count")),
+    )
+    if not model or canonical_usage.total_tokens <= 0:
+        return 0.0
+
+    result = estimate_usage_cost_from_static_pricing(
+        model,
+        canonical_usage,
+        provider=provider or None,
+        base_url=_extract_base_url(record) or None,
+    )
+    if result.amount_usd is None:
+        return 0.0
+    return _round_float(float(result.amount_usd), 6)
 
 
 def _extract_latency_ms(record: Mapping[str, Any]) -> int:
@@ -119,12 +169,7 @@ def _extract_token_count(record: Mapping[str, Any], *keys: str) -> int:
 
 
 def _extract_model(record: Mapping[str, Any]) -> str:
-    metadata = record.get("metadata")
-    if isinstance(metadata, Mapping) and metadata.get("model"):
-        return str(metadata.get("model"))
-    if record.get("model"):
-        return str(record.get("model"))
-    return ""
+    return _extract_text_field(record, "model", "model_name")
 
 
 def _finding_id(raw: Mapping[str, Any] | str) -> str:

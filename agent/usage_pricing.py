@@ -773,29 +773,14 @@ def normalize_usage(
     )
 
 
-def estimate_usage_cost(
-    model_name: str,
+def _cost_result_from_entry(
+    route: BillingRoute,
     usage: CanonicalUsage,
+    entry: PricingEntry,
     *,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    notes: tuple[str, ...] = (),
 ) -> CostResult:
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
-    if route.billing_mode == "subscription_included":
-        return CostResult(
-            amount_usd=_ZERO,
-            status="included",
-            source="none",
-            label="included",
-            pricing_version="included-route",
-        )
-
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
-    if not entry:
-        return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
-
-    notes: list[str] = []
+    result_notes: list[str] = list(notes)
     amount = _ZERO
 
     if usage.input_tokens and entry.input_cost_per_million is None:
@@ -838,9 +823,6 @@ def estimate_usage_cost(
         status = "included"
         label = "included"
 
-    if route.provider == "openrouter":
-        notes.append("OpenRouter cost is estimated from the models API until reconciled.")
-
     return CostResult(
         amount_usd=amount,
         status=status,
@@ -848,8 +830,68 @@ def estimate_usage_cost(
         label=label,
         fetched_at=entry.fetched_at,
         pricing_version=entry.pricing_version,
-        notes=tuple(notes),
+        notes=tuple(result_notes),
     )
+
+
+def estimate_usage_cost_from_static_pricing(
+    model_name: str,
+    usage: CanonicalUsage,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> CostResult:
+    """Estimate cost using only offline/static pricing data.
+
+    This intentionally skips provider metadata lookups (OpenRouter, Nous, or
+    custom OpenAI-compatible endpoints), so offline eval harnesses can use the
+    shared pricing logic without creating network dependencies.
+    """
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    if route.billing_mode == "subscription_included":
+        return CostResult(
+            amount_usd=_ZERO,
+            status="included",
+            source="none",
+            label="included",
+            pricing_version="included-route",
+        )
+    if route.provider in {"openrouter", "nous"} or route.base_url:
+        return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
+
+    entry = _lookup_official_docs_pricing(route)
+    if not entry:
+        return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
+    return _cost_result_from_entry(route, usage, entry)
+
+
+def estimate_usage_cost(
+    model_name: str,
+    usage: CanonicalUsage,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> CostResult:
+    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    if route.billing_mode == "subscription_included":
+        return CostResult(
+            amount_usd=_ZERO,
+            status="included",
+            source="none",
+            label="included",
+            pricing_version="included-route",
+        )
+
+    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
+    if not entry:
+        return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
+
+    notes: tuple[str, ...] = ()
+    if route.provider == "openrouter":
+        notes = ("OpenRouter cost is estimated from the models API until reconciled.",)
+
+    return _cost_result_from_entry(route, usage, entry, notes=notes)
 
 
 def has_known_pricing(

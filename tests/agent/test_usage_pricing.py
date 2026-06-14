@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
+    estimate_usage_cost_from_static_pricing,
     get_pricing_entry,
     normalize_usage,
 )
@@ -143,6 +144,51 @@ def test_estimate_usage_cost_marks_subscription_routes_included():
 
     assert result.status == "included"
     assert float(result.amount_usd) == 0.0
+
+
+def test_static_pricing_estimator_uses_official_snapshot_without_remote_fetch(monkeypatch):
+    def _forbid_remote_fetch(*args, **kwargs):
+        raise AssertionError("static pricing estimator must not fetch remote metadata")
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_model_metadata", _forbid_remote_fetch)
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", _forbid_remote_fetch)
+
+    result = estimate_usage_cost_from_static_pricing(
+        "claude-sonnet-4-6",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="anthropic",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert float(result.amount_usd) > 0.0
+    assert result.source == "official_docs_snapshot"
+
+
+def test_static_pricing_estimator_refuses_remote_pricing_routes(monkeypatch):
+    def _forbid_remote_fetch(*args, **kwargs):
+        raise AssertionError("static pricing estimator must not fetch remote metadata")
+
+    monkeypatch.setattr("agent.usage_pricing.fetch_model_metadata", _forbid_remote_fetch)
+    monkeypatch.setattr("agent.usage_pricing.fetch_endpoint_model_metadata", _forbid_remote_fetch)
+
+    openrouter_result = estimate_usage_cost_from_static_pricing(
+        "anthropic/claude-sonnet-4-6",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    custom_result = estimate_usage_cost_from_static_pricing(
+        "zai-org/GLM-5-TEE",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="custom",
+        base_url="https://llm.chutes.ai/v1",
+    )
+
+    assert openrouter_result.status == "unknown"
+    assert openrouter_result.amount_usd is None
+    assert custom_result.status == "unknown"
+    assert custom_result.amount_usd is None
 
 
 def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(monkeypatch):

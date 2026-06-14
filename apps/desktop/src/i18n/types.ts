@@ -143,6 +143,20 @@ export interface Translations {
       tryRecordingAgain: string
       unavailable: string
     }
+    // Native OS notification copy (titles + generic fallback bodies). Dynamic
+    // bodies (the agent's reply, a command, an error) are passed through raw.
+    native: {
+      approvalTitle: string
+      approveAction: string
+      rejectAction: string
+      inputTitle: string
+      inputBody: string
+      turnDoneTitle: string
+      turnDoneBody: string
+      turnErrorTitle: string
+      backgroundDoneTitle: string
+      backgroundFailedTitle: string
+    }
   }
 
   titlebar: {
@@ -202,6 +216,26 @@ export interface Translations {
       mcp: string
       archivedChats: string
       about: string
+      notifications: string
+    }
+    notifications: {
+      title: string
+      intro: string
+      enableAll: string
+      enableAllDesc: string
+      focusedHint: string
+      kinds: Record<
+        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
+        { label: string; description: string }
+      >
+      test: string
+      testTitle: string
+      testBody: string
+      testSent: string
+      testUnsupported: string
+      completionSoundTitle: string
+      completionSoundDesc: string
+      completionSoundPreview: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
@@ -222,9 +256,6 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
-      completionSoundTitle: string
-      completionSoundDesc: string
-      completionSoundPreview: string
       installTitle: string
       installDesc: string
       installPlaceholder: string

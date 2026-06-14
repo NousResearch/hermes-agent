@@ -88,6 +88,8 @@ declare global {
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
+      onFocusSession?: (callback: (sessionId: string) => void) => () => void
+      onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
@@ -413,6 +415,9 @@ export interface HermesNotification {
   title?: string
   body?: string
   silent?: boolean
+  kind?: string
+  sessionId?: string
+  actions?: { id: string; text: string }[]
 }
 
 export interface HermesPreviewTarget {

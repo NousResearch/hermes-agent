@@ -55,12 +55,11 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if peer_name:
         new_block["peerName"] = peer_name
 
-    # AI peer is profile-specific; workspace is shared so all profiles
-    # see the same user context, sessions, and project history.
+    # Keep profile isolation by default: profile-specific AI peer and workspace.
     # Use the bare profile name as the peer identity (not the host key)
     # because Honcho's peer ID pattern is ^[a-zA-Z0-9_-]+$ (no dots).
     new_block["aiPeer"] = profile_name
-    new_block["workspace"] = default_block.get("workspace") or cfg.get("workspace") or HOST
+    new_block["workspace"] = new_host.replace(".", "-")
     new_block["enabled"] = default_block.get("enabled", True)
 
     cfg.setdefault("hosts", {})[new_host] = new_block
@@ -121,7 +120,12 @@ def cmd_enable(args) -> None:
         # Use bare profile name as AI peer, not the host key
         ai_peer = host.split(".", 1)[1] if "." in host else host
         block.setdefault("aiPeer", ai_peer)
-        block.setdefault("workspace", default_block.get("workspace") or cfg.get("workspace") or HOST)
+        if host == HOST:
+            root_workspace = cfg.get("workspace")
+            if root_workspace:
+                block.setdefault("workspace", root_workspace)
+        else:
+            block.setdefault("workspace", host.replace(".", "-"))
 
     _write_config(cfg)
     print(f"  {label}Honcho enabled.")

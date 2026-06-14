@@ -1200,13 +1200,14 @@ def init_agent(
     #   enabled_toolsets is None        → no filter, inject (backward compat)
     #   "memory" in enabled_toolsets    → user opted in, inject
     #   otherwise (incl. [])            → user excluded memory, skip injection
+    #   disabled_toolsets has "memory"  → explicit deny, skip injection (#46171)
     #
     # Without this gate, `platform_toolsets: telegram: []` still leaks memory
     # provider tools (fact_store, etc.) into the tool surface — a 10x latency
     # penalty on local models and a frequent trigger of tool-call loops.
     if agent._memory_manager and agent.tools is not None and (
         agent.enabled_toolsets is None or "memory" in agent.enabled_toolsets
-    ):
+    ) and not (agent.disabled_toolsets and "memory" in agent.disabled_toolsets):
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

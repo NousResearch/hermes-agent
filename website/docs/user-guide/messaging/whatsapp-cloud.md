@@ -303,6 +303,16 @@ tts:
       timeout: 180
 ```
 
+Validate a live Hermes home before restarting the gateway:
+
+```bash
+scripts/verify_voice_command_tts.py --use-existing-config --hermes-home ~/.hermes
+```
+
+A passing run proves the configured provider returns a `[[audio_as_voice]]`
+media tag and real mono 48 kHz Ogg/Opus audio suitable for WhatsApp voice-note
+delivery.
+
 You can check whether the gateway found ffmpeg via the health endpoint:
 
 ```bash

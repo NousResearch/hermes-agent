@@ -340,6 +340,15 @@ config that calls `voice say --format ogg-opus`, runs Hermes'
 run proves Hermes receives a `voice_compatible` media tag and that the audio is
 real Opus in an Ogg container, mono, at 48 kHz.
 
+To validate an already deployed Hermes home without rewriting its config:
+
+```bash
+scripts/verify_voice_command_tts.py --use-existing-config --hermes-home ~/.hermes
+```
+
+In this mode the script uses the configured `tts.provider` path and only writes
+the generated audio cache entry.
+
 #### Security
 
 Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.

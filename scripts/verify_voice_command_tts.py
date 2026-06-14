@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Validate a voice-backed Hermes command TTS provider in an isolated home.
+"""Validate a voice-backed Hermes command TTS provider.
 
-This script writes a temporary Hermes config that points a command provider at
-`voice say --format ogg-opus`, runs Hermes' real text_to_speech_tool entry
-point, and verifies the resulting audio is WhatsApp-ready Ogg/Opus.
+By default this script writes a temporary Hermes config that points a command
+provider at `voice say --format ogg-opus`, runs Hermes' real
+text_to_speech_tool entry point, and verifies the resulting audio is
+WhatsApp-ready Ogg/Opus.
+
+Pass `--use-existing-config` to validate a deployed HERMES_HOME without
+rewriting config.yaml.
 """
 
 from __future__ import annotations
@@ -91,7 +95,26 @@ def write_isolated_config(
     return config_path
 
 
-def run_tts_tool(*, hermes_home: Path, text: str, output_path: str | None, platform: str) -> dict[str, Any]:
+def default_hermes_home() -> Path:
+    return Path(os.environ.get("HERMES_HOME", "~/.hermes")).expanduser()
+
+
+def existing_config_path(hermes_home: Path) -> Path:
+    config_path = hermes_home / "config.yaml"
+    if not config_path.is_file():
+        raise SystemExit(
+            f"{config_path} does not exist; remove --use-existing-config or pass --hermes-home"
+        )
+    return config_path
+
+
+def run_tts_tool(
+    *,
+    hermes_home: Path,
+    text: str,
+    output_path: str | None,
+    platform: str,
+) -> dict[str, Any]:
     os.environ["HERMES_HOME"] = str(hermes_home)
     os.environ["HERMES_SESSION_PLATFORM"] = platform
     sys.path.insert(0, str(repo_root()))
@@ -142,13 +165,20 @@ def probe_audio(path: Path, *, ffprobe_bin: str) -> dict[str, str]:
     return parse_ffprobe(completed.stdout)
 
 
-def validate_result(result: dict[str, Any], probe: dict[str, str]) -> None:
+def validate_result(
+    result: dict[str, Any],
+    probe: dict[str, str],
+    *,
+    expected_provider: str,
+) -> None:
     path = Path(str(result.get("file_path") or ""))
     media_tag = str(result.get("media_tag") or "")
     failures: list[str] = []
 
-    if result.get("provider") != "kokoro":
-        failures.append(f"expected provider kokoro, got {result.get('provider')!r}")
+    if result.get("provider") != expected_provider:
+        failures.append(
+            f"expected provider {expected_provider}, got {result.get('provider')!r}"
+        )
     if result.get("voice_compatible") is not True:
         failures.append("expected voice_compatible=true")
     if not media_tag.startswith("[[audio_as_voice]]\nMEDIA:"):
@@ -171,17 +201,32 @@ def validate_result(result: dict[str, Any], probe: dict[str, str]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run Hermes TTS against an isolated command provider backed by "
+            "Run Hermes TTS against a command provider backed by "
             "`voice say --format ogg-opus` and verify Ogg/Opus output."
         )
     )
     parser.add_argument("--voice-bin", default=os.environ.get("VOICE_BIN", "voice"))
     parser.add_argument("--ffprobe-bin", default=os.environ.get("FFPROBE_BIN", "ffprobe"))
     parser.add_argument("--hermes-home", type=Path)
+    parser.add_argument(
+        "--use-existing-config",
+        action="store_true",
+        help=(
+            "Use the existing config.yaml under --hermes-home or HERMES_HOME. "
+            "The default mode writes an isolated temporary config."
+        ),
+    )
     parser.add_argument("--keep-home", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--output-path")
-    parser.add_argument("--provider", default="kokoro")
+    parser.add_argument(
+        "--provider",
+        default="kokoro",
+        help=(
+            "Provider name to write in isolated mode, and expected result "
+            "provider in --use-existing-config mode."
+        ),
+    )
     parser.add_argument("--voice", default="af_heart")
     parser.add_argument("--speed", default="1.0")
     parser.add_argument("--timeout", type=float, default=180.0)
@@ -192,17 +237,25 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    voice_bin = resolve_executable(args.voice_bin, label="voice binary")
     ffprobe_bin = resolve_executable(args.ffprobe_bin, label="ffprobe")
 
-    temporary_home = args.hermes_home is None
-    hermes_home = (
-        Path(tempfile.mkdtemp(prefix="hermes-voice-command-tts."))
-        if temporary_home
-        else args.hermes_home.expanduser().resolve()
-    )
-
-    try:
+    if args.use_existing_config:
+        temporary_home = False
+        hermes_home = (
+            args.hermes_home.expanduser().resolve()
+            if args.hermes_home is not None
+            else default_hermes_home().resolve()
+        )
+        config_path = existing_config_path(hermes_home)
+        mode = "existing"
+    else:
+        voice_bin = resolve_executable(args.voice_bin, label="voice binary")
+        temporary_home = args.hermes_home is None
+        hermes_home = (
+            Path(tempfile.mkdtemp(prefix="hermes-voice-command-tts."))
+            if temporary_home
+            else args.hermes_home.expanduser().resolve()
+        )
         config_path = write_isolated_config(
             hermes_home,
             provider=args.provider,
@@ -212,6 +265,9 @@ def main() -> int:
             timeout=args.timeout,
             force=args.force or temporary_home,
         )
+        mode = "isolated"
+
+    try:
         result = run_tts_tool(
             hermes_home=hermes_home,
             text=args.text,
@@ -220,12 +276,13 @@ def main() -> int:
         )
         audio_path = Path(str(result["file_path"]))
         probe = probe_audio(audio_path, ffprobe_bin=ffprobe_bin)
-        validate_result(result, probe)
-        retained = not (temporary_home and not args.keep_home)
+        validate_result(result, probe, expected_provider=args.provider)
+        retained = bool(args.output_path) or not (temporary_home and not args.keep_home)
         print(
             json.dumps(
                 {
                     "success": True,
+                    "mode": mode,
                     "hermes_home": str(hermes_home),
                     "config_path": str(config_path),
                     "retained": retained,

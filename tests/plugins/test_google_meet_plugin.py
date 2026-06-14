@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -184,6 +186,101 @@ def test_start_spawns_subprocess_and_writes_active_pointer(tmp_path):
     assert active is not None
     assert active["pid"] == 99999
     assert active["meeting_id"] == "abc-defg-hij"
+    assert active["duration"] == "15m"
+
+
+def test_start_headed_uses_xvfb_when_display_is_missing(monkeypatch):
+    """A service-mode headed launch must be wrapped with xvfb-run."""
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        pid = 99998
+
+    captured_env = {}
+    captured_argv = []
+
+    def _fake_popen(argv, **kwargs):
+        captured_argv.extend(argv)
+        captured_env.update(kwargs.get("env") or {})
+        return _FakeProc()
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("HERMES_MEET_XVFB", "auto")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        res = pm.start("https://meet.google.com/abc-defg-hij", headed=True)
+
+    assert res["ok"] is True
+    assert Path(captured_argv[0]).name == "xvfb-run"
+    assert captured_argv[1] == "-a"
+    assert any("plugins.google_meet.meet_bot" in arg for arg in captured_argv)
+    assert captured_env["HERMES_MEET_HEADED"] == "1"
+    assert res["headed"] is True
+    assert res["xvfb"] is True
+
+    active = pm._read_active()
+    assert active is not None
+    assert active["headed"] is True
+    assert active["xvfb"] is True
+
+
+def test_start_headed_rejects_without_display_or_xvfb(monkeypatch):
+    """Without DISPLAY or xvfb-run, fail before spawning Chromium."""
+    from plugins.google_meet import process_manager as pm
+
+    popen_called = False
+
+    def _fake_popen(_argv, **_kwargs):
+        nonlocal popen_called
+        popen_called = True
+        class _FakeProc:
+            pid = 99997
+        return _FakeProc()
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("HERMES_MEET_XVFB", "auto")
+    monkeypatch.setenv("PATH", "/definitely-no-xvfb-here")
+
+    with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        res = pm.start("https://meet.google.com/abc-defg-hij", headed=True)
+
+    assert res["ok"] is False
+    assert "headed" in res["error"].lower()
+    assert "xvfb-run" in res["error"]
+    assert popen_called is False
+    assert pm._read_active() is None
+
+
+def test_status_clears_stale_active_pointer_when_bot_exited(tmp_path):
+    """A dead bot with a final status file is no longer an active meeting."""
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = tmp_path / "abc-defg-hij"
+    out_dir.mkdir()
+    (out_dir / "status.json").write_text(json.dumps({
+        "meetingId": "abc-defg-hij",
+        "exited": True,
+        "leaveReason": "meet_landing",
+        "error": "meet returned to landing before captions",
+    }))
+    pm._write_active({
+        "pid": 11111,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=False):
+        res = pm.status()
+
+    assert res["ok"] is False
+    assert res["reason"] == "no active meeting"
+    assert res["lastStatus"]["leaveReason"] == "meet_landing"
+    assert pm._read_active() is None
 
 
 def test_transcript_reads_last_n_lines(tmp_path):
@@ -213,9 +310,16 @@ def test_transcript_reads_last_n_lines(tmp_path):
 def test_stop_signals_process_and_clears_pointer(tmp_path):
     from plugins.google_meet import process_manager as pm
 
+    out_dir = tmp_path / "x-y-z"
+    out_dir.mkdir()
+    (out_dir / "status.json").write_text(json.dumps({
+        "meetingId": "x-y-z",
+        "exited": False,
+        "leaveReason": None,
+    }))
     pm._write_active({
         "pid": 11111, "meeting_id": "x-y-z",
-        "out_dir": str(tmp_path / "x-y-z"),
+        "out_dir": str(out_dir),
         "url": "https://meet.google.com/x-y-z",
         "started_at": 0,
     })
@@ -238,6 +342,9 @@ def test_stop_signals_process_and_clears_pointer(tmp_path):
 
     assert res["ok"] is True
     assert (11111, signal.SIGTERM) in sent
+    status = json.loads((out_dir / "status.json").read_text())
+    assert status["exited"] is True
+    assert status["leaveReason"] == "requested"
     # .active.json cleared
     assert pm._read_active() is None
 
@@ -319,10 +426,20 @@ def test_on_session_end_stops_live_bot():
     from plugins.google_meet import _on_session_end
     from plugins.google_meet import pm
 
-    with patch.object(pm, "status", return_value={"ok": True, "alive": True}), \
+    with patch.object(pm, "status", return_value={"ok": True, "alive": True, "duration": None}), \
          patch.object(pm, "stop") as stop_mock:
         _on_session_end()
-    stop_mock.assert_called_once()
+    stop_mock.assert_called_once_with(reason="session ended")
+
+
+def test_on_session_end_keeps_duration_limited_bot_running():
+    from plugins.google_meet import _on_session_end
+    from plugins.google_meet import pm
+
+    with patch.object(pm, "status", return_value={"ok": True, "alive": True, "duration": "20m"}), \
+         patch.object(pm, "stop") as stop_mock:
+        _on_session_end()
+    stop_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +591,55 @@ def test_meet_join_accepts_realtime_mode():
         }))
     assert out["success"] is True
     assert start_mock.call_args.kwargs["mode"] == "realtime"
+
+
+def test_meet_join_passes_default_auth_state_when_saved():
+    from plugins.google_meet.tools import handle_meet_join
+
+    auth_path = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "auth.json"
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text(json.dumps({"cookies": [], "origins": []}))
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+        }))
+
+    assert out["success"] is True
+    assert start_mock.call_args.kwargs["auth_state"] == str(auth_path)
+
+
+def test_meet_join_defaults_duration_so_notetaking_survives_session_end():
+    """meet_join without an explicit duration must still get a bounded duration.
+
+    Otherwise session-end cleanup can reap the durationless bot immediately
+    after the tool response.
+    """
+    from plugins.google_meet.tools import handle_meet_join
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+        }))
+
+    assert out["success"] is True
+    assert start_mock.call_args.kwargs["duration"] == "120m"
+
+
+def test_meet_join_honors_explicit_duration():
+    from plugins.google_meet.tools import handle_meet_join
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "duration": "15m",
+        }))
+
+    assert out["success"] is True
+    assert start_mock.call_args.kwargs["duration"] == "15m"
 
 
 def test_meet_join_rejects_bad_mode():

@@ -45,6 +45,10 @@ def _active_file() -> Path:
     return _root() / ".active.json"
 
 
+def _last_file() -> Path:
+    return _root() / ".last.json"
+
+
 def _read_active() -> Optional[Dict[str, Any]]:
     p = _active_file()
     if not p.is_file():
@@ -55,12 +59,31 @@ def _read_active() -> Optional[Dict[str, Any]]:
         return None
 
 
+def _read_last() -> Optional[Dict[str, Any]]:
+    p = _last_file()
+    if not p.is_file():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _write_last(data: Dict[str, Any]) -> None:
+    p = _last_file()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
 def _write_active(data: Dict[str, Any]) -> None:
     p = _active_file()
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(p)
+    _write_last(data)
 
 
 def _clear_active() -> None:
@@ -144,6 +167,7 @@ def start(
     auth_state: Optional[str] = None,
     guest_name: str = "Hermes Agent",
     duration: Optional[str] = None,
+    persist_after_session: bool = False,
     session_id: Optional[str] = None,
     mode: str = "transcribe",
     realtime_model: Optional[str] = None,
@@ -243,6 +267,7 @@ def start(
         "url": url,
         "started_at": time.time(),
         "duration": duration,
+        "persist_after_session": bool(persist_after_session),
         "session_id": session_id,
         "log_path": str(log_path),
         "mode": mode,
@@ -289,6 +314,7 @@ def status() -> Dict[str, Any]:
         "url": active.get("url"),
         "startedAt": active.get("started_at"),
         "duration": active.get("duration"),
+        "persistAfterSession": bool(active.get("persist_after_session")),
         "outDir": active.get("out_dir"),
         **bot_status,
     }
@@ -297,6 +323,8 @@ def status() -> Dict[str, Any]:
 def transcript(last: Optional[int] = None) -> Dict[str, Any]:
     """Read the current transcript file. Returns ok=False if none exists."""
     active = _read_active()
+    if not active:
+        active = _read_last()
     if not active:
         return {"ok": False, "reason": "no active meeting"}
 

@@ -69,8 +69,10 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 hermes plugins enable google_meet
 hermes meet install                                      # pip + Chromium
 hermes meet setup                                        # preflight
-hermes meet auth                                         # optional
-hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
+hermes meet auth                                         # optional saved Google state
+hermes meet join https://meet.google.com/abc-defg-hij    # transcribe as guest
+# or explicitly reuse saved Google auth:
+hermes meet join --use-auth-state https://meet.google.com/abc-defg-hij
 ```
 
 ## Realtime mode
@@ -120,6 +122,12 @@ hermes meet node ping my-mac
 - No calendar scanning, no auto-dial, no auto-consent announcement.
 - Node server uses bearer-token auth; no key exchange, no TLS termination
   built in — run it on a LAN or behind a reverse proxy you trust.
+- Guest mode is the default. Saved Google auth from `hermes meet auth` is reused
+  only with `--use-auth-state` / `use_auth_state=true`, because it changes the
+  identity and meeting permissions used to join.
+- Hermes session-end cleanup leaves active calls by default, even with a
+  duration set. Use `--persist-after-session` / `persist_after_session=true`
+  only when the user explicitly wants a detached bot.
 - One active meeting per (gateway, node) pair. A second `meet_join` leaves the first.
 - `meet_say` refuses unless the active meeting was started with `mode='realtime'`.
 

@@ -46,7 +46,7 @@ Easiest path — run the built-in installer:
 hermes plugins enable google_meet
 hermes meet install                 # pip deps + Chromium (transcribe only)
 hermes meet install --realtime      # + pulseaudio-utils / brew blackhole+ffmpeg
-hermes meet auth                    # optional; skips guest-lobby wait
+hermes meet auth                    # optional; saves Google state for explicit reuse
 hermes meet setup                   # preflight checks
 ```
 
@@ -87,14 +87,14 @@ Run `hermes meet setup` to preflight local prereqs.
 2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
 3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
 4. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
-5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave.
+5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave. Session-end cleanup leaves by default; set `persist_after_session=true` only when the user explicitly wants the bot detached from the Hermes session.
 6. **Follow up** — read `meet_transcript()` in full, summarize, and use regular tools to send the recap, file issues, schedule followups.
 
 ## Tool reference
 
 | Tool | Parameters | Use |
 |---|---|---|
-| `meet_join` | `url`, `mode?`, `guest_name?`, `duration?`, `headed?`, `node?` | Start bot |
+| `meet_join` | `url`, `mode?`, `guest_name?`, `duration?`, `persist_after_session?`, `use_auth_state?`, `headed?`, `node?` | Start bot |
 | `meet_status` | `node?` | Liveness + progress |
 | `meet_transcript` | `last?`, `node?` | Read captions |
 | `meet_leave` | `node?` | Close bot |
@@ -105,7 +105,7 @@ Run `hermes meet setup` to preflight local prereqs.
 ## Important limits
 
 - Captions are only as good as Google Meet's live captions. English-biased, lossy on overlapping speakers.
-- Guest mode sits in the lobby until a host admits. Warn the user; `hermes meet auth` avoids this.
+- Guest mode is the default and may sit in the lobby until a host admits. `use_auth_state=true` explicitly reuses saved Google auth from `hermes meet auth`; warn the user that this changes the identity and meeting permissions used to join.
 - **Lobby timeout**: if the host doesn't admit the bot within 5 minutes (configurable via `HERMES_MEET_LOBBY_TIMEOUT` env), the bot leaves and `meet_status` reports `leaveReason: "lobby_timeout"`.
 - **One active meeting per install per location.** A second `meet_join` leaves the first.
 - **Windows not supported.**

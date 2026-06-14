@@ -21,9 +21,6 @@ from hermes_constants import get_hermes_home
 from plugins.google_meet import process_manager as pm
 
 
-DEFAULT_MEET_JOIN_DURATION = "120m"
-
-
 # ---------------------------------------------------------------------------
 # Runtime gate
 # ---------------------------------------------------------------------------
@@ -59,13 +56,12 @@ def _default_auth_state() -> Optional[str]:
 def _resolve_duration(raw: Any) -> Optional[str]:
     """Resolve the bot's auto-leave duration.
 
-    An explicit value always wins. Otherwise fall back to a bounded default so
-    a "join and take notes" bot persists beyond normal session-end cleanup
-    instead of being treated as a durationless background process.
+    An explicit value always wins. Omitted duration means the bot stays until
+    meet_leave or session-end cleanup stops it.
     """
     if raw:
         return str(raw)
-    return DEFAULT_MEET_JOIN_DURATION
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +134,25 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "description": (
                     "Optional max duration before auto-leave (e.g. '30m', "
-                    "'2h', '90s'). Omit to stay until meet_leave is called."
+                    "'2h', '90s'). Omit to stay until meet_leave is called "
+                    "or Hermes session-end cleanup stops the bot."
+                ),
+            },
+            "persist_after_session": {
+                "type": "boolean",
+                "description": (
+                    "Default false. When false, Hermes session-end cleanup "
+                    "leaves the call even if duration is set. Set true only "
+                    "when the user explicitly wants the bot to remain after "
+                    "the current Hermes session ends."
+                ),
+            },
+            "use_auth_state": {
+                "type": "boolean",
+                "description": (
+                    "Default false. Set true to explicitly reuse the saved "
+                    "Google Meet auth state from the local Hermes meetings "
+                    "workspace instead of joining as the configured guest."
                 ),
             },
             "headed": {
@@ -277,6 +291,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
                 url=url,
                 guest_name=str(args.get("guest_name") or "Hermes Agent"),
                 duration=_resolve_duration(args.get("duration")),
+                persist_after_session=bool(args.get("persist_after_session", False)),
                 headed=bool(args.get("headed", False)),
                 mode=mode,
             )
@@ -296,7 +311,8 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         headed=bool(args.get("headed", False)),
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
         duration=_resolve_duration(args.get("duration")),
-        auth_state=_default_auth_state(),
+        persist_after_session=bool(args.get("persist_after_session", False)),
+        auth_state=_default_auth_state() if bool(args.get("use_auth_state", False)) else None,
         mode=mode,
     )
     return _json({"success": bool(res.get("ok")), **res})

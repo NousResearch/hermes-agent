@@ -232,9 +232,10 @@ def test_bot_state_ignores_blank_text(tmp_path):
     assert "Unknown: text but no speaker" in (tmp_path / "s" / "transcript.txt").read_text()
 
 
-def test_bot_state_writes_caption_debug_for_unknown_speaker(tmp_path):
+def test_bot_state_writes_caption_debug_for_unknown_speaker_when_debug_enabled(tmp_path, monkeypatch):
     from plugins.google_meet.meet_bot import _BotState
 
+    monkeypatch.setenv("HERMES_MEET_DEBUG_STATUS", "1")
     state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
                       url="https://meet.google.com/x-y-z")
     speaker_debug = {
@@ -261,6 +262,36 @@ def test_bot_state_writes_caption_debug_for_unknown_speaker(tmp_path):
     debug = json.loads(debug_lines[0])
     assert debug["speakerSource"] == "unresolved"
     assert debug["speakerDebug"] == speaker_debug
+
+
+def test_bot_state_minimizes_ui_debug_fields_by_default(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    speaker_debug = {
+        "candidates": [
+            {"selector": "[aria-label]", "raw": "Alex Rivera alice@example.com", "clean": ""},
+        ]
+    }
+    state.record_caption(
+        "",
+        "text but no speaker",
+        speaker_source="unresolved",
+        speaker_debug=speaker_debug,
+    )
+    state.heartbeat(
+        phase="waiting_lobby",
+        stalled_reason=None,
+        last_ui_text="Alex Rivera alice@example.com is waiting",
+        last_url="https://meet.google.com/x-y-z",
+    )
+
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["lastUiText"] is None
+    assert status["lastSpeakerCandidates"] == []
+    assert status["captionDebugPath"] is None
+    assert not (tmp_path / "s" / "caption_debug.jsonl").exists()
 
 
 def test_caption_observer_uses_active_speaker_fallback():
@@ -574,7 +605,7 @@ def test_caption_observer_scans_live_visible_speaker_labels_without_old_row_clas
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 
 
-def test_caption_observer_emits_only_new_suffix_for_growing_visible_caption_row():
+def test_caption_observer_emits_full_text_for_growing_visible_caption_row():
     entries = _run_caption_observer_js(
         body_text="",
         caption_text="",
@@ -590,12 +621,12 @@ def test_caption_observer_emits_only_new_suffix_for_growing_visible_caption_row(
     simplified = [(entry["speaker"], entry["text"]) for entry in entries]
     assert simplified == [
         ("Alex Rivera", "Testing the first caption."),
-        ("Alex Rivera", "New words from the same row."),
+        ("Alex Rivera", "Testing the first caption. New words from the same row."),
     ]
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 
 
-def test_caption_observer_suppresses_initial_large_visible_caption_history():
+def test_caption_observer_emits_initial_large_visible_caption_for_python_split():
     old_history = " ".join(f"old{i}" for i in range(220))
     entries = _run_caption_observer_js(
         body_text="",
@@ -611,7 +642,8 @@ def test_caption_observer_suppresses_initial_large_visible_caption_history():
 
     simplified = [(entry["speaker"], entry["text"]) for entry in entries]
     assert simplified == [
-        ("Alex Rivera", "Fresh words after reset."),
+        ("Alex Rivera", old_history),
+        ("Alex Rivera", f"{old_history} Fresh words after reset."),
     ]
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 
@@ -783,6 +815,39 @@ def test_status_clears_stale_active_pointer_when_bot_exited(tmp_path):
     assert pm._read_active() is None
 
 
+def test_transcript_still_reads_after_status_clears_dead_active_pointer(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = tmp_path / "abc-defg-hij"
+    out_dir.mkdir()
+    (out_dir / "status.json").write_text(json.dumps({
+        "meetingId": "abc-defg-hij",
+        "exited": True,
+        "leaveReason": "duration_expired",
+    }))
+    (out_dir / "transcript.txt").write_text(
+        "[10:00:00] Alex Rivera: one\n"
+        "[10:00:01] Morgan Lee: two\n",
+        encoding="utf-8",
+    )
+    pm._write_active({
+        "pid": 11111,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=False):
+        status = pm.status()
+    transcript = pm.transcript()
+
+    assert status["ok"] is False
+    assert transcript["ok"] is True
+    assert transcript["total"] == 2
+    assert transcript["lines"][-1].endswith("Morgan Lee: two")
+
+
 def test_transcript_reads_last_n_lines(tmp_path):
     from plugins.google_meet import process_manager as pm
 
@@ -932,12 +997,30 @@ def test_on_session_end_stops_live_bot():
     stop_mock.assert_called_once_with(reason="session ended")
 
 
-def test_on_session_end_keeps_duration_limited_bot_running():
+def test_on_session_end_stops_duration_limited_bot_by_default():
     from plugins.google_meet import _on_session_end
     from plugins.google_meet import pm
 
     with patch.object(pm, "status", return_value={"ok": True, "alive": True, "duration": "20m"}), \
          patch.object(pm, "stop") as stop_mock:
+        _on_session_end()
+    stop_mock.assert_called_once_with(reason="session ended")
+
+
+def test_on_session_end_keeps_explicitly_detached_bot_running():
+    from plugins.google_meet import _on_session_end
+    from plugins.google_meet import pm
+
+    with patch.object(
+        pm,
+        "status",
+        return_value={
+            "ok": True,
+            "alive": True,
+            "duration": "20m",
+            "persistAfterSession": True,
+        },
+    ), patch.object(pm, "stop") as stop_mock:
         _on_session_end()
     stop_mock.assert_not_called()
 
@@ -1093,7 +1176,7 @@ def test_meet_join_accepts_realtime_mode():
     assert start_mock.call_args.kwargs["mode"] == "realtime"
 
 
-def test_meet_join_passes_default_auth_state_when_saved():
+def test_meet_join_does_not_reuse_saved_auth_state_by_default():
     from plugins.google_meet.tools import handle_meet_join
 
     auth_path = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "auth.json"
@@ -1107,15 +1190,28 @@ def test_meet_join_passes_default_auth_state_when_saved():
         }))
 
     assert out["success"] is True
+    assert start_mock.call_args.kwargs["auth_state"] is None
+
+
+def test_meet_join_reuses_saved_auth_state_only_when_explicitly_requested():
+    from plugins.google_meet.tools import handle_meet_join
+
+    auth_path = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "auth.json"
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text(json.dumps({"cookies": [], "origins": []}))
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "use_auth_state": True,
+        }))
+
+    assert out["success"] is True
     assert start_mock.call_args.kwargs["auth_state"] == str(auth_path)
 
 
-def test_meet_join_defaults_duration_so_notetaking_survives_session_end():
-    """meet_join without an explicit duration must still get a bounded duration.
-
-    Otherwise session-end cleanup can reap the durationless bot immediately
-    after the tool response.
-    """
+def test_meet_join_does_not_set_default_duration():
     from plugins.google_meet.tools import handle_meet_join
 
     with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
@@ -1125,7 +1221,21 @@ def test_meet_join_defaults_duration_so_notetaking_survives_session_end():
         }))
 
     assert out["success"] is True
-    assert start_mock.call_args.kwargs["duration"] == "120m"
+    assert start_mock.call_args.kwargs["duration"] is None
+
+
+def test_meet_join_passes_persist_after_session_only_when_requested():
+    from plugins.google_meet.tools import handle_meet_join
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "persist_after_session": True,
+        }))
+
+    assert out["success"] is True
+    assert start_mock.call_args.kwargs["persist_after_session"] is True
 
 
 def test_meet_join_honors_explicit_duration():
@@ -1265,6 +1375,69 @@ def test_cli_join_accepts_mode_and_node_flags():
     assert ns.node == "my-mac"
 
 
+def test_cli_join_accepts_auth_and_persist_flags():
+    import argparse
+    from plugins.google_meet.cli import register_cli
+
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+
+    ns = parser.parse_args([
+        "join", "https://meet.google.com/abc-defg-hij",
+        "--use-auth-state", "--persist-after-session",
+    ])
+    assert ns.use_auth_state is True
+    assert ns.persist_after_session is True
+
+
+def test_cli_join_does_not_reuse_saved_auth_state_by_default(tmp_path):
+    from plugins.google_meet.cli import _auth_state_path, _cmd_join
+
+    auth_path = _auth_state_path()
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text("{}", encoding="utf-8")
+
+    with patch("plugins.google_meet.cli.pm.start", return_value={"ok": True}) as start_mock:
+        rc = _cmd_join(
+            "https://meet.google.com/abc-defg-hij",
+            guest_name="Hermes Agent",
+            duration=None,
+            headed=False,
+            mode="transcribe",
+            node=None,
+            use_auth_state=False,
+            persist_after_session=False,
+        )
+
+    assert rc == 0
+    assert start_mock.call_args.kwargs["auth_state"] is None
+    assert start_mock.call_args.kwargs["persist_after_session"] is False
+
+
+def test_cli_join_reuses_saved_auth_state_only_when_explicitly_requested(tmp_path):
+    from plugins.google_meet.cli import _auth_state_path, _cmd_join
+
+    auth_path = _auth_state_path()
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.write_text("{}", encoding="utf-8")
+
+    with patch("plugins.google_meet.cli.pm.start", return_value={"ok": True}) as start_mock:
+        rc = _cmd_join(
+            "https://meet.google.com/abc-defg-hij",
+            guest_name="Hermes Agent",
+            duration=None,
+            headed=False,
+            mode="transcribe",
+            node=None,
+            use_auth_state=True,
+            persist_after_session=True,
+        )
+
+    assert rc == 0
+    assert start_mock.call_args.kwargs["auth_state"] == str(auth_path)
+    assert start_mock.call_args.kwargs["persist_after_session"] is True
+
+
 def test_cli_say_subcommand_exists():
     import argparse
     from plugins.google_meet.cli import register_cli
@@ -1311,9 +1484,10 @@ def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
     assert status["leaveReason"] == "lobby_timeout"
 
 
-def test_bot_state_heartbeat_flushes_phase_and_diagnostics(tmp_path):
+def test_bot_state_heartbeat_flushes_phase_and_diagnostics_when_debug_enabled(tmp_path, monkeypatch):
     from plugins.google_meet.meet_bot import _BotState
 
+    monkeypatch.setenv("HERMES_MEET_DEBUG_STATUS", "1")
     state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
                       url="https://meet.google.com/x-y-z")
     before = json.loads((tmp_path / "s" / "status.json").read_text())["lastHeartbeatAt"]
@@ -2015,7 +2189,7 @@ def test_transcribe_browser_config_uses_fake_device_and_fake_ui_flags_only(monke
     assert permissions == ["microphone", "camera"]
 
 
-def test_realtime_browser_config_requests_microphone_with_fake_media(monkeypatch):
+def test_realtime_browser_config_uses_real_audio_input(monkeypatch):
     from plugins.google_meet.meet_bot import _build_browser_launch_config
 
     monkeypatch.delenv("HERMES_MEET_PROXY_SERVER", raising=False)
@@ -2023,7 +2197,7 @@ def test_realtime_browser_config_requests_microphone_with_fake_media(monkeypatch
     chrome_args, permissions = _build_browser_launch_config(realtime_enabled=True)
 
     assert "--use-fake-ui-for-media-stream" in chrome_args
-    assert "--use-fake-device-for-media-stream" in chrome_args
+    assert "--use-fake-device-for-media-stream" not in chrome_args
     assert permissions == ["microphone", "camera"]
 
 
@@ -2660,6 +2834,40 @@ def test_disable_local_media_clicks_visible_turn_off_controls():
 
     assert _disable_local_media(_Page()) == 2
     assert clicked == ["Turn off microphone", "Turn off camera"]
+
+
+def test_disable_local_media_can_preserve_microphone_for_realtime():
+    from plugins.google_meet.meet_bot import _disable_local_media
+
+    clicked = []
+
+    class _Button:
+        def __init__(self, label):
+            self.label = label
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1 if self.label in {"Turn off microphone", "Turn off camera"} else 0
+
+        def is_visible(self):
+            return self.count() == 1
+
+        def click(self, **_kwargs):
+            clicked.append(self.label)
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            if name.search("Turn off microphone"):
+                return _Button("Turn off microphone")
+            if name.search("Turn off camera"):
+                return _Button("Turn off camera")
+            return _Button("missing")
+
+    assert _disable_local_media(_Page(), disable_microphone=False) == 1
+    assert clicked == ["Turn off camera"]
 
 
 def test_disable_local_media_clicks_first_visible_duplicate_control():

@@ -59,6 +59,16 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     join_p.add_argument("url", help="https://meet.google.com/...")
     join_p.add_argument("--guest-name", default="Hermes Agent")
     join_p.add_argument("--duration", default=None, help="e.g. 30m, 2h, 90s")
+    join_p.add_argument(
+        "--persist-after-session",
+        action="store_true",
+        help="keep the bot running after the current Hermes session ends",
+    )
+    join_p.add_argument(
+        "--use-auth-state",
+        action="store_true",
+        help="reuse saved Google auth state from `hermes meet auth` instead of guest mode",
+    )
     join_p.add_argument("--headed", action="store_true", help="show browser")
     join_p.add_argument(
         "--mode", choices=("transcribe", "realtime"), default="transcribe",
@@ -126,6 +136,8 @@ def meet_command(args: argparse.Namespace) -> int:
             headed=args.headed,
             mode=getattr(args, "mode", "transcribe"),
             node=getattr(args, "node", None),
+            persist_after_session=bool(getattr(args, "persist_after_session", False)),
+            use_auth_state=bool(getattr(args, "use_auth_state", False)),
         )
     if sub == "status":
         return _cmd_status()
@@ -364,7 +376,7 @@ def _cmd_auth() -> int:
     except Exception as e:
         print(f"auth failed: {e}")
         return 1
-    print("saved. you can now run: hermes meet join <url>")
+    print("saved. use `hermes meet join --use-auth-state <url>` to reuse this session.")
     return 0
 
 
@@ -376,6 +388,8 @@ def _cmd_join(
     headed: bool,
     mode: str = "transcribe",
     node: Optional[str] = None,
+    persist_after_session: bool = False,
+    use_auth_state: bool = False,
 ) -> int:
     if not _is_safe_meet_url(url):
         print(f"refusing: not a meet.google.com URL: {url}")
@@ -397,6 +411,7 @@ def _cmd_join(
         try:
             res = client.start_bot(
                 url=url, guest_name=guest_name, duration=duration,
+                persist_after_session=persist_after_session,
                 headed=headed, mode=mode,
             )
         except Exception as e:
@@ -411,7 +426,8 @@ def _cmd_join(
         headed=headed,
         guest_name=guest_name,
         duration=duration,
-        auth_state=str(auth) if auth.is_file() else None,
+        persist_after_session=persist_after_session,
+        auth_state=str(auth) if use_auth_state and auth.is_file() else None,
         mode=mode,
     )
     print(json.dumps(res, indent=2))

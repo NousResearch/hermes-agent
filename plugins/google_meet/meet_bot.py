@@ -57,6 +57,15 @@ CALL_ERROR_STRIKE_LIMIT = 3
 MAX_TRANSCRIPT_TEXT_LEN = 500
 
 
+def _debug_status_enabled() -> bool:
+    return os.environ.get("HERMES_MEET_DEBUG_STATUS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _is_safe_meet_url(url: str) -> bool:
     """Return True if *url* is a Google Meet URL we're willing to navigate to."""
     if not isinstance(url, str):
@@ -278,7 +287,8 @@ class _BotState:
             return
         if speaker_source:
             self.last_speaker_source = speaker_source
-        if isinstance(speaker_debug, dict):
+        debug_enabled = _debug_status_enabled()
+        if debug_enabled and isinstance(speaker_debug, dict):
             candidates = speaker_debug.get("candidates")
             if isinstance(candidates, list):
                 self.last_speaker_candidates = candidates[:20]
@@ -316,6 +326,7 @@ class _BotState:
     # -------- status file ----------------------------------------------
 
     def _flush(self) -> None:
+        debug_enabled = _debug_status_enabled()
         data = {
             "meetingId": self.meeting_id,
             "url": self.url,
@@ -335,11 +346,11 @@ class _BotState:
             "lastHeartbeatAt": self.last_heartbeat_at,
             "lastProgressAt": self.last_progress_at,
             "stalledReason": self.stalled_reason,
-            "lastUiText": self.last_ui_text,
+            "lastUiText": self.last_ui_text if debug_enabled else None,
             "lastUrl": self.last_url,
             "lastSpeakerSource": self.last_speaker_source,
-            "lastSpeakerCandidates": self.last_speaker_candidates,
-            "captionDebugPath": str(self.caption_debug_path),
+            "lastSpeakerCandidates": self.last_speaker_candidates if debug_enabled else [],
+            "captionDebugPath": str(self.caption_debug_path) if debug_enabled else None,
             "localMicrophoneOn": self.local_microphone_on,
             "localCameraOn": self.local_camera_on,
             # v2 realtime telemetry.
@@ -374,8 +385,11 @@ class _BotState:
             self.phase = phase
         self.stalled_reason = stalled_reason
         if last_ui_text is not None:
-            text = " ".join(str(last_ui_text).split())
-            self.last_ui_text = text[:1000]
+            if _debug_status_enabled():
+                text = " ".join(str(last_ui_text).split())
+                self.last_ui_text = text[:1000]
+            else:
+                self.last_ui_text = None
         if last_url is not None:
             self.last_url = str(last_url)
         self.last_heartbeat_at = time.time()
@@ -404,7 +418,6 @@ _CAPTION_OBSERVER_JS = r"""
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
                           'div[jsname="tgaKEf"]';    // current (Apr 2026)
-  const maxCaptionTextLength = 500;
 
   function cleanSpeakerName(raw) {
     let value = (raw || '').replace(/\s+/g, ' ').trim();
@@ -647,20 +660,8 @@ _CAPTION_OBSERVER_JS = r"""
     if (!text) return '';
     const key = cleanSpeakerName(speaker) || '__unknown__';
     const previous = window.__hermesMeetLastTextBySpeaker[key] || '';
-    window.__hermesMeetLastTextBySpeaker[key] = text;
-    if (!previous && text.length > maxCaptionTextLength) return '';
-    if (!previous) return text;
     if (text === previous) return '';
-    if (text.startsWith(previous)) {
-      return text.slice(previous.length).replace(/^[\s,.;:!?-]+/, '').trim();
-    }
-
-    const limit = Math.min(previous.length, text.length);
-    for (let len = limit; len >= 16; len -= 1) {
-      if (previous.endsWith(text.slice(0, len))) {
-        return text.slice(len).replace(/^[\s,.;:!?-]+/, '').trim();
-      }
-    }
+    window.__hermesMeetLastTextBySpeaker[key] = text;
     return text;
   }
 
@@ -892,11 +893,16 @@ def _enable_captions(page, *, allow_shortcut: bool = True) -> bool:
         return False
 
 
-def _disable_local_media(page) -> int:
+def _disable_local_media(
+    page,
+    *,
+    disable_microphone: bool = True,
+    disable_camera: bool = True,
+) -> int:
     """Turn off the bot's local mic/camera if Meet left either enabled."""
     clicked = 0
     current = _probe_local_media_state(page)
-    controls = (
+    controls = [
         (
             "local_microphone_on",
             re.compile(r"(turn off|mute)\s+(microphone|mic)", re.IGNORECASE),
@@ -909,7 +915,11 @@ def _disable_local_media(page) -> int:
             "camera",
             "Control+E",
         ),
-    )
+    ]
+    if not disable_microphone:
+        controls = [control for control in controls if control[2] != "microphone"]
+    if not disable_camera:
+        controls = [control for control in controls if control[2] != "camera"]
     for state_key, label, kind, shortcut in controls:
         if current.get(state_key) is False:
             continue
@@ -1406,10 +1416,11 @@ def _apply_meet_proxy_args(chrome_args: list[str]) -> None:
 def _build_browser_launch_config(*, realtime_enabled: bool) -> tuple[list[str], list[str]]:
     """Return Chromium args and browser permissions for the selected Meet mode."""
     chrome_args = [
-        "--use-fake-device-for-media-stream",
         "--use-fake-ui-for-media-stream",
         "--disable-blink-features=AutomationControlled",
     ]
+    if not realtime_enabled:
+        chrome_args.insert(0, "--use-fake-device-for-media-stream")
     permissions = ["microphone", "camera"]
 
     _apply_meet_proxy_args(chrome_args)
@@ -1533,7 +1544,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
-            _disable_local_media(page)
+            _disable_local_media(page, disable_microphone=not rt["enabled"])
             state.set(**_probe_local_media_state(page))
             _try_guest_name(page, guest_name)
             join_clicked = _click_join(page, state)
@@ -1620,7 +1631,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
                 if state.in_call and (now - last_media_disable_check) > 3.0:
                     last_media_disable_check = now
-                    _disable_local_media(page)
+                    _disable_local_media(page, disable_microphone=not rt["enabled"])
                     state.set(**_probe_local_media_state(page))
 
                 if _should_retry_caption_enable(state, now=now, last_caption_enable_check=last_caption_enable_check):

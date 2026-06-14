@@ -56,7 +56,7 @@ def _on_session_end(**kwargs) -> None:
     """
     try:
         status = pm.status()
-        if status.get("ok") and status.get("alive") and not status.get("duration"):
+        if status.get("ok") and status.get("alive") and not status.get("persistAfterSession"):
             pm.stop(reason="session ended")
     except Exception as e:  # pragma: no cover — defensive
         logger.debug("google_meet on_session_end cleanup failed: %s", e)

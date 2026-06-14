@@ -953,6 +953,32 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
+    _RICH_DETAILS_RE = re.compile(r"<details\b[^>]*>.*?</details>", re.IGNORECASE | re.DOTALL)
+    _RICH_MATH_IN_DETAILS_RE = re.compile(
+        r"(\$\$.*?\$\$|"
+        r"\\\[.*?\\\]|"
+        r"\\\(.*?\\\)|"
+        r"\\(?:sum|frac|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|"
+        r"int|prod|sqrt|lim|infty|begin\{(?:equation|align|matrix|cases)\}))",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
+        """Return True for rich-message details+math content that crashes TDesktop.
+
+        Telegram Desktop 6.9.1 can crash while rendering Bot API 10.1 rich
+        messages containing math inside a collapsible details block
+        (telegramdesktop/tdesktop#30808). The Bot API accepts the payload, so
+        Hermes must skip rich delivery up front and use the legacy MarkdownV2
+        path until affected Desktop clients age out.
+        """
+        if not content:
+            return False
+        for details_block in self._RICH_DETAILS_RE.findall(content):
+            if self._RICH_MATH_IN_DETAILS_RE.search(details_block):
+                return True
+        return False
+
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
@@ -962,6 +988,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
+            and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )
@@ -1194,6 +1221,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
+            and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

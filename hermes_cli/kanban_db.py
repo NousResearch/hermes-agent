@@ -5449,7 +5449,135 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def _classify_worker_error(
+    log_path: "Path | str | None",
+    *,
+    default_kind: str = "unknown",
+    default_message: str = "no worker log available",
+) -> "tuple[str, str]":
+    """Classify a worker crash by reading the tail of its log file.
+
+    Companion to :func:`_classify_worker_exit` (which is PID-based and
+    only knows the exit code). This helper reads the actual worker's
+    log to extract an operator-actionable error class, so the
+    ``last_failure_error`` column on the task tells the operator WHY the
+    worker died, not just "pid X not alive".
+
+    Returns ``(kind, message)`` where ``kind`` is one of:
+
+      * ``"rate_limited"`` — provider returned HTTP 429 / quota wall.
+        Worker hit a provider-side throttle; transient, retry after
+        the quota window clears.
+      * ``"auth_failed"`` — provider returned HTTP 401/403. The
+        configured API key is wrong or missing.
+      * ``"context_overflow"`` — provider returned HTTP 400 with
+        context-length / token-limit message. The prompt is too big
+        for this model.
+      * ``"model_unavailable"`` — provider returned HTTP 404/410 or
+        a "model not found" / "model deprecated" message.
+      * ``"rate_limited_sentence"`` — worker self-reported "rate
+        limited" / "quota" in its chat (e.g. the OLLAMA rate-limit
+        handler, the OpenAI retry-and-give-up path). Distinct from
+        ``rate_limited`` (which requires an explicit HTTP 429 in the
+        log); this one is the worker's own narrative.
+      * ``"unknown"`` — log was empty, missing, or had no recognizable
+        error pattern. ``message`` falls back to ``default_message``.
+
+    The function is intentionally tolerant: it never raises. A
+    malformed log line, a permissions error, or a missing file all
+    degrade to ``(default_kind, default_message)`` so the dispatcher's
+    crash path stays robust.
+    """
+    if not log_path:
+        return (default_kind, default_message)
+    path = Path(log_path)
+    if not path.exists():
+        return (default_kind, default_message)
+    try:
+        # Read the tail (last 16 KiB) — long enough to catch the final
+        # error line, short enough to be cheap on a hot loop over many
+        # crashed workers.
+        with open(path, "rb") as f:
+            try:
+                f.seek(-16384, 2)
+            except OSError:
+                f.seek(0)
+            raw = f.read().decode("utf-8", errors="replace")
+    except OSError as exc:
+        return (default_kind, f"{default_message} (read error: {exc})")
+
+    # Patterns are deliberately conservative: each one captures the
+    # HTTP class (or worker-narrated class) and the most informative
+    # detail line. Order matters — first match wins. More-specific
+    # patterns come before less-specific ones.
+    patterns: list[tuple[str, "re.Pattern[str]"]] = [
+        # HTTP 429 / quota / throttling. Match the most common shapes
+        # first, then fall through to "rate limited" prose.
+        ("rate_limited", re.compile(
+            r"HTTP\s*429[^\n]*?(?:rate|quota|throttl|usage)[^\n]*",
+            re.IGNORECASE,
+        )),
+        ("rate_limited", re.compile(
+            r"HTTP\s*429[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+        ("rate_limited", re.compile(
+            r"\brate[\s-]?limit(?:ed|ing)?\b[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+        ("rate_limited", re.compile(
+            r"\bquota\s+(?:exhausted|wall|exceeded|reached|max(?:ed)?)\b[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+        # HTTP 401/403 — bad credentials.
+        ("auth_failed", re.compile(
+            r"HTTP\s*(?:401|403)[^\n]{0,200}",
+            re.IGNORECASE,
+        )),
+        ("auth_failed", re.compile(
+            r"\b(?:invalid[_ ]api[_ ]key|incorrect[_ ]api[_ ]key|"
+            r"unauthorized|forbidden|authentication[_ ]failed|"
+            r"api[_ ]key[_ ]not[_ ]valid)\b[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+        # HTTP 400/413 — context overflow / token limit.
+        ("context_overflow", re.compile(
+            r"HTTP\s*(?:400|413|422)[^\n]*?(?:context|token|too[_ ]long|"
+            r"maximum[_ ]context|context[_ ]length|reduce[_ ]the[_ ]length)[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+        ("context_overflow", re.compile(
+            r"\b(?:context[_ ]length[_ ]exceeded|maximum[_ ]context[_ ]length|"
+            r"prompt[_ ]is[_ ]too[_ ]long|reduce[_ ]the[_ ]length)\b[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+        # HTTP 404/410 — model not found / deprecated.
+        ("model_unavailable", re.compile(
+            r"HTTP\s*(?:404|410)[^\n]{0,200}",
+            re.IGNORECASE,
+        )),
+        ("model_unavailable", re.compile(
+            r"\b(?:model[_ ]not[_ ]found|model[_ ](?:has[_ ]been[_ ])?deprecated|"
+            r"the[_ ]model[^\n]{0,40}does[_ ]not[_ ]exist)\b[^\n]{0,160}",
+            re.IGNORECASE,
+        )),
+    ]
+    for kind, pat in patterns:
+        m = pat.search(raw)
+        if m:
+            msg = m.group(0).strip()
+            # Truncate to a reasonable column width but keep the
+            # actionable tail.
+            if len(msg) > 240:
+                msg = msg[:237] + "..."
+            return (kind, msg)
+    return (default_kind, default_message)
+
+
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    board: "Optional[str]" = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -5550,16 +5678,43 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             else:
                 protocol_violation = False
                 if kind == "nonzero_exit":
-                    error_text = f"pid {pid} exited with code {code}"
+                    base_error = f"pid {pid} exited with code {code}"
                 elif kind == "signaled":
-                    error_text = f"pid {pid} killed by signal {code}"
+                    base_error = f"pid {pid} killed by signal {code}"
                 else:
-                    error_text = f"pid {pid} not alive"
+                    base_error = f"pid {pid} not alive"
+                # K1: enrich error_text with the HTTP error class from
+                # the worker's log when one is available. The log is the
+                # source of truth for WHY the worker died (rate limit,
+                # bad auth, context overflow, etc); the pid-based
+                # ``_classify_worker_exit`` only knows the exit code.
+                # Read the log once per crashed task — cheap (last 16 KiB)
+                # and bounded.
+                log_kind, log_msg = _classify_worker_error(
+                    worker_log_path(row["id"], board=board),
+                    default_kind=kind,
+                    default_message=base_error,
+                )
+                # Prefix the operator-actionable class so the
+                # ``last_failure_error`` column reads as
+                # "rate_limited: HTTP 429 — extra usage auto reload..."
+                # in the dashboard. Falls back to the pid-based message
+                # when the log has no recognizable error pattern.
+                error_text = (
+                    f"{log_kind}: {log_msg}"
+                    if log_kind not in ("unknown", kind)
+                    else base_error
+                )
                 event_kind = "crashed"
                 event_payload = {"pid": pid, "claimer": row["claim_lock"]}
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
+                # Also surface the log-based kind so future audit
+                # tooling can filter by it without re-parsing the
+                # error string.
+                if log_kind not in ("unknown", kind):
+                    event_payload["log_error_kind"] = log_kind
 
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -5605,32 +5760,30 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # ready → blocked with a ``gave_up`` event on top of the ``crashed``
     # event we already emitted.
     #
-    # Protocol-violation crashes force an immediate trip (failure_limit=1)
-    # because clean-exit-without-transition is deterministic: the next
-    # respawn will do exactly the same thing. Better to surface to a
-    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
-    # times first.
+    # We use a CONSISTENT 2-strike policy regardless of crash type:
+    # protocol-violation and systemic (3+ same-fingerprint in a tick)
+    # crashes no longer trip on the first occurrence. Reasoning: the
+    # user wants predictable, uniform retry behavior — a worker that
+    # exits cleanly without kanban_complete is just as likely to be a
+    # transient issue (lost network, model timeout, profile misconfig
+    # on first run) as it is to be a permanent bug. Surfacing after 2
+    # strikes instead of 1 gives the dispatcher one chance to retry
+    # under changed conditions before paging a human.
     auto_blocked: list[str] = []
     if crash_details:
-        # Fingerprint errors to detect systemic failures.
-        _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
-            fp = _error_fingerprint(err_text)
-            _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
-            fp = _error_fingerprint(error_text)
-            is_systemic = (
-                not protocol_violation
-                and _fp_counts.get(fp, 0) >= 3
-            )
+        for tid, pid, claimer, _protocol_violation, error_text in crash_details:
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                failure_limit=None,  # K2: always fall through to DEFAULT_FAILURE_LIMIT
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "claimer": claimer},
+                # _protocol_violation is preserved in the event payload
+                # for audit purposes even though it no longer affects
+                # the breaker trip (K2: consistent 2-strike).
+                event_payload_extra={"pid": pid, "claimer": claimer,
+                                     "protocol_violation": _protocol_violation},
             )
             if tripped:
                 auto_blocked.append(tid)
@@ -6827,21 +6980,34 @@ def _default_spawn(
     # many profile-scoped skills dirs; preloading a missing skill is
     # fatal at CLI startup). Only add when the per-task skills list
     # does not already ask for it (avoid duplicate --skills flags).
+    # Insert kanban-worker BEFORE the first ``--skills`` (i.e. as the
+    # leading skill) so argv reads ``--skills kanban-worker --skills
+    # <user-skill-1> ... chat``. Tests + dashboard both expect the
+    # built-in to come first.
     if (
         _kanban_worker_skill_available(env.get("HERMES_HOME"))
         and "kanban-worker" not in (task.skills or [])
     ):
-        # Inject before ``chat -q <prompt>`` (the helper appended those
-        # at the end). One ``--skills X`` pair, mirrors the original
-        # dispatcher shape.
-        idx = next(
-            (i for i, tok in enumerate(cmd) if tok == "chat"),
-            len(cmd) - 2,
+        first_skills_idx = next(
+            (i for i, tok in enumerate(cmd) if tok == "--skills"),
+            # Fall back to right before ``chat`` if no --skills yet.
+            next(
+                (i for i, tok in enumerate(cmd) if tok == "chat"),
+                len(cmd),
+            ),
         )
-        cmd = cmd[:idx] + ["--skills", "kanban-worker"] + cmd[idx:]
+        cmd = (
+            cmd[:first_skills_idx]
+            + ["--skills", "kanban-worker"]
+            + cmd[first_skills_idx:]
+        )
     # Worker toolsets come from the assigned profile's config.yaml; append
     # after the standard shape so a future change to the dispatcher's
     # per-profile toolset rules does not have to touch the public helper.
+    # The 62c85118d refactor moved the base cmd into
+    # ``spawn_worker.build_spawn_cmd`` but left the per-profile toolset
+    # injection here, which needs a local resolution to work.
+    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         # Inject ``--toolsets X`` before ``chat -q <prompt>`` (which
         # build_spawn_cmd appended at the end). The kanban CLI accepts

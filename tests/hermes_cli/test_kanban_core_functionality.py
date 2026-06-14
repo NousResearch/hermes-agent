@@ -4345,9 +4345,15 @@ def test_detect_crashed_workers_increments_counter(kanban_home):
 def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
     """A worker that exited rc=0 while its task was still ``running``
     is a protocol violation (agent answered conversationally without
-    calling kanban_complete / kanban_block). Retrying will just loop,
-    so auto-block immediately instead of waiting for the breaker to
-    trip at ``DEFAULT_FAILURE_LIMIT``.
+    calling kanban_complete / kanban_block).
+
+    The user requested consistent 2-strike behavior for ALL crash
+    types (K2), even protocol violations. So instead of auto-blocking
+    on the first occurrence, the task now transitions
+    ``running → ready`` with counter=1, and a ``protocol_violation``
+    event is recorded for the operator. The second consecutive
+    protocol violation would then trip the breaker at
+    ``DEFAULT_FAILURE_LIMIT`` (2).
 
     Regression test for the respawn-loop-after-completion bug reported
     against small local models (gemma4-e2b q4) where the model writes
@@ -4376,10 +4382,15 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
 
         assert tid in result_crashed, "should be detected as crashed"
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked", (
-            f"protocol violation should auto-block on first occurrence, "
+        # K2: consistent 2-strike. 1st protocol violation -> ready,
+        # counter=1. The 2nd occurrence would block. This gives the
+        # dispatcher one retry under changed conditions before
+        # paging a human.
+        assert task.status == "ready", (
+            f"protocol violation should be ready (consistent 2-strike), "
             f"got status={task.status}"
         )
+        assert task.consecutive_failures == 1
         assert "kanban_complete" in (task.last_failure_error or ""), (
             f"expected protocol-violation message, got {task.last_failure_error!r}"
         )

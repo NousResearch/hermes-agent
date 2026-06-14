@@ -546,7 +546,18 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
 def test_detect_crashed_workers_systemic_failure_fast_block(
     kanban_home, monkeypatch,
 ):
-    """When many tasks crash with the same error, trip the breaker faster."""
+    """When many tasks crash with the same error, the breaker still
+    follows the consistent 2-strike policy.
+
+    The original implementation used a 1-strike shortcut for systemic
+    failures (3+ same-fingerprint crashes in a tick) and protocol
+    violations. The user requested consistent 2-strike behavior for
+    ALL crash types — even when the failure pattern is clearly
+    systemic. This test now verifies the new contract: 4 tasks with
+    the same crash each transition ``running → ready`` (not
+    ``running → blocked``), counter=1, and stay in the ready queue
+    for the dispatcher's normal 2-strike cycle.
+    """
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
@@ -569,8 +580,14 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
 
         for tid in task_ids:
             task = kb.get_task(conn, tid)
-            assert task.status == "blocked", (
-                f"task {tid} should be blocked (systemic), got {task.status}"
+            # K2: consistent 2-strike. 1st crash -> ready, counter=1.
+            assert task.status == "ready", (
+                f"task {tid} should be ready (consistent 2-strike), "
+                f"got {task.status}"
+            )
+            assert task.consecutive_failures == 1, (
+                f"task {tid} should have counter=1, got "
+                f"{task.consecutive_failures}"
             )
 
 

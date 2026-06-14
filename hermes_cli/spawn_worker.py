@@ -168,9 +168,14 @@ def build_spawn_cmd(
         cmd.append("--accept-hooks")
     # Per-task force-loaded skills. Same shape as the dispatcher:
     # one ``--skills X`` pair per name, easy to grep in ``ps`` output.
+    # We do NOT filter ``kanban-worker`` here — the caller's dispatcher
+    # (or test) decides whether to inject it. Filtering at this layer
+    # would cause a silent drop when the user explicitly listed it
+    # (e.g. via ``hermes kanban create --skill kanban-worker``), with
+    # no replacement downstream.
     skill_list = list(skills or [])
     for sk in skill_list:
-        if sk and sk != "kanban-worker":
+        if sk:
             cmd.extend(["--skills", sk])
     if model and model.strip():
         cmd.extend(["-m", model.strip()])

@@ -221,6 +221,9 @@ def build_turn_context(
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+    # Reset flush cursor to align with the current message list; prevents overshoot
+    # from a prior turn's cursor from skipping the new user message.
+    agent._last_flushed_db_idx = current_turn_user_idx
 
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
@@ -236,14 +239,24 @@ def build_turn_context(
     active_system_prompt = agent._cached_system_prompt
 
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
-    try:
-        agent._persist_session(messages, conversation_history)
-    except Exception:
-        logger.warning(
-            "Early turn-start session persistence failed for session=%s",
-            agent.session_id or "none",
-            exc_info=True,
-        )
+    # Retry once on transient DB failure (e.g. SQLite lock); log structured warning if it
+    # still fails so data loss is observable.
+    for _persist_attempt in range(2):
+        try:
+            agent._persist_session(messages, conversation_history)
+            break
+        except Exception:
+            if _persist_attempt == 0:
+                try:
+                    agent._ensure_db_session()
+                except Exception:
+                    pass
+            else:
+                logger.warning(
+                    "Early turn-start session persistence failed after retry for session=%s",
+                    agent.session_id or "none",
+                    exc_info=True,
+                )
 
     # ── Preflight context compression ──
     if (

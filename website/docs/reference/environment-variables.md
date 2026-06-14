@@ -409,6 +409,33 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `ROCKETCHAT_URL` | Rocket.Chat server URL (e.g. `https://chat.example.com`) |
+| `ROCKETCHAT_USER_ID` | Rocket.Chat runtime user ID |
+| `ROCKETCHAT_AUTH_TOKEN` | Rocket.Chat auth token or personal access token |
+| `ROCKETCHAT_ALLOWED_USERS` | Comma-separated Rocket.Chat user IDs allowed to message the bot |
+| `ROCKETCHAT_ALLOW_ALL_USERS` | Allow any Rocket.Chat user (`true`/`false`, dev only) |
+| `ROCKETCHAT_HOME_CHANNEL` | Room ID for proactive message delivery (cron, notifications) |
+| `ROCKETCHAT_HOME_CHANNEL_NAME` | Display name for the Rocket.Chat home room |
+| `ROCKETCHAT_HOME_CHANNEL_THREAD_ID` | Optional existing thread ID inside the home room for deliveries |
+| `ROCKETCHAT_REQUIRE_MENTION` | Require `@mention` in shared rooms (default: `true`) |
+| `ROCKETCHAT_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention` |
+| `ROCKETCHAT_ALLOWED_ROOMS` | If set, Hermes only responds in these room IDs (DMs still work) |
+| `ROCKETCHAT_COMMAND_PREFIX` | Portable typed command prefix that Hermes rewrites to slash commands (default: `!`) |
+| `ROCKETCHAT_BOOTSTRAP_ENABLED` | Enable bootstrap artifact auth override |
+| `ROCKETCHAT_BOOTSTRAP_ARTIFACT` | Path to the stored Rocket.Chat bootstrap credentials artifact |
+| `ROCKETCHAT_BOOTSTRAP_PAT_NAME` | Preferred PAT name to create during bootstrap |
+| `ROCKETCHAT_BOOTSTRAP_REDIRECT_URI` | Local loopback redirect URI used during browser bootstrap (default: `http://127.0.0.1:8633/rocketchat/callback`) |
+| `ROCKETCHAT_BOOTSTRAP_TIMEOUT_SECONDS` | How long Hermes waits for the browser callback during bootstrap (default: `300`) |
+| `ROCKETCHAT_BOOTSTRAP_2FA_CODE` | Optional 2FA code to present when creating a PAT during bootstrap |
+| `ROCKETCHAT_BOOTSTRAP_2FA_METHOD` | Optional Rocket.Chat 2FA method header (for example `totp`) |
+| `ROCKETCHAT_BOOTSTRAP_PAT_BYPASS_2FA` | Ask Rocket.Chat to bypass 2FA for PAT creation when policy allows (default: `true`) |
+| `ROCKETCHAT_OAUTH_SERVICE_NAME` | Rocket.Chat login service name used to exchange the upstream OAuth/OIDC token |
+| `ROCKETCHAT_OAUTH_AUTHORIZE_URL` | Authorization endpoint for the upstream OAuth/OIDC provider |
+| `ROCKETCHAT_OAUTH_TOKEN_URL` | Token endpoint for the upstream OAuth/OIDC provider |
+| `ROCKETCHAT_OAUTH_CLIENT_ID` | OAuth/OIDC client ID for the bootstrap flow |
+| `ROCKETCHAT_OAUTH_CLIENT_SECRET` | OAuth/OIDC client secret for the bootstrap flow |
+| `ROCKETCHAT_OAUTH_SCOPE` | OAuth scope string used during bootstrap (default: `openid profile email`) |
+| `ROCKETCHAT_OAUTH_AUTHORIZE_PARAMS` | Optional JSON object of extra authorization query params for the upstream provider |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

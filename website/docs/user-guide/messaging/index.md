@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Rocket.Chat, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Rocket.Chat, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, ntfy, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
@@ -28,6 +28,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Rocket.Chat | — | ✅ | ✅ | ✅ | — | — | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -59,6 +60,7 @@ flowchart TB
             em[Email]
             ha[Home Assistant]
             mm[Mattermost]
+            rc[Rocket.Chat]
             mx[Matrix]
             dt[DingTalk]
     fs[Feishu/Lark]
@@ -88,6 +90,7 @@ flowchart TB
     em --> store
     ha --> store
     mm --> store
+    rc --> store
     mx --> store
     dt --> store
     fs --> store
@@ -115,6 +118,12 @@ hermes gateway setup        # Interactive setup for all messaging platforms
 ```
 
 This walks you through configuring each platform with arrow-key selection, shows which platforms are already configured, and offers to start/restart the gateway when done.
+
+## Bundled Platform Plugins
+
+Several messaging integrations now ship as bundled platform plugins under `plugins/platforms/`. They register themselves at startup and appear everywhere Hermes expects a platform name: `gateway.platforms`, `/platform list`, home-channel delivery, and cron `deliver=<platform>`.
+
+Rocket.Chat is exposed as the platform name `rocketchat`.
 
 ## Gateway Commands
 
@@ -197,6 +206,7 @@ SIGNAL_ALLOWED_USERS=+155****4567,+155****6543
 SMS_ALLOWED_USERS=+155****4567,+155****6543
 EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
+ROCKETCHAT_ALLOWED_USERS=user-id-1,user-id-2
 MATRIX_ALLOWED_USERS=@alice:matrix.org
 DINGTALK_ALLOWED_USERS=user-id-1
 FEISHU_ALLOWED_USERS=ou_xxxxxxxx,ou_yyyyyyyy
@@ -453,6 +463,7 @@ Each platform has its own toolset:
 | Email | `hermes-email` | Full tools including terminal |
 | Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
+| Rocket.Chat | `hermes-rocketchat` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
@@ -581,6 +592,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Email Setup](email.md)
 - [Home Assistant Integration](homeassistant.md)
 - [Mattermost Setup](mattermost.md)
+- [Rocket.Chat Setup](rocketchat.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
 - [Feishu/Lark Setup](feishu.md)

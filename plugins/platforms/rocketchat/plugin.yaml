@@ -1,0 +1,89 @@
+name: rocketchat-platform
+label: Rocket.Chat
+kind: platform
+version: 1.0.0
+description: >
+  Rocket.Chat gateway adapter for Hermes Agent.
+  Connects to a Rocket.Chat workspace via REST + DDP WebSocket, supports
+  DMs, public/private rooms, existing threads, native file/image uploads,
+  and an optional browser-assisted OAuth bootstrap that persists runtime
+  API credentials for headless use.
+author: NousResearch
+requires_env:
+  - name: ROCKETCHAT_URL
+    description: "Rocket.Chat server URL (e.g. https://chat.example.com)"
+    prompt: "Rocket.Chat server URL"
+    password: false
+optional_env:
+  - name: ROCKETCHAT_USER_ID
+    description: "Rocket.Chat user ID for runtime API access"
+    prompt: "Rocket.Chat user ID"
+    password: false
+  - name: ROCKETCHAT_AUTH_TOKEN
+    description: "Rocket.Chat auth token or personal access token"
+    prompt: "Rocket.Chat auth token / PAT"
+    password: true
+  - name: ROCKETCHAT_ALLOWED_USERS
+    description: "Comma-separated Rocket.Chat user IDs allowed to talk to Hermes"
+    prompt: "Allowed user IDs (comma-separated)"
+    password: false
+  - name: ROCKETCHAT_ALLOW_ALL_USERS
+    description: "Allow all Rocket.Chat users (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ROCKETCHAT_HOME_CHANNEL
+    description: "Default room ID for cron / notification delivery"
+    prompt: "Home room ID"
+    password: false
+  - name: ROCKETCHAT_HOME_CHANNEL_THREAD_ID
+    description: "Optional thread ID inside the home room for cron delivery"
+    prompt: "Home thread ID"
+    password: false
+  - name: ROCKETCHAT_REQUIRE_MENTION
+    description: "Require an @mention in shared rooms (default true)"
+    prompt: "Require @mention? (true/false)"
+    password: false
+  - name: ROCKETCHAT_FREE_RESPONSE_ROOMS
+    description: "Comma-separated room IDs where Hermes replies without mention"
+    prompt: "Free-response room IDs (comma-separated)"
+    password: false
+  - name: ROCKETCHAT_ALLOWED_ROOMS
+    description: "Comma-separated room IDs where Hermes is allowed to reply"
+    prompt: "Allowed room IDs (comma-separated)"
+    password: false
+  - name: ROCKETCHAT_COMMAND_PREFIX
+    description: "Typed command prefix rewrite alias (default: !)"
+    prompt: "Command prefix"
+    password: false
+  - name: ROCKETCHAT_BOOTSTRAP_ENABLED
+    description: "Enable bootstrap artifact auth override"
+    prompt: "Enable bootstrap artifact? (true/false)"
+    password: false
+  - name: ROCKETCHAT_BOOTSTRAP_ARTIFACT
+    description: "Path to the stored bootstrap credentials artifact"
+    prompt: "Bootstrap artifact path"
+    password: false
+  - name: ROCKETCHAT_BOOTSTRAP_PAT_NAME
+    description: "Preferred PAT name to create during bootstrap"
+    prompt: "Bootstrap PAT name"
+    password: false
+  - name: ROCKETCHAT_OAUTH_SERVICE_NAME
+    description: "Rocket.Chat login service name to exchange provider OAuth tokens"
+    prompt: "Rocket.Chat OAuth service name"
+    password: false
+  - name: ROCKETCHAT_OAUTH_AUTHORIZE_URL
+    description: "Authorization URL for the upstream OAuth/OIDC provider"
+    prompt: "OAuth authorize URL"
+    password: false
+  - name: ROCKETCHAT_OAUTH_TOKEN_URL
+    description: "Token URL for the upstream OAuth/OIDC provider"
+    prompt: "OAuth token URL"
+    password: false
+  - name: ROCKETCHAT_OAUTH_CLIENT_ID
+    description: "OAuth/OIDC client ID used for bootstrap"
+    prompt: "OAuth client ID"
+    password: false
+  - name: ROCKETCHAT_OAUTH_CLIENT_SECRET
+    description: "OAuth/OIDC client secret used for bootstrap"
+    prompt: "OAuth client secret"
+    password: true

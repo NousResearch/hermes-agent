@@ -64,6 +64,36 @@ class TestMattermostConfigLoading:
         assert Platform.MATTERMOST in config.platforms
         assert config.platforms[Platform.MATTERMOST].extra.get("url") == ""
 
+    def test_apply_yaml_config_maps_approval_action_settings(self, monkeypatch):
+        """Mattermost approval-button callback settings should flow from config.yaml."""
+        for name in (
+            "MATTERMOST_APPROVAL_ACTION_URL",
+            "MATTERMOST_APPROVAL_ACTION_TOKEN",
+            "MATTERMOST_APPROVAL_ACTION_HOST",
+            "MATTERMOST_APPROVAL_ACTION_PORT",
+            "MATTERMOST_APPROVAL_ACTION_PATH",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        _apply_yaml_config(
+            {},
+            {
+                "approval_action_url": "http://127.0.0.1:8766/hermes/mattermost/actions",
+                "approval_action_token": "token-123",
+                "approval_action_host": "127.0.0.1",
+                "approval_action_port": 8766,
+                "approval_action_path": "/hermes/mattermost/actions",
+            },
+        )
+
+        assert os.environ["MATTERMOST_APPROVAL_ACTION_URL"] == "http://127.0.0.1:8766/hermes/mattermost/actions"
+        assert os.environ["MATTERMOST_APPROVAL_ACTION_TOKEN"] == "token-123"
+        assert os.environ["MATTERMOST_APPROVAL_ACTION_HOST"] == "127.0.0.1"
+        assert os.environ["MATTERMOST_APPROVAL_ACTION_PORT"] == "8766"
+        assert os.environ["MATTERMOST_APPROVAL_ACTION_PATH"] == "/hermes/mattermost/actions"
+
 
 # ---------------------------------------------------------------------------
 # Adapter format / truncate
@@ -277,6 +307,159 @@ class TestMattermostSend:
         result = await self.adapter.send("channel_1", "Hello!")
 
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_posts_interactive_buttons_in_thread(self, monkeypatch):
+        """Mattermost approval prompts should use signed interactive action buttons."""
+        monkeypatch.setenv("MATTERMOST_ALLOW_ALL_USERS", "true")
+        self.adapter._reply_mode = "thread"
+        self.adapter._approval_action_url = "http://127.0.0.1:8766/hermes/mattermost/actions"
+        self.adapter._approval_action_token = "secret-token"
+        self.adapter._resolve_root_id = AsyncMock(return_value="root_post")
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "approval_post"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send_exec_approval(
+            chat_id="channel_1",
+            command="rm -rf /tmp/demo",
+            session_key="mattermost:channel_1:root_post",
+            description="dangerous command",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "approval_post"
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["channel_id"] == "channel_1"
+        assert payload["root_id"] == "root_post"
+        attachment = payload["props"]["attachments"][0]
+        actions = attachment["actions"]
+        assert [a["name"] for a in actions] == [
+            "Allow Once",
+            "Allow Session",
+            "Always Allow",
+            "Deny",
+        ]
+        assert all(a["type"] == "button" for a in actions)
+        assert actions[0]["integration"]["url"] == "http://127.0.0.1:8766/hermes/mattermost/actions"
+        context = actions[0]["integration"]["context"]
+        assert context["action"] == "approval"
+        assert context["choice"] == "once"
+        assert context["session_key"] == "mattermost:channel_1:root_post"
+        assert "token" not in context
+        assert context["sig"]
+        assert context["ts"]
+        assert context["nonce"]
+        assert self.adapter._verify_approval_action_context(context)
+
+    @pytest.mark.asyncio
+    async def test_handle_approval_action_payload_resolves_gateway_approval(self, monkeypatch):
+        """Mattermost button callbacks should unblock the pending approval."""
+        monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "user_123")
+        self.adapter._approval_action_token = "secret-token"
+        context = {
+            "action": "approval",
+            "choice": "session",
+            "session_key": "mattermost:channel_1:root_post",
+            "ts": str(int(time.time())),
+            "nonce": "nonce-123",
+        }
+        context["sig"] = self.adapter._sign_approval_action_context(context)
+
+        with patch(
+            "tools.approval.resolve_gateway_approval",
+            return_value=1,
+        ) as resolve:
+            response = await self.adapter._handle_approval_action_payload(
+                {
+                    "user_id": "user_123",
+                    "post_id": "approval_post",
+                    "context": context,
+                }
+            )
+
+        resolve.assert_called_once_with("mattermost:channel_1:root_post", "session")
+        assert "update" in response
+        assert response["update"]["props"] == {}
+        assert "Approved for session" in response["ephemeral_text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_approval_action_payload_rejects_bad_signature(self, monkeypatch):
+        """Mattermost button callbacks must reject unsigned/tampered contexts."""
+        monkeypatch.setenv("MATTERMOST_ALLOW_ALL_USERS", "true")
+        self.adapter._approval_action_token = "secret-token"
+        context = {
+            "action": "approval",
+            "choice": "once",
+            "session_key": "mattermost:channel_1:root_post",
+            "ts": str(int(time.time())),
+            "nonce": "nonce-123",
+            "sig": "not-a-valid-signature",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as resolve:
+            response = await self.adapter._handle_approval_action_payload(
+                {"user_id": "user_123", "context": context}
+            )
+
+        resolve.assert_not_called()
+        assert "error" in response
+        assert "signature" in response["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_handle_approval_action_payload_rejects_expired_signature(self, monkeypatch):
+        """Mattermost approval button contexts should be short-lived."""
+        monkeypatch.setenv("MATTERMOST_ALLOW_ALL_USERS", "true")
+        self.adapter._approval_action_token = "secret-token"
+        context = {
+            "action": "approval",
+            "choice": "once",
+            "session_key": "mattermost:channel_1:root_post",
+            "ts": str(int(time.time()) - 601),
+            "nonce": "nonce-123",
+        }
+        context["sig"] = self.adapter._sign_approval_action_context(context)
+
+        with patch("tools.approval.resolve_gateway_approval") as resolve:
+            response = await self.adapter._handle_approval_action_payload(
+                {"user_id": "user_123", "context": context}
+            )
+
+        resolve.assert_not_called()
+        assert "error" in response
+        assert "signature" in response["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_handle_approval_action_payload_rejects_unauthorized_user(self, monkeypatch):
+        """Mattermost button callbacks should enforce gateway-compatible allowlists."""
+        monkeypatch.setenv("MATTERMOST_ALLOWED_USERS", "someone_else")
+        monkeypatch.delenv("MATTERMOST_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        self.adapter._approval_action_token = "secret-token"
+        context = {
+            "action": "approval",
+            "choice": "once",
+            "session_key": "mattermost:channel_1:root_post",
+            "ts": str(int(time.time())),
+            "nonce": "nonce-123",
+        }
+        context["sig"] = self.adapter._sign_approval_action_context(context)
+
+        with patch("tools.approval.resolve_gateway_approval") as resolve:
+            response = await self.adapter._handle_approval_action_payload(
+                {"user_id": "user_123", "context": context}
+            )
+
+        resolve.assert_not_called()
+        assert "error" in response
+        assert "not allowed" in response["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

@@ -811,6 +811,25 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    "codex_cockpit": {
+        "enabled": True,
+        "driver": "codex_app_server",
+        "default_model": "gpt-5.5",
+        "default_worktree_root": "/private/tmp/hermes-codex",
+        "branch_prefix": "codex/",
+        "repo_allowlist": [str(Path.home() / "Code")],
+        "readout": {
+            "include_git_status": True,
+            "include_recent_tool_events": True,
+            "include_checks": True,
+            "max_events": 25,
+        },
+        "context_helper": {
+            "propose_memory": True,
+            "propose_skills": True,
+            "auto_promote": False,
+        },
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

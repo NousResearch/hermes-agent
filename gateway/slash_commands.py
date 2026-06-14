@@ -1445,6 +1445,94 @@ class GatewaySlashCommandsMixin:
         prefix = "✓" if result.success else "✗"
         return f"{prefix} {result.message}"
 
+    async def _handle_codex_command(self, event: MessageEvent) -> str:
+        """Handle /codex cockpit commands.
+
+        `/codex-runtime` remains the low-level transport toggle. This command
+        is the operator-facing cockpit for readouts, staged context, and
+        launching Codex driver tasks in clean git worktrees.
+        """
+        from hermes_cli import codex_cockpit as cockpit
+        from hermes_cli.config import load_config
+
+        raw_args = event.get_command_args().strip() if event else ""
+        parsed = cockpit.parse_codex_command(raw_args)
+        if parsed.action == "error":
+            return f"Could not parse /codex arguments: {parsed.tokens[0]}"
+        if parsed.action == "help":
+            return cockpit.render_help()
+
+        try:
+            cfg = load_config()
+        except Exception as exc:
+            return f"Could not load config: {exc}"
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        active_agent = self._running_agents.get(session_key)
+        cwd = os.environ.get("TERMINAL_CWD") or str(Path.home())
+
+        transcript: list[dict[str, Any]] = []
+        try:
+            session_entry = self.session_store.get_or_create_session(source)
+            transcript = self.session_store.load_transcript(session_entry.session_id)
+        except Exception:
+            logger.debug("could not load transcript for /codex", exc_info=True)
+
+        process_sessions: list[dict[str, Any]] = []
+        try:
+            from tools.process_registry import process_registry
+
+            process_sessions = process_registry.list_sessions()
+        except Exception:
+            logger.debug("could not list process registry for /codex", exc_info=True)
+
+        if parsed.action == "status":
+            return cockpit.render_status(
+                cfg,
+                active_agent=active_agent,
+                process_sessions=process_sessions,
+                transcript=transcript,
+                cwd=cwd,
+                session_key=session_key,
+            )
+        if parsed.action == "last":
+            return cockpit.render_last(transcript, active_agent=active_agent)
+        if parsed.action == "checks":
+            return cockpit.render_checks(process_sessions)
+        if parsed.action == "context":
+            return cockpit.render_context()
+        if parsed.action == "launch":
+            plan, error = cockpit.prepare_launch(raw_args, cfg, cwd=cwd)
+            if error:
+                return error
+            assert plan is not None
+            try:
+                from tools.process_registry import process_registry
+
+                proc = process_registry.spawn_local(
+                    plan.command,
+                    cwd=plan.repo_root,
+                    task_id=plan.task_id,
+                    session_key=session_key,
+                    use_pty=True,
+                )
+            except Exception as exc:
+                logger.warning("/codex launch failed", exc_info=True)
+                return f"Codex launch failed: {exc}"
+            return "\n".join(
+                [
+                    "Codex driver launched.",
+                    f"- Process: `{proc.id}`",
+                    f"- Branch: `{plan.branch}`",
+                    f"- Worktree: `{plan.worktree_path}`",
+                    f"- Prompt: {plan.prompt_preview}",
+                    "Use `/agents` or `/codex checks` to monitor background work.",
+                ]
+            )
+
+        return f"Unknown /codex action `{parsed.action}`.\n\n{cockpit.render_help()}"
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from gateway.run import _hermes_home, _load_gateway_config

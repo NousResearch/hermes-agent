@@ -217,6 +217,8 @@ def run_codex_app_server_turn(
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
+        agent._last_codex_error = str(exc)
+        agent._last_codex_completed_at = time.time()
         # Crash → unconditionally drop the session so the next turn
         # respawns from scratch instead of reusing a dead client.
         try:
@@ -251,6 +253,11 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+
+    agent._last_codex_thread_id = turn.thread_id
+    agent._last_codex_turn_id = turn.turn_id
+    agent._last_codex_error = turn.error or ""
+    agent._last_codex_completed_at = time.time()
 
     # Splice projected messages into the conversation. The projector emits
     # standard {role, content, tool_calls, tool_call_id} entries, which

@@ -463,7 +463,6 @@ def runtime_delegation_readiness(completed_stages: Iterable[str], dry_run: bool 
 
 def existing_project_review_targets():
     return {
-        "kalshi-vc": ["experiment success rate", "promotion rate", "bucket performance", "evidence coverage"],
         "investing-system": ["watchlist size", "thesis status", "portfolio exposure", "risk metrics"],
         "media-engine": ["stories published", "coverage mix", "brand growth", "approval time"],
         "rinseables": ["business model", "workflows", "dashboards", "approvals"],

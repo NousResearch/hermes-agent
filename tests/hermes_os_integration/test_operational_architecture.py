@@ -53,9 +53,9 @@ def test_project_scanner_and_cli_json_output(tmp_path, capsys):
 
 def test_cli_block_on_critical(tmp_path, capsys):
     projects = tmp_path / "projects"
-    (projects / "khashi-vc").mkdir(parents=True)
+    (projects / "sample-project").mkdir(parents=True)
 
-    exit_code = architect_main(["review", "kalshi-vc", "--projects-root", str(projects), "--block-on-critical"])
+    exit_code = architect_main(["review", "sample-project", "--projects-root", str(projects), "--block-on-critical"])
     assert exit_code == BLOCKED
     assert "Architecture Review" in capsys.readouterr().out
 

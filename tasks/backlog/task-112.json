@@ -3,12 +3,12 @@
   "title": "Add experiment and promotion decision graph nodes",
   "status": "backlog",
   "priority": "medium",
-  "phase": "Kalshi Work Graph Expansion",
-  "summary": "Represent Kalshi experiment history and promotion decisions as graph nodes.",
+  "phase": "Market Research Work Graph Expansion",
+  "summary": "Represent market research experiment history and decision records as graph nodes.",
   "acceptanceCriteria": [
     "Experiment nodes track hypothesis, bucket, status, and outcome",
-    "Promotion decision nodes track approval and rationale",
-    "Portfolio assignment depends on promotion decision",
+    "Decision nodes track approval and rationale",
+    "Portfolio assignment depends on approved decision records",
     "Nodes preserve audit trail"
   ]
 }

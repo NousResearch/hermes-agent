@@ -63,11 +63,11 @@ AGENT_REGISTRY: Dict[str, AgentDefinition] = {
         allowed_tools=["filesystem", "terminal"],
         runtime_provider="official-hermes-agent",
     ),
-    "kalshi-research": AgentDefinition(
-        kind="kalshi-research",
-        purpose="Research prediction-market buckets with evidence trails.",
-        inputs=["bucket", "market_context"],
-        outputs=["evidence", "hypotheses", "portfolio_notes"],
+    "market-research": AgentDefinition(
+        kind="market-research",
+        purpose="Research market opportunities with evidence trails.",
+        inputs=["market_context", "research_question"],
+        outputs=["evidence", "hypotheses", "research_notes"],
         allowed_tools=["web", "research", "filesystem"],
         runtime_provider="official-hermes-agent",
     ),
@@ -91,7 +91,7 @@ TASK_TYPE_TO_AGENT = {
     "docs": "documentation",
     "documentation": "documentation",
     "deployment": "deployment",
-    "kalshi": "kalshi-research",
+    "market": "market-research",
     "experiment": "experiment",
 }
 

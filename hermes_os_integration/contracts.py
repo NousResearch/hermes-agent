@@ -13,7 +13,7 @@ AGENT_KINDS = {
     "review",
     "documentation",
     "deployment",
-    "kalshi-research",
+    "market-research",
     "experiment",
 }
 

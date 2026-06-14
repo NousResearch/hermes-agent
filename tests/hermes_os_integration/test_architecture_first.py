@@ -33,8 +33,8 @@ def test_constitution_and_architecture_order_block_premature_code():
 
 def test_architect_review_contract_and_report():
     request, error = validate_architecture_review_request({
-        "project_id": "kalshi-vc",
-        "project_path": "/workspace/projects/khashi-vc",
+        "project_id": "sample-project",
+        "project_path": "/workspace/projects/sample-project",
         "present_documents": ["PROJECT.md"],
         "completed_stages": ["business_system"],
     })
@@ -115,5 +115,4 @@ def test_agent_boundaries_artifacts_and_delegation_gate():
 
 def test_existing_project_review_targets_include_workspace_projects():
     targets = existing_project_review_targets()
-    assert "kalshi-vc" in targets
     assert "investing-system" in targets

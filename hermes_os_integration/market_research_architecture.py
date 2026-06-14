@@ -1,20 +1,20 @@
-"""Kalshi research worker architecture definition."""
+"""Generic market research worker architecture definition."""
 
 
-KALSHI_RESEARCH_ARCHITECTURE = {
+MARKET_RESEARCH_ARCHITECTURE = {
     "control_plane": "Hermes OS",
     "runtime_worker": "official-hermes-agent",
     "pipeline": [
-        "bucket",
+        "research-question",
         "research-agent",
         "evidence-agent",
         "validation-agent",
-        "portfolio-agent",
+        "decision-agent",
         "experiment-tracker",
         "dashboard",
     ],
     "direct_runtime_exceptions": {
-        "low-latency-market-fetch": "deepseek-direct",
+        "low-latency-market-fetch": "external-integration",
         "final-state-storage": "Hermes OS",
     },
 }

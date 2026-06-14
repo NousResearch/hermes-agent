@@ -7,7 +7,7 @@
   "summary": "Scan the workspace for Hermes-controlled projects and resolve project names to paths.",
   "acceptanceCriteria": [
     "Scanner finds projects under workspace `projects/`",
-    "Scanner resolves aliases like khashi-vc and investing-system",
+    "Scanner resolves configured project aliases",
     "Scanner ignores unrelated system files",
     "Scanner has tests using temporary project fixtures"
   ]

@@ -4,7 +4,7 @@
   "status": "completed",
   "priority": "medium",
   "phase": "Project Scanners",
-  "summary": "Add project profiles for Kalshi VC, Investment System, Media Engine, and Rinseables.",
+  "summary": "Add generic workspace project profiles without making any separate project part of the Hermes-agent build.",
   "acceptanceCriteria": [
     "Profiles include canonical project names and aliases",
     "Profiles include expected dashboard metrics",

@@ -1,10 +1,10 @@
 {
   "id": "task-020",
-  "title": "Define Kalshi research agent architecture",
+  "title": "Define market research agent architecture",
   "status": "completed",
   "priority": "medium",
-  "phase": "Phase 10 - Kalshi Research",
-  "summary": "Define the long-term Kalshi research architecture using official runtime worker agents under Hermes OS.",
+  "phase": "Phase 10 - Market Research",
+  "summary": "Define the long-term market research architecture using official runtime worker agents under Hermes OS.",
   "acceptanceCriteria": [
     "Architecture covers research, evidence, validation, portfolio, experiment tracking, and dashboard",
     "Hermes OS remains command center",

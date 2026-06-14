@@ -128,7 +128,7 @@ Supported MCP categories:
 - Filesystem.
 - Documentation.
 - Research.
-- Kalshi.
+- Market data.
 - Broker integrations.
 
 ### Phase 8 - Dashboard
@@ -158,11 +158,11 @@ Research -> Validation -> Review -> Report
 
 Hermes OS stores checkpoints after each step and can resume from the latest checkpoint.
 
-### Phase 10 - Kalshi Research
+### Phase 10 - Market Research
 
-- `task-020`: Define Kalshi research agent architecture.
+- `task-020`: Define market research agent architecture.
 
-Kalshi target architecture:
+Market research target architecture:
 
 ```text
 Bucket
@@ -291,7 +291,7 @@ Before automation is implemented, the project must define daily visibility, succ
 
 Examples:
 
-- Kalshi: experiment success rate, promotion rate, bucket performance, portfolio performance, research throughput, evidence coverage.
+- Market research: research throughput, evidence coverage, validation quality, decision readiness, portfolio exposure.
 - Media Engine: stories published, coverage mix, brand growth, cross-brand comparison, platform coverage, approval time.
 - Investment System: watchlist size, thesis status, portfolio exposure, valuation opportunities, risk metrics.
 
@@ -348,7 +348,7 @@ Examples:
 
 ### Phase 19 - Existing Project Reviews
 
-- `task-048`: Review Kalshi VC architecture readiness.
+- `task-048`: Review workspace project architecture readiness.
 - `task-049`: Review Investment System architecture readiness.
 - `task-050`: Review Media Engine and Rinseables architecture readiness.
 
@@ -363,7 +363,7 @@ Examples:
 - `task-054`: Build project discovery scanner.
 - `task-055`: Build documentation coverage scanner.
 - `task-056`: Build domain/workflow/dashboard/approval scanner.
-- `task-057`: Add workspace project profiles for Kalshi VC, Investment System, Media Engine, and Rinseables.
+- `task-057`: Add generic workspace project profiles.
 
 ### Phase 22 - Review-Generated Documentation
 
@@ -546,9 +546,9 @@ Add:
 - `task-108`: Add continuous architecture score history.
 - `task-109`: Add autonomous review safety and approval policy.
 
-### Phase 34 - Kalshi Work Graph Expansion
+### Phase 34 - Market Research Work Graph Expansion
 
-- `task-110`: Model Kalshi research-to-portfolio work graph.
+- `task-110`: Model market research-to-portfolio work graph.
 - `task-111`: Add evidence quality and validation nodes.
 - `task-112`: Add experiment and promotion decision graph nodes.
-- `task-113`: Add Kalshi dashboard metrics for work graph execution.
+- `task-113`: Add market research dashboard metrics for work graph execution.

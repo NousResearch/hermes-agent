@@ -1,10 +1,10 @@
 {
   "id": "task-048",
-  "title": "Review Kalshi VC architecture readiness",
+  "title": "Review workspace project architecture readiness",
   "status": "completed",
   "priority": "medium",
   "phase": "Existing Project Reviews",
-  "summary": "Run the architecture-first review model against Kalshi VC and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmap.",
+  "summary": "Run the architecture-first review model against a generic workspace project and generate missing documentation, workflows, dashboards, schemas, approvals, and improvement roadmap.",
   "acceptanceCriteria": [
     "Review covers business, domain, workflows, dashboards, metrics, approvals, agents, and data",
     "Missing project documents are listed",

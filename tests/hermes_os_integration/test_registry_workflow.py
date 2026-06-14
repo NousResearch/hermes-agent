@@ -1,4 +1,4 @@
-from hermes_os_integration.kalshi_architecture import KALSHI_RESEARCH_ARCHITECTURE
+from hermes_os_integration.market_research_architecture import MARKET_RESEARCH_ARCHITECTURE
 from hermes_os_integration.registry import get_agent, select_agent_kind
 from hermes_os_integration.workflows import CheckpointedWorkflow
 
@@ -23,6 +23,6 @@ def test_checkpointed_workflow_runs_two_dry_run_steps():
     assert run.latest_step() == "review"
 
 
-def test_kalshi_architecture_keeps_hermes_os_control_plane():
-    assert KALSHI_RESEARCH_ARCHITECTURE["control_plane"] == "Hermes OS"
-    assert "research-agent" in KALSHI_RESEARCH_ARCHITECTURE["pipeline"]
+def test_market_research_architecture_keeps_hermes_os_control_plane():
+    assert MARKET_RESEARCH_ARCHITECTURE["control_plane"] == "Hermes OS"
+    assert "research-agent" in MARKET_RESEARCH_ARCHITECTURE["pipeline"]

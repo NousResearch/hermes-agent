@@ -85,7 +85,7 @@ Every architecture-first project receives:
 
 Initial existing-project reviews:
 
-- Kalshi VC.
+- Workspace projects.
 - Investment System.
 - Media Engine.
 - Rinseables.

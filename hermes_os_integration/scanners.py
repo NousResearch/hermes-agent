@@ -8,8 +8,6 @@ from .architecture_first import REQUIRED_PROJECT_DOCS, existing_project_review_t
 
 
 PROJECT_ALIASES = {
-    "kalshi-vc": "khashi-vc",
-    "khashi-vc": "khashi-vc",
     "investment-system": "investing-system",
     "investing-system": "investing-system",
     "media-engine": "media-engine",
@@ -53,13 +51,6 @@ def workspace_projects_root(start_path: Optional[str] = None):
 def project_profiles():
     targets = existing_project_review_targets()
     return {
-        "khashi-vc": ProjectProfile(
-            project_id="khashi-vc",
-            canonical_name="Kalshi VC",
-            aliases=["kalshi-vc", "khashi-vc"],
-            expected_metrics=targets["kalshi-vc"],
-            review_hints=["prediction markets", "experiments", "portfolio promotion"],
-        ),
         "investing-system": ProjectProfile(
             project_id="investing-system",
             canonical_name="Investment System",

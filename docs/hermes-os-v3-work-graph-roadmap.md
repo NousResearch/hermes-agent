@@ -69,7 +69,7 @@ Hermes OS v3 adds:
 
 ## Control Plane
 
-`hermes portfolio` summarizes architecture score, task health, execution status, blockers, approvals, and runtime usage across Kalshi VC, Investment System, Media Engine, Rinseables, Hermes, and future projects.
+`hermes portfolio` summarizes architecture score, task health, execution status, blockers, approvals, and runtime usage across workspace projects.
 
 ## Continuous Improvement
 

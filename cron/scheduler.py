@@ -1536,9 +1536,11 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
+    # Mark only this run as a cron session so the approval system can apply
+    # cron_mode. The env var is process-global, so restore the previous value
+    # in the function's finally block to avoid poisoning unrelated gateway/chat
+    # sessions handled later by the same process.
+    _prior_cron_session = os.environ.get("HERMES_CRON_SESSION", "_UNSET_")
     os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
@@ -1960,6 +1962,12 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        # Restore the process-wide cron-session flag so a cron run inside the
+        # gateway does not leak headless approval policy into normal chats.
+        if _prior_cron_session == "_UNSET_":
+            os.environ.pop("HERMES_CRON_SESSION", None)
+        else:
+            os.environ["HERMES_CRON_SESSION"] = _prior_cron_session
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

@@ -262,6 +262,9 @@ def build_verify_commands(
         "--voice-bin",
         voice_bin,
         "--run-tts-smoke",
+        "--run-sidecar-offer-smoke",
+        "--webrtc-python-bin",
+        webrtc_python_bin,
     ]
     if run_stt_smoke:
         live_gateway_command.extend(

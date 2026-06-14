@@ -605,15 +605,20 @@ class LocalEnvironment(BaseEnvironment):
             f"$ErrorActionPreference = 'Continue'",
             f"Set-Location -LiteralPath '{quoted_cwd}' -ErrorAction SilentlyContinue",
             f"if ($?) {{ Set-Location -LiteralPath '{quoted_cwd}' }} else {{ exit 126 }}",
-            # Run the command
-            f"Invoke-Expression '{escaped}'",
+            # Run the command and force PowerShell's formatting pipeline to
+            # flush before the wrapper exits.  Without ``Out-Default``,
+            # object-producing commands such as ``pwd`` / ``Get-Location`` or
+            # mixed statements like ``Get-Location; Test-Path ...`` can return
+            # an empty stdout when followed by ``exit`` in non-interactive
+            # PowerShell hosts.
+            f"Invoke-Expression '{escaped}' | Out-Default",
             f"$hermes_ec = $LASTEXITCODE",
             # Write CWD to temp file
             f"(Get-Location).Path | Out-File -Encoding utf8 -FilePath '{quoted_cwd_file}'",
             # Emit CWD marker
             f"$cwd = (Get-Location).Path",
             f"Write-Output ''",
-            f"Write-Output '{marker}' + $cwd + '{marker}'",
+            f"Write-Output ('{marker}' + $cwd + '{marker}')",
             # Exit with captured code
             f"exit $hermes_ec",
         ]

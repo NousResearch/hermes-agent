@@ -18,6 +18,7 @@ and ``os.path.isdir`` so the MSYS path tests as "missing" exactly like
 on the real OS.
 """
 
+import shutil
 from unittest.mock import patch
 
 
@@ -140,6 +141,40 @@ class TestUpdateCwdWindowsMsys:
             env._update_cwd({"output": "", "returncode": 0})
 
         assert env.cwd == str(new_dir)
+
+
+class TestPowerShellWrapperOutput:
+    def test_object_output_survives_wrapper_exit(self, monkeypatch, tmp_path):
+        """PowerShell object output must be formatted before wrapper ``exit``.
+
+        Native PowerShell commands like ``Get-Location`` and ``Test-Path``
+        write objects, not plain text.  If the wrapper immediately calls
+        ``exit`` after ``Invoke-Expression``, non-interactive hosts can drop
+        that formatted output and the terminal tool appears to return an
+        empty result even though the command succeeded.
+        """
+        shell = shutil.which("pwsh") or shutil.which("powershell.exe")
+        if not shell:
+            import pytest
+
+            pytest.skip("PowerShell executable is not available")
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_resolve_shell", lambda: ("powershell", shell))
+
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+        try:
+            result = env.execute(
+                "Get-Location; Test-Path -LiteralPath .",
+                timeout=10,
+            )
+        finally:
+            env.cleanup()
+
+        assert result["returncode"] == 0
+        assert str(tmp_path) in result["output"]
+        assert "True" in result["output"]
+        assert env._cwd_marker not in result["output"]
 
 
 # ---------------------------------------------------------------------------

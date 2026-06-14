@@ -8097,7 +8097,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._console_print(
                     "  \U0001f512 Read-only mode ON — only whitelisted tools allowed."
                 )
-                self._console_print(f"  Whitelist: {_whitelist_str}")
+                self._console_print(f"  Whitelist ({len(_tools_sorted)}): {_whitelist_str}")
                 self._pending_ro_note = "[Read-only mode is now ON — only whitelisted tools are available. Use /ro off to disable.]"
 
     def _on_reasoning(self, reasoning_text: str):

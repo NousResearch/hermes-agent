@@ -1702,6 +1702,7 @@ def _classify_meet_ui(
         or re.search(r"asking to be let in", text, re.IGNORECASE)
         or re.search(r"waiting for.*let you in", text, re.IGNORECASE)
         or re.search(r"you'll join.*when someone lets you in", text, re.IGNORECASE)
+        or re.search(r"please wait until a meeting host brings you into the call", text, re.IGNORECASE)
         or re.search(r"ask to join", text, re.IGNORECASE)
     )
     pre_join = bool(

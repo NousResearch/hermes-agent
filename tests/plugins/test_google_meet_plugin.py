@@ -1359,6 +1359,23 @@ def test_classify_meet_ui_blocks_ready_to_join_page_with_media_prompt():
     assert result["preJoin"] is True
 
 
+def test_classify_meet_ui_treats_host_wait_phrase_as_lobby():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        (
+            "Please wait until a meeting host brings you into the call "
+            "Turn on microphone Turn on camera Leave call"
+        ),
+        leave=True,
+        in_call_control=True,
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert result["inCall"] is False
+    assert result["waitingLobby"] is True
+
+
 def test_classify_meet_ui_blocks_landing_page_after_meet_error():
     from plugins.google_meet.meet_bot import _classify_meet_ui
 

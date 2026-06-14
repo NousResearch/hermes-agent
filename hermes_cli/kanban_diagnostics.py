@@ -950,6 +950,80 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         ),
     ]
 
+    # Check for a recent respawn_guarded event — if the dispatcher
+    # deferred this task on the last tick, surface the guard reason
+    # instead of the generic "no worker" message.
+    # Guard-window constants (mirror kanban_db.py; kept local to avoid
+    # a circular import).
+    _GUARD_WINDOWS = {
+        "rate_limit_cooldown": 300,     # 5 min cooldown
+        "recent_success":      3600,    # 1 h success window
+        "active_pr":           86400,   # 24 h PR window
+        "blocker_auth":        0,       # no expiry (circuit breaker owns it)
+    }
+    _GUARD_DESCRIPTIONS = {
+        "active_pr":           "a prior worker opened a GitHub PR",
+        "recent_success":      "a run completed recently (review pending)",
+        "blocker_auth":        "last failure was a quota/auth blocker",
+        "rate_limit_cooldown": "rate-limit cooldown in effect",
+    }
+    latest_guard_event = None
+    latest_guard_ts = 0
+    for ev in events:
+        if _event_kind(ev) == "respawn_guarded":
+            ts = _event_ts(ev)
+            if ts >= latest_guard_ts:
+                latest_guard_ts = ts
+                latest_guard_event = ev
+
+    if latest_guard_event is not None:
+        guard_reason = _parse_payload(latest_guard_event).get("reason", "")
+        window = _GUARD_WINDOWS.get(guard_reason, 0)
+        desc = _GUARD_DESCRIPTIONS.get(guard_reason, guard_reason)
+        if window > 0:
+            expires_at = latest_guard_ts + window
+            remaining = max(0, expires_at - int(now))
+            if remaining > 0:
+                if remaining >= 3600:
+                    exp_str = f"~{remaining / 3600:.1f}h"
+                else:
+                    exp_str = f"~{int(remaining / 60)}m"
+                expiry_note = f"; guard expires in {exp_str}"
+            else:
+                expiry_note = " (guard window may have elapsed on last tick)"
+        else:
+            expiry_note = ""
+        guard_detail = (
+            f"The dispatcher deferred this task for {age_str} because {desc}{expiry_note}. "
+            f"This is intentional guard behaviour — not a missing worker. "
+            f"Take action (merge the PR, check quota, or manually unblock) to allow a respawn."
+        )
+        guard_actions = [
+            DiagnosticAction(
+                kind="cli_hint",
+                label="Check guard reason",
+                payload={"command": f"hermes kanban show {_task_field(task, 'id', '')}"},
+            ),
+        ]
+        return [Diagnostic(
+            kind="stranded_in_ready",
+            severity=severity,
+            title=f"Ready for {age_str}: deferred by respawn guard ({guard_reason})",
+            detail=guard_detail,
+            actions=guard_actions,
+            first_seen_at=last_ready_ts,
+            last_seen_at=latest_guard_ts,
+            count=1,
+            data={
+                "ready_since": last_ready_ts,
+                "age_seconds": int(age_seconds),
+                "assignee": assignee,
+                "threshold_seconds": int(threshold_seconds),
+                "guard_reason": guard_reason,
+                "guard_event_ts": latest_guard_ts,
+            },
+        )]
+
     return [Diagnostic(
         kind="stranded_in_ready",
         severity=severity,

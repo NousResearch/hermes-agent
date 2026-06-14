@@ -201,6 +201,84 @@ class TestRuntimeProvider:
         assert result["provider"] == "bedrock"
         assert result["api_mode"] == "bedrock_converse"
 
+    def test_bedrock_target_model_nova_overrides_claude_default(self, monkeypatch):
+        """Regression for #27829: per-request target_model must drive the
+        Bedrock dual-path api_mode decision, not the config default.
+
+        With a Claude Bedrock model configured as the default, a per-request
+        target_model of a Nova (non-Anthropic) model must route through the
+        Converse API (bedrock_converse), NOT the AnthropicBedrock
+        (anthropic_messages) path.
+        """
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        # Config default is a Claude Bedrock model (would normally route to
+        # the anthropic_messages path).
+        claude_default = {
+            "provider": "bedrock",
+            "default": "us.anthropic.claude-sonnet-4-6",
+        }
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value=claude_default):
+            result = resolve_runtime_provider(
+                requested="bedrock",
+                target_model="us.amazon.nova-pro-v1:0",
+            )
+        assert result["provider"] == "bedrock"
+        # target_model (Nova) wins over the Claude default → Converse API.
+        assert result["api_mode"] == "bedrock_converse"
+        assert result.get("bedrock_anthropic") is not True
+
+    def test_bedrock_target_model_claude_overrides_nova_default(self, monkeypatch):
+        """Inverse guard for #27829: a Claude target_model must drive the
+        api_mode to anthropic_messages even when the config default is a
+        Nova (non-Anthropic) model — proving target_model controls routing
+        in both directions.
+        """
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        nova_default = {
+            "provider": "bedrock",
+            "default": "us.amazon.nova-pro-v1:0",
+        }
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value=nova_default):
+            result = resolve_runtime_provider(
+                requested="bedrock",
+                target_model="us.anthropic.claude-sonnet-4-6",
+            )
+        assert result["provider"] == "bedrock"
+        # target_model (Claude) wins over the Nova default → AnthropicBedrock.
+        assert result["api_mode"] == "anthropic_messages"
+        assert result.get("bedrock_anthropic") is True
+
+    def test_bedrock_no_target_model_falls_back_to_default(self, monkeypatch):
+        """When no target_model is supplied, api_mode must continue to derive
+        from the config default (preserves pre-#27829 behavior).
+        """
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        claude_default = {
+            "provider": "bedrock",
+            "default": "us.anthropic.claude-sonnet-4-6",
+        }
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value=claude_default):
+            result = resolve_runtime_provider(requested="bedrock")
+        assert result["provider"] == "bedrock"
+        # No override → Claude default drives routing → anthropic_messages.
+        assert result["api_mode"] == "anthropic_messages"
+        assert result.get("bedrock_anthropic") is True
+
 
 # ---------------------------------------------------------------------------
 # providers.py integration

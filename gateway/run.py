@@ -16248,6 +16248,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
 
+    _ensure_windows_gateway_venv_imports()
+
     _start_gateway_mcp_discovery_thread()
 
     # Start the gateway

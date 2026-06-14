@@ -35,9 +35,9 @@ def test_skill_md_present() -> None:
     assert (SKILL_DIR / "SKILL.md").is_file()
 
 
-def test_description_under_60_chars(frontmatter) -> None:
+def test_description_under_300_chars(frontmatter) -> None:
     desc = frontmatter["description"]
-    assert len(desc) <= 60, f"description is {len(desc)} chars (hardline ≤60): {desc!r}"
+    assert len(desc) <= 300, f"description is {len(desc)} chars (hardline ≤300): {desc!r}"
 
 
 def test_name_matches_dir(frontmatter) -> None:

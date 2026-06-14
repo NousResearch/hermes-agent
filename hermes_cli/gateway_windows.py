@@ -1,10 +1,19 @@
-"""Windows gateway service backend (Scheduled Task + Startup-folder fallback).
+"""Windows gateway service backends (Scheduled Task + Startup-folder fallback + Windows Service).
 
 This mirrors the contract exposed by ``launchd_install`` / ``launchd_start`` /
 ``launchd_status`` etc. on macOS and ``systemd_install`` / ``systemd_start`` on
-Linux. It uses ``schtasks`` under the hood with ``/SC ONLOGON`` and restart-on-
-failure XML settings, and falls back to a ``%APPDATA%\\...\\Startup\\<name>.cmd``
-dropper when Scheduled Task creation is denied (locked-down corporate boxes).
+Linux.
+
+Two backends are available:
+
+1. **Scheduled Task** (default) — Uses ``schtasks`` under the hood with
+   ``/SC ONLOGON`` and restart-on-failure XML settings, and falls back to a
+   ``%APPDATA%\\...\\Startup\\<name>.cmd`` dropper when Scheduled Task creation
+   is denied (locked-down corporate boxes).
+2. **Windows Service** (admin required) — A proper Windows Service registered
+   with the Service Control Manager (SCM) using pywin32's ``ServiceFramework``,
+   with SCM ``RecoveryActions`` for quadratic-backoff auto-restart on crash.
+   No console window ever appears.
 
 Design notes
 ------------
@@ -16,9 +25,13 @@ Design notes
   actual ``python -m hermes_cli.main gateway run --replace`` invocation) and
   EITHER a schtasks entry pointing at it OR a Startup-folder ``.cmd`` that
   spawns it detached.
+* The Windows Service backend requires elevation (admin rights) because SCM
+  registration is a privileged operation. Non-admin users get the Startup
+  folder fallback.
 * Status = merge of "is the schtasks entry registered?" + "is the startup
-  .cmd present?" + "is there a gateway process running?" so the status
-  command keeps working regardless of which install path was taken.
+  .cmd present?" + "is the Windows Service registered?" + "is there a gateway
+  process running?" so the status command keeps working regardless of which
+  install path was taken.
 * Quoting is tricky: schtasks parses ``/TR`` itself and cmd.exe parses the
   generated ``gateway.cmd``. Those are DIFFERENT parsers. We keep two
   separate quote helpers (same pattern OpenClaw uses) and never cross them.
@@ -752,12 +765,109 @@ def install(
     start_now: bool | None = None,
     start_on_login: bool | None = None,
     elevated_handoff: bool = False,
+    backend: str | None = None,
 ) -> None:
-    """Install the gateway as a Windows Scheduled Task (with Startup fallback).
+    """Install the gateway as a Windows background service.
 
-    Idempotent: re-running updates the task to point at the current python/
-    project paths. ``force`` is accepted for API parity with ``launchd_install``
-    / ``systemd_install`` but isn't needed — we always reconcile.
+    Two backends are available:
+
+    * ``"scheduled-task"`` (default) — ``schtasks /SC ONLOGON`` with a
+      Startup-folder fallback for non-admin users.
+    * ``"service"`` — A proper Windows Service registered with the SCM,
+      with RecoveryActions auto-restart. Requires admin rights.
+
+    ``backend`` can be set explicitly (e.g. from CLI flag) or the user is
+    prompted interactively. Idempotent: re-running updates the service.
+
+    Args:
+        force: Accepted for API parity with ``launchd_install`` / ``systemd_install``.
+        start_now: Start the gateway after install.
+        start_on_login: (Scheduled Task only) Start on Windows login.
+        elevated_handoff: True when called from an already-elevated child process.
+        backend: ``"scheduled-task"`` or ``"service"`` (prompted if None).
+    """
+    _assert_windows()
+
+    # ── Prompt for backend if not specified ──────────────────────────────
+    if backend is None:
+        from hermes_cli.setup import prompt_choice
+
+        backend = prompt_choice(
+            "How should the gateway run on Windows?",
+            choices=[
+                ("Scheduled Task (auto-start on login, Startup fallback for non-admin)", "scheduled-task"),
+                ("Windows Service (SCM-managed, auto-restart on crash, no console window)", "service"),
+            ],
+            default="scheduled-task",
+        )
+
+    if backend == "service":
+        return _install_windows_service_backend(start_now=start_now)
+    return _install_scheduled_task_backend(
+        force=force,
+        start_now=start_now,
+        start_on_login=start_on_login,
+        elevated_handoff=elevated_handoff,
+    )
+
+
+def _install_windows_service_backend(
+    *,
+    start_now: bool | None = None,
+) -> None:
+    """Install the gateway as a proper Windows Service via the SCM.
+
+    Requires admin rights. Non-admin fallback: defers to
+    ``_install_scheduled_task_backend`` with the Startup folder fallback path.
+    """
+    _assert_windows()
+
+    if not _is_running_as_admin():
+        from hermes_cli.setup import prompt_yes_no
+
+        print("↻ Windows Service install requires administrator privileges.")
+        print("  The Service Control Manager (SCM) registration is a privileged operation.")
+        if prompt_yes_no("  Open the UAC prompt now?", False):
+            if _launch_elevated_install(force=False, start_now=start_now if start_now is not None else True, start_on_login=False):
+                print("✓ Launched elevated Hermes gateway install via Windows Service.")
+                if start_now:
+                    print("  Approve the Windows UAC prompt; the elevated install will register and start the service.")
+                else:
+                    print("  Approve the Windows UAC prompt, then run: hermes gateway status")
+                return
+            print("⚠ Elevation was unavailable or cancelled.")
+        else:
+            print("  Skipped elevation.")
+
+        print("↻ Falling back to Scheduled Task (Startup folder if needed)...")
+        return _install_scheduled_task_backend(
+            force=False,
+            start_now=start_now,
+            start_on_login=True,
+            elevated_handoff=False,
+        )
+
+    from hermes_cli.gateway_windows_service import install_service as _install_svc
+
+    if start_now is None:
+        from hermes_cli.setup import prompt_yes_no
+        start_now = prompt_yes_no("Start the gateway now after installing the service?", True)
+
+    _install_svc(start_now=start_now)
+    _print_next_steps()
+
+
+def _install_scheduled_task_backend(
+    force: bool = False,
+    *,
+    start_now: bool | None = None,
+    start_on_login: bool | None = None,
+    elevated_handoff: bool = False,
+) -> None:
+    """Install the gateway as a Scheduled Task (with Startup-folder fallback).
+
+    This is the original Windows backend — kept as the default for non-admin
+    users and for backward compatibility.
     """
     _assert_windows()
     start_now, start_on_login = _prompt_install_choices(start_now, start_on_login)
@@ -872,6 +982,8 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
+
+
 def _wait_for_gateway_ready(timeout_s: float = 6.0, interval_s: float = 0.4) -> list[int]:
     """Poll for a live gateway process for up to ``timeout_s`` seconds.
 
@@ -912,11 +1024,23 @@ def _print_next_steps() -> None:
 
 
 def uninstall() -> None:
-    """Remove both the Scheduled Task and the Startup-folder fallback, if present."""
+    """Remove the Scheduled Task, Startup-folder fallback, and/or Windows Service, if present."""
     _assert_windows()
     task_name = get_task_name()
     script_path = get_task_script_path()
     startup_entry = get_startup_entry_path()
+
+    # ── Windows Service removal ─────────────────────────────────────────
+    from hermes_cli.gateway_windows_service import (
+        uninstall_service as _uninstall_svc,
+        get_service_name as _svc_name,
+    )
+    try:
+        svc_removed = _uninstall_svc()
+        if svc_removed:
+            print(f"✓ Removed Windows Service {_svc_name()!r}")
+    except Exception as exc:
+        print(f"⚠ Could not remove Windows Service: {exc}")
 
     scheduled_task_removed = False
     if is_task_registered():
@@ -969,8 +1093,9 @@ def is_startup_entry_installed() -> bool:
 
 
 def is_installed() -> bool:
-    """True when either the schtasks entry or the Startup fallback is present."""
-    return is_task_registered() or is_startup_entry_installed()
+    """True when either the schtasks entry, the Startup fallback, or the Windows Service is present."""
+    from hermes_cli.gateway_windows_service import is_service_installed as _svc_installed
+    return is_task_registered() or is_startup_entry_installed() or _svc_installed()
 
 
 def query_task_status() -> dict[str, str]:
@@ -1141,9 +1266,25 @@ def status(deep: bool = False) -> None:
     task_name = get_task_name()
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()
+    svc_installed = False
+    svc_status = {}
+    from hermes_cli.gateway_windows_service import (
+        is_service_installed as _svc_installed,
+        get_service_status as _svc_status,
+    )
+    svc_installed = _svc_installed()
+    if svc_installed:
+        svc_status = _svc_status()
+
     pids = _gateway_pids()
 
-    if task_installed:
+    if svc_installed:
+        from hermes_cli.gateway_windows_service import get_service_name as _svc_name
+        svc_name = _svc_name()
+        state = svc_status.get("state", "unknown")
+        print(f"✓ Windows Service registered: {svc_name}")
+        print(f"  State: {state}")
+    elif task_installed:
         print(f"✓ Scheduled Task registered: {task_name}")
         info = query_task_status()
         if info:
@@ -1176,7 +1317,7 @@ def status(deep: bool = False) -> None:
 
 
 def start() -> None:
-    """Start the gateway. Prefers /Run on the scheduled task if present."""
+    """Start the gateway. Prefers the SCM service if installed, then Scheduled Task."""
     _assert_windows()
     running_pids = _gateway_pids()
     if running_pids:
@@ -1185,6 +1326,14 @@ def start() -> None:
 
     task_installed = is_task_registered()
     startup_installed = is_startup_entry_installed()
+    from hermes_cli.gateway_windows_service import is_service_installed as _svc_installed
+    svc_installed = _svc_installed()
+
+    if svc_installed:
+        from hermes_cli.gateway_windows_service import start_service as _svc_start
+        _svc_start()
+        _report_gateway_start(f"Windows Service {get_service_name()!r}")
+        return
 
     if not task_installed and not startup_installed:
         from hermes_cli.setup import prompt_yes_no
@@ -1252,7 +1401,8 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
 def stop() -> None:
     """Stop the gateway.
 
-    Writes the planned-stop marker first so the gateway can drain
+    If the Windows Service is installed, stops via the SCM (``win32serviceutil.StopService``).
+    Otherwise, writes the planned-stop marker first so the gateway can drain
     in-flight agents and persist ``resume_pending`` before exit (the
     gateway's marker-watcher thread picks this up — Windows asyncio
     can't deliver SIGTERM to the loop, so the marker is our only IPC).
@@ -1262,6 +1412,18 @@ def stop() -> None:
     _assert_windows()
     from hermes_cli.gateway import kill_gateway_processes, _get_restart_drain_timeout
     from gateway.status import get_running_pid
+    from hermes_cli.gateway_windows_service import is_service_installed as _svc_installed
+
+    # ── Windows Service: stop via SCM ──────────────────────────────────
+    if _svc_installed():
+        from hermes_cli.gateway_windows_service import stop_service as _svc_stop
+        _svc_stop()
+        print("✓ Gateway service stopped via SCM")
+        # Also kill any remaining gateway processes
+        killed = kill_gateway_processes(all_profiles=False, force=True)
+        if killed:
+            print(f"✓ Killed {killed} remaining gateway process(es)")
+        return
 
     # Phase 1: ask the running gateway (if any) to drain itself by writing
     # the planned-stop marker, then wait briefly for it to exit cleanly.
@@ -1305,6 +1467,14 @@ def stop() -> None:
 def restart() -> None:
     """Stop the gateway then start it again."""
     _assert_windows()
+    from hermes_cli.gateway_windows_service import is_service_installed as _svc_installed
+
+    if _svc_installed():
+        from hermes_cli.gateway_windows_service import restart_service as _svc_restart
+        _svc_restart()
+        print("✓ Gateway service restarted via SCM")
+        return
+
     stop()
     # Give Windows a moment to release the listening port.
     time.sleep(1.0)

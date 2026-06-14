@@ -58,6 +58,11 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
             "gateway's exit code. No effect outside an s6 container."
         ),
     )
+    gateway_run.add_argument(
+        "--service",
+        action="store_true",
+        help="Run as a Windows Service (registers with SCM via StartServiceCtrlDispatcher)",
+    )
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
@@ -165,6 +170,14 @@ def build_gateway_parser(subparsers, *, cmd_gateway: Callable, cmd_proxy: Callab
         dest="elevated_handoff",
         action="store_true",
         help=argparse.SUPPRESS,
+    )
+    gateway_install.add_argument(
+        "--service-type",
+        dest="backend",
+        choices=["scheduled-task", "service"],
+        default=None,
+        help="Backend type: 'scheduled-task' (default, auto-start on login) or "
+             "'service' (proper Windows Service with SCM RecoveryActions, admin required)",
     )
 
     # gateway uninstall

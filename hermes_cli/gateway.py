@@ -1128,6 +1128,21 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
             service_scope="launchd",
         )
 
+    if is_windows():
+        from hermes_cli.gateway_windows_service import (
+            is_service_installed as _win_svc_installed,
+            get_service_status as _win_svc_status,
+        )
+        svc_installed = _win_svc_installed()
+        svc_status = _win_svc_status() if svc_installed else {}
+        return GatewayRuntimeSnapshot(
+            manager="Windows Service" if svc_installed else "manual process",
+            service_installed=svc_installed,
+            service_running=svc_status.get("state") == "running",
+            gateway_pids=gateway_pids,
+            service_scope="SCM",
+        )
+
     return GatewayRuntimeSnapshot(
         manager="manual process",
         gateway_pids=gateway_pids,
@@ -3789,8 +3804,59 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
-def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
-    """Run the gateway in foreground.
+    sys.exit(1)
+
+
+def _run_gateway_as_windows_service(verbose: int, quiet: bool, replace: bool) -> None:
+    """Run the gateway as a Windows Service via StartServiceCtrlDispatcher."""
+    import win32service
+    import win32serviceutil
+    import win32event
+    import threading
+
+    class HermesGatewayService:
+        _svc_name_ = "HermesGateway"
+        _svc_display_name_ = "Hermes Agent Gateway"
+        _svc_description_ = (
+            "Hermes Agent Gateway - Messaging Platform Integration "
+            "(Telegram, Discord, Slack, WhatsApp, and more). "
+            "Auto-restarts on failure via SCM RecoveryActions."
+        )
+
+        def __init__(self, args):
+            self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
+            self._loop = None
+
+        def SvcDoRun(self):
+            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+            try:
+                import asyncio
+                from gateway.run import start_gateway
+                verbosity = None if quiet else verbose
+                asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                raise
+            finally:
+                win32event.SetEvent(self.hWaitStop)
+
+        def SvcStop(self):
+            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+            # The gateway's planned-stop mechanism handles shutdown
+            try:
+                from gateway.status import get_running_pid, write_planned_stop_marker
+                pid = get_running_pid()
+                if pid:
+                    write_planned_stop_marker(pid)
+            except Exception:
+                pass
+
+    win32serviceutil.HandleCommandLine(HermesGatewayService)
+
+
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, service: bool = False):
+    """Run the gateway in foreground or as a Windows Service.
 
     Args:
         verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
@@ -3798,9 +3864,14 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
+        service: If True, run as a Windows Service via StartServiceCtrlDispatcher.
+                 The process registers with the SCM and handles service control commands.
     """
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
+
+    if service and sys.platform == "win32":
+        return _run_gateway_as_windows_service(verbose, quiet, replace)
 
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
@@ -6345,7 +6416,8 @@ def _gateway_command_inner(args):
         verbose = getattr(args, "verbose", 0)
         quiet = getattr(args, "quiet", False)
         replace = getattr(args, "replace", False)
-        run_gateway(verbose, quiet=quiet, replace=replace)
+        service = getattr(args, "service", False)
+        run_gateway(verbose, quiet=quiet, replace=replace, service=service)
         return
 
     if subcmd == "setup":
@@ -6389,14 +6461,15 @@ def _gateway_command_inner(args):
         elif is_macos():
             launchd_install(force)
         elif is_windows():
-            from hermes_cli import gateway_windows
+                    from hermes_cli import gateway_windows
 
-            gateway_windows.install(
-                force=force,
-                start_now=getattr(args, 'start_now', None),
-                start_on_login=getattr(args, 'start_on_login', None),
-                elevated_handoff=getattr(args, 'elevated_handoff', False),
-            )
+                    gateway_windows.install(
+                        force=force,
+                        start_now=getattr(args, 'start_now', None),
+                        start_on_login=getattr(args, 'start_on_login', None),
+                        elevated_handoff=getattr(args, 'elevated_handoff', False),
+                        backend=getattr(args, 'backend', None),
+                    )
         elif is_wsl():
             print("WSL detected but systemd is not running.")
             print(

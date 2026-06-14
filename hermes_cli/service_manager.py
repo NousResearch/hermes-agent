@@ -243,14 +243,16 @@ class LaunchdServiceManager(_RegistrationUnsupportedMixin):
 
 class WindowsServiceManager(_RegistrationUnsupportedMixin):
     """Thin wrapper around ``hermes_cli.gateway_windows`` (Scheduled Task /
-    Startup-folder fallback).
+    Startup-folder fallback) and ``hermes_cli.gateway_windows_service``
+    (proper Windows Service via SCM).
 
-    The native Windows backend uses a Scheduled Task rather than a true
-    init-system service, but for protocol purposes the lifecycle is the
-    same: start / stop / restart / is_running. ``install`` accepts a
-    handful of Windows-specific kwargs (start_now, start_on_login,
-    elevated_handoff) that are passed straight through — non-Windows
-    callers should never invoke ``install`` on this wrapper.
+    The native Windows backend can use either a Scheduled Task or a proper
+    Windows Service registered with the SCM. The lifecycle methods
+    (start / stop / restart / is_running) auto-detect which backend is
+    active. ``install`` accepts a ``backend`` kwarg (``"scheduled-task"``
+    or ``"service"``) plus Windows-specific kwargs (start_now,
+    start_on_login, elevated_handoff) that are passed straight through.
+    Non-Windows callers should never invoke ``install`` on this wrapper.
     """
 
     kind: ServiceManagerKind = "windows"
@@ -262,6 +264,7 @@ class WindowsServiceManager(_RegistrationUnsupportedMixin):
         start_now: bool | None = None,
         start_on_login: bool | None = None,
         elevated_handoff: bool = False,
+        backend: str | None = None,
     ) -> None:
         from hermes_cli import gateway_windows
         gateway_windows.install(
@@ -269,25 +272,48 @@ class WindowsServiceManager(_RegistrationUnsupportedMixin):
             start_now=start_now,
             start_on_login=start_on_login,
             elevated_handoff=elevated_handoff,
+            backend=backend,
         )
 
     def start(self, name: str) -> None:
         from hermes_cli import gateway_windows
-        gateway_windows.start()
+        from hermes_cli.gateway_windows_service import is_service_installed
+        if is_service_installed():
+            from hermes_cli.gateway_windows_service import start_service
+            start_service()
+        else:
+            gateway_windows.start()
 
     def stop(self, name: str) -> None:
         from hermes_cli import gateway_windows
-        gateway_windows.stop()
+        from hermes_cli.gateway_windows_service import is_service_installed
+        if is_service_installed():
+            from hermes_cli.gateway_windows_service import stop_service
+            stop_service()
+        else:
+            gateway_windows.stop()
 
     def restart(self, name: str) -> None:
         from hermes_cli import gateway_windows
-        gateway_windows.restart()
+        from hermes_cli.gateway_windows_service import is_service_installed
+        if is_service_installed():
+            from hermes_cli.gateway_windows_service import restart_service
+            restart_service()
+        else:
+            gateway_windows.restart()
 
     def is_running(self, name: str) -> bool:
         from hermes_cli import gateway_windows
-        from hermes_cli.gateway import find_gateway_pids
+        from hermes_cli.gateway_windows_service import (
+            is_service_installed as _svc_installed,
+            get_service_status,
+        )
+        if _svc_installed():
+            status = get_service_status()
+            return status.get("state") == "running"
         if not gateway_windows.is_installed():
             return False
+        from hermes_cli.gateway import find_gateway_pids
         return bool(find_gateway_pids())
 
 

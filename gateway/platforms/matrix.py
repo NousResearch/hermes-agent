@@ -1562,11 +1562,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
             try:
                 event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
-                        send_event_type,
-                        msg_content,
-                        disable_encryption=disable_enc,
+                    asyncio.ensure_future(
+                        self._client.send_message_event(
+                            RoomID(chat_id),
+                            send_event_type,
+                            msg_content,
+                            disable_encryption=disable_enc,
+                        ),
                     ),
                     timeout=45,
                 )
@@ -1591,11 +1593,13 @@ class MatrixAdapter(BasePlatformAdapter):
                             retry_type = EventType.ROOM_ENCRYPTED
                             retry_disable = True
                         event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                retry_type,
-                                retry_content,
-                                disable_encryption=retry_disable,
+                            asyncio.ensure_future(
+                                self._client.send_message_event(
+                                    RoomID(chat_id),
+                                    retry_type,
+                                    retry_content,
+                                    disable_encryption=retry_disable,
+                                ),
                             ),
                             timeout=45,
                         )

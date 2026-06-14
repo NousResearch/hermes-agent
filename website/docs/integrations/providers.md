@@ -324,7 +324,7 @@ Get your API key at [novita.ai/settings/key-management](https://novita.ai/settin
 
 ### Chutes — Decentralized, TEE Confidential Compute
 
-[Chutes](https://chutes.ai) is a decentralized, OpenAI-compatible inference network. Every model runs inside a TEE (Intel TDX) confidential-compute enclave, so prompts and responses stay encrypted end to end — including GPU VRAM — and no provider sees them. The shared endpoint is `https://llm.chutes.ai/v1` and API keys are prefixed `cpk_`.
+[Chutes](https://chutes.ai) is a decentralized, OpenAI-compatible inference network. Every model runs inside a Trusted Execution Environment: Intel TDX Trust Domains keep model memory encrypted with CPU-held keys (the hypervisor stays outside the trust boundary), and NVIDIA Protected PCIe (PPCIE) encrypts the CPU↔GPU channel. Privacy is verifiable via remote attestation (signed TD Quotes plus GPU attestation) — "don't trust, verify" — so neither the host nor Chutes can read your prompts or responses. The shared endpoint is `https://llm.chutes.ai/v1` and API keys are prefixed `cpk_`.
 
 ```bash
 # Use any available model

@@ -2324,6 +2324,56 @@ def test_click_join_handles_continue_without_media_gate_before_join_now(tmp_path
     assert state.lobby_waiting is False
 
 
+def test_click_join_clicks_first_visible_duplicate_join_now(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    clicked = []
+
+    class _Button:
+        def __init__(self, label, visible):
+            self.label = label
+            self.visible = visible
+
+        def is_visible(self):
+            return self.visible
+
+        def click(self, **_kwargs):
+            clicked.append(self.label)
+
+    class _Locator:
+        def __init__(self, label):
+            self.label = label
+            self.buttons = (
+                [_Button(f"{label}:hidden", False), _Button(f"{label}:visible", True)]
+                if label == "Join now"
+                else []
+            )
+
+        @property
+        def first(self):
+            return self.buttons[0] if self.buttons else _Button(self.label, False)
+
+        def count(self):
+            return len(self.buttons)
+
+        def nth(self, index):
+            return self.buttons[index]
+
+    class _Page:
+        def get_by_role(self, _role, *, name, **_kwargs):
+            return _Locator(name)
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _click_join(_Page(), state) is True
+    assert clicked == ["Join now:visible"]
+    assert state.lobby_waiting is False
+
+
 def test_disable_local_media_clicks_visible_turn_off_controls():
     from plugins.google_meet.meet_bot import _disable_local_media
 

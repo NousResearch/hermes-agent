@@ -1857,8 +1857,9 @@ def _click_join(page, state: _BotState) -> bool:
             "button",
             name="Continue without microphone and camera",
             exact=False,
-        ).first
-        if continue_btn.count() and continue_btn.is_visible():
+        )
+        continue_btn = _first_visible(continue_btn)
+        if continue_btn is not None:
             continue_btn.click(timeout=3_000)
             page.wait_for_timeout(500)
     except Exception:
@@ -1866,8 +1867,8 @@ def _click_join(page, state: _BotState) -> bool:
 
     for label in ("Join now", "Ask to join"):
         try:
-            btn = page.get_by_role("button", name=label, exact=False).first
-            if btn.count() and btn.is_visible():
+            btn = _first_visible(page.get_by_role("button", name=label, exact=False))
+            if btn is not None:
                 btn.click(timeout=3_000)
                 if label == "Ask to join":
                     state.set(lobby_waiting=True)

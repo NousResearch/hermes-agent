@@ -682,11 +682,21 @@ class ChatCompletionsTransport(ProviderTransport):
             if isinstance(_msg_extra, dict):
                 refusal = _msg_extra.get("refusal")
         if isinstance(refusal, str) and refusal.strip():
-            if not (isinstance(content, str) and content.strip()):
-                content = refusal
-            if finish_reason in (None, "stop"):
-                finish_reason = "content_filter"
+            # Record the refusal explanation regardless — it's useful provider
+            # metadata even when the model also returned a usable payload.
             provider_data["refusal"] = refusal
+            _has_text = isinstance(content, str) and content.strip()
+            _has_tool_calls = bool(tool_calls)
+            # Only promote to a terminal ``content_filter`` when the refusal is
+            # the *sole* payload — no visible text and no tool calls. A response
+            # that carries real content (or tool calls) alongside a refusal note
+            # is a normal, usable turn: surfacing it as a failed safety refusal
+            # would discard the model's actual work. In the empty-payload case,
+            # adopt the refusal as content so the loop has something to show.
+            if not _has_text and not _has_tool_calls:
+                content = refusal
+                if finish_reason in (None, "stop"):
+                    finish_reason = "content_filter"
 
         return NormalizedResponse(
             content=content,

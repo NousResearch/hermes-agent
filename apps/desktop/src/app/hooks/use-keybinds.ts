@@ -39,7 +39,7 @@ import {
 } from '@/store/session-switcher'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus } from '../chat/composer/focus'
+import { requestComposerDictate, requestComposerFocus } from '../chat/composer/focus'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import {
   AGENTS_ROUTE,
@@ -113,6 +113,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
+    'composer.dictate': () => requestComposerDictate('active'),
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,

@@ -421,6 +421,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
         # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
         # with the raw agent markdown so tables/task lists/etc. render natively.
+        # Enabled by default; users can opt out for clients that accept but do
+        # not render rich messages via platforms.telegram.extra.rich_messages.
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", True)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -954,7 +957,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", True)
+            and not getattr(self, "_rich_send_disabled", False)
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
@@ -995,7 +999,8 @@ class TelegramAdapter(BasePlatformAdapter):
         streams split exactly as before.
         """
         if (
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", True)
+            and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
             return self.RICH_MESSAGE_MAX_CHARS
@@ -1184,7 +1189,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            getattr(self, "_rich_messages_enabled", True)
+            and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()

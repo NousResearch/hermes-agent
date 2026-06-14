@@ -1982,6 +1982,9 @@ DEFAULT_CONFIG = {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        "extra": {
+            "rich_messages": True,      # Bot API 10.1 rich messages; set false to force legacy MarkdownV2
+        },
     },
 
     # Mattermost platform settings (gateway mode)

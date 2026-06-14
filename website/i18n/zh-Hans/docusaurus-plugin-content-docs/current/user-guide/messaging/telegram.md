@@ -886,7 +886,17 @@ gateway:
 - **小表格**被展平为**行组项目符号**——每行在列标题下变为可读的项目符号列表。适合 2-4 列和短单元格。
 - **较大或较宽的表格**回退为带对齐列的**围栏代码块**，以防内容折叠。
 
-回退无需配置——适配器会为每条消息选择正确的渲染方式。如果你想要旧版"始终使用代码块"行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
+API 回退无需配置——适配器会为每条消息选择正确的渲染方式。如果某个 Telegram 客户端能接收但不能渲染富消息（例如手表客户端把它们显示为不透明媒体块），可以选择退出并强制使用 MarkdownV2 路径：
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_messages: false
+```
+
+富消息默认启用（`rich_messages: true`）。这个设置用于客户端渲染兼容性；当 Telegram 拒绝富消息 API 调用时，Hermes 已经会自动回退。如果你只是想在保持富消息启用的同时恢复旧版「始终使用代码块」表格行为，可在 `config.yaml` 中设置 `telegram.pretty_tables: false` 禁用表格规范化（默认：`true`）。
 
 **链接预览。** Telegram 会为机器人消息中的 URL 自动生成链接预览。如果你希望抑制这些预览（长 `/tools` 输出、提及十个链接的 Agent 回复等）：
 

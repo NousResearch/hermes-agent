@@ -1244,17 +1244,21 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         for gp_key, gp_entries in global_pool.items():
             if not isinstance(gp_entries, list) or not gp_entries:
                 continue
-            # Per-provider shadowing: profile wins whenever it has ANY entries.
+            # Per-provider shadowing: profile wins whenever it declares the
+            # provider key, even as an explicit empty list.  An empty profile
+            # pool means "do not inherit global/default credentials"; this is
+            # required for profile isolation after removing a provider from a
+            # worker.
             existing = merged.get(gp_key)
-            if isinstance(existing, list) and existing:
+            if isinstance(existing, list):
                 continue
             merged[gp_key] = list(gp_entries)
         return merged
 
     provider_entries = pool.get(provider_id)
-    if isinstance(provider_entries, list) and provider_entries:
+    if isinstance(provider_entries, list):
         return list(provider_entries)
-    # Profile has no entries for this provider — fall back to global.
+    # Profile has no provider key at all — fall back to global.
     global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
 

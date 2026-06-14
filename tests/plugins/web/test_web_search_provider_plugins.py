@@ -280,40 +280,33 @@ class TestRegistryResolution:
         # a typed credential-missing error to the caller.
         assert result.is_available() is False
 
-    def test_unknown_configured_name_falls_back_to_available_provider(
+    def test_unknown_configured_name_does_not_fall_back_to_available_provider(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Typo / uninstalled plugin → walk legacy preference, pick available."""
+        """Typo / late-loaded plugin → fail closed instead of silent reroute."""
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         monkeypatch.setenv("EXA_API_KEY", "real")
         result = _resolve("not-a-real-provider", capability="search")
-        # Either ddgs (no-key fallback) or exa (the only available
-        # premium provider) — both are valid. The point is the unknown
-        # name shouldn't return None when SOMETHING is available.
-        assert result is not None
-        assert result.is_available() is True
+        assert result is None
 
-    def test_explicit_search_only_provider_for_extract_falls_back(
+    def test_explicit_search_only_provider_for_extract_does_not_fall_back(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Asking for extract via a search-only backend → fall back.
+        """Asking for extract via a search-only backend fails closed.
 
         ``brave-free`` is search-only (``supports_extract() is False``).
-        When the registry resolves it for an extract capability, the
-        explicit-config branch rejects it as capability-incompatible
-        and the fallback walk picks an extract-capable provider.
+        When the registry resolves it for an extract capability, the explicit
+        config branch rejects it as capability-incompatible instead of silently
+        routing extraction through a different backend.
         """
         _ensure_plugins_loaded()
         from agent.web_search_registry import _resolve
 
         monkeypatch.setenv("EXA_API_KEY", "real")
         result = _resolve("brave-free", capability="extract")
-        # Should land on exa (only extract-capable available provider).
-        assert result is not None
-        assert result.supports_extract() is True
-        assert result.is_available() is True
+        assert result is None
 
     def test_no_config_no_credentials_returns_none(
         self,

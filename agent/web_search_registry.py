@@ -140,8 +140,8 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
        provider that supports *capability*, return it even if its
        :meth:`is_available` returns False — the dispatcher will surface a
        precise "X_API_KEY is not set" error to the user instead of silently
-       routing somewhere else. Matches legacy
-       :func:`tools.web_tools._get_backend` behavior for configured names.
+       routing somewhere else. If the configured name is missing or
+       capability-incompatible, fail closed rather than silently rerouting.
 
     2. **Single-provider shortcut.** When only one registered provider
        supports *capability* AND ``is_available()`` reports True, return it.
@@ -187,14 +187,15 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             return provider
         if provider is None:
             logger.debug(
-                "web backend '%s' configured but not registered; falling back",
+                "web backend '%s' configured but not registered",
                 configured,
             )
         else:
             logger.debug(
-                "web backend '%s' configured but does not support '%s'; falling back",
+                "web backend '%s' configured but does not support '%s'",
                 configured, capability,
             )
+        return None
 
     # 2. + 3. Fallback path — filter by availability so we don't surface
     #    a provider the user has no credentials for. Without this filter,

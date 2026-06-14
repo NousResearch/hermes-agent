@@ -53,6 +53,7 @@ def _make_adapter(**overrides):
     adapter._calling_sidecar_timeout = overrides.pop("calling_sidecar_timeout", 10.0)
     adapter._runner = None
     adapter._http_client = None
+    adapter._calling_sidecar_call_ids = set()
 
     # Behavior-mixin contract
     adapter._reply_prefix = None
@@ -803,6 +804,7 @@ class TestCallingSidecarClient:
             calling_sidecar_url="http://127.0.0.1:8787",
             calling_sidecar_timeout=2.5,
         )
+        adapter._calling_sidecar_call_ids.add("wacid.call/with/slash")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"closed": True})
@@ -816,10 +818,12 @@ class TestCallingSidecarClient:
             "http://127.0.0.1:8787/calls/wacid.call%2Fwith%2Fslash/close"
         )
         assert call.kwargs["timeout"] == 2.5
+        assert adapter._calling_sidecar_call_ids == set()
 
     @pytest.mark.asyncio
     async def test_close_calling_sidecar_session_treats_404_as_closed(self):
         adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("wacid.missing")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(404, {"error": "unknown call_id"})
@@ -828,6 +832,29 @@ class TestCallingSidecarClient:
         closed = await adapter._close_calling_sidecar_session("wacid.missing")
 
         assert closed is True
+        assert adapter._calling_sidecar_call_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_tracked_sidecar_sessions_before_http_close(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.update({"wacid.two", "wacid.one"})
+        http_client = MagicMock()
+        http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"closed": True})
+        )
+        http_client.aclose = AsyncMock()
+        adapter._http_client = http_client
+
+        await adapter.disconnect()
+
+        assert adapter._http_client is None
+        posted_urls = [call.args[0] for call in http_client.post.call_args_list]
+        assert posted_urls == [
+            "http://127.0.0.1:8787/calls/wacid.one/close",
+            "http://127.0.0.1:8787/calls/wacid.two/close",
+        ]
+        http_client.aclose.assert_awaited_once()
+        assert adapter._calling_sidecar_call_ids == set()
 
 
 # ---------------------------------------------------------------------------
@@ -1383,6 +1410,9 @@ class TestWebhookDispatch:
             "sdp_type": "answer",
             "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
         }
+        assert adapter._calling_sidecar_call_ids == {
+            "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh"
+        }
 
     @pytest.mark.asyncio
     async def test_call_connect_sidecar_failure_skips_graph_accept(self):
@@ -1444,6 +1474,7 @@ class TestWebhookDispatch:
             "http://127.0.0.1:8787/calls/"
             "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
         )
+        assert adapter._calling_sidecar_call_ids == set()
 
     @pytest.mark.asyncio
     async def test_call_connect_accept_failure_closes_sidecar(self):
@@ -1486,6 +1517,7 @@ class TestWebhookDispatch:
             "http://127.0.0.1:8787/calls/"
             "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
         )
+        assert adapter._calling_sidecar_call_ids == set()
 
     @pytest.mark.asyncio
     async def test_call_connect_malformed_offer_skips_sidecar(self):
@@ -1515,6 +1547,7 @@ class TestWebhookDispatch:
             calling_sidecar_url="http://127.0.0.1:8787",
         )
         adapter.handle_message = AsyncMock()
+        adapter._calling_sidecar_call_ids.add("wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh")
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"closed": True})
@@ -1533,6 +1566,7 @@ class TestWebhookDispatch:
             "http://127.0.0.1:8787/calls/"
             "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh/close"
         )
+        assert adapter._calling_sidecar_call_ids == set()
 
     @pytest.mark.asyncio
     async def test_call_terminate_without_sidecar_skips_http(self):

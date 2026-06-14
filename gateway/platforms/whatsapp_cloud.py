@@ -408,6 +408,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Runtime
         self._runner = None
         self._http_client: Optional["httpx.AsyncClient"] = None
+        self._calling_sidecar_call_ids: set[str] = set()
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -896,6 +897,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[whatsapp_cloud] sidecar had no session for terminated call %s",
                 normalized_call_id,
             )
+            self._calling_sidecar_call_ids.discard(normalized_call_id)
             return True
         if resp.status_code != 200:
             logger.warning(
@@ -905,7 +907,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 str(getattr(resp, "text", ""))[:500],
             )
             return False
+        self._calling_sidecar_call_ids.discard(normalized_call_id)
         return True
+
+    async def _close_all_calling_sidecar_sessions(self) -> None:
+        """Best-effort close for every local sidecar session Hermes created."""
+        for call_id in sorted(self._calling_sidecar_call_ids):
+            await self._close_calling_sidecar_session(call_id)
 
     @staticmethod
     def _bounded_put(cache: "OrderedDict[str, str]", key: str, value: str) -> None:
@@ -1015,6 +1023,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception:
                 logger.exception("[whatsapp_cloud] webhook server cleanup failed")
             self._runner = None
+        if self._calling_sidecar_call_ids:
+            await self._close_all_calling_sidecar_sessions()
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()
@@ -2222,6 +2232,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 call_id,
             )
             return
+        self._calling_sidecar_call_ids.add(call_id)
 
         pre_accept = await self._send_call_action(
             call_id,

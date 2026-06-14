@@ -1953,6 +1953,12 @@ def _click_join(page, state: _BotState) -> bool:
     for label in ("Join now", "Ask to join"):
         try:
             btn = _first_visible(page.get_by_role("button", name=label, exact=False))
+            if btn is None and hasattr(page, "locator"):
+                btn = _first_visible(
+                    page.locator(
+                        f"button:has-text('{label}'), [role='button']:has-text('{label}')"
+                    )
+                )
             if btn is not None:
                 btn.click(timeout=3_000)
                 if label == "Ask to join":

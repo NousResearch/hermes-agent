@@ -2394,6 +2394,56 @@ def test_click_join_returns_true_and_marks_lobby_for_ask_to_join(tmp_path):
     assert state.lobby_waiting is True
 
 
+def test_click_join_falls_back_to_visible_text_for_ask_to_join(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    clicked = []
+
+    class _EmptyLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+    class _TextLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return True
+
+        def click(self, **_kwargs):
+            clicked.append("Ask to join")
+
+    class _Page:
+        def get_by_role(self, *_args, **_kwargs):
+            return _EmptyLocator()
+
+        def locator(self, selector):
+            if "Ask to join" in selector:
+                return _TextLocator()
+            return _EmptyLocator()
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _click_join(_Page(), state) is True
+    assert clicked == ["Ask to join"]
+    assert state.lobby_waiting is True
+
+
 def test_click_join_handles_continue_without_media_gate_before_join_now(tmp_path):
     from plugins.google_meet.meet_bot import _BotState, _click_join
 

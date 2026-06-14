@@ -911,10 +911,20 @@ def _resolve_openrouter_runtime(
     # Also treat explicitly-configured OpenRouter mirrors/proxies as OpenRouter
     # for key selection — if the user set OPENROUTER_BASE_URL or requested
     # provider=openrouter explicitly, OPENROUTER_API_KEY should still be used.
+    # Additionally, when provider is "custom" and the base_url is a loopback
+    # address that matches OPENROUTER_BASE_URL env var, treat it as an
+    # OpenRouter context — the local proxy (Headroom, LiteLLM, etc.) is
+    # forwarding to OpenRouter and needs the key.
+    _is_loopback = _loopback_hostname(base_url_hostname(base_url))
     _is_openrouter_context = _is_openrouter_url or (
         requested_norm == "openrouter"
         and (env_openrouter_base_url or base_url == env_openrouter_base_url)
         and base_url == (env_openrouter_base_url or "").rstrip("/")
+    ) or (
+        requested_norm == "custom"
+        and _is_loopback
+        and bool(env_openrouter_base_url)
+        and base_url == env_openrouter_base_url.rstrip("/")
     )
     if _is_openrouter_context:
         api_key_candidates = [

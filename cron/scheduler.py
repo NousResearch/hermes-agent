@@ -1867,11 +1867,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.
-        if final_response.strip() == "(No response generated)":
+        no_response_placeholders = {
+            "(No response generated)",
+            "（返信を生成できませんでした）",
+        }
+        if final_response.strip() in no_response_placeholders:
             final_response = ""
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
-        logged_response = final_response if final_response else "(No response generated)"
+        logged_response = final_response if final_response else "（返信を生成できませんでした）"
         
         output = f"""# Cron Job: {job_name}
 

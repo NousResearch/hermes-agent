@@ -3441,6 +3441,9 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        if isinstance(result.raw_response, dict) and result.raw_response.get("unsafe_to_retry"):
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -3474,8 +3477,9 @@ class BasePlatformAdapter(ABC):
                 # All retries exhausted (loop completed without break) — notify user
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
                 notice = (
-                    "\u26a0\ufe0f Message delivery failed after multiple attempts. "
-                    "Please try again \u2014 your request was processed but the response could not be sent."
+                    "⚠️ 返信の送信に複数回失敗しました。"
+                    "依頼の処理自体は完了している可能性がありますが、結果を送れませんでした。"
+                    "少し待ってからもう一度送ってください。"
                 )
                 try:
                     await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
@@ -3487,7 +3491,7 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
-            content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
+            content=f"（返信の整形に失敗したため、プレーンテキストで送ります）\n\n{content[:3500]}",
             reply_to=reply_to,
             metadata=metadata,
         )
@@ -4544,14 +4548,13 @@ class BasePlatformAdapter(ABC):
             # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__
-                error_detail = str(e)[:300] if str(e) else "no details available"
+                error_detail = str(e)[:300] if str(e) else "詳細なし"
                 _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
+                        f"⚠️ 処理中にエラーが発生しました（{error_type}）。\n"
+                        "もう一度送るか、続く場合は /reset で新しく始めてください。"
                     ),
                     metadata=_thread_metadata,
                 )

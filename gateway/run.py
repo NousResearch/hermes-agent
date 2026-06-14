@@ -1824,6 +1824,97 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+_PROVIDER_API_FAILURE_RE = re.compile(
+    r"^API call failed after (?P<retries>\d+) retries:\s*(?P<detail>.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+_REQUEST_ID_RE = re.compile(
+    r"\brequest[ _-]?id\b\s*(?:[:=]|is|was)?\s*([A-Za-z0-9][A-Za-z0-9._:-]{8,})",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_provider_api_failure(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return bool(_PROVIDER_API_FAILURE_RE.match(text.strip())) or any(
+        marker in lowered
+        for marker in (
+            "api call failed after",
+            "rate limited after",
+            "provider's stream connection",
+            "openai.badrequesterror",
+            "openai.authenticationerror",
+            "openai.permissiondeniederror",
+            "openai.ratelimiterror",
+            "openai.internalservererror",
+        )
+    )
+
+
+def _format_provider_api_failure_for_gateway(agent_result: dict, response: str) -> str:
+    """Return a short user-facing fallback for provider/API failures.
+
+    The agent core intentionally keeps the raw provider error in logs and in the
+    result dict for diagnostics.  Gateway chats should not expose long English
+    SDK/provider messages (especially help-center text and request IDs) as the
+    visible bot reply.
+    """
+    if not response:
+        return response
+
+    error_detail = str(agent_result.get("error") or "") if isinstance(agent_result, dict) else ""
+    raw_text = str(response)
+    combined = "\n".join(part for part in (raw_text, error_detail) if part)
+    if not _looks_like_provider_api_failure(raw_text) and not _looks_like_provider_api_failure(error_detail):
+        return response
+
+    request_id_match = _REQUEST_ID_RE.search(combined)
+    request_id = request_id_match.group(1).strip(".,;)") if request_id_match else None
+    logger.warning(
+        "Provider/API failure hidden from gateway user response%s: %s",
+        f" request_id={request_id}" if request_id else "",
+        combined[:2000],
+    )
+
+    lowered = combined.lower()
+    context_markers = (
+        "context length", "context size", "context window", "maximum context",
+        "token limit", "too many tokens", "reduce the length", "exceeds the limit",
+        "request entity too large", "prompt is too long", "payload too large",
+        "input is too long",
+    )
+    if any(marker in lowered for marker in context_markers):
+        return (
+            "⚠️ 会話が長くなり、モデルのコンテキスト上限に近づきました。\n"
+            "/compact で圧縮するか、/reset で新しく始めてください。"
+        )
+
+    if any(marker in lowered for marker in ("429", "rate limit", "rate_limited", "too many requests")):
+        return (
+            "⚠️ モデルAPIが一時的に混み合っています。少し待って再実行してください。\n"
+            "詳細はログに記録しました。"
+        )
+
+    if any(marker in lowered for marker in ("401", "403", "authentication", "permission", "api key", "unauthorized")):
+        return (
+            "⚠️ モデルAPIの認証または権限で失敗しました。設定を確認してください。\n"
+            "詳細はログに記録しました。"
+        )
+
+    if any(marker in lowered for marker in ("connection lost", "connection reset", "connection closed", "network connection", "network error", "stream connection")):
+        return (
+            "⚠️ モデルAPIとの接続が途中で切れました。少し待って再実行してください。\n"
+            "大きな出力中に起きた場合は、作業を小さく分けると通りやすいです。"
+        )
+
+    return (
+        "⚠️ モデル応答が一時的に失敗しました。少し待って再実行してください。\n"
+        "詳細はログに記録しました。"
+    )
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -1848,23 +1939,30 @@ def _normalize_empty_agent_response(
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
             return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
+                "⚠️ 会話が長くなり、モデルのコンテキスト上限に近づきました。\n"
+                "/compact で圧縮するか、/reset で新しく始めてください。"
             )
+        logger.warning(
+            "Agent failed with empty response; hiding raw error from gateway user: %s",
+            str(error_detail)[:1000],
+        )
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
+            "⚠️ 処理中に一時的なエラーが発生しました。もう一度送ってください。\n"
+            "続く場合は /reset で新しい会話に切り替えてください。"
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            logger.warning(
+                "Agent stopped with partial response; hiding raw error from gateway user: %s",
+                str(err)[:1000],
+            )
+            return "⚠️ 処理が途中で止まりました。もう一度送ってください。"
         return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again."
+            "⚠️ 処理は完了しましたが、返信文を生成できませんでした。"
+            "一時的な可能性があるので、もう一度送ってください。"
         )
 
     return response
@@ -3148,6 +3246,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except Exception:
             pass
+
+    def _runtime_status_active_state(self) -> str:
+        """Return the runtime state to persist while work is still active."""
+        return "draining" if getattr(self, "_draining", False) else "running"
+
+    async def _runtime_status_heartbeat_loop(self, session_key: str) -> None:
+        """Keep ``gateway_state.json`` fresh while a gateway turn is busy.
+
+        External watchdogs use the runtime status file as the cheap liveness
+        signal for the gateway process. A single agent turn can legitimately
+        run for much longer than the watchdog window, so claiming/releasing
+        ``active_agents`` is not enough: ``updated_at`` must continue moving
+        while the turn is active so a healthy-but-busy gateway is not mistaken
+        for a wedged process and restarted mid-turn.
+        """
+        if not session_key:
+            return
+        interval = _float_env("HERMES_GATEWAY_STATUS_HEARTBEAT_INTERVAL", 30.0)
+        if interval <= 0:
+            return
+        try:
+            while session_key in getattr(self, "_running_agents", {}):
+                await asyncio.sleep(interval)
+                if session_key not in getattr(self, "_running_agents", {}):
+                    return
+                self._update_runtime_status(self._runtime_status_active_state())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Runtime status heartbeat stopped for %s: %s", session_key, exc)
 
     def _update_platform_runtime_status(
         self,
@@ -7582,6 +7710,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        self._update_runtime_status(self._runtime_status_active_state())
+        _runtime_status_heartbeat_task = asyncio.create_task(
+            self._runtime_status_heartbeat_loop(_quick_key)
+        )
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -7616,13 +7748,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return _agent_result
         finally:
             # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
+            # is idempotent and clears stale real-agent slots left when session_reset
+            # bumps the generation mid-flight. Always cancel the heartbeat task too.
             self._release_running_agent_state(_quick_key)
+            _runtime_status_heartbeat_task.cancel()
+            try:
+                await _runtime_status_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug(
+                    "Runtime status heartbeat cleanup failed for %s: %s",
+                    _quick_key,
+                    exc,
+                )
 
     async def _prepare_inbound_message_text(
         self,
@@ -8650,9 +8789,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # looks like a bug; a short explanation is more helpful.
             if response == "(empty)":
                 response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
+                    "⚠️ モデルが返信文を生成できませんでした。"
+                    "もう一度送るか、少し言い換えて試してください。"
                 )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
@@ -8687,6 +8825,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             response = _normalize_empty_agent_response(
                 agent_result, response, history_len=len(history),
             )
+            response = _format_provider_api_failure_for_gateway(agent_result, response)
             response = _sanitize_gateway_final_response(source.platform, response)
 
             # Ordering contract: the agent thread already updated the contextvar
@@ -8873,9 +9012,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source, session_entry, reason="compression-exhausted-reset",
                     )
                 response = (response or "") + (
-                    "\n\n🔄 Session auto-reset — the conversation exceeded the "
-                    "maximum context size and could not be compressed further. "
-                    "Your next message will start a fresh session."
+                    "\n\n🔄 会話がコンテキスト上限を超え、圧縮もできなかったため、"
+                    "セッションを自動でリセットしました。次のメッセージから新しい会話になります。"
                 )
 
             ts = datetime.now().isoformat()
@@ -9063,9 +9201,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             status_code = getattr(e, "status_code", None)
             _hist_len = len(history) if 'history' in locals() else 0
             if status_code == 401:
-                status_hint = " Check your API key or run `claude /login` to refresh OAuth credentials."
+                status_hint = " APIキーまたはOAuth認証を確認してください。"
             elif status_code == 402:
-                status_hint = " Your API balance or quota is exhausted. Check your provider dashboard."
+                status_hint = " APIの残高または利用枠が不足しています。プロバイダ側の設定を確認してください。"
             elif status_code == 429:
                 # Check if this is a plan usage limit (resets on a schedule) vs a transient rate limit
                 _err_body = getattr(e, "response", None)
@@ -9082,30 +9220,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _resets_in and _resets_in > 0:
                         import math
                         _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                        status_hint = f" 利用上限に達しました。約{_hours}時間後にリセットされます。"
                     else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                        status_hint = " 利用上限に達しました。リセットまで少し待ってください。"
                 else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
+                    status_hint = " レート制限中です。少し待ってからもう一度送ってください。"
             elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
+                status_hint = " APIが一時的に混み合っています。少し待ってからもう一度送ってください。"
             elif status_code in {400, 500}:
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ 会話が長くなり、モデルのコンテキスト上限に近づきました。\n"
+                        "/compact で圧縮するか、/reset で新しく始めてください。"
                     )
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
+                    status_hint = " APIにリクエストが拒否されました。"
+            logger.warning(
+                "Gateway handler error hidden from user response: type=%s detail=%s hint=%s",
+                error_type, str(error_detail)[:1000], status_hint.strip(),
+            )
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
-                f"{error_detail}\n"
-                f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                f"⚠️ 処理中にエラーが発生しました（{error_type}）。\n"
+                f"{status_hint.strip()}\n"
+                "もう一度送るか、続く場合は /reset で新しく始めてください。"
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -10092,6 +10232,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("Post-stream media extraction failed: %s", e)
 
 
+    async def _handle_background_command(self, event: MessageEvent) -> str:
+        """Handle /background <prompt> — run a prompt in a separate background session.
+
+        Spawns a new AIAgent in a background thread with its own session.
+        When it completes, sends the result back to the same chat without
+        modifying the active session's conversation history.
+        """
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return (
+                "使い方: /background <依頼内容>\n"
+                "例: /background 今日のHNトップ記事を要約して\n\n"
+                "別セッションで実行します。このまま会話でき、完了したらここに結果を送ります。"
+            )
+
+        source = event.source
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
+
+        event_message_id = self._reply_anchor_for_event(event)
+
+        # Fire-and-forget the background task
+        _task = asyncio.create_task(
+            self._run_background_task(
+                prompt,
+                source,
+                task_id,
+                event_message_id=event_message_id,
+            )
+        )
+        self._background_tasks.add(_task)
+        _task.add_done_callback(self._background_tasks.discard)
+
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        return f'🔄 バックグラウンド作業を開始しました: "{preview}"\nTask ID: {task_id}\nこのまま会話できます。完了したら結果を送ります。'
 
     async def _run_background_task(
         self,
@@ -10124,7 +10298,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    f"❌ バックグラウンド作業 {task_id} に失敗しました: モデルAPIの認証情報が設定されていません。",
                     metadata=_thread_metadata,
                 )
                 return
@@ -10202,7 +10376,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
-                response = f"Error: {result['error']}"
+                logger.warning(
+                    "Background task %s returned error without response; hiding raw error: %s",
+                    task_id, str(result.get("error"))[:1000],
+                )
+                response = "⚠️ バックグラウンド作業中にエラーが発生しました。もう一度試してください。"
+            if result:
+                response = _format_provider_api_failure_for_gateway(result, response)
 
             # Extract media files from the response
             if response:
@@ -10212,7 +10392,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                header = f'✅ バックグラウンド作業が完了しました\n依頼: "{preview}"\n\n'
 
                 if text_content:
                     await adapter.send(
@@ -10223,7 +10403,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 elif not images and not media_files:
                     await adapter.send(
                         chat_id=source.chat_id,
-                        content=header + "(No response generated)",
+                        content=header + "(返信なし)",
                         metadata=_thread_metadata,
                     )
 
@@ -10280,7 +10460,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=f'✅ バックグラウンド作業が完了しました\n依頼: "{preview}"\n\n(返信なし)',
                     metadata=_thread_metadata,
                 )
 
@@ -12423,16 +12603,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key, run_generation
         ):
             return False
+        released = self._running_agents.pop(session_key, None) is not None
         lease = getattr(self, "_active_session_leases", {}).pop(session_key, None)
         if lease is not None:
             try:
                 lease.release()
             except Exception:
                 logger.debug("Failed to release active session slot", exc_info=True)
-        self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        if released:
+            self._update_runtime_status(self._runtime_status_active_state())
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -13200,10 +13382,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        _progress_tool_filter = resolve_display_setting(
+            user_config, platform_key, "tool_progress_tools"
+        )
+        progress_tool_allowlist = {
+            str(name).strip().lower()
+            for name in (_progress_tool_filter or [])
+            if str(name).strip()
+        }
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            source.platform != Platform.WEBHOOK
+            and (progress_mode != "off" or bool(progress_tool_allowlist))
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -13329,6 +13522,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
+                return
+
+            # Optional per-tool allowlist.  This keeps high-signal progress
+            # (for example 🧠 memory writes) visible while suppressing noisy
+            # operational calls like terminal/read_file/search_files.
+            if (
+                progress_tool_allowlist
+                and str(tool_name or "").strip().lower() not in progress_tool_allowlist
+            ):
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
@@ -14737,18 +14939,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
-                    # In Gateway mode, auto-title failures must NOT be
-                    # surfaced as user-visible messages (fixes #23246).
-                    # Log them at debug level only — they are not actionable
-                    # to the end user. CLI mode keeps the existing behaviour
-                    # via the agent's _emit_auxiliary_failure path.
-                    def _title_failure_cb(task: str, exc: BaseException) -> None:
-                        logger.debug(
-                            "Gateway auto-title failure suppressed (not user-visible): %s: %s",
-                            task, exc,
-                        )
+                    # Title generation is a best-effort background convenience.
+                    # In chat gateways, do not surface failures to the user: a
+                    # transient auxiliary/provider error should not post an
+                    # extra warning message after the main answer was already delivered.
                     maybe_auto_title_kwargs = {
-                        "failure_callback": _title_failure_cb,
+                        "failure_callback": None,
                         "main_runtime": {
                             "model": getattr(agent, "model", None),
                             "provider": getattr(agent, "provider", None),

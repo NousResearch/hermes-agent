@@ -16,10 +16,11 @@ Also: SessionDB connections were never closed on gateway shutdown,
 leaving WAL locks in place until Python actually exited.
 """
 
+import asyncio
 import threading
 from unittest.mock import MagicMock
 
-
+import pytest
 
 def _make_runner():
     """Bare GatewayRunner wired with just the state the helper touches."""
@@ -29,6 +30,9 @@ def _make_runner():
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._busy_ack_ts = {}
+    runner._draining = False
+    runner._restart_requested = False
+    runner._update_runtime_status = MagicMock()
     return runner
 
 
@@ -44,6 +48,24 @@ class TestReleaseRunningAgentStateUnit:
         assert "k" not in runner._running_agents
         assert "k" not in runner._running_agents_ts
         assert "k" not in runner._busy_ack_ts
+        runner._update_runtime_status.assert_called_once_with("running")
+
+    def test_release_preserves_draining_state_in_runtime_status(self):
+        """A release during restart/shutdown drain must not briefly report running."""
+        runner = _make_runner()
+        runner._draining = True
+        runner._running_agents["k"] = MagicMock()
+        runner._running_agents_ts["k"] = 123.0
+
+        runner._release_running_agent_state("k")
+
+        runner._update_runtime_status.assert_called_once_with("draining")
+
+    def test_runtime_status_active_state_follows_drain_flag(self):
+        runner = _make_runner()
+        assert runner._runtime_status_active_state() == "running"
+        runner._draining = True
+        assert runner._runtime_status_active_state() == "draining"
 
     def test_idempotent_on_missing_key(self):
         """Calling twice (or on an absent key) must not raise."""
@@ -110,6 +132,51 @@ class TestReleaseRunningAgentStateUnit:
         assert runner._running_agents == {}
         assert runner._running_agents_ts == {}
         assert runner._busy_ack_ts == {}
+
+    @pytest.mark.asyncio
+    async def test_runtime_status_heartbeat_refreshes_busy_gateway(self, monkeypatch):
+        """Long turns keep gateway_state.json fresh so watchdogs don't restart them."""
+        runner = _make_runner()
+        runner._running_agents["k"] = MagicMock()
+        monkeypatch.setenv("HERMES_GATEWAY_STATUS_HEARTBEAT_INTERVAL", "0.01")
+
+        task = asyncio.create_task(runner._runtime_status_heartbeat_loop("k"))
+        try:
+            for _ in range(20):
+                if runner._update_runtime_status.call_count >= 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert runner._update_runtime_status.call_count >= 1
+            runner._update_runtime_status.assert_any_call("running")
+        finally:
+            runner._running_agents.clear()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_runtime_status_heartbeat_uses_draining_state(self, monkeypatch):
+        runner = _make_runner()
+        runner._draining = True
+        runner._running_agents["k"] = MagicMock()
+        monkeypatch.setenv("HERMES_GATEWAY_STATUS_HEARTBEAT_INTERVAL", "0.01")
+
+        task = asyncio.create_task(runner._runtime_status_heartbeat_loop("k"))
+        try:
+            for _ in range(20):
+                if runner._update_runtime_status.call_count:
+                    break
+                await asyncio.sleep(0.01)
+            runner._update_runtime_status.assert_any_call("draining")
+        finally:
+            runner._running_agents.clear()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 class TestNoMoreBareDeleteSites:

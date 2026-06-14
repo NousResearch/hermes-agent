@@ -21,7 +21,7 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple, Set
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,9 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_DISCORD_SEND_MAX_ATTEMPTS = 3
+_DISCORD_SEND_BASE_DELAY_SECONDS = 0.75
+_DISCORD_SEND_MAX_DELAY_SECONDS = 30.0
 
 try:
     import discord
@@ -567,6 +570,196 @@ class VoiceReceiver:
                 pass
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid boolean for %s=%r; using default %s", name, raw, default)
+    return default
+
+
+def _env_int(name: str, default: int, *, min_value: Optional[int] = None) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+    if min_value is not None and value < min_value:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+    return value
+
+
+def _env_float(name: str, default: float, *, min_value: Optional[float] = None) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning("Invalid float for %s=%r; using default %s", name, raw, default)
+        return default
+    if min_value is not None and value < min_value:
+        logger.warning("Invalid float for %s=%r; using default %s", name, raw, default)
+        return default
+    return value
+
+
+def _discord_allow_bots_mode() -> str:
+    raw = os.getenv("DISCORD_ALLOW_BOTS", "none")
+    mode = raw.strip().lower()
+    if mode in {"none", "mentions", "all"}:
+        return mode
+    if mode:
+        logger.warning(
+            "Invalid DISCORD_ALLOW_BOTS=%r; expected one of none, mentions, all. Using none.",
+            raw,
+        )
+    return "none"
+
+
+def _discord_allowed_bot_ids() -> Set[str]:
+    raw = os.getenv("DISCORD_ALLOWED_BOTS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _normalise_dialogue_text(text: str) -> str:
+    text = re.sub(r"<@!?\d+>", "", text or "")
+    text = re.sub(r"\s+", "", text)
+    return text.strip().lower()
+
+
+_DEFAULT_BOT_DIALOGUE_STOP_PHRASES = (
+    "了解",
+    "承知",
+    "確認しました",
+    "完了として",
+    "ここで止めます",
+    "ここまでにします",
+    "返信はここで止めます",
+    "会話は終了",
+    "終了済み",
+    "未決点なし",
+    "追加なし",
+    "大丈夫です",
+    "👍",
+)
+
+
+def _bot_dialogue_stop_phrases() -> Tuple[str, ...]:
+    raw = os.getenv("DISCORD_BOT_DIALOGUE_STOP_PHRASES", "")
+    phrases = [p.strip() for p in raw.split(",") if p.strip()]
+    if not phrases:
+        phrases = list(_DEFAULT_BOT_DIALOGUE_STOP_PHRASES)
+    return tuple(_normalise_dialogue_text(p) for p in phrases if _normalise_dialogue_text(p))
+
+
+def _is_bot_dialogue_closure_only(text: str) -> bool:
+    """Return True for bot replies that should end a bot-to-bot handoff.
+
+    The guard intentionally catches short acknowledgement / closure-only
+    messages before they reach the LLM.  Short messages may still contain
+    useful next actions (for example, "了解しました。ログを確認します。"), so
+    acknowledgements are treated as closure-only only when the remainder is
+    just polite suffixes, emoji, or punctuation.
+    """
+    norm = _normalise_dialogue_text(text)
+    if not norm:
+        return True
+
+    # Hermes gateway status/busy notices are control-plane messages, not
+    # conversational content.  When one Hermes Discord bot is talking to
+    # another, these notices can otherwise be fed back into the peer LLM and
+    # create noisy "same thing twice" acknowledgement loops.  This predicate is
+    # used only for peer-bot messages, so it is safe to block these aggressively
+    # before the normal substantive-reply heuristics below.
+    status_prefixes = (
+        "⚡interruptingcurrenttask",
+        "operationinterrupted:",
+        "operationinterrupted",
+        "gatewayrestarting",
+        "gatewayshutdown",
+        "gatewayisrestarting",
+        "sessionautomaticallyreset",
+        "◐sessionautomaticallyreset",
+    )
+    if norm.startswith(status_prefixes):
+        return True
+
+    status_contains = (
+        "i'llrespondtoyourmessageshortly",
+        "i’llrespondtoyourmessageshortly",
+        "waitingformodelresponse",
+        "interruptingcurrenttask",
+        "queuedforthenextturn",
+        "currenttaskisstillrunning",
+    )
+    if any(marker in norm for marker in status_contains):
+        return True
+
+    if "?" in norm or "？" in norm:
+        return False
+
+    stripped = norm.strip("。．.!！、,…〜~ー-()（）[]【】{}『』\"'` ")
+    if stripped in {"👍", "+1", "ok", "okay"}:
+        return True
+
+    # Avoid false positives on short substantive handoffs such as
+    # "了解しました。ログを確認します。" while still blocking pure acks.
+    for ack in ("了解", "承知"):
+        if stripped.startswith(ack):
+            rest = stripped[len(ack):]
+            if re.fullmatch(
+                r"(しました|いたしました|です|ですー|です〜|です!|です！|ます|[。．.!！、,…〜~ー\-()（）\[\]【】{}『』\"'`🙏👍🙇])*",
+                rest,
+            ):
+                return True
+            return False
+
+    substantive_markers = (
+        "追加で",
+        "次に",
+        "ただし",
+        "しかし",
+        "一方",
+        "また、",
+        "さらに",
+        "必要",
+        "ログ",
+        "設定",
+        "実装",
+        "調査",
+        "確認します",
+        "送ります",
+        "対応します",
+        "進めます",
+        "提案",
+        "理由",
+        "手順",
+        "todo",
+        "http",
+    )
+    if any(marker in norm for marker in substantive_markers):
+        return False
+
+    for phrase in _bot_dialogue_stop_phrases():
+        if not phrase or phrase in {"了解", "承知"}:
+            continue
+        if norm == phrase or (phrase in norm and len(norm) <= max(24, len(phrase) + 14)):
+            return True
+    return False
+
+
 def _read_dm_role_auth_guild() -> Optional[int]:
     """Return the guild ID opted-in for DM role-based auth, or None.
 
@@ -675,6 +868,75 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Per-thread peer-bot dialogue guard.  This is intentionally local to
+        # each Discord bot process: it prevents one Hermes bot from continuing
+        # to feed closure/ack-only messages from another bot into the LLM.
+        self._bot_dialogue_counts: Dict[str, Tuple[float, int]] = {}
+
+    def _bot_dialogue_key(self, message: DiscordMessage) -> str:
+        channel = getattr(message, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            return str(channel_id)
+        parent_id = getattr(channel, "parent_id", None)
+        return str(parent_id or "unknown")
+
+    def _accept_peer_bot_message(self, message: DiscordMessage) -> bool:
+        """Gateway-level safety guard for bot-to-bot Discord handoffs."""
+        if not _env_bool("DISCORD_BOT_DIALOGUE_GUARD", True):
+            return True
+
+        content = getattr(message, "content", "") or ""
+        key = self._bot_dialogue_key(message)
+        now = time.time()
+        reset_seconds = _env_float("DISCORD_BOT_DIALOGUE_RESET_SECONDS", 900.0, min_value=0.0)
+        max_messages = _env_int("DISCORD_BOT_DIALOGUE_MAX_MESSAGES", 5, min_value=0)
+
+        last_ts, count = self._bot_dialogue_counts.get(key, (0.0, 0))
+        if now - last_ts > reset_seconds:
+            count = 0
+
+        has_non_text_payload = bool(
+            getattr(message, "attachments", None)
+            or getattr(message, "embeds", None)
+            or getattr(message, "stickers", None)
+        )
+        if _is_bot_dialogue_closure_only(content) and not has_non_text_payload:
+            logger.info(
+                "[Discord] Bot dialogue guard blocked closure-only bot message "
+                "channel=%s author=%s content=%r",
+                key,
+                getattr(getattr(message, "author", None), "id", "unknown"),
+                content[:120],
+            )
+            self._bot_dialogue_counts[key] = (now, count)
+            return False
+
+        allowed_bot_ids = _discord_allowed_bot_ids()
+        author_id = str(getattr(getattr(message, "author", None), "id", ""))
+        if allowed_bot_ids and author_id not in allowed_bot_ids:
+            logger.info(
+                "[Discord] Bot dialogue guard blocked unlisted peer-bot message "
+                "channel=%s author=%s",
+                key,
+                author_id or "unknown",
+            )
+            self._bot_dialogue_counts[key] = (now, count)
+            return False
+
+        if max_messages > 0 and count >= max_messages:
+            logger.info(
+                "[Discord] Bot dialogue guard blocked peer-bot message after limit "
+                "channel=%s count=%s max=%s",
+                key,
+                count,
+                max_messages,
+            )
+            self._bot_dialogue_counts[key] = (now, count)
+            return False
+
+        self._bot_dialogue_counts[key] = (now, count + 1)
+        return True
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -897,12 +1159,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 _role_authorized = False
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    allow_bots = _discord_allow_bots_mode()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
+                    if not adapter_self._accept_peer_bot_message(message):
+                        return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
@@ -1608,15 +1872,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception as e:
                     logger.debug("Could not fetch reply-to message: %s", e)
 
+            warnings: list[str] = []
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
                     chunk_reference = reference
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
+                    msg = await self._discord_api_call_with_retry(
+                        lambda: channel.send(
+                            content=chunk,
+                            reference=chunk_reference,
+                        ),
+                        op_name="send message chunk",
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1636,11 +1904,33 @@ class DiscordAdapter(BasePlatformAdapter):
                             reply_to,
                         )
                         reference = None
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
+                        msg = await self._discord_api_call_with_retry(
+                            lambda: channel.send(
+                                content=chunk,
+                                reference=None,
+                            ),
+                            op_name="send message chunk without reply reference",
                         )
                     else:
+                        # If earlier chunks are acknowledged, do not bubble a
+                        # failure back to BasePlatformAdapter._send_with_retry:
+                        # it would resend the whole response and duplicate the
+                        # delivered chunks. Return partial success with a
+                        # warning instead.
+                        if message_ids:
+                            warning = f"Failed to send Discord chunk {i + 1}/{len(chunks)} after retries: {e}"
+                            logger.error("[%s] %s", self.name, warning, exc_info=True)
+                            warnings.append(warning)
+                            raw_response: Dict[str, Any] = {
+                                "message_ids": message_ids,
+                                "warnings": warnings,
+                                "partial": True,
+                            }
+                            return SendResult(
+                                success=True,
+                                message_id=message_ids[0],
+                                raw_response=raw_response,
+                            )
                         raise
                 message_ids.append(str(msg.id))
 
@@ -1650,15 +1940,142 @@ class DiscordAdapter(BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 self._last_self_message_id[_target_id] = message_ids[-1]
 
+            raw_response: Dict[str, Any] = {"message_ids": message_ids}
+            if warnings:
+                raw_response["warnings"] = warnings
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
-                raw_response={"message_ids": message_ids}
+                raw_response=raw_response
             )
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=self._is_transient_discord_send_error(e),
+            )
+
+
+    @staticmethod
+    def _discord_error_status(exc: BaseException) -> Optional[int]:
+        """Extract a Discord/HTTP status code from common exception shapes."""
+        for value in (
+            getattr(exc, "status", None),
+            getattr(exc, "status_code", None),
+            getattr(getattr(exc, "response", None), "status", None),
+            getattr(getattr(exc, "response", None), "status_code", None),
+        ):
+            try:
+                if value is not None:
+                    return int(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _discord_retry_after(exc: BaseException) -> Optional[float]:
+        """Extract Retry-After seconds, clamped to a safe local maximum."""
+        candidates: list[Any] = [getattr(exc, "retry_after", None)]
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            try:
+                candidates.append(headers.get("Retry-After"))
+            except Exception:
+                pass
+        for value in candidates:
+            try:
+                if value is not None:
+                    return max(0.0, min(float(value), _DISCORD_SEND_MAX_DELAY_SECONDS))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @classmethod
+    def _is_transient_discord_send_error(cls, exc: BaseException) -> bool:
+        """Return True for send failures worth retrying locally.
+
+        Permission, validation, auth, and missing-channel errors fail fast.
+        Transport drops and server/rate-limit responses get a short
+        operation-local retry so the whole response is not replayed by the
+        generic platform retry wrapper after partial delivery.
+        """
+        status = cls._discord_error_status(exc)
+        if status in {429, 500, 502, 503, 504}:
+            return True
+        if status in {400, 401, 403, 404}:
+            return False
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionError)):
+            return True
+        if isinstance(exc, OSError):
+            text = str(exc).lower()
+            return any(pat in text for pat in ("broken pipe", "connection reset", "connection closed"))
+        text = str(exc).lower()
+        return any(
+            pat in text
+            for pat in (
+                "server disconnected",
+                "broken pipe",
+                "connection reset",
+                "connection closed",
+                "connection aborted",
+                "temporarily unavailable",
+            )
+        )
+
+    @classmethod
+    def _is_safe_create_thread_retry(cls, exc: BaseException) -> bool:
+        """Retry forum starter creation only when Discord clearly rejected it.
+
+        A Broken pipe / server-disconnected after create_thread() is ambiguous:
+        the thread may already exist, so replaying can duplicate a forum post.
+        A 429 with Retry-After is safe because Discord refused the mutation.
+        """
+        return cls._discord_error_status(exc) == 429
+
+    def _discord_send_delay(self, exc: BaseException, attempt_index: int) -> float:
+        retry_after = self._discord_retry_after(exc)
+        if retry_after is not None:
+            return retry_after
+        return min(
+            _DISCORD_SEND_BASE_DELAY_SECONDS * (2 ** attempt_index),
+            _DISCORD_SEND_MAX_DELAY_SECONDS,
+        )
+
+    async def _discord_api_call_with_retry(
+        self,
+        operation: Callable[[], Any],
+        *,
+        op_name: str,
+        retry_unknown_delivery: bool = True,
+    ) -> Any:
+        """Run one Discord API operation with bounded local retries."""
+        for attempt_index in range(_DISCORD_SEND_MAX_ATTEMPTS):
+            try:
+                return await operation()
+            except Exception as exc:
+                transient = self._is_transient_discord_send_error(exc)
+                safe_for_operation = retry_unknown_delivery or self._is_safe_create_thread_retry(exc)
+                if (
+                    not transient
+                    or not safe_for_operation
+                    or attempt_index >= _DISCORD_SEND_MAX_ATTEMPTS - 1
+                ):
+                    raise
+                delay = self._discord_send_delay(exc, attempt_index)
+                logger.warning(
+                    "[%s] Discord %s failed transiently (attempt %d/%d, retrying in %.1fs): %s",
+                    self.name,
+                    op_name,
+                    attempt_index + 1,
+                    _DISCORD_SEND_MAX_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -1680,13 +2097,30 @@ class DiscordAdapter(BasePlatformAdapter):
         starter_content = chunks[0] if chunks else thread_name
 
         try:
-            thread = await forum_channel.create_thread(
-                name=thread_name,
-                content=starter_content,
+            thread = await self._discord_api_call_with_retry(
+                lambda: forum_channel.create_thread(
+                    name=thread_name,
+                    content=starter_content,
+                ),
+                op_name="create forum thread",
+                retry_unknown_delivery=False,
             )
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
-            return SendResult(success=False, error=f"Forum thread creation failed: {e}")
+            unsafe_to_retry = (
+                self._is_transient_discord_send_error(e)
+                and not self._is_safe_create_thread_retry(e)
+            )
+            raw_response = {"unsafe_to_retry": True} if unsafe_to_retry else None
+            error = f"Forum thread creation failed: {e}"
+            if unsafe_to_retry:
+                error = f"{error}; not retried to avoid duplicate forum post"
+            return SendResult(
+                success=False,
+                error=error,
+                raw_response=raw_response,
+                retryable=self._is_safe_create_thread_retry(e),
+            )
 
         thread_channel = thread if hasattr(thread, "send") else getattr(thread, "thread", None)
         thread_id = str(getattr(thread_channel, "id", getattr(thread, "id", "")))
@@ -1699,7 +2133,10 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await self._discord_api_call_with_retry(
+                    lambda: thread_channel.send(content=chunk),
+                    op_name="send forum follow-up chunk",
+                )
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -3476,10 +3913,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_queue(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
 
-        @tree.command(name="background", description="Run a prompt in the background")
-        @discord.app_commands.describe(prompt="The prompt to run in the background")
+        @tree.command(name="background", description="プロンプトをバックグラウンドで実行します")
+        @discord.app_commands.describe(prompt="バックグラウンドで実行する内容")
         async def slash_background(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+            await self._run_simple_slash(interaction, f"/background {prompt}", "バックグラウンド作業を開始しました~")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in

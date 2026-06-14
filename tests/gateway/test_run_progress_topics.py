@@ -145,6 +145,47 @@ class FakeAgent:
         }
 
 
+class MemoryOnlyProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("tool.started", "terminal", "pwd", {"command": "pwd"})
+            time.sleep(0.1)
+            cb("tool.started", "memory", "add user preference", {"action": "add"})
+            time.sleep(0.1)
+            cb("tool.started", "read_file", "/tmp/noisy.txt", {"path": "/tmp/noisy.txt"})
+            time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class NoProgressAgent:
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.model = "fake-model"
+        self.provider = "fake-provider"
+        self.base_url = "https://example.invalid"
+        self.api_key = "fake-key"
+        self.api_mode = "chat_completions"
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "done",
+            "messages": [
+                {"role": "user", "content": message},
+                {"role": "assistant", "content": "done"},
+            ],
+            "api_calls": 1,
+        }
+
+
 class LongPreviewAgent:
     """Agent that emits a tool call with a very long preview string."""
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
@@ -329,6 +370,118 @@ async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypa
     assert result["final_response"] == "done"
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.edits)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_progress_tool_allowlist_can_show_memory_only(monkeypatch, tmp_path):
+    """display.tool_progress_tools can keep memory visible while hiding noisy tools."""
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "display": {
+                    "tool_progress": "off",
+                    "tool_progress_tools": ["Memory"],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = MemoryOnlyProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.memory_tool  # noqa: F401 - register memory emoji for this fake-agent test
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="discord-channel",
+        chat_type="group",
+        thread_id="thread-1",
+    )
+
+    result = await runner._run_agent(
+        message="remember this",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-memory-only",
+        session_key="agent:main:discord:group:discord-channel:thread-1",
+    )
+
+    assert result["final_response"] == "done"
+    progress_contents = [item["content"] for item in adapter.sent]
+    assert progress_contents == ['🧠 memory: "add user preference"']
+    assert "terminal" not in "\n".join(progress_contents)
+    assert "read_file" not in "\n".join(progress_contents)
+
+
+@pytest.mark.asyncio
+async def test_gateway_auto_title_does_not_surface_aux_failure_callback(monkeypatch, tmp_path):
+    """Gateway auto-title generation must not emit post-answer auxiliary warnings."""
+    import yaml
+
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"tool_progress": "off"}}),
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = NoProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    captured = []
+
+    def fake_maybe_auto_title(*args, **kwargs):
+        captured.append((args, kwargs))
+
+    import agent.title_generator as title_generator
+
+    monkeypatch.setattr(title_generator, "maybe_auto_title", fake_maybe_auto_title)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    runner._session_db = object()
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="discord-channel",
+        chat_type="group",
+        thread_id="thread-1",
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-title",
+        session_key="agent:main:discord:group:discord-channel:thread-1",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(captured) == 1
+    _, kwargs = captured[0]
+    assert kwargs["failure_callback"] is None
+    assert kwargs["main_runtime"]["model"] == "fake-model"
 
 
 @pytest.mark.asyncio

@@ -1014,6 +1014,7 @@ class TestAuxiliaryPoolAwareness:
 
         with (
             patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
         ):
@@ -1645,8 +1646,66 @@ class TestCallLlmPaymentFallback:
         assert fallback_client.chat.completions.create.called
 
 
+    def test_connection_error_evicts_cached_auto_client_before_fallback(self):
+        """Timeouts close Codex streams; evict the cached auto wrapper before fallback."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = TimeoutError("Codex auxiliary Responses stream exceeded 30.0s total timeout")
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._evict_cached_clients") as mock_evict, \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "fallback response"
+        mock_evict.assert_called_once_with("auto")
+        assert fallback_client.chat.completions.create.called
+
+    @pytest.mark.asyncio
+    async def test_async_connection_error_evicts_cached_auto_client_before_fallback(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=TimeoutError("Codex auxiliary Responses stream exceeded 30.0s total timeout")
+        )
+
+        fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="async fallback response"))
+        ]))
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._evict_cached_clients") as mock_evict, \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fallback-model", "openrouter")), \
+             patch("agent.auxiliary_client._to_async_client",
+                    return_value=(async_fallback_client, "fallback-model")):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "async fallback response"
+        mock_evict.assert_called_once_with("auto")
+        async_fallback_client.chat.completions.create.assert_awaited_once()
+
+
 class TestAuxiliaryFallbackLayering:
-    """Explicit-provider users get layered fallback: configured_chain → main agent → warn."""
+    """Explicit-provider users get layered fallback: configured_chain -> main agent -> warn."""
 
     def _make_payment_err(self):
         exc = Exception("Payment Required: insufficient credits")
@@ -1654,7 +1713,7 @@ class TestAuxiliaryFallbackLayering:
         return exc
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
-        """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""
+        """When a user has fallback_chain configured, it is tried BEFORE the main agent model."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
@@ -1681,7 +1740,6 @@ class TestAuxiliaryFallbackLayering:
             )
 
         assert chain_client.chat.completions.create.called
-        # Main agent fallback should NOT have been consulted — chain succeeded first
         main_called.assert_not_called()
 
     def test_explicit_provider_falls_back_to_main_when_chain_exhausted(self, monkeypatch):
@@ -3013,6 +3071,39 @@ class TestCodexAuxiliaryAdapterTimeout:
             )
 
         assert time.monotonic() - started < 0.14
+
+    def test_enforces_total_timeout_when_responses_create_blocks(self):
+        """Timeout must fire even before responses.create(stream=True) yields any events."""
+        close_calls = []
+
+        class BlockingCreateStream:
+            def close(self):
+                pass
+
+            def __iter__(self):
+                return iter(())
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                assert kwargs.get("stream") is True
+                time.sleep(0.3)
+                return BlockingCreateStream()
+
+        fake_client = SimpleNamespace(
+            responses=FakeResponses(),
+            close=lambda: close_calls.append(True),
+        )
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            adapter.create(
+                messages=[{"role": "user", "content": "summarize this"}],
+                timeout=0.05,
+            )
+
+        assert time.monotonic() - started < 0.14
+        assert close_calls
 
 
 class TestCodexAuxiliaryToolMessageConversion:

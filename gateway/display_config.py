@@ -32,6 +32,10 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    # Optional allowlist for progress bubbles.  When set, only these tool names
+    # are shown (e.g. ["memory"] to keep 🧠 memory visible while hiding noisy
+    # terminal/read_file/search progress).  None/empty means no per-tool filter.
+    "tool_progress_tools": None,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -216,6 +220,33 @@ def resolve_display_setting(
 # Helpers
 # ---------------------------------------------------------------------------
 
+_TOOL_PROGRESS_TOOL_SENTINELS = {"all", "*", "none", "off", "false"}
+
+
+def _normalise_tool_progress_tools(value: Any) -> list[str] | None:
+    """Return a lower-case tool allowlist, or None for no per-tool filter."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, str):
+        raw_items = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        return None
+
+    tools: list[str] = []
+    for item in raw_items:
+        lowered = item.lower()
+        if not lowered:
+            continue
+        if lowered in _TOOL_PROGRESS_TOOL_SENTINELS:
+            # Explicit all/off sentinels mean "no allowlist" even when they
+            # appear in YAML list form (e.g. tool_progress_tools: [all]).
+            return None
+        tools.append(lowered)
+    return tools or None
+
+
 def _normalise(setting: str, value: Any) -> Any:
     """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
     if setting == "tool_progress":
@@ -223,7 +254,14 @@ def _normalise(setting: str, value: Any) -> Any:
             return "off"
         if value is True:
             return "all"
-        return str(value).lower()
+        lowered = str(value).strip().lower()
+        if lowered in {"off", "none", "false", "no", "0"}:
+            return "off"
+        if lowered in {"on", "true", "yes", "1"}:
+            return "all"
+        return lowered
+    if setting == "tool_progress_tools":
+        return _normalise_tool_progress_tools(value)
     if setting in {
         "show_reasoning",
         "streaming",

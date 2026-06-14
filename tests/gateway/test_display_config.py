@@ -149,6 +149,14 @@ class TestYAMLNormalisation:
         config = {"display": {"tool_progress": True}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
 
+    def test_tool_progress_string_sentinels_normalised(self):
+        """String sentinels like 'none' and 'false' really disable gateway progress."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in ("off", "none", "false", "no", "0"):
+            config = {"display": {"tool_progress": value}}
+            assert resolve_display_setting(config, "discord", "tool_progress") == "off"
+
     def test_show_reasoning_string_true(self):
         """String 'true' is normalised to bool True."""
         from gateway.display_config import resolve_display_setting
@@ -169,6 +177,41 @@ class TestYAMLNormalisation:
 
         config = {"display": {"platforms": {"slack": {"tool_progress": False}}}}
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
+
+    def test_tool_progress_tools_string_normalised_to_list(self):
+        """Comma-separated tool allowlist strings become clean lower-case lists."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress_tools": "Memory, patch,"}}
+        assert resolve_display_setting(config, "discord", "tool_progress_tools") == [
+            "memory",
+            "patch",
+        ]
+
+    def test_tool_progress_tools_platform_override_wins(self):
+        """Per-platform allowlists can override the global allowlist."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "tool_progress_tools": ["memory"],
+                "platforms": {"discord": {"tool_progress_tools": ["patch"]}},
+            }
+        }
+        assert resolve_display_setting(config, "discord", "tool_progress_tools") == [
+            "patch",
+        ]
+        assert resolve_display_setting(config, "telegram", "tool_progress_tools") == [
+            "memory",
+        ]
+
+    def test_tool_progress_tools_off_normalised_to_none(self):
+        """Empty/off/all values mean no per-tool filter."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in (False, "", "off", "all", "*", ["all"], ["memory", "*"]):
+            config = {"display": {"tool_progress_tools": value}}
+            assert resolve_display_setting(config, "discord", "tool_progress_tools") is None
 
 
 # ---------------------------------------------------------------------------

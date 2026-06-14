@@ -11,6 +11,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     safe_url_for_log,
+    SendResult,
     utf16_len,
     _log_safe_path,
     _prefix_within_utf16_limit,
@@ -1110,6 +1111,47 @@ class TestShouldSendMediaAsAudio:
         assert should_send_media_as_audio(Platform.TELEGRAM, ".mp3") is True
         assert should_send_media_as_audio(Platform.TELEGRAM, ".flac") is False
         assert should_send_media_as_audio(Platform.DISCORD, ".flac") is True
+
+
+# ---------------------------------------------------------------------------
+# _send_with_retry unsafe retry guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_respects_unsafe_to_retry_result():
+    from gateway.config import Platform, PlatformConfig
+
+    class StubAdapter(BasePlatformAdapter):
+        def __init__(self):
+            super().__init__(config=PlatformConfig(enabled=True, token="test"), platform=Platform.DISCORD)
+            self.calls = 0
+
+        async def connect(self):
+            return True
+
+        async def disconnect(self):
+            pass
+
+        async def send(self, *a, **kw):
+            self.calls += 1
+            return SendResult(
+                success=False,
+                error="Forum thread creation failed after connection drop",
+                raw_response={"unsafe_to_retry": True},
+                retryable=True,
+            )
+
+        async def get_chat_info(self, *a):
+            return {}
+
+    adapter = StubAdapter()
+
+    result = await adapter._send_with_retry("123", "hello", max_retries=3, base_delay=0)
+
+    assert result.success is False
+    assert result.raw_response["unsafe_to_retry"] is True
+    assert adapter.calls == 1
 
 
 # ---------------------------------------------------------------------------

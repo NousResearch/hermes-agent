@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import time
+from collections import deque
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -680,7 +681,7 @@ class TestRateLimiting:
             assert resp.status == 202
 
             # Backdate all rate-limit timestamps to > 60 seconds ago
-            adapter._rate_counts["limited"] = [time.time() - 120]
+            adapter._rate_counts["limited"] = deque([time.time() - 120])
 
             resp = await cli.post(
                 "/webhooks/limited",
@@ -688,6 +689,33 @@ class TestRateLimiting:
                 headers={"X-GitHub-Delivery": "d-b"},
             )
             assert resp.status == 202  # allowed again
+
+    def test_rate_limit_prunes_incrementally_from_left(self):
+        """Expired rate-limit entries are pruned without rebuilding the window."""
+        adapter = _make_adapter(rate_limit=2)
+        adapter._rate_counts["limited"] = deque([100.0, 220.0])
+
+        assert adapter._record_rate_limit_hit("limited", 221.0) is True
+
+        window = adapter._rate_counts["limited"]
+        assert list(window) == [220.0, 221.0]
+
+    def test_seen_delivery_ttl_is_checked_per_delivery_without_full_prune(self):
+        """Expired delivery IDs can reprocess even when stale siblings remain."""
+        adapter = _make_adapter(rate_limit=1)
+        adapter._idempotency_ttl = 60
+        adapter._seen_deliveries = {
+            "expired-target": 100.0,
+            "expired-sibling": 101.0,
+            "fresh-sibling": 155.0,
+        }
+
+        now = 200.0
+        assert adapter._record_delivery_id("expired-target", now) is True
+
+        assert adapter._seen_deliveries["expired-target"] == now
+        assert "expired-sibling" in adapter._seen_deliveries
+        assert "fresh-sibling" in adapter._seen_deliveries
 
 
 # ===================================================================
@@ -837,6 +865,31 @@ class TestDeliveryCleanup:
         assert "webhook:test:old" not in adapter._delivery_info_created
         assert "webhook:test:new" in adapter._delivery_info
         assert "webhook:test:new" in adapter._delivery_info_created
+
+    @pytest.mark.asyncio
+    async def test_delivery_info_prune_uses_ordered_incremental_queue(self):
+        """Delivery-info TTL pruning stops at the first fresh queued entry."""
+        adapter = _make_adapter()
+        adapter._idempotency_ttl = 60
+        now = 1000.0
+        for key, created_at in (
+            ("webhook:test:old", now - 120),
+            ("webhook:test:new", now - 5),
+            ("webhook:test:newer", now),
+        ):
+            adapter._delivery_info[key] = {"deliver": "log"}
+            adapter._delivery_info_created[key] = created_at
+            adapter._delivery_info_order.append((created_at, key))
+
+        adapter._prune_delivery_info(now)
+
+        assert "webhook:test:old" not in adapter._delivery_info
+        assert "webhook:test:new" in adapter._delivery_info
+        assert "webhook:test:newer" in adapter._delivery_info
+        assert list(adapter._delivery_info_order) == [
+            (now - 5, "webhook:test:new"),
+            (now, "webhook:test:newer"),
+        ]
 
 
 # ===================================================================

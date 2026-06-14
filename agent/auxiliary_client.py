@@ -4640,10 +4640,12 @@ def _resolve_task_provider_model(
     if cfg_provider:
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
-    if provider:
+    if provider and provider.strip().lower() != "auto":
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
+    if provider:
+        return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
         # Config.yaml is the primary source for per-task overrides.

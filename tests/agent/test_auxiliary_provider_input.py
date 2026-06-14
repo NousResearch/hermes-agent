@@ -36,6 +36,22 @@ def test_openai_alias_with_explicit_base_url_still_routes_as_custom():
     assert api_mode is None
 
 
+def test_auto_provider_with_explicit_base_url_routes_as_custom():
+    """Explicit auto provider must not override an explicit endpoint."""
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
+        provider="auto",
+        model="gpt-4o-mini",
+        base_url="https://proxy.example.com/v1",
+        api_key="sk-test",
+    )
+
+    assert provider == "custom"
+    assert model == "gpt-4o-mini"
+    assert base_url == "https://proxy.example.com/v1"
+    assert api_key == "sk-test"
+    assert api_mode is None
+
+
 def test_resolved_copilot_client_uses_copilot_credentials_and_headers():
     """The preserved provider identity reaches Copilot auth, not custom auth."""
     from agent.auxiliary_client import resolve_provider_client

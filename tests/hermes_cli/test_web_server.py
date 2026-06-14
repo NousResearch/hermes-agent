@@ -8,11 +8,13 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     reload_env,
     redact_key,
     OPTIONAL_ENV_VARS,
+    DEFAULT_CONFIG,
 )
 
 
@@ -2708,6 +2710,10 @@ class TestNewEndpoints:
         import hermes_cli.profiles as profiles_mod
 
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+        (get_hermes_home() / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n",
+            encoding="utf-8",
+        )
         default_skill = get_hermes_home() / "skills" / "custom" / "new-skill"
         default_skill.mkdir(parents=True)
         (default_skill / "SKILL.md").write_text("---\nname: new-skill\n---\n", encoding="utf-8")
@@ -2718,8 +2724,11 @@ class TestNewEndpoints:
         )
 
         assert resp.status_code == 200
-        cloned_skill = get_hermes_home() / "profiles" / "cloned" / "skills" / "custom" / "new-skill" / "SKILL.md"
+        cloned_root = get_hermes_home() / "profiles" / "cloned"
+        cloned_skill = cloned_root / "skills" / "custom" / "new-skill" / "SKILL.md"
         assert cloned_skill.exists()
+        cloned_config = yaml.safe_load((cloned_root / "config.yaml").read_text(encoding="utf-8"))
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
         assert profiles["cloned"]["skill_count"] == 1
 

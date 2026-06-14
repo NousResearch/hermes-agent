@@ -164,6 +164,8 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
             payload = json.loads(body)
         except json.JSONDecodeError:
             return 400, {"error": "Cannot parse body"}
+        if not isinstance(payload, dict):
+            return 400, {"error": "Expected JSON object"}
 
         delivery_id = headers.get("Linear-Delivery") or headers.get("linear-delivery") or ""
         if not delivery_id:
@@ -334,6 +336,8 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
 
     async def _process_agent_session_event(self, payload: Dict[str, Any], delivery_id: str) -> None:
         agent_session = payload.get("agentSession") or payload.get("agent_session") or {}
+        if not isinstance(agent_session, dict):
+            agent_session = {}
         agent_session_id = str(agent_session.get("id") or payload.get("agentSessionId") or "")
         if not agent_session_id:
             logger.warning("[linear] AgentSession event missing session id")
@@ -341,6 +345,8 @@ class LinearAgentSessionAdapter(BasePlatformAdapter):
 
         action = payload.get("action") or payload.get("type") or ""
         activity = payload.get("agentActivity") or payload.get("agent_activity") or {}
+        if not isinstance(activity, dict):
+            activity = {}
         signal = (activity.get("signal") or payload.get("signal") or "").lower()
 
         if signal == "stop":

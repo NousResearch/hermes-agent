@@ -556,6 +556,42 @@ def test_invalid_json_rejected_without_agent_run():
     adapter.handle_message.assert_not_called()
 
 
+def test_non_object_json_rejected_without_agent_run():
+    adapter = _adapter()
+    adapter.handle_message = AsyncMock()
+    body = b"[]"
+
+    status, data = adapter._handle_agent_session_body(
+        body=body,
+        headers={"Linear-Signature": _signature(body, "linear-secret")},
+        content_length=len(body),
+    )
+
+    assert status == 400
+    assert data["error"] == "Expected JSON object"
+    adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_malformed_nested_session_or_activity_does_not_raise(caplog):
+    adapter = _adapter()
+    adapter.handle_message = AsyncMock()
+    payload = {
+        "action": "prompted",
+        "agentSession": "not-an-object",
+        "agentSessionId": "as_123",
+        "agentActivity": "not-an-object",
+    }
+
+    with caplog.at_level("WARNING"):
+        await adapter._process_agent_session_event(payload, "delivery-malformed")
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_id == "agentSession:as_123"
+    assert event.text == "Linear AgentSession prompt."
+
+
 def test_payload_too_large_rejected_before_signature():
     adapter = _adapter()
     adapter.handle_message = AsyncMock()

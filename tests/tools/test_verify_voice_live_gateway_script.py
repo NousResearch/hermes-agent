@@ -181,6 +181,82 @@ def test_validate_calling_sidecar_env_requires_url_and_stream_command():
         )
 
 
+def test_validate_sidecar_service_state_accepts_expected_unit(tmp_path: Path):
+    script = _load_script_module()
+    voice_repo = tmp_path / "voice"
+    sidecar_path = voice_repo / "examples" / "webrtc-sidecar" / "sidecar.py"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text("", encoding="utf-8")
+    voice_bin = tmp_path / "bin" / "voice"
+    voice_bin.parent.mkdir()
+    voice_bin.write_text("", encoding="utf-8")
+
+    result = script.validate_sidecar_service_state(
+        {
+            "ActiveState": "active",
+            "MainPID": "42",
+            "Environment": f"VOICE_BIN={voice_bin}",
+            "WorkingDirectory": str(voice_repo),
+            "ExecStart": f"{{ argv[]={sys.executable} {sidecar_path} --port 8787 }}",
+        },
+        service="voice-webrtc-sidecar.service",
+        voice_bin=str(voice_bin),
+        voice_repo=voice_repo,
+    )
+
+    assert result["service"] == "voice-webrtc-sidecar.service"
+    assert result["pid"] == 42
+    assert result["voice_bin"] == str(voice_bin)
+    assert result["working_directory"] == str(voice_repo)
+    assert result["sidecar_path"] == str(sidecar_path)
+
+
+def test_validate_sidecar_service_state_rejects_stale_voice_bin(tmp_path: Path):
+    script = _load_script_module()
+    expected_voice = tmp_path / "expected" / "voice"
+    stale_voice = tmp_path / "stale" / "voice"
+    expected_voice.parent.mkdir()
+    stale_voice.parent.mkdir()
+    expected_voice.write_text("", encoding="utf-8")
+    stale_voice.write_text("", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="VOICE_BIN"):
+        script.validate_sidecar_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "42",
+                "Environment": f"VOICE_BIN={stale_voice}",
+            },
+            service="voice-webrtc-sidecar.service",
+            voice_bin=str(expected_voice),
+            voice_repo=None,
+        )
+
+
+def test_validate_sidecar_service_state_rejects_wrong_voice_repo(tmp_path: Path):
+    script = _load_script_module()
+    voice_repo = tmp_path / "voice"
+    stale_repo = tmp_path / "old-voice"
+    sidecar_path = voice_repo / "examples" / "webrtc-sidecar" / "sidecar.py"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text("", encoding="utf-8")
+    stale_repo.mkdir()
+
+    with pytest.raises(SystemExit, match="WorkingDirectory"):
+        script.validate_sidecar_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "42",
+                "Environment": "",
+                "WorkingDirectory": str(stale_repo),
+                "ExecStart": f"{{ argv[]={sys.executable} {sidecar_path} }}",
+            },
+            service="voice-webrtc-sidecar.service",
+            voice_bin=None,
+            voice_repo=voice_repo,
+        )
+
+
 def test_validate_calling_sidecar_contract_requires_voice_pcm_shape():
     script = _load_script_module()
     contract = {
@@ -613,3 +689,80 @@ def test_main_validates_calling_sidecar_when_requested(
     output = json.loads(capsys.readouterr().out)
     assert output["checks"]["calling_sidecar"]["env"]["url"] == sidecar_url
     assert output["checks"]["calling_sidecar"]["sidecar"]["health"]["ok"] is True
+
+
+def test_main_validates_sidecar_service_when_requested(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    script = _load_script_module()
+    live_root = tmp_path / "hermes"
+    voice_repo = tmp_path / "voice"
+    sidecar_path = voice_repo / "examples" / "webrtc-sidecar" / "sidecar.py"
+    voice_bin = tmp_path / "bin" / "voice"
+    _write_voice_native_root(live_root)
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text("", encoding="utf-8")
+    voice_bin.parent.mkdir()
+    voice_bin.write_text("", encoding="utf-8")
+    bridge_bin = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
+
+    monkeypatch.setattr(script, "resolve_executable", lambda value, *, label: value)
+
+    def fake_service_state(service, *, timeout):
+        if service == "voice-webrtc-sidecar.service":
+            return {
+                "ActiveState": "active",
+                "MainPID": "456",
+                "Environment": f"VOICE_BIN={voice_bin}",
+                "WorkingDirectory": str(voice_repo),
+                "ExecStart": f"{{ argv[]=/python {sidecar_path} --port 8787 }}",
+            }
+        return {
+            "ActiveState": "active",
+            "MainPID": "123",
+            "Environment": f"PYTHONPATH={live_root} PATH=/usr/bin:{bridge_bin}",
+            "DropInPaths": "/drop-in.conf",
+        }
+
+    monkeypatch.setattr(script, "get_service_state", fake_service_state)
+    monkeypatch.setattr(
+        script,
+        "read_process_env",
+        lambda _pid: {"PYTHONPATH": str(live_root), "PATH": f"/usr/bin:{bridge_bin}"},
+    )
+    monkeypatch.setattr(
+        script,
+        "import_smoke",
+        lambda **_kwargs: {"tools.tts_tool": str(live_root / "tools" / "tts_tool.py")},
+    )
+    monkeypatch.setattr(
+        script,
+        "get_bridge_health",
+        lambda *_args, **_kwargs: {"status": "connected"},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_live_gateway.py",
+            "--live-hermes-root",
+            str(live_root),
+            "--python-bin",
+            "/python",
+            "--voice-bin",
+            str(voice_bin),
+            "--voice-repo",
+            str(voice_repo),
+            "--sidecar-service",
+            "voice-webrtc-sidecar.service",
+        ],
+    )
+
+    assert script.main() == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["checks"]["sidecar_service"]["pid"] == 456
+    assert output["checks"]["sidecar_service"]["voice_bin"] == str(voice_bin)
+    assert output["checks"]["sidecar_service"]["working_directory"] == str(voice_repo)

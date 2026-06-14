@@ -140,6 +140,10 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert "http://127.0.0.1:8787" in live_gateway
     assert "--voice-bin" in live_gateway
     assert "--run-tts-smoke" in live_gateway
+    assert "--sidecar-service" in live_gateway
+    assert "voice-webrtc-sidecar.service" in live_gateway
+    assert "--voice-repo" in live_gateway
+    assert str(voice_repo.resolve()) in live_gateway
     assert "--skip-bridge-health" not in live_gateway
     assert plan["verify_commands"]["live_gateway_cloud_only"][-1] == (
         "--skip-bridge-health"

@@ -11,6 +11,8 @@ that Hermes returns a WhatsApp-ready Ogg/Opus voice-note file.
 
 Pass ``--voice-bin`` with ``--calling-sidecar-url`` to compare the running
 sidecar's machine-readable contract with the installed ``voice stream-contract``.
+Pass ``--sidecar-service`` to also verify the systemd user unit that runs the
+local WebRTC sidecar.
 """
 
 from __future__ import annotations
@@ -104,6 +106,10 @@ def get_service_state(service: str, *, timeout: float) -> dict[str, str]:
             "Environment",
             "-p",
             "DropInPaths",
+            "-p",
+            "ExecStart",
+            "-p",
+            "WorkingDirectory",
             "--no-pager",
         ],
         timeout=timeout,
@@ -152,16 +158,20 @@ def path_is_under(path: Path, root: Path) -> bool:
     return True
 
 
-def validate_service_state(state: dict[str, str]) -> int:
+def validate_service_state(state: dict[str, str], *, label: str = "gateway service") -> int:
     if state.get("ActiveState") != "active":
-        raise SystemExit(f"gateway service is not active: {state}")
+        raise SystemExit(f"{label} is not active: {state}")
     try:
         pid = int(state.get("MainPID") or "0")
     except ValueError as exc:
-        raise SystemExit(f"gateway service MainPID is invalid: {state.get('MainPID')!r}") from exc
+        raise SystemExit(f"{label} MainPID is invalid: {state.get('MainPID')!r}") from exc
     if pid <= 0:
-        raise SystemExit(f"gateway service has no running MainPID: {state}")
+        raise SystemExit(f"{label} has no running MainPID: {state}")
     return pid
+
+
+def normalized_path_text(value: str) -> str:
+    return str(Path(value).expanduser().resolve())
 
 
 def validate_env_points_at_root(
@@ -220,6 +230,55 @@ def validate_calling_sidecar_env(env: dict[str, str], expected_url: str) -> dict
             "",
         ),
     }
+
+
+def validate_sidecar_service_state(
+    state: dict[str, str],
+    *,
+    service: str,
+    voice_bin: str | None,
+    voice_repo: Path | None,
+) -> dict[str, Any]:
+    pid = validate_service_state(state, label=service)
+    env = parse_systemd_environment(state.get("Environment", ""))
+    result: dict[str, Any] = {
+        "service": service,
+        "pid": pid,
+    }
+
+    if voice_bin is not None:
+        configured_voice_bin = str(env.get("VOICE_BIN") or "")
+        if not configured_voice_bin:
+            raise SystemExit(f"{service} does not set VOICE_BIN")
+        if normalized_path_text(configured_voice_bin) != normalized_path_text(voice_bin):
+            raise SystemExit(
+                f"{service} VOICE_BIN does not match {voice_bin!r}: "
+                f"{configured_voice_bin!r}"
+            )
+        result["voice_bin"] = configured_voice_bin
+
+    if voice_repo is not None:
+        expected_root = voice_repo.expanduser().resolve()
+        working_directory = str(state.get("WorkingDirectory") or "")
+        if not working_directory:
+            raise SystemExit(f"{service} does not set WorkingDirectory")
+        if Path(working_directory).expanduser().resolve() != expected_root:
+            raise SystemExit(
+                f"{service} WorkingDirectory does not match {expected_root}: "
+                f"{working_directory!r}"
+            )
+
+        sidecar_path = expected_root / "examples" / "webrtc-sidecar" / "sidecar.py"
+        exec_start = str(state.get("ExecStart") or "")
+        if str(sidecar_path) not in exec_start:
+            raise SystemExit(
+                f"{service} ExecStart does not reference expected sidecar "
+                f"{sidecar_path}: {exec_start!r}"
+            )
+        result["working_directory"] = working_directory
+        result["sidecar_path"] = str(sidecar_path)
+
+    return result
 
 
 def import_smoke(
@@ -491,7 +550,16 @@ print(json.dumps(json.loads(tts_tool.text_to_speech_tool(%r)), sort_keys=True))
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--service", default=DEFAULT_SERVICE)
+    parser.add_argument(
+        "--sidecar-service",
+        help=(
+            "Optional systemd user service name for the WebRTC sidecar. When "
+            "provided, verify it is active and points at --voice-bin / "
+            "--voice-repo."
+        ),
+    )
     parser.add_argument("--live-hermes-root", type=Path, required=True)
+    parser.add_argument("--voice-repo", type=Path)
     parser.add_argument("--hermes-home", type=Path, default=Path("~/.hermes"))
     parser.add_argument("--python-bin", default="~/.hermes/hermes-agent/venv/bin/python")
     parser.add_argument("--bridge-url", default=DEFAULT_BRIDGE_URL)
@@ -538,6 +606,7 @@ def main() -> int:
         if args.voice_bin
         else None
     )
+    voice_repo = args.voice_repo.expanduser().resolve() if args.voice_repo else None
     ffprobe_bin = (
         resolve_executable(args.ffprobe_bin, label="ffprobe")
         if args.run_tts_smoke
@@ -602,8 +671,16 @@ def main() -> int:
                     timeout=args.timeout,
                 ),
             )
-    elif voice_bin:
-        raise SystemExit("--voice-bin requires --calling-sidecar-url")
+    elif voice_bin and not args.sidecar_service:
+        raise SystemExit("--voice-bin requires --calling-sidecar-url or --sidecar-service")
+
+    if args.sidecar_service:
+        checks["sidecar_service"] = validate_sidecar_service_state(
+            get_service_state(args.sidecar_service, timeout=args.timeout),
+            service=args.sidecar_service,
+            voice_bin=voice_bin,
+            voice_repo=voice_repo,
+        )
 
     checks["imports"] = import_smoke(
         python_bin=python_bin,

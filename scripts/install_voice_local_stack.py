@@ -226,6 +226,7 @@ def build_verify_commands(
     voice_bin: str,
     webrtc_python_bin: str,
     sidecar_url: str,
+    sidecar_service: str | None,
 ) -> dict[str, list[str]]:
     live_gateway_command = [
         verifier_python_bin,
@@ -242,6 +243,15 @@ def build_verify_commands(
         voice_bin,
         "--run-tts-smoke",
     ]
+    if sidecar_service:
+        live_gateway_command.extend(
+            [
+                "--sidecar-service",
+                sidecar_service,
+                "--voice-repo",
+                str(voice_repo),
+            ]
+        )
     return {
         "local_stack": [
             verifier_python_bin,
@@ -455,6 +465,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             voice_bin=voice_bin,
             webrtc_python_bin=webrtc_python_bin,
             sidecar_url=args.sidecar_url.rstrip("/"),
+            sidecar_service=None if args.skip_sidecar_service else args.sidecar_service,
         ),
     }
 

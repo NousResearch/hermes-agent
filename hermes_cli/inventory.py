@@ -178,6 +178,14 @@ def build_models_payload(
                 user_models.update(m.lower() for m in (row.get("models") or []))
         if user_models:
             for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_aggregator() reports True for every custom:*
+                # slug.  Without this guard the dedup strips a user-defined
+                # custom provider's entire model list (all of it lives in
+                # user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
                 slug = row.get("slug", "")
                 if not _is_aggregator(slug):
                     continue

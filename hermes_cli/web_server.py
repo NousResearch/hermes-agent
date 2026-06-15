@@ -234,6 +234,11 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
+# Memory-provider OAuth connect routes live in the memory layer, not here.
+from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
+
+app.include_router(_memory_oauth_router)
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via
@@ -2512,47 +2517,6 @@ async def restart_gateway(profile: Optional[str] = None):
         "pid": proc.pid,
         "name": "gateway-restart",
     }
-
-
-def _memory_oauth_flow(provider: str):
-    """Resolve a memory provider's OAuth flow module by convention, or 404.
-
-    Keeps the generic layer provider-agnostic: ``plugins.memory.<provider>``
-    owns its flow; a provider without one simply has no module.
-    """
-    import importlib
-
-    if not provider.isidentifier():
-        raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
-    try:
-        return importlib.import_module(f"plugins.memory.{provider}.oauth_flow")
-    except ImportError:
-        raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
-
-
-@app.post("/api/memory/providers/{provider}/oauth/start")
-async def start_memory_oauth(provider: str, profile: Optional[str] = None):
-    """Begin a memory provider's zero-CLI OAuth flow — opens the browser and
-    captures the grant via the loopback listener. Returns immediately; poll status."""
-    flow = _memory_oauth_flow(provider)
-    try:
-        # The flow resolves its config path eagerly inside this scope; the
-        # worker thread it spawns outlives the request and the override.
-        with _profile_scope(profile):
-            return flow.start_loopback_flow_background()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}")
-
-
-@app.get("/api/memory/providers/{provider}/oauth/status")
-async def memory_oauth_status(provider: str, profile: Optional[str] = None):
-    """Poll a memory provider's OAuth flow: idle | pending | connected | error."""
-    flow = _memory_oauth_flow(provider)
-    try:
-        with _profile_scope(profile):
-            return flow.get_flow_status()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read {provider} OAuth status: {exc}")
 
 
 @app.post("/api/hermes/update")

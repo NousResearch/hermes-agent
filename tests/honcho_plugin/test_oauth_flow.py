@@ -301,16 +301,16 @@ def test_get_flow_status_reports_stored_connection(tmp_path, monkeypatch, reset_
     assert s["connected"] is True and s["auth"] == "oauth"
 
 
-def test_web_server_dispatches_by_provider_convention():
+def test_memory_oauth_router_dispatches_by_provider_convention():
     # The generic seam behind the two routes: provider → plugins.memory.<p>.oauth_flow.
     from fastapi import HTTPException
 
-    from hermes_cli.web_server import _memory_oauth_flow
+    from hermes_cli.memory_oauth import _resolve_flow
 
-    mod = _memory_oauth_flow("honcho")
+    mod = _resolve_flow("honcho")
     assert hasattr(mod, "start_loopback_flow_background") and hasattr(mod, "get_flow_status")
 
     for bad in ("builtin", "no-such-provider", "../etc"):
         with pytest.raises(HTTPException) as exc:
-            _memory_oauth_flow(bad)
+            _resolve_flow(bad)
         assert exc.value.status_code == 404

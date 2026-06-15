@@ -34,7 +34,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, ClassVar, Iterable, Iterator, List, Optional
+from typing import Any, Callable, ClassVar, Iterator, List, Optional
 
 from agent.file_safety import get_read_block_error, is_write_denied
 from gateway.session_context import get_session_env
@@ -1493,54 +1493,3 @@ class _ACPChatCompletions:
 class _ACPChatNamespace:
     def __init__(self, client: "ClaudeCodeACPClient"):
         self.completions = _ACPChatCompletions(client)
-
-
-def trace_to_messages_snapshot(
-    trace: Iterable[Any],
-    *,
-    fallback_name: str = "claude_code_tool",
-) -> list[dict[str, Any]]:
-    """Reconstruct a hermes-shape ``messages_snapshot`` from a tool trace.
-
-    ``trace`` may be an iterable of :class:`ToolCallRecord` instances OR of
-    dict records (as produced by :attr:`ToolCallRecord.to_dict`) — both are
-    accepted so auto-skill-creation can consume the serialized form.
-    Each record becomes an ``assistant`` message containing a ``tool_use``
-    block, followed by a ``tool`` message with the ``tool_result`` block.
-    """
-    messages: list[dict[str, Any]] = []
-    for record in trace:
-        if hasattr(record, "to_dict"):
-            data = record.to_dict()
-        elif isinstance(record, dict):
-            data = record
-        else:
-            continue
-        call_id = str(data.get("id") or data.get("tool_call_id") or "").strip()
-        if not call_id:
-            call_id = f"tool-{len(messages) + 1}"
-        name = str(data.get("name") or fallback_name).strip() or fallback_name
-        raw_input = data.get("raw_input")
-        raw_output = data.get("raw_output")
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": call_id,
-                        "name": name,
-                        "input": raw_input if raw_input is not None else {},
-                    }
-                ],
-            }
-        )
-        messages.append(
-            {
-                "role": "tool",
-                "tool_use_id": call_id,
-                "content": _coerce_str(raw_output) if raw_output is not None else "",
-            }
-        )
-    return messages

@@ -1006,6 +1006,13 @@ auxiliary:
   # Context compression timeout (separate from compression.* config)
   compression:
     timeout: 120               # seconds — compression summarizes long conversations, needs more time
+    # fallback_chain:           # Optional — providers to try on rate-limit / connectivity failure
+    #   - provider: nous
+    #     model: deepseek/deepseek-chat
+    #   - provider: openrouter
+    #     model: google/gemini-2.5-flash
+    #     base_url: ""
+    #     api_key: ""
 
   # Auto-generated session titles. Empty language follows the conversation;
   # set e.g. "English" or "Japanese" to pin titles to one language.
@@ -1053,6 +1060,34 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::info
 Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
+
+### Per-task fallback chain for auxiliary tasks
+
+Each auxiliary task can optionally define a `fallback_chain` — a list of provider/model entries that Hermes tries when the primary auxiliary provider fails due to rate limits, connectivity issues, or payment restrictions:
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: openai/gpt-4o-mini
+    fallback_chain:
+      - provider: nous
+        model: deepseek/deepseek-chat
+      - provider: openrouter
+        model: google/gemini-2.5-flash
+```
+
+When the primary auxiliary provider (`openrouter` / `openai/gpt-4o-mini`) returns a rate-limit, connection timeout, or payment-required error, Hermes walks the `fallback_chain` in order. It skips entries whose provider matches the already-failed provider, and tries each remaining entry until one succeeds or the chain is exhausted. If all fallbacks fail, Hermes falls back to the main agent model as a final safety net.
+
+Each entry supports the same three knobs as any auxiliary task config:
+
+| Key | Description |
+|-----|-------------|
+| `provider` | Provider name (`nous`, `openrouter`, `anthropic`, `gemini`, `main`, etc.) |
+| `model` | Model name for that provider |
+| `base_url` | (Optional) Custom OpenAI-compatible endpoint |
+
+`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `web_extract`, `approval`, `skills_hub`, `mcp`, etc.
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 

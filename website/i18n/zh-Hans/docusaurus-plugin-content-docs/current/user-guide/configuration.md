@@ -820,6 +820,13 @@ auxiliary:
   # 上下文压缩超时（与 compression.* 配置分开）
   compression:
     timeout: 120               # 秒 —— 压缩摘要长对话，需要更多时间
+    # fallback_chain:           # 可选 —— 发生速率限制/连接故障时尝试的 provider
+    #   - provider: nous
+    #     model: deepseek/deepseek-chat
+    #   - provider: openrouter
+    #     model: google/gemini-2.5-flash
+    #     base_url: ""
+    #     api_key: ""
 
   # 技能中心 —— 技能匹配和搜索
   skills_hub:
@@ -855,8 +862,36 @@ auxiliary:
 :::
 
 :::info
-上下文压缩有自己的 `compression:` 块用于阈值，以及 `auxiliary.compression:` 块用于模型/provider 设置 —— 参阅上方的[上下文压缩](#context-compression)。回退模型使用 `fallback_model:` 块 —— 参阅[回退模型](/integrations/providers#fallback-model)。三者都遵循相同的 provider/model/base_url 模式。
+上下文压缩有自己的 `compression:` 块用于阈值，以及 `auxiliary.compression:` 块用于模型/provider 设置 —— 参阅上方的[上下文压缩](#context-compression)。主备用链使用顶层的 `fallback_providers:` 列表 —— 参阅[备用提供商](/integrations/providers#fallback-providers)。三者都遵循相同的 provider/model/base_url 模式。
 :::
+
+### 辅助任务的每任务回退链
+
+每个辅助任务都可以选择性地定义一个 `fallback_chain` —— 一个 provider/model 条目列表，当主要辅助 provider 因速率限制、网络连接问题或付费限制而失败时，Hermes 会尝试使用该列表：
+
+```yaml
+auxiliary:
+  compression:
+    provider: openrouter
+    model: openai/gpt-4o-mini
+    fallback_chain:
+      - provider: nous
+        model: deepseek/deepseek-chat
+      - provider: openrouter
+        model: google/gemini-2.5-flash
+```
+
+当主要辅助 provider（`openrouter` / `openai/gpt-4o-mini`）返回速率限制、连接超时或需要付费错误时，Hermes 将依次遍历 `fallback_chain`。它会跳过 provider 与已失败 provider 相同的条目，并尝试每个剩余条目，直到有一个成功或该链耗尽。如果所有回退都失败，Hermes 会回退到主 agent 模型作为最终的安全网。
+
+每个条目支持与任何辅助任务配置相同的三个旋钮：
+
+| 键 | 描述 |
+|-----|-------------|
+| `provider` | Provider 名称（`nous`、`openrouter`、`anthropic`、`gemini`、`main` 等） |
+| `model` | 该 provider 的模型名称 |
+| `base_url` | （可选）自定义 OpenAI 兼容端点 |
+
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`web_extract`、`approval`、`skills_hub`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 

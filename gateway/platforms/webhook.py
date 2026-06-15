@@ -669,7 +669,8 @@ class WebhookAdapter(BasePlatformAdapter):
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        if not self._record_delivery_id(delivery_id, now):
+        seen_at = self._seen_deliveries.get(delivery_id)
+        if seen_at is not None and now - seen_at < self._idempotency_ttl:
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -677,6 +678,8 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
+        if seen_at is not None:
+            self._seen_deliveries.pop(delivery_id, None)
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -714,6 +717,9 @@ class WebhookAdapter(BasePlatformAdapter):
                 )
 
             if result.success:
+                self._seen_deliveries[delivery_id] = now
+                if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
+                    self._prune_seen_deliveries(now)
                 return web.json_response(
                     {
                         "status": "delivered",
@@ -735,6 +741,10 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,
             )
+
+        self._seen_deliveries[delivery_id] = now
+        if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
+            self._prune_seen_deliveries(now)
 
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).

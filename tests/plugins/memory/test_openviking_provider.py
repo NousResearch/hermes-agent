@@ -37,6 +37,41 @@ def test_tool_search_sorts_by_raw_score_across_buckets():
     assert result["total"] == 3
 
 
+def test_tool_search_uses_current_openviking_find_payload():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.post.return_value = {"result": {"memories": [], "resources": [], "skills": []}}
+
+    result = json.loads(provider._tool_search({
+        "query": "ranking",
+        "mode": "fast",
+        "scope": "viking://resources/docs",
+        "limit": 7,
+    }))
+
+    provider._client.post.assert_called_once_with("/api/v1/search/find", {
+        "query": "ranking",
+        "target_uri": "viking://resources/docs",
+        "limit": 7,
+    })
+    assert result["results"] == []
+
+
+def test_tool_search_deep_uses_session_search_endpoint():
+    provider = OpenVikingMemoryProvider()
+    provider._session_id = "session-123"
+    provider._client = MagicMock()
+    provider._client.post.return_value = {"result": {"memories": [], "resources": [], "skills": []}}
+
+    result = json.loads(provider._tool_search({"query": "connect facts", "mode": "deep"}))
+
+    provider._client.post.assert_called_once_with("/api/v1/search/search", {
+        "query": "connect facts",
+        "session_id": "session-123",
+    })
+    assert result["results"] == []
+
+
 def test_tool_search_sorts_missing_raw_score_after_negative_scores():
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -313,9 +348,9 @@ def test_viking_client_upload_temp_file_uses_multipart_identity_headers(tmp_path
     assert "files" in captured_kwargs
     assert "json" not in captured_kwargs
     headers = captured_kwargs["headers"]
-    assert headers["X-OpenViking-Account"] == "test-account"
-    assert headers["X-OpenViking-User"] == "test-user"
-    assert headers["X-OpenViking-Agent"] == "test-agent"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
+    assert headers["X-OpenViking-Actor-Peer"] == "test-agent"
     assert headers["X-API-Key"] == "test-key"
     assert "Content-Type" not in headers
 
@@ -350,16 +385,16 @@ def test_viking_client_headers_include_bearer_when_api_key_set():
     headers = client._headers()
     assert headers["X-API-Key"] == "test-key"
     assert headers["Authorization"] == "Bearer test-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Account" not in headers
+    assert "X-OpenViking-User" not in headers
 
 
 def test_viking_client_headers_send_tenant_when_default():
-    # account/user set to the literal string "default". OpenViking 0.3.x
-    # requires X-OpenViking-Account and X-OpenViking-User for ROOT API key
-    # requests to tenant-scoped APIs — omitting them causes
-    # INVALID_ARGUMENT errors even when account="default".
+    # Local/trusted mode needs explicit tenant identity headers.
     client = _VikingClient(
         "https://example.com",
-        api_key="test-key",
+        api_key="",
         account="default",
         user="default",
         agent="hermes",
@@ -367,8 +402,8 @@ def test_viking_client_headers_send_tenant_when_default():
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "default"
     assert headers["X-OpenViking-User"] == "default"
-    assert headers["X-OpenViking-Agent"] == "hermes"
-    assert headers["Authorization"] == "Bearer test-key"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "Authorization" not in headers
 
 
 def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
@@ -384,11 +419,12 @@ def test_viking_client_headers_send_tenant_when_empty_falls_back_to_default():
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "default"
     assert headers["X-OpenViking-User"] == "default"
+    assert headers["X-OpenViking-Actor-Peer"] == "hermes"
     assert "Authorization" not in headers
     assert "X-API-Key" not in headers
 
 
-def test_viking_client_headers_sent_with_real_tenant_values():
+def test_viking_client_headers_can_include_tenant_for_trusted_retry():
     client = _VikingClient(
         "https://example.com",
         api_key="test-key",
@@ -396,9 +432,54 @@ def test_viking_client_headers_sent_with_real_tenant_values():
         user="real-user",
         agent="hermes",
     )
-    headers = client._headers()
+    headers = client._headers(include_tenant=True)
     assert headers["X-OpenViking-Account"] == "real-account"
     assert headers["X-OpenViking-User"] == "real-user"
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_viking_client_retries_with_tenant_headers_for_trusted_mode(monkeypatch):
+    client = _VikingClient(
+        "https://example.com",
+        api_key="test-key",
+        account="acct",
+        user="usr",
+        agent="hermes",
+    )
+    captured_headers = []
+
+    def capture_httpx_post(url, **kwargs):
+        captured_headers.append(dict(kwargs["headers"]))
+        if len(captured_headers) == 1:
+            return SimpleNamespace(
+                status_code=400,
+                text="",
+                json=lambda: {
+                    "status": "error",
+                    "error": {
+                        "code": "INVALID_ARGUMENT",
+                        "message": "Trusted mode requests must include X-OpenViking-Account.",
+                    },
+                },
+                raise_for_status=lambda: None,
+            )
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"status": "ok", "result": {"ok": True}},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client._httpx, "post", capture_httpx_post)
+
+    assert client.post("/api/v1/fs/ls", {"query": "x"}) == {
+        "status": "ok",
+        "result": {"ok": True},
+    }
+    assert "X-OpenViking-Account" not in captured_headers[0]
+    assert "X-OpenViking-User" not in captured_headers[0]
+    assert captured_headers[1]["X-OpenViking-Account"] == "acct"
+    assert captured_headers[1]["X-OpenViking-User"] == "usr"
 
 
 def test_viking_client_health_sends_auth_headers(monkeypatch):
@@ -420,3 +501,5 @@ def test_viking_client_health_sends_auth_headers(monkeypatch):
     assert client.health() is True
     assert captured["url"] == "https://example.com/health"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
+    assert captured["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert "X-OpenViking-Account" not in captured["headers"]

@@ -284,12 +284,17 @@ hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
 echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
+# Authenticated servers should use a user/admin API key:
+echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 ```
 
 **Key features:**
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
 - Automatic memory extraction on session commit (profile, preferences, entities, events, cases, patterns)
 - `viking://` URI scheme for hierarchical knowledge browsing
+
+`OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
+`OPENVIKING_AGENT` names the OpenViking actor peer for Hermes-scoped memories.
 
 ---
 

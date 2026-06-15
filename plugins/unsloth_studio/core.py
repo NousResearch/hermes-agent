@@ -149,7 +149,14 @@ def _pid_alive(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        import psutil  # type: ignore
+
+        return bool(psutil.pid_exists(int(pid)))
+    except Exception:
+        if _is_windows():
+            return False
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok - POSIX-only fallback when psutil is unavailable.
         return True
     except OSError:
         return False

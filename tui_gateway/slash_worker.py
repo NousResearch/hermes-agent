@@ -100,6 +100,10 @@ def main():
 
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
+    # Gateway port for RPC calls from slash commands (e.g. /tps needs session.tps)
+    gw_port = os.environ.get("HERMES_SLASH_GATEWAY_PORT", "")
+    if gw_port:
+        os.environ["HERMES_SLASH_GATEWAY_PORT"] = gw_port
 
     # Start before the (hundreds-of-ms) HermesCLI build — that window is itself
     # an orphan risk if the gateway dies mid-spawn.

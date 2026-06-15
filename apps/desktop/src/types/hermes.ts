@@ -372,6 +372,7 @@ export interface UsageStats {
   cost_usd?: number
   input: number
   output: number
+  output_speed?: number
   total: number
 }
 

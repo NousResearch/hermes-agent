@@ -1,6 +1,6 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
+Renders a compact footer showing runtime state (model, context %, cwd, tps) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
 
@@ -9,7 +9,7 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        fields: [model, context_pct, cwd, tps]   # order shown; drop any to hide
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -95,6 +95,8 @@ def format_runtime_footer(
     context_length: Optional[int],
     cwd: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
+    response_tokens: Optional[int] = None,
+    elapsed_ms: Optional[float] = None,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
@@ -115,6 +117,10 @@ def format_runtime_footer(
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
                 parts.append(rel)
+        elif field == "tps":
+            if response_tokens and elapsed_ms and elapsed_ms > 0:
+                tps = round(response_tokens / (elapsed_ms / 1000), 1)
+                parts.append(f"{tps}t/s")
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +136,8 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    response_tokens: Optional[int] = None,
+    elapsed_ms: Optional[float] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -146,4 +154,6 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+        response_tokens=response_tokens,
+        elapsed_ms=elapsed_ms,
     )

@@ -1782,6 +1782,10 @@ def run_conversation(
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
 
+                    # Store last API call stats for TPS / output-speed display
+                    agent.last_api_duration = api_duration
+                    agent.last_output_tokens = canonical_usage.output_tokens
+
                     # Log API call details for debugging/observability
                     _cache_pct = ""
                     if canonical_usage.cache_read_tokens and prompt_tokens:

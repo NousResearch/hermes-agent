@@ -8956,6 +8956,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _footer_line = ""
             try:
                 from gateway.runtime_footer import build_footer_line as _bfl
+                _last_output_toks = agent_result.get("last_output_tokens", 0) or 0
+                _last_dur_s = agent_result.get("last_api_duration", 0.0) or 0.0
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),
                     platform_key=_platform_config_key(source.platform),
@@ -8963,6 +8965,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    response_tokens=_last_output_toks,
+                    elapsed_ms=_last_dur_s * 1000 if _last_dur_s > 0 else None,
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -14948,6 +14952,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
+                _last_output_toks = getattr(_agent, "last_output_tokens", 0) or 0
+                _last_api_dur = getattr(_agent, "last_api_duration", 0.0) or 0.0
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
@@ -15027,6 +15033,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "last_api_duration": _last_api_dur,
+                    "last_output_tokens": _last_output_toks,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered

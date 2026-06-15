@@ -1462,6 +1462,7 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "show_output_speed": False,   # Show tokens/sec after each response (off by default)
         "skin": "default",
         # UI language for static user-facing messages (approval prompts, a
         # handful of gateway slash-command replies).  Does NOT affect agent

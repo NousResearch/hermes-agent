@@ -474,6 +474,86 @@ class TestCreateThread:
 
 
 # ---------------------------------------------------------------------------
+# Actions: rename_thread
+# ---------------------------------------------------------------------------
+
+class TestRenameThread:
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_public_thread(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        # Two sequential _discord_request calls: GET (probe) then PATCH (edit).
+        mock_req.side_effect = [
+            {"id": "800", "type": 11, "name": "old name"},
+            {"id": "800", "type": 11, "name": "new name"},
+        ]
+        result = json.loads(discord_core(
+            action="rename_thread", channel_id="800", name="new name",
+        ))
+        assert result == {"success": True, "thread_id": "800", "name": "new name"}
+        assert mock_req.call_args_list[0].args[:2] == ("GET", "/channels/800")
+        assert mock_req.call_args_list[1].args[:2] == ("PATCH", "/channels/800")
+        assert mock_req.call_args_list[1].kwargs.get("body") == {"name": "new name"}
+
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_private_thread(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "801", "type": 12, "name": "old"},
+            {"id": "801", "type": 12, "name": "renamed"},
+        ]
+        result = json.loads(discord_core(
+            action="rename_thread", channel_id="801", name="renamed",
+        ))
+        assert result["success"] is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_news_thread(self, mock_req, monkeypatch):
+        """Announcement-channel threads (type 10) are valid targets too."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "802", "type": 10, "name": "old"},
+            {"id": "802", "type": 10, "name": "v2"},
+        ]
+        result = json.loads(discord_core(
+            action="rename_thread", channel_id="802", name="v2",
+        ))
+        assert result["success"] is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_refuses_text_channel(self, mock_req, monkeypatch):
+        """Defense-in-depth: PATCH /channels/{id} would happily rename a
+        top-level text channel if we let it. Refuse anything that isn't a
+        thread type (10/11/12) so an agent asked to "rename this thread"
+        can't accidentally rename a server channel.
+        """
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "900", "type": 0, "name": "general"}
+        result = json.loads(discord_core(
+            action="rename_thread", channel_id="900", name="new",
+        ))
+        assert result == {
+            "success": False,
+            "error": (
+                "channel 900 is not a thread (type=0 → text). "
+                "Use a different action to rename non-thread channels."
+            ),
+        }
+        # GET only — no PATCH must fire.
+        assert mock_req.call_count == 1
+
+    @patch("tools.discord_tool._discord_request")
+    def test_rename_refuses_forum_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "950", "type": 15, "name": "support"}
+        result = json.loads(discord_core(
+            action="rename_thread", channel_id="950", name="new",
+        ))
+        assert result["success"] is False
+        assert "forum" in result["error"]
+        assert mock_req.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Actions: add_role / remove_role
 # ---------------------------------------------------------------------------
 
@@ -558,14 +638,18 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == {
+            "fetch_messages", "search_members", "create_thread", "rename_thread",
+        }
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - {
+            "fetch_messages", "search_members", "create_thread", "rename_thread",
+        }
         assert actions == expected_admin
 
     def test_all_actions_covered(self):

@@ -454,6 +454,40 @@ def _create_thread(
     })
 
 
+def _rename_thread(
+    token: str, channel_id: str, name: str, **_kwargs: Any,
+) -> str:
+    """Rename a Discord thread.
+
+    Threads are channels under the API, so ``PATCH /channels/{id}`` with
+    ``{"name": ...}`` is the same call that would rename a regular channel.
+    To avoid surprises (the agent renaming an actual server channel when
+    asked to rename a thread), this action probes the target's ``type``
+    first and refuses on non-thread channels.
+    """
+    info = _discord_request("GET", f"/channels/{channel_id}", token)
+    channel_type = info.get("type")
+    # 10 = NEWS_THREAD, 11 = PUBLIC_THREAD, 12 = PRIVATE_THREAD
+    if channel_type not in (10, 11, 12):
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"channel {channel_id} is not a thread "
+                f"(type={channel_type} → "
+                f"{_channel_type_name(channel_type if channel_type is not None else -1)}). "
+                "Use a different action to rename non-thread channels."
+            ),
+        })
+    updated = _discord_request(
+        "PATCH", f"/channels/{channel_id}", token, body={"name": name},
+    )
+    return json.dumps({
+        "success": True,
+        "thread_id": updated["id"],
+        "name": updated.get("name"),
+    })
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -484,11 +518,12 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "rename_thread": _rename_thread,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "rename_thread"})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -511,6 +546,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("rename_thread", "(channel_id, name)", "rename an existing thread (channel_id = thread id)"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -532,6 +568,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "rename_thread": ["channel_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }

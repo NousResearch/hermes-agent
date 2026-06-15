@@ -147,17 +147,47 @@ def make_history_message(
     msg_id: int,
     msg_type=None,
     attachments=None,
+    reference=None,
+    embeds=None,
 ):
     return SimpleNamespace(
         id=msg_id,
         author=author,
         content=content,
+        clean_content=content,
         attachments=list(attachments or []),
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
+        reference=reference,
+        embeds=list(embeds or []),
     )
 
 
 class FakeHistoryChannel(FakeTextChannel):
+    def __init__(self, history_messages, **kwargs):
+        super().__init__(**kwargs)
+        self._history_messages = list(history_messages)
+
+    def history(self, *, limit, before, after=None, oldest_first=None):
+        before_id = int(getattr(before, "id", before))
+        after_id = int(getattr(after, "id", after)) if after is not None else None
+        if oldest_first is None:
+            oldest_first = after is not None
+
+        messages = [
+            message for message in self._history_messages
+            if int(message.id) < before_id
+            and (after_id is None or int(message.id) > after_id)
+        ]
+        messages.sort(key=lambda message: int(message.id), reverse=not oldest_first)
+
+        async def _iter():
+            for message in messages[:limit]:
+                yield message
+
+        return _iter()
+
+
+class FakeHistoryThread(FakeThread):
     def __init__(self, history_messages, **kwargs):
         super().__init__(**kwargs)
         self._history_messages = list(history_messages)
@@ -491,6 +521,101 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
     await adapter._handle_message(message)
 
     assert "777" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_discord_message_started_thread_injects_parent_alert_context(adapter, monkeypatch):
+    """Thread replies like "fix this" should include the parent alert message."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["history_backfill"] = True
+    adapter._threads.mark("456")
+
+    parent = FakeTextChannel(channel_id=200, name="infra")
+    alert_author = SimpleNamespace(id=77, display_name="Robusta", name="Robusta", bot=True)
+    alert_embed = SimpleNamespace(
+        title="Clock not synchronising.",
+        description="Clock at 192.168.0.15:9100 is not synchronising.",
+        fields=[
+            SimpleNamespace(name="alertname", value="NodeClockNotSynchronising"),
+            SimpleNamespace(name="instance", value="192.168.0.15:9100"),
+        ],
+    )
+    parent_alert = make_history_message(
+        author=alert_author,
+        content="✅ resolved - :yellow_circle: LOW - **",
+        msg_id=900,
+        embeds=[alert_embed],
+    )
+    starter_reference = SimpleNamespace(
+        message_id=900,
+        channel_id=200,
+        resolved=parent_alert,
+    )
+    starter_message = make_history_message(
+        author=SimpleNamespace(id=0, display_name="Discord", name="Discord", bot=True),
+        content="",
+        msg_id=901,
+        msg_type=21,
+        reference=starter_reference,
+    )
+    thread = FakeHistoryThread(
+        [starter_message],
+        channel_id=456,
+        name="resolved alert",
+        parent=parent,
+    )
+    message = make_message(channel=thread, content="이거 맨날 뜨는거 해결해줘")
+    message.id = 902
+
+    await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "이거 맨날 뜨는거 해결해줘"
+    assert event.reply_to_message_id == "900"
+    assert event.reply_to_text is not None
+    assert "[Thread started from Discord message]" in event.reply_to_text
+    assert "Clock not synchronising." in event.reply_to_text
+    assert "NodeClockNotSynchronising" in event.reply_to_text
+    assert "192.168.0.15:9100" in event.reply_to_text
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_starter_context_fetches_unresolved_parent_message(adapter):
+    """If Discord omits referenced_message, fetch the parent message by reference."""
+    parent = FakeTextChannel(channel_id=200, name="infra")
+    parent.fetch_message = AsyncMock(
+        return_value=make_history_message(
+            author=SimpleNamespace(id=77, display_name="Robusta", name="Robusta", bot=True),
+            content="Clock at 192.168.0.15:9100 is not synchronising.",
+            msg_id=900,
+        )
+    )
+    adapter._client.get_channel = lambda channel_id: parent if channel_id == 200 else None
+
+    starter_message = make_history_message(
+        author=SimpleNamespace(id=0, display_name="Discord", name="Discord", bot=True),
+        content="",
+        msg_id=901,
+        msg_type=21,
+        reference=SimpleNamespace(message_id=900, channel_id=200, resolved=None),
+    )
+    thread = FakeHistoryThread(
+        [starter_message],
+        channel_id=456,
+        name="resolved alert",
+        parent=parent,
+    )
+    trigger = make_message(channel=thread, content="이거 해결")
+    trigger.id = 902
+
+    starter_id, context = await adapter._fetch_thread_starter_context(thread, before=trigger)
+
+    assert starter_id == "900"
+    assert context is not None
+    assert "Clock at 192.168.0.15:9100" in context
+    parent.fetch_message.assert_awaited_once_with(900)
 
 
 @pytest.mark.asyncio
@@ -925,5 +1050,3 @@ async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
 
     adapter._auto_create_thread.assert_awaited_once()
     adapter._fetch_channel_context.assert_not_awaited()
-
-

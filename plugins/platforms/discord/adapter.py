@@ -143,6 +143,93 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _discord_message_type_value(message_type: Any) -> Optional[int]:
+    """Return a stable integer value for discord.py MessageType-like objects."""
+    value = getattr(message_type, "value", message_type)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_thread_starter_message(message: Any) -> bool:
+    """Return True for Discord THREAD_STARTER_MESSAGE system messages."""
+    message_type = getattr(message, "type", None)
+    if _discord_message_type_value(message_type) == 21:
+        return True
+    return str(getattr(message_type, "name", "")).lower() == "thread_starter_message"
+
+
+def _obj_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _compact_context_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _format_discord_message_context(message: Any, *, max_chars: int = 1800) -> str:
+    """Format a Discord message's content/embed payload for prompt context."""
+    if message is None:
+        return ""
+
+    lines: list[str] = ["[Thread started from Discord message]"]
+
+    author = getattr(message, "author", None)
+    author_name = (
+        getattr(author, "display_name", None)
+        or getattr(author, "name", None)
+        or getattr(author, "global_name", None)
+    )
+    if author_name:
+        suffix = " [bot]" if getattr(author, "bot", False) else ""
+        lines.append(f"author: {author_name}{suffix}")
+
+    content = getattr(message, "clean_content", None) or getattr(message, "content", None)
+    if content:
+        lines.append(f"content: {_compact_context_text(content, 700)}")
+
+    for embed in list(getattr(message, "embeds", []) or [])[:3]:
+        title = _obj_value(embed, "title")
+        description = _obj_value(embed, "description")
+        if title:
+            lines.append(f"embed title: {_compact_context_text(title, 240)}")
+        if description:
+            lines.append(f"embed description: {_compact_context_text(description, 700)}")
+        for field in list(_obj_value(embed, "fields", []) or [])[:8]:
+            name = _obj_value(field, "name", "field")
+            value = _obj_value(field, "value", "")
+            if value:
+                lines.append(
+                    f"{_compact_context_text(name, 120)}: "
+                    f"{_compact_context_text(value, 500)}"
+                )
+
+    attachments = list(getattr(message, "attachments", []) or [])
+    if attachments:
+        names = []
+        for att in attachments[:5]:
+            names.append(
+                getattr(att, "filename", None)
+                or getattr(att, "url", None)
+                or "attachment"
+            )
+        lines.append(f"attachments: {', '.join(names)}")
+
+    context = "\n".join(line for line in lines if line.strip())
+    if context == "[Thread started from Discord message]":
+        return ""
+    if len(context) <= max_chars:
+        return context
+    return context[: max(0, max_chars - 1)].rstrip() + "…"
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -4213,6 +4300,79 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] Failed to fetch channel history: %s", self.name, e)
             return ""
 
+    async def _fetch_referenced_message(self, reference: Any, fallback_channel: Any = None) -> Any:
+        """Resolve a Discord message reference to the referenced message."""
+        if reference is None:
+            return None
+
+        resolved = getattr(reference, "resolved", None)
+        if resolved is not None and not isinstance(resolved, int):
+            if _format_discord_message_context(resolved):
+                return resolved
+
+        message_id = getattr(reference, "message_id", None)
+        if message_id is None:
+            return None
+
+        channel = None
+        channel_id = getattr(reference, "channel_id", None)
+        if channel_id is not None and self._client:
+            try:
+                channel = self._client.get_channel(int(channel_id))
+                if channel is None:
+                    channel = await self._client.fetch_channel(int(channel_id))
+            except Exception as exc:
+                logger.debug("[%s] Could not resolve referenced channel %s: %s", self.name, channel_id, exc)
+                channel = None
+
+        channel = channel or fallback_channel
+        fetch_message = getattr(channel, "fetch_message", None)
+        if not fetch_message:
+            return None
+
+        try:
+            return await fetch_message(int(message_id))
+        except Exception as exc:
+            logger.debug("[%s] Could not fetch referenced message %s: %s", self.name, message_id, exc)
+            return None
+
+    async def _fetch_thread_starter_context(
+        self,
+        channel: Any,
+        before: "DiscordMessage",
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Return parent-message context for threads started from a Discord message.
+
+        Discord represents message-started threads with a first system message
+        of type THREAD_STARTER_MESSAGE. That system message has no content of
+        its own; it points back to the parent-channel message via
+        ``message_reference`` / ``referenced_message``.
+        """
+        if not isinstance(channel, discord.Thread):
+            return None, None
+
+        parent = getattr(channel, "parent", None)
+        try:
+            async for msg in channel.history(limit=10, before=before, oldest_first=True):
+                if not _is_thread_starter_message(msg):
+                    continue
+                reference = getattr(msg, "reference", None)
+                starter = await self._fetch_referenced_message(reference, fallback_channel=parent)
+                context = _format_discord_message_context(starter)
+                if context:
+                    starter_id = (
+                        getattr(reference, "message_id", None)
+                        or getattr(starter, "id", None)
+                        or getattr(msg, "id", None)
+                    )
+                    return str(starter_id), context
+                break
+        except discord.Forbidden:
+            logger.debug("[%s] Missing permissions to fetch thread starter context", self.name)
+        except Exception as exc:
+            logger.warning("[%s] Failed to fetch thread starter context: %s", self.name, exc)
+        return None, None
+
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
         return getattr(channel, "parent", None) or channel
@@ -5231,6 +5391,15 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+
+        if is_thread and not reply_to_text:
+            starter_id, starter_text = await self._fetch_thread_starter_context(
+                message.channel,
+                before=message,
+            )
+            if starter_text:
+                reply_to_id = starter_id
+                reply_to_text = starter_text
 
         event = MessageEvent(
             text=event_text,

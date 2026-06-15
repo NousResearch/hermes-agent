@@ -197,11 +197,13 @@ class GatewayKanbanWatchersMixin:
                         "architect": "tester", "pm": "reviewer",
                     }
                     for _ctid in completed_task_ids:
-                        # Check if this task already has a verification child.
+                        # Check if this task already has a verification task.
+                        # Use title pattern instead of parent-child edge to
+                        # avoid dependency deadlocks (see below).
                         child_rows = conn.execute(
-                            "SELECT id, assignee, status FROM tasks WHERE id IN "
-                            "(SELECT child_id FROM task_edges WHERE parent_id=?)",
-                            (_ctid,),
+                            "SELECT id, assignee, status FROM tasks "
+                            "WHERE title LIKE ?",
+                            (f"验证 {_ctid}%",),
                         ).fetchall()
                         has_verification = any(
                             row[1] in ("tester", "reviewer")
@@ -235,7 +237,10 @@ class GatewayKanbanWatchersMixin:
                                         f"通过标准: 产出真实存在且符合任务要求\n"
                                         f"失败处理: kanban_block(reason='❌ 验证失败: <原因>')"
                                     ),
-                                    parents=[_ctid],
+                                    # NO parents link — avoids deadlock when
+                                    # tester blocks verification and creates
+                                    # fix tasks. Title pattern "验证 {ctid}"
+                                    # is used for dedup lookup instead.
                                     initial_status="ready",
                                 )
                                 newly_created_verifications += 1
@@ -447,35 +452,49 @@ class GatewayKanbanWatchersMixin:
 
                     adapter = self.adapters.get(epoch_platform)
 
-                    # Inject into session FIRST so the agent processes the
-                    # epoch while we prepare the user-facing message.
-                    response_text = await self._handle_message(synthetic_event)
+                    # Inject into session WITHOUT blocking the notifier loop.
+                    # A synchronous await here would queue user messages behind
+                    # the epoch processing, causing multi-minute delays.
+                    # fire-and-forget lets the agent handle it asynchronously.
 
-                    # Combine summary + agent response into ONE message to
-                    # minimize sends (avoid platform rate limits).
-                    summary_parts.append("")
-                    if response_text:
-                        summary_parts.append(f"📋 **处理结果:**\n{response_text[:500]}")
+                    async def _epoch_inject():
+                        """Process epoch injection and send combined response."""
+                        try:
+                            response_text = await self._handle_message(synthetic_event)
+                        except Exception as exc:
+                            logger.warning("kanban epoch injection failed: %s", exc)
+                            return
 
-                    combined_msg = "\n".join(summary_parts)
+                        # Combine summary + agent response into ONE message.
+                        summary_parts.append("")
+                        if response_text:
+                            summary_parts.append(f"📋 **处理结果:**\n{response_text[:500]}")
 
-                    if adapter:
-                        send_result = await adapter.send(
-                            chat_id=_chat_id, content=combined_msg,
-                        )
-                        # adapter.send() returns SendResult, does NOT raise.
-                        # Must check .success to detect failures.
-                        if send_result and getattr(send_result, "success", False):
-                            logger.info(
-                                "kanban epoch: sent to %s/%s (epoch %d/%d)",
-                                _plat_str, _chat_id, current_epoch, MAX_EPOCHS,
+                        combined_msg = "\n".join(summary_parts)
+
+                        if adapter:
+                            send_result = await adapter.send(
+                                chat_id=_chat_id, content=combined_msg,
                             )
-                        else:
-                            err = getattr(send_result, "error", "unknown") if send_result else "no result"
-                            logger.warning(
-                                "kanban epoch: send to %s/%s FAILED: %s",
-                                _plat_str, _chat_id, err,
-                            )
+                            if send_result and getattr(send_result, "success", False):
+                                logger.info(
+                                    "kanban epoch: sent to %s/%s (epoch %d/%d)",
+                                    _plat_str, _chat_id, current_epoch, MAX_EPOCHS,
+                                )
+                            else:
+                                err = getattr(send_result, "error", "unknown") if send_result else "no result"
+                                logger.warning(
+                                    "kanban epoch: send to %s/%s FAILED: %s",
+                                    _plat_str, _chat_id, err,
+                                )
+
+                    # Schedule as a background task — don't block notifier.
+                    import asyncio as _aio
+                    _aio.ensure_future(_epoch_inject())
+                    logger.info(
+                        "kanban epoch: scheduled injection for %s/%s (epoch %d/%d, fire-and-forget)",
+                        _plat_str, _chat_id, current_epoch, MAX_EPOCHS,
+                    )
                 except Exception as orch_exc:
                     logger.warning(
                         "kanban orchestrator callback: failed for board %s: %s",

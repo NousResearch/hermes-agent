@@ -381,6 +381,77 @@ class TestTargetAppDriftGuard:
             ("capture", "som", "Safari"),
         ]
 
+    def test_capture_with_requested_app_preserves_max_elements_cap(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import CaptureResult, UIElement
+
+        elements = [
+            UIElement(index=i + 1, role="AXButton", label=f"el-{i}", bounds=(0, 0, 1, 1))
+            for i in range(25)
+        ]
+
+        class SafariBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    elements=list(elements),
+                    app="Safari", window_title="Example",
+                )
+
+        backend = SafariBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "capture",
+                "mode": "ax",
+                "app": "Safari",
+                "max_elements": 5,
+            })
+
+        parsed = json.loads(out)
+        assert len(parsed["elements"]) == 5
+        assert parsed["total_elements"] == 25
+        assert parsed["truncated_elements"] == 20
+        assert backend.calls == [("capture", "ax", "Safari")]
+
+    def test_failed_action_with_requested_app_skips_capture_after(self):
+        from tools.computer_use import tool as cu_tool
+        from tools.computer_use.backend import ActionResult, CaptureResult
+
+        class FailingSafariBackend:
+            def __init__(self):
+                self.calls = []
+            def capture(self, mode="som", app=None):
+                self.calls.append(("capture", mode, app))
+                return CaptureResult(
+                    mode=mode, width=1, height=1,
+                    app="Safari", window_title="Example",
+                )
+            def scroll(self, **kw):
+                self.calls.append(("scroll", kw))
+                return ActionResult(ok=False, action="scroll", message="element not found")
+
+        backend = FailingSafariBackend()
+        cu_tool.reset_backend_for_tests()
+        with patch.object(cu_tool, "_get_backend", return_value=backend):
+            out = cu_tool.handle_computer_use({
+                "action": "scroll",
+                "app": "Safari",
+                "direction": "down",
+                "capture_after": True,
+            })
+
+        parsed = json.loads(out)
+        assert parsed["ok"] is False
+        assert parsed["action"] == "scroll"
+        assert backend.calls == [
+            ("capture", "ax", "Safari"),
+            ("scroll", {"direction": "down", "amount": 3, "element": None, "x": None, "y": None, "modifiers": None}),
+        ]
+
     def test_app_matcher_accepts_common_localized_macos_names(self):
         from tools.computer_use.tool import _app_matches_requested
 

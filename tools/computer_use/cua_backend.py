@@ -471,7 +471,10 @@ class CuaDriverBackend(ComputerUseBackend):
                     png_b64=None,
                     elements=[],
                     app="",
-                    window_title=f"No on-screen window found for app {app!r}",
+                    window_title=(
+                        f"No on-screen window found for app {app!r}; "
+                        "call list_apps to see available app names"
+                    ),
                     png_bytes_len=0,
                 )
             windows = filtered

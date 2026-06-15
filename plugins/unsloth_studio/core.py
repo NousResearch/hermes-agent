@@ -230,7 +230,6 @@ def status_payload(values: dict[str, Any] | None = None) -> dict[str, Any]:
 def _popen_kwargs(cwd: str | Path | None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "cwd": str(cwd) if cwd else None,
-        "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
@@ -276,7 +275,7 @@ def start_studio(values: dict[str, Any]) -> dict[str, Any]:
     command.extend(str(arg) for arg in values.get("extra_args") or [])
     cwd = values.get("cwd")
     try:
-        proc = subprocess.Popen(command, **_popen_kwargs(cwd))
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, **_popen_kwargs(cwd))
     except OSError as exc:
         return {"ok": False, "error": str(exc), "command": command}
 

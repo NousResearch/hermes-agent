@@ -674,6 +674,47 @@ class TestSetupWizardDeploymentShape:
         assert host["userPeerAliases"] == {"99887766": "eri"}
         assert host["runtimePeerPrefix"] == "discord_"
 
+    def test_named_agents_maps_runtime_ids_to_agent_peers_via_roster(self, monkeypatch, tmp_path):
+        """Choice [4] with a discoverable agent roster prompts one runtime-ID
+        line per agent and writes each into userPeerAliases under its peer."""
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_agent_peer_roster", lambda: ["scribe", "router"])
+        answers = [
+            "cloud", "", "eri", "hermetika", "hermes",
+            "4",               # tree: a set of named agents
+            "100200300",       # runtime ID for agent 'scribe'
+            "400500600",       # runtime ID for agent 'router'
+            "",                # runtime peer prefix (skip)
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers)
+        assert host["pinUserPeer"] is False
+        assert host["userPeerAliases"] == {
+            "100200300": "scribe",
+            "400500600": "router",
+        }
+        assert "runtimePeerPrefix" not in host
+
+    def test_named_agents_falls_back_to_freetext_pairs_without_roster(self, monkeypatch, tmp_path):
+        """With no discoverable roster, choice [4] accepts 'runtime_id=peer'
+        pairs until a blank line, then an optional prefix."""
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_agent_peer_roster", lambda: [])
+        answers = [
+            "cloud", "", "eri", "hermetika", "hermes",
+            "4",                 # tree: a set of named agents
+            "100200300=scribe",  # pair 1
+            "400500600=router",  # pair 2
+            "",                  # finish pairs
+            "agent_",            # runtime peer prefix for unmapped users
+        ]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers)
+        assert host["pinUserPeer"] is False
+        assert host["userPeerAliases"] == {
+            "100200300": "scribe",
+            "400500600": "router",
+        }
+        assert host["runtimePeerPrefix"] == "agent_"
+
 
 class TestCloneCarriesPinUserPeer:
     """``pinUserPeer`` (canonical name for ``pinPeerName``) must survive a

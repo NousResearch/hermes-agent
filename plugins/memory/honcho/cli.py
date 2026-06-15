@@ -424,6 +424,59 @@ def _collect_operator_aliases(existing: dict, peer_target: str) -> dict:
     return aliases
 
 
+def _agent_peer_roster() -> list[str]:
+    """Known agent peer names to offer as defaults, or [] if undiscoverable.
+
+    Best-effort and dependency-free: a multi-agent host may expose a roster
+    of agent peers, but the memory plugin must not hard-depend on one.  Lazy,
+    guarded import (same idiom as ``_gateway_platforms``), and we duck-type the
+    accessor so this works against whatever shape a host registry exposes —
+    any failure falls back to free-text entry.
+    """
+    try:
+        from gateway.config import load_gateway_config
+        cfg = load_gateway_config()
+        accessor = getattr(cfg, "get_agent_peers", None)
+        roster: object = accessor() if callable(accessor) else getattr(cfg, "agent_peers", None)
+        if not roster:
+            return []
+        return [str(p) for p in roster if str(p).strip()]  # type: ignore[union-attr]
+    except Exception:
+        return []
+
+
+def _collect_agent_aliases(existing: dict) -> dict:
+    """Prompt for ``runtime_id = agent_peer`` pairs, one per known agent.
+
+    For deployments where each agent carries its own Honcho peer identity.
+    Writes the same ``userPeerAliases`` map as the human paths — the resolver
+    is identity-agnostic, so an agent peer is just another alias target.
+    Existing entries are preserved.
+    """
+    aliases = dict(existing)
+    roster = _agent_peer_roster()
+    print("\n  Map each agent's runtime ID to its peer.")
+    print("  Leave a runtime ID blank to skip that agent.  Existing aliases are preserved.")
+    if roster:
+        for agent_peer in roster:
+            rid = _prompt(
+                f"  runtime ID for agent '{agent_peer}'", default="",
+            ).strip()
+            if rid:
+                aliases[rid] = agent_peer
+    else:
+        print("  Enter 'runtime_id=agent_peer' pairs (blank line to finish):")
+        while True:
+            entry = _prompt("    pair", default="").strip()
+            if not entry:
+                break
+            if "=" in entry:
+                rid, peer = (p.strip() for p in entry.split("=", 1))
+                if rid and peer:
+                    aliases[rid] = peer
+    return aliases
+
+
 def _apply_runtime_prefix(
     hermes_host: dict, current_prefix: str, prefix_from_root: bool, label: str
 ) -> None:
@@ -702,6 +755,7 @@ def cmd_setup(args) -> None:
         print("    [1] just me — everyone collapses to your peer")
         print("    [2] me + other people — keep mine pooled, others separate")
         print("    [3] only other people — everyone gets their own peer")
+        print("    [4] a set of named agents — map each agent's runtime ID to its peer")
         print("    [s] skip (leave untouched)   [e] edit raw keys")
         choice = _prompt("Choice", default=default_choice).strip().lower()
 
@@ -714,6 +768,8 @@ def cmd_setup(args) -> None:
             shape = "single"
         elif choice in {"3", "others"}:
             shape = "multi"
+        elif choice in {"4", "agents", "named-agents"}:
+            shape = "agents"
         elif choice in {"e", "edit", "raw"}:
             shape = "raw"
         else:
@@ -772,6 +828,23 @@ def cmd_setup(args) -> None:
                 "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
             )
             print(f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "agents":
+            # Each agent carries its own peer.  Same userPeerAliases mechanism
+            # as the human paths — the resolver is identity-agnostic — but the
+            # prompts collect agent peer names rather than the operator's own
+            # platform IDs.  Unknown runtime IDs still get their own peer.
+            existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            merged = _collect_agent_aliases(existing_aliases)
+            if merged:
+                hermes_host["userPeerAliases"] = merged
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix for unmapped users (e.g. 'telegram_', blank for none)",
+            )
+            print("  Each mapped runtime ID → its agent peer; unmapped → own peer.")
             _echo_identity_mapping(hermes_host)
         elif shape == "raw":
             _configure_raw_identity_mapping(

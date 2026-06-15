@@ -164,6 +164,7 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 - **just me** → `pinUserPeer: true`. All gateway users collapse to `peerName`. Personal use where you connect Hermes to your own Telegram/Discord/etc.
 - **me + other people, pooled** → `pinUserPeer: false` + `userPeerAliases` mapping your runtime IDs to `peerName`. You stay on the shared history; everyone else gets their own peer.
 - **me + other people / only other people** → `pinUserPeer: false`, optional `runtimePeerPrefix`. Each runtime user → own peer. For bots serving many humans.
+- **a set of named agents** → `pinUserPeer: false` + `userPeerAliases` mapping each agent's runtime ID to its own peer. For deployments where every agent carries its own Honcho peer identity; unmapped IDs still get their own peer. Same `userPeerAliases` mechanism as the human paths — the resolver is identity-agnostic.
 
 Pick **[e]** at the prompt to set the three keys directly instead of going through the tree.
 

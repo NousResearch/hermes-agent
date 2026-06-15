@@ -3474,6 +3474,18 @@ def test_reclaim_termination_signals_worker_process_group(monkeypatch):
     assert info["terminated"] is True
 
 
+def test_process_group_alive_short_circuits_on_windows(monkeypatch):
+    """Windows must never use os.kill(..., 0) as a liveness probe."""
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+
+    def _forbidden_kill(*_args, **_kwargs):
+        raise AssertionError("os.kill should not be called on Windows")
+
+    monkeypatch.setattr(kb.os, "kill", _forbidden_kill)
+
+    assert kb._process_group_alive(4242) is False
+
+
 def test_reclaim_termination_avoids_recycled_pid_foreign_group(monkeypatch):
     """If pid was recycled into another pgrp, do not signal that group."""
     host = kb._claimer_id().split(":", 1)[0]

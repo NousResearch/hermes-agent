@@ -5085,7 +5085,7 @@ def _process_group_alive(pgid: Optional[int]) -> bool:
     if _IS_WINDOWS or not pgid or pgid <= 0 or not hasattr(os, "kill"):
         return False
     try:
-        os.kill(-int(pgid), 0)
+        os.kill(-int(pgid), 0)  # windows-footgun: ok — guarded by _IS_WINDOWS above; POSIX process-group probe
     except ProcessLookupError:
         return False
     except PermissionError:

@@ -3357,11 +3357,20 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
 # where one app's refresh invalidates the other's session.
 # =============================================================================
 
-def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+def _read_codex_tokens(*, _lock: bool = True, allow_pool_fallback: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
-    
+
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
+
+    When the singleton (``providers.openai-codex``) is empty and
+    ``allow_pool_fallback`` is True, synthesizes the return value from a usable
+    ``credential_pool.openai-codex`` entry so pool-only installs (the modern
+    ``hermes auth`` writes only to the pool) don't hard-fail on the direct
+    callers of this function. ``resolve_codex_runtime_credentials`` passes
+    ``allow_pool_fallback=False`` so it keeps its own deliberate pool handling
+    (source=credential_pool, no singleton write — avoids refresh-token rotation
+    divergence between the singleton and pool copies). JARVIS-LOCAL (#32992).
     """
     if _lock:
         with _auth_store_lock():
@@ -3370,6 +3379,15 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
         auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
     if not state:
+        # Pool-only install fallback: the modern `hermes auth` writes Codex
+        # credentials to `credential_pool.openai-codex` and never populates the
+        # singleton, so every direct caller of this function (account usage, the
+        # desktop turn flow) would otherwise hard-fail with codex_auth_missing
+        # despite valid pool creds. Completes the divergence fix from #32992,
+        # which only covered resolve_codex_runtime_credentials. JARVIS-LOCAL.
+        pooled = _pool_codex_token_pair() if allow_pool_fallback else None
+        if pooled is not None:
+            return pooled
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",
             provider="openai-codex",
@@ -3776,7 +3794,7 @@ def resolve_codex_runtime_credentials(
     """
     read_error: Optional[AuthError] = None
     try:
-        data = _read_codex_tokens()
+        data = _read_codex_tokens(allow_pool_fallback=False)
     except AuthError as exc:
         read_error = exc
         if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
@@ -3846,7 +3864,7 @@ def resolve_codex_runtime_credentials(
     if should_refresh:
         # Re-read under lock to avoid racing with other Hermes processes
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_codex_tokens(_lock=False)
+            data = _read_codex_tokens(_lock=False, allow_pool_fallback=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
 
@@ -3984,6 +4002,51 @@ def _pool_codex_access_token() -> str:
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)
     return ""
+
+
+def _pool_codex_token_pair() -> Optional[Dict[str, Any]]:
+    """Return a full access+refresh token pair from the openai-codex pool.
+
+    Companion to ``_pool_codex_access_token`` for the singleton readers
+    (``_read_codex_tokens``) that need the refresh token too, not just the
+    access token. Picks the first pool entry that has BOTH tokens and is not in
+    an exhaustion cooldown. Returns ``None`` when no usable entry exists, so the
+    caller falls through to raising the original ``codex_auth_missing`` error.
+    Shape mirrors ``_read_codex_tokens``'s return value. JARVIS-LOCAL (#32992
+    follow-up).
+    """
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return None
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            access_token = entry.get("access_token")
+            refresh_token = entry.get("refresh_token")
+            if not isinstance(access_token, str) or not access_token.strip():
+                continue
+            if not isinstance(refresh_token, str) or not refresh_token.strip():
+                continue
+            reset_at = entry.get("last_error_reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                continue
+            tokens: Dict[str, Any] = {
+                "access_token": access_token.strip(),
+                "refresh_token": refresh_token.strip(),
+            }
+            for key in ("token_type", "expires_in", "account_id", "id_token"):
+                if entry.get(key) is not None:
+                    tokens[key] = entry.get(key)
+            return {"tokens": tokens, "last_refresh": entry.get("last_refresh")}
+    except Exception:
+        logger.debug("Codex pool token-pair fallback lookup failed", exc_info=True)
+    return None
 
 
 # =============================================================================

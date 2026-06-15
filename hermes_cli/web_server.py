@@ -11242,27 +11242,38 @@ def _discover_dashboard_plugins() -> list:
     return plugins
 
 
-# Cache discovered plugins per-process (refresh on explicit re-scan).
+# Cache discovered plugins per-process (refresh on explicit re-scan or
+# whenever the active profile/HERMES_HOME changes).
 _dashboard_plugins_cache: Optional[list] = None
+_dashboard_plugins_cache_key: Optional[str] = None
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
-    global _dashboard_plugins_cache
-    if _dashboard_plugins_cache is None or force_rescan:
+    global _dashboard_plugins_cache, _dashboard_plugins_cache_key
+
+    current_key = str(get_hermes_home().resolve())
+    if (
+        force_rescan
+        or _dashboard_plugins_cache is None
+        or _dashboard_plugins_cache_key != current_key
+    ):
         _dashboard_plugins_cache = _discover_dashboard_plugins()
+        _dashboard_plugins_cache_key = current_key
     elif _dashboard_plugins_cache:
         if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
             _dashboard_plugins_cache = _discover_dashboard_plugins()
+            _dashboard_plugins_cache_key = current_key
     return _dashboard_plugins_cache
 
 
 @app.get("/api/dashboard/plugins")
-async def get_dashboard_plugins():
+async def get_dashboard_plugins(profile: Optional[str] = None):
     """Return discovered dashboard plugins (excludes user-hidden ones)."""
-    plugins = _get_dashboard_plugins()
-    # Read user's hidden plugins list from config.
-    config = load_config()
-    hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
+    with _profile_scope(profile):
+        plugins = _get_dashboard_plugins()
+        # Read user's hidden plugins list from config.
+        config = load_config()
+        hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
     # Strip internal fields before sending to frontend and filter out hidden.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
@@ -11272,9 +11283,10 @@ async def get_dashboard_plugins():
 
 
 @app.get("/api/dashboard/plugins/rescan")
-async def rescan_dashboard_plugins():
+async def rescan_dashboard_plugins(profile: Optional[str] = None):
     """Force re-scan of dashboard plugins."""
-    plugins = _get_dashboard_plugins(force_rescan=True)
+    with _profile_scope(profile):
+        plugins = _get_dashboard_plugins(force_rescan=True)
     return {"ok": True, "count": len(plugins)}
 
 
@@ -11410,32 +11422,38 @@ def _merged_plugins_hub() -> Dict[str, Any]:
 
 
 @app.get("/api/dashboard/plugins/hub")
-async def get_plugins_hub(request: Request):
+async def get_plugins_hub(request: Request, profile: Optional[str] = None):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return _merged_plugins_hub()
+        with _profile_scope(profile):
+            return _merged_plugins_hub()
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc
 
 
 @app.post("/api/dashboard/agent-plugins/install")
-async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
+async def post_agent_plugin_install(
+    request: Request,
+    body: _AgentPluginInstallBody,
+    profile: Optional[str] = None,
+):
     _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_install_plugin
 
-    result = dashboard_install_plugin(
-        body.identifier.strip(),
-        force=body.force,
-        enable=body.enable,
-    )
-    if not result.get("ok"):
-        raise HTTPException(
-            status_code=400,
-            detail=result.get("error") or "Install failed.",
+    with _profile_scope(profile):
+        result = dashboard_install_plugin(
+            body.identifier.strip(),
+            force=body.force,
+            enable=body.enable,
         )
-    _get_dashboard_plugins(force_rescan=True)
+        if not result.get("ok"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error") or "Install failed.",
+            )
+        _get_dashboard_plugins(force_rescan=True)
     # Strip internal paths from the response
     result.pop("after_install_path", None)
     return result
@@ -11450,52 +11468,56 @@ def _validate_plugin_name(name: str) -> str:
 
 
 @app.post("/api/dashboard/agent-plugins/{name:path}/enable")
-async def post_agent_plugin_enable(request: Request, name: str):
+async def post_agent_plugin_enable(request: Request, name: str, profile: Optional[str] = None):
     _require_token(request)
     name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
-    result = dashboard_set_agent_plugin_enabled(name, enabled=True)
+    with _profile_scope(profile):
+        result = dashboard_set_agent_plugin_enabled(name, enabled=True)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Enable failed.")
     return result
 
 
 @app.post("/api/dashboard/agent-plugins/{name:path}/disable")
-async def post_agent_plugin_disable(request: Request, name: str):
+async def post_agent_plugin_disable(request: Request, name: str, profile: Optional[str] = None):
     _require_token(request)
     name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
 
-    result = dashboard_set_agent_plugin_enabled(name, enabled=False)
+    with _profile_scope(profile):
+        result = dashboard_set_agent_plugin_enabled(name, enabled=False)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or "Disable failed.")
     return result
 
 
 @app.post("/api/dashboard/agent-plugins/{name:path}/update")
-async def post_agent_plugin_update(request: Request, name: str):
+async def post_agent_plugin_update(request: Request, name: str, profile: Optional[str] = None):
     _require_token(request)
     name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
 
-    result = dashboard_update_user_plugin(name)
-    if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
-    _get_dashboard_plugins(force_rescan=True)
+    with _profile_scope(profile):
+        result = dashboard_update_user_plugin(name)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
+        _get_dashboard_plugins(force_rescan=True)
     return result
 
 
 @app.delete("/api/dashboard/agent-plugins/{name:path}")
-async def delete_agent_plugin(request: Request, name: str):
+async def delete_agent_plugin(request: Request, name: str, profile: Optional[str] = None):
     _require_token(request)
     name = _validate_plugin_name(name)
     from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
 
-    result = dashboard_remove_user_plugin(name)
-    if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
-    _get_dashboard_plugins(force_rescan=True)
+    with _profile_scope(profile):
+        result = dashboard_remove_user_plugin(name)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Remove failed.")
+        _get_dashboard_plugins(force_rescan=True)
     return result
 
 
@@ -11505,7 +11527,11 @@ class _PluginProvidersPutBody(BaseModel):
 
 
 @app.put("/api/dashboard/plugin-providers")
-async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
+async def put_plugin_providers(
+    request: Request,
+    body: _PluginProvidersPutBody,
+    profile: Optional[str] = None,
+):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
     from hermes_cli.plugins_cmd import (
@@ -11513,10 +11539,11 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody):
         _save_memory_provider,
     )
 
-    if body.memory_provider is not None:
-        _save_memory_provider(body.memory_provider)
-    if body.context_engine is not None:
-        _save_context_engine(body.context_engine)
+    with _profile_scope(profile):
+        if body.memory_provider is not None:
+            _save_memory_provider(body.memory_provider)
+        if body.context_engine is not None:
+            _save_context_engine(body.context_engine)
     return {"ok": True}
 
 
@@ -11525,25 +11552,31 @@ class _PluginVisibilityBody(BaseModel):
 
 
 @app.post("/api/dashboard/plugins/{name:path}/visibility")
-async def post_plugin_visibility(request: Request, name: str, body: _PluginVisibilityBody):
+async def post_plugin_visibility(
+    request: Request,
+    name: str,
+    body: _PluginVisibilityBody,
+    profile: Optional[str] = None,
+):
     """Toggle a plugin's sidebar visibility (persists to config.yaml dashboard.hidden_plugins)."""
     _require_token(request)
     name = _validate_plugin_name(name)
 
-    config = load_config()
-    if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
-        config["dashboard"] = {}
-    hidden_list: list = config["dashboard"].get("hidden_plugins") or []
-    if not isinstance(hidden_list, list):
-        hidden_list = []
+    with _profile_scope(profile):
+        config = load_config()
+        if "dashboard" not in config or not isinstance(config.get("dashboard"), dict):
+            config["dashboard"] = {}
+        hidden_list: list = config["dashboard"].get("hidden_plugins") or []
+        if not isinstance(hidden_list, list):
+            hidden_list = []
 
-    if body.hidden and name not in hidden_list:
-        hidden_list.append(name)
-    elif not body.hidden and name in hidden_list:
-        hidden_list.remove(name)
+        if body.hidden and name not in hidden_list:
+            hidden_list.append(name)
+        elif not body.hidden and name in hidden_list:
+            hidden_list.remove(name)
 
-    config["dashboard"]["hidden_plugins"] = hidden_list
-    save_config(config)
+        config["dashboard"]["hidden_plugins"] = hidden_list
+        save_config(config)
     return {"ok": True, "name": name, "hidden": body.hidden}
 
 

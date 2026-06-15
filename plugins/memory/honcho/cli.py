@@ -699,7 +699,7 @@ def cmd_setup(args) -> None:
         peer_target = hermes_host.get("peerName") or current_peer or "user"
         default_choice = {"single": "1", "hybrid": "2", "multi": "3"}.get(current_shape, "3")
         print("\n  How should gateway users map to memory peers?")
-        print("    [1] just me — everyone collapses to your peer")
+        print("    [1] just me — every non-agent user collapses to your peer")
         print("    [2] me + other people — keep mine pooled, others separate")
         print("    [3] only other people — everyone gets their own peer")
         print("    [s] skip (leave untouched)   [e] edit raw keys")
@@ -739,7 +739,7 @@ def cmd_setup(args) -> None:
         if shape == "single":
             _scrub_identity_mapping(hermes_host)
             hermes_host["pinUserPeer"] = True
-            print(f"  All gateway users route to '{peer_target}'.")
+            print(f"  All non-agent gateway users route to '{peer_target}' (pin overrides aliases).")
             _echo_identity_mapping(hermes_host)
         elif shape == "multi":
             # Preserve operator-curated host-level aliases across multi → multi

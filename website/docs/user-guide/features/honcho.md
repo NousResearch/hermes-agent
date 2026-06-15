@@ -165,7 +165,7 @@ The setup wizard detects whether a gateway platform is connected and skips this 
 
 | Answer | Result |
 |--------|--------|
-| **just me** | `pinUserPeer: true` — everyone collapses to your peer |
+| **just me** | `pinUserPeer: true` — every non-agent gateway user collapses to your peer. Pin overrides all aliases, so pick this only when no user-side identity needs its own peer. If separate agents reach the gateway and each needs a distinct peer, do **not** pin — leave `pinUserPeer: false` and map them via `userPeerAliases` (the `[e]` editor) instead |
 | **me + other people** (pooled) | `pinUserPeer: false` + `userPeerAliases` mapping your runtime IDs to `peerName` — you stay on your shared history, others get their own peers |
 | **only other people** | `pinUserPeer: false`, optional `runtimePeerPrefix` — each user gets their own peer |
 

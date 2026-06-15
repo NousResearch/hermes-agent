@@ -16369,7 +16369,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key=session_key,
                 user_config=user_config,
             )
-            cache_busting_config = self._extract_cache_busting_config(user_config)
+            cache_busting_config = dict(self._extract_cache_busting_config(user_config) or {})
             cache_busting_config["skip_user_profile"] = skip_user_profile
             _sig = self._agent_config_signature(
                 turn_route["model"],

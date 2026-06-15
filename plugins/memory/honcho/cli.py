@@ -633,7 +633,35 @@ def cmd_setup(args) -> None:
         method = _prompt("OAuth or API key?", default="oauth").strip().lower()
         use_oauth = method in {"oauth", "o"}
 
-        if not use_oauth:
+        if use_oauth:
+            # Sign in now, up front — the browser link is the whole point, so
+            # don't bury it behind the identity prompts. The grant's tokens are
+            # merged into the in-memory cfg so the wizard's final save preserves
+            # them; settings stay wizard-owned (apply_config=False).
+            from plugins.memory.honcho.oauth_flow import authorize_via_loopback
+
+            def _open(url: str) -> None:
+                print(f"\n  Open this link to authorize (waiting up to 5 minutes):\n\n    {url}\n")
+                import webbrowser
+
+                webbrowser.open(url)
+
+            print("\n  Starting browser sign-in…")
+            try:
+                cred = authorize_via_loopback(
+                    config_path=write_path,
+                    source="hermes-cli",
+                    apply_config=False,
+                    open_url=_open,
+                )
+            except Exception as e:
+                print(f"  OAuth sign-in failed: {e}")
+                print("  Re-run 'hermes honcho setup' to retry, or choose an API key instead.\n")
+                return
+            hermes_host["apiKey"] = cred.access_token
+            hermes_host["oauth"] = cred.oauth_block()
+            print("  Authorized — token saved. Let's finish configuring.\n")
+        else:
             current_key = cfg.get("apiKey", "")
             masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
             print(f"\n  Current API key: {masked}")
@@ -893,33 +921,6 @@ def cmd_setup(args) -> None:
 
     _write_config(cfg)
     print(f"\n  Config written to {write_path}")
-
-    # --- OAuth sign-in (cloud) ---
-    # Runs after the wizard's save so the token write (atomic re-read/rewrite
-    # of the same file) can't be clobbered by it. apply_config=False: tokens
-    # only — CLI settings stay wizard-owned, never overwritten by the grant.
-    if use_oauth:
-        from plugins.memory.honcho.oauth_flow import authorize_via_loopback
-
-        def _open(url: str) -> None:
-            print(f"\n  Open this link to authorize (waiting up to 5 minutes):\n\n    {url}\n")
-            import webbrowser
-
-            webbrowser.open(url)
-
-        print("\n  Starting browser sign-in…")
-        try:
-            authorize_via_loopback(
-                config_path=write_path,
-                source="hermes-cli",
-                apply_config=False,
-                open_url=_open,
-            )
-            print("  Authorized — token saved.")
-        except Exception as e:
-            print(f"  OAuth sign-in failed: {e}")
-            print("  Re-run 'hermes honcho setup' to retry, or use an API key instead.\n")
-            return
 
     # --- Auto-enable Honcho as memory provider in config.yaml ---
     try:

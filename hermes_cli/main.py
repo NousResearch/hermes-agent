@@ -8270,10 +8270,16 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         )
         if diff.returncode != 0:
             return
+        dirty_pkg = [
+            line.strip()
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package.json")
+        ]
         dirty = [
             line.strip()
             for line in diff.stdout.splitlines()
             if line.strip().endswith("package-lock.json")
+            and str(Path(line.strip()).parent / "package.json") not in dirty_pkg
         ]
         if not dirty:
             return

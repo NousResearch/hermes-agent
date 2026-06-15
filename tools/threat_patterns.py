@@ -42,7 +42,73 @@ of "ignore all instructions").  This mirrors the fix applied to
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import List, Optional, Tuple
+
+# Homoglyph map: common Cyrillic and Greek confusables → Latin equivalents.
+# Scanned as a pre-pass before regex matching so "іgnore" (Cyrillic і)
+# collapses to "ignore" and the regex catches it.
+# Covers: lowercase Cyrillic, uppercase Cyrillic, lowercase Greek, uppercase Greek.
+#
+# CAVEAT: This map is hand-maintained and covers the English threat vocabulary.
+# A future pass could generate it from the Unicode UAX #36 confusables table
+# (https://www.unicode.org/reports/tr36/) for comprehensive coverage, but the
+# current set catches the common attack vectors seen in practice.
+_HOMOGLYPH_MAP = {
+    # Cyrillic lowercase
+    "\u0430": "a",  # а → a
+    "\u0435": "e",  # е → e
+    "\u043E": "o",  # о → o
+    "\u0440": "p",  # р → p
+    "\u0441": "c",  # с → c
+    "\u0445": "x",  # х → x
+    "\u0443": "y",  # у → y (Cyrillic u)
+    "\u0456": "i",  # і → i
+    "\u0457": "i",  # ї → i
+    "\u0458": "j",  # ј → j
+    "\u0455": "s",  # ѕ → s
+    # Cyrillic uppercase
+    "\u0410": "A",  # А → A
+    "\u0412": "B",  # В → B
+    "\u0415": "E",  # Е → E
+    "\u041A": "K",  # К → K
+    "\u041C": "M",  # М → M
+    "\u041D": "H",  # Н → H
+    "\u041E": "O",  # О → O
+    "\u0420": "P",  # Р → P
+    "\u0421": "C",  # С → C
+    "\u0422": "T",  # Т → T
+    "\u0425": "X",  # Х → X
+    # Greek lowercase
+    "\u03BF": "o",  # ο → o
+    "\u03B1": "a",  # α → a
+    "\u03B5": "e",  # ε → e
+    "\u03C1": "p",  # ρ → p
+    "\u03C5": "u",  # υ → u
+    # Greek uppercase
+    "\u0391": "A",  # Α → A
+    "\u0392": "B",  # Β → B
+    "\u0395": "E",  # Ε → E
+    "\u039F": "O",  # Ο → O
+    "\u03A1": "P",  # Ρ → P
+    "\u03A4": "T",  # Τ → T
+    "\u0399": "I",  # Ι → I
+    # Non-confusable (kept as-is)
+    "\u0471": "ψ",  # ѱ → ψ (keep as-is, not Latin-confusable)
+}
+
+
+def _normalize_confusables(text: str) -> str:
+    """Apply NFKC normalization + homoglyph fold for threat scanning.
+
+    Returns a copy of ``text`` with Unicode normalized and common
+    confusable characters replaced with their Latin look-alikes.
+    Original text is never mutated.
+    """
+    # NFKC first: decomposes compatibility chars (e.g. fullwidth "ｉ" → "i")
+    normalized = unicodedata.normalize("NFKC", text)
+    # Then fold homoglyphs
+    return "".join(_HOMOGLYPH_MAP.get(c, c) for c in normalized)
 
 # Each entry: (regex, pattern_id, scope)
 # scope ∈ {"all", "context", "strict"}
@@ -213,12 +279,21 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     for ch in invisible_hits:
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
 
-    # Threat patterns
+    # Threat patterns — scan both original and confusable-folded copies.
+    # The original catches ASCII/clean-Unicode attacks; the folded copy
+    # catches homoglyph bypasses (e.g. Cyrillic "і" in "іgnore").
+    # Scanning both (not just the folded copy) preserves detection of
+    # patterns that rely on specific Unicode codepoints.
     patterns = _COMPILED.get(scope)
     if patterns is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
+    folded = _normalize_confusables(content)
+    # ASCII short-circuit: if no confusables were folded, scan only the original
+    # string (avoids a redundant second regex pass on pure-ASCII content, which
+    # is the overwhelming majority of tool-result scans).
+    haystacks = (content,) if folded == content else (content, folded)
     for compiled, pid in patterns:
-        if compiled.search(content):
+        if any(compiled.search(h) for h in haystacks):
             findings.append(pid)
 
     return findings

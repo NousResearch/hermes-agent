@@ -650,3 +650,112 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+# =========================================================================
+# read() action (GAP 1 fix)
+# =========================================================================
+
+class TestMemoryStoreRead:
+    def test_read_memory(self, store):
+        store.add("memory", "entry 1")
+        store.add("memory", "entry 2")
+        result = store.read("memory")
+        assert result["success"] is True
+        assert result["entry_count"] == 2
+        assert "entry 1" in result["entries"]
+
+    def test_read_user(self, store):
+        store.add("user", "Alice, developer")
+        result = store.read("user")
+        assert result["success"] is True
+        assert "Alice, developer" in result["entries"]
+
+    def test_read_empty(self, store):
+        result = store.read("memory")
+        assert result["success"] is True
+        assert result["entry_count"] == 0
+
+    def test_read_via_tool_dispatcher(self, store):
+        store.add("memory", "test entry")
+        result = json.loads(memory_tool(action="read", target="memory", store=store))
+        assert result["success"] is True
+        assert "test entry" in result["entries"]
+
+    def test_read_reflects_writes(self, store):
+        """read() returns live state, not frozen snapshot."""
+        result1 = store.read("memory")
+        assert result1["entry_count"] == 0
+
+        store.add("memory", "new entry")
+        result2 = store.read("memory")
+        assert result2["entry_count"] == 1
+
+
+# =========================================================================
+# Phase 2 verification tests
+#
+# M3 write-then-commit: failed disk writes must not leave phantom entries
+# in memory. GAP 2 headroom reporting. M2 lock-unavailable warning.
+# Assert on DIRECT in-memory state — NOT via read() which reloads from disk
+# and would mask any phantom.
+# =========================================================================
+
+from unittest.mock import patch
+import logging
+
+
+class TestM3WriteThenCommit:
+    """A failing _write_file must leave in-memory state unchanged."""
+
+    def test_failed_write_keeps_memory_clean_add(self, store):
+        store.add("memory", "First entry")
+        with patch.object(store, "_write_file", side_effect=RuntimeError("disk full")):
+            result = store.add("memory", "Second entry")
+        assert result["success"] is False
+        assert store.memory_entries == ["First entry"]  # direct check, no reload
+
+    def test_failed_write_keeps_memory_clean_replace(self, store):
+        store.add("memory", "Original")
+        with patch.object(store, "_write_file", side_effect=RuntimeError("disk full")):
+            result = store.replace("memory", "Original", "Replacement")
+        assert result["success"] is False
+        assert store.memory_entries == ["Original"]
+
+    def test_failed_write_keeps_memory_clean_remove(self, store):
+        store.add("memory", "Keep")
+        store.add("memory", "Remove")
+        with patch.object(store, "_write_file", side_effect=RuntimeError("disk full")):
+            result = store.remove("memory", "Remove")
+        assert result["success"] is False
+        assert store.memory_entries == ["Keep", "Remove"]
+
+    def test_failed_write_error_dict_has_error_message(self, store):
+        """The error dict must carry the RuntimeError message."""
+        with patch.object(store, "_write_file", side_effect=RuntimeError("IO failure xyz")):
+            result = store.add("memory", "Won't persist")
+        assert result["success"] is False
+        assert "IO failure xyz" in result["error"]
+
+
+class TestGAP2HeadroomReporting:
+    """Overflow errors must include headroom_chars for consolidation guidance."""
+
+    def test_overflow_error_includes_headroom(self, store):
+        store.add("memory", "x" * 480)  # near the 500-char limit
+        result = store.add("memory", "y" * 50)  # would overflow
+        assert result["success"] is False
+        assert "headroom_chars" in result
+        current = len(("\n§\n").join(store.memory_entries))
+        assert result["headroom_chars"] == max(0, 500 - current)
+
+
+class TestM2LockWarning:
+    """When no file-locking primitive is available, a warning must be logged."""
+
+    def test_lock_unavailable_logs_warning(self, store, caplog):
+        with patch("tools.memory_tool.fcntl", None), patch("tools.memory_tool.msvcrt", None):
+            with caplog.at_level(logging.WARNING):
+                with store._file_lock(store._path_for("memory")):
+                    pass
+        assert "no file-locking primitive" in caplog.text

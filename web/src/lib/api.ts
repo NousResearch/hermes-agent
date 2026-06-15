@@ -817,6 +817,11 @@ export const api = {
       { method: "DELETE" },
     ),
 
+  getWhatsappQR: () =>
+    fetchJSON<WhatsappQRResponse>("/api/messaging/whatsapp/qr"),
+  resetWhatsappSession: () =>
+    fetchJSON<{ ok: boolean }>("/api/messaging/whatsapp/reset", { method: "POST" }),
+
   // Gateway / update actions
   restartGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
@@ -1628,6 +1633,11 @@ export interface EnvVarInfo {
   advanced: boolean;
   /** True when this var is a messaging-platform credential owned by the Channels page. */
   channel_managed?: boolean;
+}
+
+export interface WhatsappQRResponse {
+  status: "disconnected" | "qr_pending" | "connected" | string;
+  qr: string | null;
 }
 
 export interface TelegramOnboardingStartResponse {

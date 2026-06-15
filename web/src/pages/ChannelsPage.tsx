@@ -29,6 +29,7 @@ import type {
   MessagingPlatformEnvVar,
   MessagingPlatformUpdate,
   TelegramOnboardingStartResponse,
+  WhatsappQRResponse,
 } from "@/lib/api";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -451,6 +452,9 @@ export default function ChannelsPage() {
                     showToast={showToast}
                   />
                 )}
+                {platform.id === "whatsapp" && (
+                  <WhatsappOnboardingPanel showToast={showToast} />
+                )}
               </CardContent>
             </Card>
           );
@@ -803,6 +807,113 @@ function TelegramOnboardingPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function WhatsappOnboardingPanel({
+  showToast,
+}: {
+  showToast: (message: string, type: "success" | "error") => void;
+}) {
+  const [data, setData] = useState<WhatsappQRResponse | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [resetting, setResetting] = useState(false);
+
+  const fetchQR = useCallback(async () => {
+    try {
+      const res = await api.getWhatsappQR();
+      setData(res);
+      if (res.qr) {
+        const url = await QRCode.toDataURL(res.qr, {
+          errorCorrectionLevel: "M",
+          margin: 1,
+          width: 224,
+        });
+        setQrDataUrl(url);
+      } else {
+        setQrDataUrl("");
+      }
+    } catch {
+      // bridge not running — silently skip
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchQR();
+    const timer = setInterval(fetchQR, 3000);
+    return () => clearInterval(timer);
+  }, [fetchQR]);
+
+  const handleReset = async () => {
+    if (!window.confirm("Delete WhatsApp session and re-pair with a new QR code?")) return;
+    setResetting(true);
+    try {
+      await api.resetWhatsappSession();
+      setData(null);
+      setQrDataUrl("");
+      showToast("Session reset — scan the new QR code", "success");
+      setTimeout(fetchQR, 1500);
+    } catch (e) {
+      showToast(`Reset failed: ${e}`, "error");
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  if (!data) return null;
+
+  const isConnected = data.status === "connected";
+  const isPending = data.status === "qr_pending";
+
+  return (
+    <div className="mt-4 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium text-muted-foreground">WhatsApp pairing</span>
+        {isConnected && (
+          <Badge tone="success">Connected</Badge>
+        )}
+        {isPending && (
+          <Badge tone="warning">Scan QR to pair</Badge>
+        )}
+        {!isConnected && !isPending && (
+          <Badge tone="outline">{data.status}</Badge>
+        )}
+      </div>
+
+      {isPending && qrDataUrl && (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-xs text-muted-foreground">
+            Open WhatsApp on your phone → Linked Devices → Link a Device
+          </p>
+          <img
+            src={qrDataUrl}
+            alt="WhatsApp QR code"
+            className="rounded border border-border"
+            width={224}
+            height={224}
+          />
+        </div>
+      )}
+
+      {isConnected && (
+        <p className="text-xs text-muted-foreground">
+          WhatsApp is connected. Use the button below to re-pair if needed.
+        </p>
+      )}
+
+      <div>
+        <Button
+          ghost
+          size="sm"
+          className="uppercase text-destructive"
+          onClick={handleReset}
+          disabled={resetting}
+          prefix={resetting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
+        >
+          {resetting ? "Resetting…" : "Reset & re-pair"}
+        </Button>
+      </div>
     </div>
   );
 }

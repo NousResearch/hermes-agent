@@ -196,6 +196,7 @@ const MAX_RECENT_IDS = 50;
 
 let sock = null;
 let connectionState = 'disconnected';
+let latestQR = null;
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -224,6 +225,8 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      latestQR = qr;
+      connectionState = "qr_pending";
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       console.log('\nWaiting for scan...\n');
@@ -234,6 +237,7 @@ async function startSocket() {
       connectionState = 'disconnected';
 
       if (reason === DisconnectReason.loggedOut) {
+        latestQR = null;
         console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         process.exit(1);
       } else {
@@ -712,6 +716,30 @@ app.get('/chat/:id', async (req, res) => {
     isGroup,
     participants: [],
   });
+});
+
+// QR code for dashboard pairing
+app.get("/qr", (req, res) => {
+  res.json({ status: connectionState, qr: latestQR });
+});
+
+// Reset session
+app.post("/reset-session", async (req, res) => {
+  try {
+    const { readdirSync: rd, unlinkSync: ul, existsSync: ex } = await import("fs");
+    if (ex(SESSION_DIR)) {
+      for (const f of rd(SESSION_DIR)) {
+        try { ul(SESSION_DIR + "/" + f); } catch (_) {}
+      }
+    }
+    latestQR = null;
+    connectionState = "disconnected";
+    if (sock) { try { sock.end(undefined); } catch (_) {} sock = null; }
+    setTimeout(startSocket, 500);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 // Health check

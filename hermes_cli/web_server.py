@@ -4738,6 +4738,42 @@ async def cancel_telegram_onboarding(pairing_id: str):
     return {"ok": True}
 
 
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp QR pairing endpoints
+# ---------------------------------------------------------------------------
+
+_WHATSAPP_BRIDGE_PORT = int(os.environ.get("WHATSAPP_BRIDGE_PORT", "3000"))
+
+
+def _whatsapp_bridge_request(method, path):
+    import urllib.request as _ur
+    url = f"http://127.0.0.1:{_WHATSAPP_BRIDGE_PORT}{path}"
+    data = b"{}" if method == "POST" else None
+    headers = {"Host": "localhost"}
+    if data:
+        headers["Content-Type"] = "application/json"
+    req = _ur.Request(url, data=data, method=method, headers=headers)
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:
+            import json as _json
+            return _json.loads(resp.read().decode())
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Bridge unreachable: {exc}")
+
+
+@app.get("/api/messaging/whatsapp/qr")
+async def get_whatsapp_qr():
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _whatsapp_bridge_request("GET", "/qr"))
+
+
+@app.post("/api/messaging/whatsapp/reset")
+async def reset_whatsapp_session():
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: _whatsapp_bridge_request("POST", "/reset-session"))
+
 @app.get("/api/messaging/platforms")
 async def get_messaging_platforms(profile: Optional[str] = None):
     # Profile-scoped so the dashboard's global profile switcher shows the

@@ -131,9 +131,16 @@ export const findStableBoundary = (text: string) => {
 export const StreamingMd = memo(function StreamingMd({ cols, compact, t, text }: StreamingMdProps) {
   const stablePrefixRef = useRef('')
 
-  // Reset if the text no longer starts with our recorded prefix (defensive;
-  // normally the component unmounts between turns so this shouldn't trigger).
-  if (!text.startsWith(stablePrefixRef.current)) {
+  // Reset the prefix cache when the text content has changed dramatically.
+  // This can happen when tool results arrive mid-stream and the message
+  // text is restructured.  Without this, a stale prefix can lock in a
+  // boundary that was correct for the old (shorter) text but splits the
+  // new (much longer) text incorrectly.
+  //
+  // Guard: reset if the text no longer starts with the recorded prefix
+  // (different message entirely), OR if the text has grown more than
+  // 8x the current prefix length (tool results appended mid-stream).
+  if (!text.startsWith(stablePrefixRef.current) || text.length > stablePrefixRef.current.length * 8) {
     stablePrefixRef.current = ''
   }
 

@@ -285,6 +285,18 @@ export function useVirtualHistory(
       while (start > 0 && total - offsets[start - 1]! < budget) {
         start--
       }
+
+      // During liveTailActive, the streaming item's key changes on every
+      // delta (messageHeightKey includes hashText). heights.current has
+      // only the ESTIMATE seed for the new key — not a Yoga measurement.
+      // With a 4-row seed for a 50+ row message, `total` is severely
+      // underestimated, `start` lands near `n`, and the topSpacer pushes
+      // the prefix out of view (Issue #46606).  Fall back to mounting the
+      // viewport's worth of items from the end so real rendered heights
+      // cover the visible area regardless of stale estimates.
+      if (liveTailActive && n > 0) {
+        start = Math.max(0, Math.min(start, n - Math.ceil(vp / estimate)))
+      }
     } else {
       // User scrolled up. Span [committed..target] so every drain frame is
       // covered. Claude-code caps the span at 3×viewport so pendingDelta

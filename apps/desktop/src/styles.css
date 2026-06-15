@@ -158,6 +158,7 @@
     --ui-accent-secondary: var(--theme-primary);
     --ui-warm: var(--theme-warm);
     --ui-unread-contrast: var(--theme-unread-contrast, #38bdf8);
+    --ui-unread-stroke: var(--theme-unread-stroke, #38bdf8);
     --ui-red: #cf2d56;
     --ui-orange: #db704b;
     --ui-yellow: #c08532;

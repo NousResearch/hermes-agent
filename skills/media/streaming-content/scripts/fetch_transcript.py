@@ -43,13 +43,24 @@ def _find_hermes_root(start):
     return None
 
 
+def _find_ffmpeg():
+    """Locate ffmpeg's directory even when it isn't on PATH — non-interactive shells
+    routinely omit /opt/homebrew/bin or /usr/local/bin. Returns the dir, or None."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return os.path.dirname(found)
+    for d in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/snap/bin"):
+        if os.path.exists(os.path.join(d, "ffmpeg")):
+            return d
+    return None
+
+
 def download_audio(url, dest_dir):
-    """Download a single clip/VOD's audio. Returns yt-dlp's info dict and the mp3 path."""
+    """Download a single clip/VOD's audio. Returns (info, audio_path, error)."""
     try:
         import yt_dlp
     except ImportError:
-        print(json.dumps({"error": "yt-dlp not installed. Run: pip install yt-dlp"}))
-        sys.exit(1)
+        return None, "", "yt-dlp not installed. Run: pip install yt-dlp"
 
     opts = {
         "format": "bestaudio/best",
@@ -62,14 +73,25 @@ def download_audio(url, dest_dir):
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "5"}
         ],
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+    ffmpeg_dir = _find_ffmpeg()
+    if ffmpeg_dir:
+        opts["ffmpeg_location"] = ffmpeg_dir   # so audio extraction works off-PATH
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except Exception as e:
+        msg = str(e)
+        if "ffmpeg" in msg.lower() or "ffprobe" in msg.lower():
+            msg = ("ffmpeg/ffprobe not found. Install ffmpeg "
+                   "(brew install ffmpeg / apt install ffmpeg).")
+        return None, "", "download failed: %s" % msg
 
     audio_path = os.path.join(dest_dir, "audio.mp3")
     if not os.path.exists(audio_path):
         candidates = sorted(Path(dest_dir).glob("audio.*"))
         audio_path = str(candidates[0]) if candidates else ""
-    return info, audio_path
+    return info, audio_path, ""
 
 
 def transcribe(audio_path):
@@ -96,9 +118,9 @@ def main():
 
     work_dir = tempfile.mkdtemp(prefix="streaming-content-")
     try:
-        info, audio_path = download_audio(args.url, work_dir)
-        if not audio_path:
-            print(json.dumps({"error": "audio download failed"}))
+        info, audio_path, err = download_audio(args.url, work_dir)
+        if err or not audio_path:
+            print(json.dumps({"error": err or "audio download failed"}))
             sys.exit(1)
 
         result = transcribe(audio_path)

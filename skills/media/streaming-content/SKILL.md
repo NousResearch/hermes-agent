@@ -1,8 +1,8 @@
 ---
 name: streaming-content
 description: >
-  Fetch transcripts from live-streaming clips and VODs (Twitch, Kick, Rumble, and other
-  yt-dlp-supported platforms) and transform them into structured content (summaries,
+  Fetch transcripts from clips and VODs on live-streaming platforms (Twitch, Kick, Rumble,
+  and other yt-dlp-supported sites) and transform them into structured content (summaries,
   threads, blog posts, quotes). Use when the user shares a Twitch / Kick / Rumble clip or
   VOD link, asks to summarize a stream, or wants a transcript from a live-streaming
   platform. For YouTube, use the youtube-content skill instead — it reads served captions

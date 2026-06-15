@@ -17,8 +17,8 @@ downloads the audio and transcribes it.
 
 ## How it works
 
-1. `yt-dlp` downloads the clip/VOD audio.
-2. The shared `transcribe_audio()` tool transcribes it (local faster-whisper, Groq, or
+1. If the source already serves a caption track (some Rumble videos do), `yt-dlp` reads it directly - no download, no transcription.
+2. Otherwise (Twitch, Kick), `yt-dlp` downloads the audio and the shared `transcribe_audio()` tool transcribes it (local faster-whisper, Groq, or
    OpenAI — whichever the environment is configured for).
 3. The transcript is returned as JSON, ready to reshape.
 

@@ -3,10 +3,14 @@
 Fetch a transcript for a live-streaming clip or VOD (Twitch, Kick, Rumble, ...) and
 output it as structured JSON.
 
-Unlike YouTube, these platforms don't serve caption tracks, so this script:
-  1. downloads the audio with yt-dlp, then
-  2. transcribes it with the shared ``transcribe_audio`` tool (faster-whisper / Groq /
-     OpenAI, whichever the environment is configured for).
+Live-streaming platforms are inconsistent about captions: Twitch and Kick serve no
+caption track at all, while some Rumble videos expose an auto-generated one. So this
+script:
+  1. reads a served caption track directly when the source exposes one (cheap — no
+     download, no transcription), otherwise
+  2. downloads the audio with yt-dlp and transcribes it with the shared
+     ``transcribe_audio`` tool (faster-whisper / Groq / OpenAI, whichever the
+     environment is configured for).
 
 Usage:
     python fetch_transcript.py <url> [--text-only] [--keep-audio]
@@ -18,17 +22,19 @@ Output (JSON):
         "uploader": "...",
         "title": "...",
         "duration": 40,
-        "provider": "openai",
+        "provider": "served-captions" | "openai" | ...,
         "full_text": "complete transcript as plain text"
     }
 
-Dependencies: yt-dlp (pip), ffmpeg (on PATH). Requires Python 3.10+ — older interpreters
-silently fail Twitch's GraphQL, so run inside the Hermes venv.
+Dependencies: yt-dlp (pip), ffmpeg (on PATH, only needed for the transcribe path).
+Requires Python 3.10+ — older interpreters silently fail Twitch's GraphQL, so run
+inside the Hermes venv.
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -53,6 +59,88 @@ def _find_ffmpeg():
         if os.path.exists(os.path.join(d, "ffmpeg")):
             return d
     return None
+
+
+def _captions_to_text(path):
+    """Flatten a .vtt/.srt caption file to plain text: drop the WEBVTT header, cue
+    numbers, timestamp lines, and inline timing tags, and collapse the consecutive
+    duplicate lines that auto-generated captions emit."""
+    lines = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for raw in f:
+            s = raw.strip()
+            if not s or s == "WEBVTT" or "-->" in s or s.isdigit():
+                continue
+            if s.startswith(("NOTE", "Kind:", "Language:")):
+                continue
+            s = re.sub(r"<[^>]+>", "", s)  # strip <00:00:00.000>-style inline tags
+            if s:
+                lines.append(s)
+    out = []
+    for ln in lines:
+        if not out or out[-1] != ln:
+            out.append(ln)
+    return " ".join(out).strip()
+
+
+def fetch_served_captions(url, dest_dir):
+    """If the source already exposes a caption/subtitle track, fetch and return
+    (info, text) — skipping the whole audio download + transcription pass. Returns
+    (info, None) when there's no usable track (Twitch, Kick, ...), so the caller
+    falls back to download + transcribe. Prefers a manual track over auto-generated,
+    and English over other languages."""
+    try:
+        import yt_dlp
+    except ImportError:
+        return None, None
+
+    probe = {"quiet": True, "no_warnings": True, "skip_download": True}
+    try:
+        with yt_dlp.YoutubeDL(probe) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:
+        return None, None
+
+    subs = info.get("subtitles") or {}
+    auto = info.get("automatic_captions") or {}
+
+    def _pick(tracks):
+        if not tracks:
+            return None
+        for lang in tracks:
+            if lang.lower().startswith("en"):
+                return lang
+        return next(iter(tracks))
+
+    manual = _pick(subs)
+    lang = manual or _pick(auto)
+    if not lang:
+        return info, None
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "writesubtitles": bool(manual),
+        "writeautomaticsub": not bool(manual),
+        "subtitleslangs": [lang],
+        "subtitlesformat": "vtt/srt/best",
+        "outtmpl": os.path.join(dest_dir, "caption.%(ext)s"),
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception:
+        return info, None
+
+    found = sorted(Path(dest_dir).glob("caption*.vtt")) + sorted(Path(dest_dir).glob("caption*.srt"))
+    if not found:
+        found = sorted(Path(dest_dir).glob("*.vtt")) + sorted(Path(dest_dir).glob("*.srt"))
+    if not found:
+        return info, None
+
+    text = _captions_to_text(str(found[0]))
+    return info, (text or None)
 
 
 def download_audio(url, dest_dir):
@@ -118,18 +206,30 @@ def main():
 
     work_dir = tempfile.mkdtemp(prefix="streaming-content-")
     try:
-        info, audio_path, err = download_audio(args.url, work_dir)
-        if err or not audio_path:
-            print(json.dumps({"error": err or "audio download failed"}))
-            sys.exit(1)
+        # 1) If the source already serves a caption track (e.g. some Rumble videos),
+        #    read it directly — no audio download, no transcription.
+        info, cap_text = fetch_served_captions(args.url, work_dir)
+        if cap_text:
+            text = cap_text
+            provider = "served-captions"
+        else:
+            # 2) No caption track (Twitch, Kick, ...) — download the audio + transcribe.
+            dl_info, audio_path, err = download_audio(args.url, work_dir)
+            info = info or dl_info
+            if err or not audio_path:
+                print(json.dumps({"error": err or "audio download failed"}))
+                sys.exit(1)
 
-        result = transcribe(audio_path)
-        if not result.get("success"):
-            print(json.dumps({"error": result.get("error", "transcription failed")}))
-            sys.exit(1)
+            result = transcribe(audio_path)
+            if not result.get("success"):
+                print(json.dumps({"error": result.get("error", "transcription failed")}))
+                sys.exit(1)
+
+            text = result.get("transcript") or result.get("text") or ""
+            provider = result.get("provider")
 
         info = info or {}
-        text = (result.get("transcript") or result.get("text") or "").strip()
+        text = (text or "").strip()
 
         if args.text_only:
             print(text)
@@ -141,7 +241,7 @@ def main():
             "uploader": info.get("uploader") or info.get("channel"),
             "title": info.get("title"),
             "duration": info.get("duration"),
-            "provider": result.get("provider"),
+            "provider": provider,
             "full_text": text,
         }, ensure_ascii=False, indent=2))
     finally:

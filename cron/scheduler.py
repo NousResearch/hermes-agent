@@ -656,6 +656,33 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _cron_delivery_max_chars(config: dict) -> Optional[int]:
+    """Return configured max chars for user-facing cron delivery text."""
+    try:
+        cron_cfg = config.get("cron", {}) if isinstance(config, dict) else {}
+        raw = cron_cfg.get("max_delivery_chars") or cron_cfg.get("delivery_max_chars")
+        if raw in (None, "", False):
+            return None
+        limit = int(float(raw))
+        return limit if limit > 0 else None
+    except Exception:
+        return None
+
+
+def _truncate_cron_delivery_text(text: str, limit: Optional[int], job_id: str) -> str:
+    """Bound oversized cron chat text while keeping full output in cron/output."""
+    if not limit or len(text) <= limit:
+        return text
+    marker = (
+        "\n\n…\n"
+        f"[cron output truncated to {limit} chars; full output saved under "
+        f"cron/output/{job_id}/ in Hermes home]"
+    )
+    if limit <= len(marker) + 20:
+        return text[:limit]
+    return text[: limit - len(marker)].rstrip() + marker
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -682,6 +709,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
     # in config.yaml for clean output.
     wrap_response = True
+    user_cfg = {}
     try:
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
@@ -701,10 +729,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    # Extract MEDIA: tags so attachments are forwarded as files, not raw text.
+    # Apply the delivery length cap after extraction so MEDIA attachments are
+    # not accidentally removed from long report text.
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    cleaned_delivery_content = _truncate_cron_delivery_text(
+        cleaned_delivery_content,
+        _cron_delivery_max_chars(user_cfg),
+        job.get("id", ""),
+    )
 
     try:
         config = load_gateway_config()

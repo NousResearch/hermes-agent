@@ -190,6 +190,15 @@ By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
 - A footer noting the agent cannot see the delivered message in conversation
 
+Set `cron.max_delivery_chars` in `config.yaml` to cap the user-facing text delivered to chat platforms. The scheduler saves the full, untruncated job output under `cron/output/<job_id>/` in Hermes home before delivery, then truncates only the chat text and appends a pointer to that output directory. `MEDIA:` attachments are extracted before truncation, so file/image/audio attachments still deliver even when the text is capped.
+
+```yaml
+cron:
+  max_delivery_chars: 900
+```
+
+The cap is opt-in; when unset or invalid, delivery text is not truncated.
+
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
 ### Session Isolation

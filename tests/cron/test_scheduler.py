@@ -575,6 +575,103 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
+    def test_delivery_truncates_oversized_chat_text_when_configured(self):
+        """cron.max_delivery_chars caps user-facing text while preserving a file pointer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "max_delivery_chars": 180}}):
+            job = {
+                "id": "long-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "A" * 500)
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert len(sent_content) <= 180
+        assert "cron output truncated" in sent_content
+        assert "cron/output/long-job/ in Hermes home" in sent_content
+
+    def test_delivery_cap_defaults_to_no_truncation_when_unset(self):
+        """Absent cron.max_delivery_chars preserves existing delivery behavior."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            job = {
+                "id": "uncapped-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "A" * 500)
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "A" * 500
+        assert "cron output truncated" not in sent_content
+
+    def test_delivery_cap_applies_to_wrapped_default_response(self):
+        """Default wrapped cron responses are also bounded when cap is configured."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"max_delivery_chars": 180}}):
+            job = {
+                "id": "wrapped-long-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "A" * 500)
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert len(sent_content) <= 180
+        assert "Cronjob Response: wrapped-long-job" in sent_content
+        assert "cron output truncated" in sent_content
+        assert "cron/output/wrapped-long-job/ in Hermes home" in sent_content
+
+    def test_delivery_length_cap_does_not_drop_media_attachments(self, tmp_path, monkeypatch):
+        """MEDIA tags are extracted before text truncation, so attachments survive."""
+        from gateway.config import Platform
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "long-report.png")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False, "max_delivery_chars": 140}}):
+            job = {
+                "id": "media-long-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, ("A" * 500) + f"\nMEDIA:{media_path}")
+
+        args, kwargs = send_mock.call_args
+        assert len(args[3]) <= 140
+        assert "MEDIA:" not in args[3]
+        assert kwargs["media_files"] == [(str(media_path), False)]
+
     def test_delivery_extracts_media_tags_before_send(self, tmp_path, monkeypatch):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform

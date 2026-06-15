@@ -138,6 +138,33 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+### Rich message formatting
+
+Hermes uses Telegram Bot API Rich Messages automatically for Markdown constructs
+that Telegram's legacy `sendMessage` + MarkdownV2 path cannot render natively,
+including tables, task lists, and display math. Plain messages still use the
+legacy path by default for maximum client compatibility.
+
+You can override the default in `config.yaml` under the Telegram platform
+`extra` block:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      rich_messages: auto    # default: auto | always | off
+```
+
+- `auto` — use rich messages only when needed for tables/task lists/math
+- `always` or `true` — send all final messages through `sendRichMessage`
+- `off` or `false` — disable rich messages entirely
+
+Restart the gateway after changing this setting:
+
+```bash
+hermes gateway restart
+```
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are

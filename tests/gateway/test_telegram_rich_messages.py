@@ -184,7 +184,7 @@ async def test_rich_messages_opt_out_accepts_string_false():
 
 
 @pytest.mark.asyncio
-async def test_rich_messages_default_is_disabled():
+async def test_rich_messages_default_auto_sends_structured_markdown():
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = TelegramAdapter(config)
     bot = MagicMock()
@@ -196,8 +196,23 @@ async def test_rich_messages_default_is_disabled():
     result = await adapter.send("12345", RICH_CONTENT)
 
     assert result.success is True
-    bot = adapter._bot
-    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_default_auto_keeps_plain_text_on_legacy_path():
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", "Plain **bold** text")
+
+    assert result.success is True
     bot.do_api_request.assert_not_called()
     bot.send_message.assert_awaited()
 

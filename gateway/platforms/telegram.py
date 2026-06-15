@@ -419,11 +419,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages: when explicitly enabled, send final
-        # replies via sendRichMessage with the raw agent markdown so
-        # tables/task lists/etc. render natively. Disabled by default because
-        # several Telegram clients accept but render rich messages poorly.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Bot API 10.1 Rich Messages: default to "auto" so rich-only markdown
+        # constructs (tables, task lists, display math) render natively while
+        # ordinary text stays on the battle-tested MarkdownV2 path. Operators
+        # can still force "always"/true or disable with false/"off".
+        self._rich_messages_mode: str = self._coerce_rich_messages_mode(
+            self.config.extra.get("rich_messages", "auto")
+        )
+        self._rich_messages_enabled: bool = self._rich_messages_mode != "off"
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -912,6 +915,47 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    @staticmethod
+    def _coerce_rich_messages_mode(value: Any) -> str:
+        """Normalize ``extra.rich_messages`` to off/auto/always.
+
+        Backwards compatible with the previous boolean contract:
+        ``true`` means force rich for all final messages, ``false`` disables
+        rich entirely. The new default string ``auto`` only uses rich delivery
+        for Markdown constructs the legacy MarkdownV2 path cannot preserve.
+        """
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"auto", "smart", "needed"}:
+                return "auto"
+            if lowered in {"true", "1", "yes", "on", "always", "all"}:
+                return "always"
+            if lowered in {"false", "0", "no", "off", "never"}:
+                return "off"
+            return "auto"
+        return "always" if bool(value) else "off"
+
+    @staticmethod
+    def _content_needs_rich_markdown(content: str) -> bool:
+        """True for Markdown constructs degraded by sendMessage+MarkdownV2."""
+        if not content:
+            return False
+        if "|" in content and any(
+            _TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()
+        ):
+            return True
+        if re.search(r"(?m)^\s*\$\$[\s\S]*?\$\$\s*$", content):
+            return True
+        if re.search(r"(?m)^```math\b", content):
+            return True
+        if re.search(r"(?m)^\s*[-*+]\s+\[[ xX]\]\s+", content):
+            return True
+        return False
+
+    def _rich_mode_allows_content(self, content: str) -> bool:
+        mode = getattr(self, "_rich_messages_mode", "off")
+        return mode == "always" or (mode == "auto" and self._content_needs_rich_markdown(content))
+
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}
@@ -988,6 +1032,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
+            and self._rich_mode_allows_content(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
@@ -1020,6 +1065,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if (
             getattr(self, "_rich_messages_enabled", False)
+            and getattr(self, "_rich_messages_mode", "off") == "always"
             and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
@@ -1214,6 +1260,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
+            and self._rich_mode_allows_content(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()

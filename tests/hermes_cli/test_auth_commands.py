@@ -1745,6 +1745,7 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
         {
             "version": 1,
             "credential_pool": {"copilot": []},
+            "active_provider": "copilot",
         },
     )
 

@@ -125,6 +125,30 @@ def test_bot_state_rewrites_growing_same_speaker_caption_row(tmp_path):
     assert status["transcriptLines"] == 1
 
 
+def test_bot_state_rewrites_interleaved_growing_caption_row(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "We should start with requirements.")
+    state.record_caption("Jordan Lee", "The background audio is duplicated.")
+    state.record_caption(
+        "Alex Rivera",
+        "We should start with requirements and then verify the transcript.",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: We should start with requirements and then verify the transcript.",
+        "Jordan Lee: The background audio is duplicated.",
+    ]
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 2
+
+
 def test_bot_state_rewrites_similar_same_speaker_caption_edit(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 

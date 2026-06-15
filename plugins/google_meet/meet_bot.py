@@ -244,25 +244,28 @@ class _BotState:
         if segment_key in self._seen_transcript_segments:
             return
 
-        if self._transcript_entries:
-            _, previous_speaker, previous_text = self._transcript_entries[-1]
-            if previous_speaker == speaker:
-                if (
-                    allow_revision
-                    and self._is_caption_revision(previous_text, text)
-                    and len(text) <= MAX_TRANSCRIPT_TEXT_LEN
-                ):
-                    self._transcript_entries[-1] = (ts, speaker, text)
-                    self._seen_transcript_segments.add(f"{speaker}|{text}")
+        recent_start = max(0, len(self._transcript_entries) - 24)
+        for idx in range(len(self._transcript_entries) - 1, recent_start - 1, -1):
+            _, previous_speaker, previous_text = self._transcript_entries[idx]
+            if previous_speaker != speaker:
+                continue
+            if (
+                allow_revision
+                and self._is_caption_revision(previous_text, text)
+                and len(text) <= MAX_TRANSCRIPT_TEXT_LEN
+            ):
+                self._transcript_entries[idx] = (ts, speaker, text)
+                self._seen_transcript_segments.add(f"{speaker}|{text}")
+                self._rewrite_transcript()
+                return
+            if combine_with_previous:
+                combined = f"{previous_text} {text}".strip()
+                if len(combined) <= MAX_TRANSCRIPT_TEXT_LEN:
+                    self._transcript_entries[idx] = (ts, speaker, combined)
+                    self._seen_transcript_segments.add(f"{speaker}|{combined}")
                     self._rewrite_transcript()
                     return
-                if combine_with_previous:
-                    combined = f"{previous_text} {text}".strip()
-                    if len(combined) <= MAX_TRANSCRIPT_TEXT_LEN:
-                        self._transcript_entries[-1] = (ts, speaker, combined)
-                        self._seen_transcript_segments.add(f"{speaker}|{combined}")
-                        self._rewrite_transcript()
-                        return
+            break
 
         self._seen_transcript_segments.add(segment_key)
         self._transcript_entries.append((ts, speaker, text))

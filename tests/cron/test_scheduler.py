@@ -1672,6 +1672,189 @@ class TestRunJobConfigEnvVarExpansion:
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
 
 
+class TestRunJobProviderFallback:
+    """Cron jobs must fall back to fallback_providers when the primary
+    provider fails with any exception (not just AuthError). Covers the
+    bug where the except Exception handler raised RuntimeError immediately
+    without consulting the fallback chain (issue #46511)."""
+
+    _FALLBACK_RUNTIME = {
+        "api_key": "fallback-key",
+        "base_url": "https://fallback.example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def _make_resolve(self, primary_exc, fallback_runtime):
+        """Return a side_effect list: first call raises, subsequent calls return runtime."""
+        calls = [primary_exc, fallback_runtime]
+        idx = 0
+
+        def _resolve(**kwargs):
+            nonlocal idx
+            val = calls[idx] if idx < len(calls) else fallback_runtime
+            idx += 1
+            if isinstance(val, Exception):
+                raise val
+            return val
+
+        return _resolve
+
+    def test_non_auth_exception_uses_fallback_providers(self, tmp_path):
+        """When resolve_runtime_provider raises a plain Exception (e.g. 429
+        during OAuth token refresh), the job should succeed via fallback_providers."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: gpt-4o-mini\n"
+        )
+
+        job = {"id": "oauth-job", "name": "oauth test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        primary_error = Exception("HTTP 429 from token refresh endpoint")
+        resolve_fn = self._make_resolve(primary_error, self._FALLBACK_RUNTIME)
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_fn), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True, f"Job should succeed via fallback, got error={error!r}"
+        assert error is None
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+
+    def test_non_auth_exception_no_fallback_raises(self, tmp_path):
+        """When resolve_runtime_provider raises and no fallback is configured,
+        the job should fail with a RuntimeError."""
+        (tmp_path / "config.yaml").write_text("model: gpt-4o\n")
+
+        job = {"id": "no-fb-job", "name": "no fallback", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=Exception("token refresh 429")):
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert error is not None
+
+    def test_all_fallbacks_exhausted_raises(self, tmp_path):
+        """When both primary and every fallback entry fail, the job fails."""
+        (tmp_path / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: gpt-4o-mini\n"
+        )
+
+        job = {"id": "all-fail-job", "name": "all fail", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=Exception("all providers down")):
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert error is not None
+
+
+class TestRunJobCredentialPoolExhausted:
+    """When a credential pool exists but all entries are exhausted,
+    the pool must NOT be passed to AIAgent as credential_pool so that
+    AIAgent can use the fallback chain cleanly (issue #46511 secondary fix)."""
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openai-codex",
+        "api_mode": "chat_completions",
+    }
+
+    def test_exhausted_pool_not_passed_to_agent(self, tmp_path):
+        """has_credentials()=True but has_available()=False → credential_pool=None."""
+        (tmp_path / "config.yaml").write_text(
+            "provider: openai-codex\n"
+            "model: gpt-4o\n"
+        )
+
+        job = {"id": "exhaust-job", "name": "exhausted pool", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_pool.has_available.return_value = False
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("agent.credential_pool.load_pool", return_value=mock_pool), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True, f"Job should still succeed, got error={error!r}"
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs.get("credential_pool") is None, (
+            "Exhausted pool must not be forwarded to AIAgent; "
+            f"got credential_pool={kwargs.get('credential_pool')!r}"
+        )
+
+    def test_available_pool_is_passed_to_agent(self, tmp_path):
+        """has_credentials()=True and has_available()=True → credential_pool forwarded."""
+        (tmp_path / "config.yaml").write_text(
+            "provider: openai-codex\n"
+            "model: gpt-4o\n"
+        )
+
+        job = {"id": "avail-job", "name": "available pool", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        mock_pool = MagicMock()
+        mock_pool.has_credentials.return_value = True
+        mock_pool.has_available.return_value = True
+        mock_pool.entries.return_value = ["entry1", "entry2"]
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("agent.credential_pool.load_pool", return_value=mock_pool), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True, f"Got error={error!r}"
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs.get("credential_pool") is mock_pool, (
+            "Available pool must be forwarded to AIAgent"
+        )
+
+
 class TestRunJobSkillBacked:
     def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
         job = {

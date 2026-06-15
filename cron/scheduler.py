@@ -1681,8 +1681,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
-            message = format_runtime_provider_error(exc)
-            raise RuntimeError(message) from exc
+            # Primary provider resolution failed (e.g. 429 during OAuth token
+            # refresh, transient network error). Try the fallback chain before
+            # giving up — mirrors the AuthError handler above.
+            logger.warning("Job '%s': primary provider failed (%s), trying fallback", job_id, exc)
+            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
+            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            runtime = None
+            for entry in fb_list:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    fb_kwargs = {"requested": entry.get("provider")}
+                    if entry.get("base_url"):
+                        fb_kwargs["explicit_base_url"] = entry["base_url"]
+                    if entry.get("api_key"):
+                        fb_kwargs["explicit_api_key"] = entry["api_key"]
+                    runtime = resolve_runtime_provider(**fb_kwargs)
+                    logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    break
+                except Exception as fb_exc:
+                    logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
+            if runtime is None:
+                message = format_runtime_provider_error(exc)
+                raise RuntimeError(message) from exc
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
@@ -1692,13 +1714,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 from agent.credential_pool import load_pool
                 pool = load_pool(runtime_provider)
                 if pool.has_credentials():
-                    credential_pool = pool
-                    logger.info(
-                        "Job '%s': loaded credential pool for provider %s with %d entries",
-                        job_id,
-                        runtime_provider,
-                        len(pool.entries()),
-                    )
+                    if pool.has_available():
+                        credential_pool = pool
+                        logger.info(
+                            "Job '%s': loaded credential pool for provider %s with %d entries",
+                            job_id,
+                            runtime_provider,
+                            len(pool.entries()),
+                        )
+                    else:
+                        logger.info(
+                            "Job '%s': credential pool for %s is fully exhausted — "
+                            "fallback chain will handle runtime rate limits",
+                            job_id,
+                            runtime_provider,
+                        )
             except Exception as e:
                 logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
 

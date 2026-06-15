@@ -169,6 +169,8 @@ _OUTBOUND_MARKDOWN_MENTION_RE = re.compile(
     r"@\[([^\]\n]+)\]\((?:feishu|lark):([^) \t\r\n]+)\)"
 )
 _OUTBOUND_OPEN_ID_MENTION_RE = re.compile(r"(?<![\w@])@(ou_[A-Za-z0-9]+)\b")
+_OUTBOUND_INLINE_CODE_RE = re.compile(r"`+[^`\n]+`+")
+_OUTBOUND_URL_RE = re.compile(r"https?://[^\s<>\])]+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -639,8 +641,11 @@ def _has_outbound_structured_mentions(content: str) -> bool:
 
 def _parse_outbound_structured_mentions(content: str) -> List[_OutboundMention]:
     mentions: List[_OutboundMention] = []
+    protected_spans = _outbound_mention_protected_spans(content)
 
     for match in _OUTBOUND_AT_TAG_RE.finditer(content):
+        if _span_overlaps_any(match.start(), match.end(), protected_spans):
+            continue
         attrs = _parse_outbound_at_attrs(match.group(1))
         user_id = (
             attrs.get("user_id")
@@ -668,6 +673,8 @@ def _parse_outbound_structured_mentions(content: str) -> List[_OutboundMention]:
         )
 
     for match in _OUTBOUND_MARKDOWN_MENTION_RE.finditer(content):
+        if _span_overlaps_any(match.start(), match.end(), protected_spans):
+            continue
         mentions.append(
             _OutboundMention(
                 start=match.start(),
@@ -678,6 +685,8 @@ def _parse_outbound_structured_mentions(content: str) -> List[_OutboundMention]:
         )
 
     for match in _OUTBOUND_OPEN_ID_MENTION_RE.finditer(content):
+        if _span_overlaps_any(match.start(), match.end(), protected_spans):
+            continue
         open_id = match.group(1).strip()
         mentions.append(
             _OutboundMention(
@@ -697,6 +706,36 @@ def _parse_outbound_structured_mentions(content: str) -> List[_OutboundMention]:
         filtered.append(mention)
         last_end = mention.end
     return filtered
+
+
+def _outbound_mention_protected_spans(content: str) -> List[tuple[int, int]]:
+    spans: List[tuple[int, int]] = []
+    for match in _OUTBOUND_INLINE_CODE_RE.finditer(content):
+        spans.append((match.start(), match.end()))
+    for match in _MARKDOWN_LINK_RE.finditer(content):
+        href = match.group(2).strip().lower()
+        if match.start() > 0 and content[match.start() - 1] == "@" and href.startswith(("feishu:", "lark:")):
+            continue
+        spans.append((match.start(), match.end()))
+    for match in _OUTBOUND_URL_RE.finditer(content):
+        spans.append((match.start(), match.end()))
+    return _merge_spans(spans)
+
+
+def _merge_spans(spans: List[tuple[int, int]]) -> List[tuple[int, int]]:
+    if not spans:
+        return []
+    merged: List[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _span_overlaps_any(start: int, end: int, spans: List[tuple[int, int]]) -> bool:
+    return any(start < protected_end and end > protected_start for protected_start, protected_end in spans)
 
 
 def _parse_outbound_at_attrs(raw_attrs: str) -> Dict[str, str]:
@@ -5020,7 +5059,10 @@ class FeishuAdapter(BasePlatformAdapter):
         return _build_markdown_post_payload(content)
 
     def _build_media_post_payload(self, *, caption: str, media_tag: Dict[str, str]) -> str:
-        payload = json.loads(self._build_post_payload(caption))
+        if _has_outbound_structured_mentions(caption):
+            payload = json.loads(_build_structured_mention_post_payload(caption))
+        else:
+            payload = json.loads(self._build_post_payload(caption))
         content = payload.setdefault("zh_cn", {}).setdefault("content", [])
         content.append([media_tag])
         return json.dumps(payload, ensure_ascii=False)

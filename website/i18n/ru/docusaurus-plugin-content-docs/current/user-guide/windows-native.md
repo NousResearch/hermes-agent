@@ -1,15 +1,11 @@
 ---
-title: "Windows (нативный режим) — ранняя бета"
-description: "Ранняя бета: нативный запуск Hermes Agent на Windows 10 / 11 — установка, матрица возможностей, консоль UTF-8, Git Bash, шлюз как запланированная задача, работа с редактором, PATH, удаление и типичные ловушки"
-sidebar_label: "Windows (нативный режим) — бета"
+title: "Руководство по Windows (нативный режим)"
+description: "Нативный запуск Hermes Agent на Windows 10 / 11 — установка, матрица возможностей, консоль UTF-8, Git Bash, шлюз как запланированная задача, работа с редактором, PATH, удаление и типичные ловушки"
+sidebar_label: "Windows (нативный режим)"
 sidebar_position: 3
 ---
 
-# Windows (нативный режим) — ранняя бета
-
-:::warning РАННЯЯ БЕТА
-Нативная поддержка Windows сейчас находится в **ранней бете**. Установка работает, Hermes запускается и проходит базовые проверки на типичные ошибки Windows, но в реальной эксплуатации эта ветка пока проверена заметно меньше, чем Linux/macOS/WSL2. Возможны шероховатости — особенно в вызовах `subprocess`, в нюансах путей и в выводе консоли с не-ASCII символами. Если столкнётесь с проблемой, пожалуйста, [сообщите о ней](https://github.com/NousResearch/hermes-agent/issues) вместе со шагами воспроизведения. Если нужен самый обкатанный сценарий уже сейчас, используйте [установщик Linux/macOS внутри WSL2](/user-guide/windows-wsl-quickstart).
-:::
+# Руководство по Windows (нативный режим)
 
 Hermes нативно работает на Windows 10 и Windows 11 — без WSL, без Cygwin, без Docker. Эта страница подробно объясняет, что именно работает нативно, что остаётся только для WSL, что делает установщик, и какие Windows-специфичные настройки могут понадобиться.
 
@@ -40,16 +36,16 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 | `-Branch` | `main` | Клонировать конкретную ветку (полезно для проверки PR) |
 | `-Commit` | не задано | Привязать установку к конкретному SHA коммита (имеет приоритет над `-Branch`) |
 | `-Tag` | не задано | Привязать установку к конкретному git-тегу (например, `v0.14.0`) |
-| `-NoVenv` | выключено | Пропустить создание venv (для продвинутых сценариев, где Python вы управляете сами) |
+| `-NoVenv` | выключено | Пропустить создание venv (для продвинутых сценариев, где вы сами управляете Python) |
 | `-SkipSetup` | выключено | Пропустить мастер первого запуска `hermes setup` |
 | `-HermesHome` | `%LOCALAPPDATA%\hermes` | Переопределить каталог данных |
 | `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Переопределить каталог с кодом |
 
-Установщик автоматически повторяет неудачные `git fetch` и удаляет BOM из любого скачанного `install.ps1`, так что UTF-8 BOM, попавший в полезную нагрузку HTTP-передачи, больше не ломает форму `[scriptblock]::Create((irm ...))`.
+Установщик автоматически повторяет неудачные `git fetch` и удаляет BOM из любого скачанного `install.ps1`, так что UTF-8 BOM, попавший в файл при HTTP-загрузке, больше не ломает форму `[scriptblock]::Create((irm ...))`.
 
 ### Графический установщик (альтернатива) {#desktop-installer-alternative}
 
-Есть и лёгкий графический установщик — он удобен, если вам проще запустить `.exe` двойным щелчком, чем открывать PowerShell. Скачайте Hermes Desktop, запустите установщик, и при первом запуске GUI сам вызовет `install.ps1`, чтобы подготовить Python (через `uv`), Node, PortableGit и остальные зависимости в описанном ниже процессе первичной настройки. После первого запуска настольное приложение и CLI, установленный через PowerShell, используют одну и ту же установку в `%LOCALAPPDATA%\hermes\hermes-agent` и общий каталог данных `%USERPROFILE%\.hermes` — можно свободно переключаться между GUI и CLI.
+Есть и лёгкий графический установщик — он удобен, если вам проще запустить `.exe` двойным щелчком, чем открывать PowerShell. Скачайте Hermes Desktop, запустите установщик, и при первом запуске GUI сам вызовет `install.ps1`, чтобы подготовить Python (через `uv`), Node, PortableGit и остальные зависимости в описанном ниже процессе первичной настройки. После первого запуска настольное приложение и CLI, установленный через PowerShell, используют одну и ту же установку в `%LOCALAPPDATA%\hermes\hermes-agent` и общий каталог данных `%LOCALAPPDATA%\hermes` — можно свободно переключаться между GUI и CLI.
 
 Используйте графический установщик, когда хотите привычный сценарий установки в Windows или отдаёте Hermes пользователю без опыта работы в терминале; используйте однострочную команду PowerShell, если вы уже работаете в shell.
 
@@ -65,7 +61,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 | **ripgrep** | Быстрый поиск по файлам — при отсутствии откатывается на `grep`. |
 | **npm packages** | `agent-browser`, Playwright Chromium и любые Node-зависимости для наборов инструментов ставятся один раз при первом использовании браузерного инструмента. |
 
-У каждой зависимости есть проверка в стиле `shutil.which(...)`; если бинарника нет и запуск интерактивный, `dep_ensure` предложит установить его, а саму установку делегирует `scripts\install.ps1 -ensure <dep>`. Неинтерактивные запуски (шлюз, cron, headless-запуски desktop-приложения) пропускают диалог и вместо этого показывают понятную ошибку `this feature needs <dep>`.
+У каждой зависимости есть проверка в стиле `shutil.which(...)`; если бинарника нет и запуск интерактивный, `dep_ensure` предложит установить его, а саму установку делегирует `scripts\install.ps1 -ensure <dep>`. Неинтерактивные запуски (шлюз, cron, запуски настольного приложения без графического интерфейса) пропускают диалог и вместо этого показывают понятную ошибку `this feature needs <dep>`.
 
 ## Что делает установщик на самом деле
 
@@ -77,10 +73,14 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 4. **Ставит портативный Git** — если `git` уже есть в PATH, установщик использует его; иначе он скачивает урезанный самодостаточный **PortableGit** (~45 МБ, из официального релиза `git-for-windows`) в `%LOCALAPPDATA%\hermes\git`. Без админских прав, без реестра Windows Installer, без какого-либо конфликта с уже установленным Git.
 5. **Клонирует репозиторий** в `%LOCALAPPDATA%\hermes\hermes-agent` и создаёт внутри него виртуальное окружение.
 6. **Многоступенчатая установка через `uv pip install`** — сначала пробует `.[all]`, а если `git+https`-зависимость упирается в ограничение GitHub по запросам, откатывается к всё более компактным наборам (`[messaging,dashboard,ext]` → `[messaging]` → `.`). Это убирает режим, когда единичный сбой оставляет вас с урезанной установкой.
-7. **Автоустанавливает messaging SDKs** по `.env` — если присутствуют `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` / `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `WHATSAPP_ENABLED`, он запускает `python -m ensurepip --upgrade` и точечные `pip install`, чтобы SDK каждой платформы действительно можно было импортировать.
+7. **Автоматически устанавливает SDK для мессенджеров** по `.env` — если присутствуют `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` / `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `WHATSAPP_ENABLED`, он запускает `python -m ensurepip --upgrade` и точечные `pip install`, чтобы SDK каждой платформы действительно можно было импортировать.
 8. **Задаёт `HERMES_GIT_BASH_PATH`** на найденный `bash.exe`, чтобы Hermes детерминированно находил его в свежих shell-сессиях.
-9. **Добавляет `%LOCALAPPDATA%\hermes\bin` в пользовательский PATH** — так команда `hermes` становится доступна после открытия нового терминала.
+9. **Добавляет `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts` в пользовательский PATH и задаёт `HERMES_HOME=%LOCALAPPDATA%\hermes`** — так команда `hermes` становится доступна после открытия нового терминала, а Hermes использует правильный каталог данных.
 10. **Запускает `hermes setup`** — обычный мастер первого запуска (модель, провайдер, toolsets). Его можно пропустить через `-SkipSetup`.
+
+:::tip Быстрая настройка провайдера на Windows
+На Windows настройка API-ключей для отдельных инструментов (Firecrawl, FAL, Browser Use, OpenAI TTS) обычно занимает больше всего времени. Подписка [Nous Portal](/user-guide/features/tool-gateway) покрывает и модель, и все эти инструменты через один OAuth-вход. После завершения установщика выполните `hermes setup --portal`, чтобы связать всё автоматически.
+:::
 
 ## Матрица возможностей
 
@@ -202,15 +202,15 @@ hermes gateway uninstall   # Удаляет запись schtasks, ярлык в
 
 | Путь | Содержимое |
 |---|---|
-| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. Можно безболезненно удалить через `Remove-Item -Recurse` и установить заново. |
+| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. `venv\Scripts\hermes.exe` — команда, которую установщик добавляет в пользовательский PATH. Можно безболезненно удалить через `Remove-Item -Recurse` и установить заново. |
 | `%LOCALAPPDATA%\hermes\git\` | PortableGit (только если его поставил сам установщик). |
 | `%LOCALAPPDATA%\hermes\node\` | Portable Node.js (только если его поставил сам установщик). |
-| `%LOCALAPPDATA%\hermes\bin\` | `hermes.cmd` shim, добавленный в пользовательский PATH. |
-| `%USERPROFILE%\.hermes\` | Конфиг, auth, skills, sessions, logs. **Переживает переустановки.** |
+| `%LOCALAPPDATA%\hermes\bin\` | Управляемый Hermes `uv.exe` — Python manager, который используется для обновлений. |
+| `%LOCALAPPDATA%\hermes\` (корень) | Ваша конфигурация, данные авторизации, навыки, сессии и журналы (`config.yaml`, `.env`, `skills\`, `sessions\`, `logs\`, …). **Переживает переустановки.** |
 
-Разделение намеренное: `%LOCALAPPDATA%\hermes` — это расходуемая инфраструктура (её можно снести, и one-liner восстановит всё заново). `%USERPROFILE%\.hermes` — это ваши данные: конфиг, память, навыки, история сессий. По структуре она совпадает с Linux-установкой. Синхронизируйте её между машинами, и Hermes будет сопровождать вас.
+В нативной Windows установщик задаёт `HERMES_HOME=%LOCALAPPDATA%\hermes`, поэтому данные и служебная инфраструктура установки живут под одним корнем `%LOCALAPPDATA%\hermes`: установка и среда выполнения находятся в подкаталогах `hermes-agent\`, `git\`, `node\` и `bin\`, а ваши данные лежат прямо в `%LOCALAPPDATA%\hermes`. Переустановка заменяет только рабочую копию `hermes-agent\`, так что данные сохраняются. Но поскольку они делят общий корень, **не выполняйте** `Remove-Item -Recurse %LOCALAPPDATA%\hermes`, если хотите сохранить данные; удаляйте только подкаталог `hermes-agent\`. По структуре каталог данных совпадает с Linux `~/.hermes`, поэтому его можно зеркалировать между машинами.
 
-**Переопределить `HERMES_HOME`:** задайте эту переменную окружения, чтобы указать другой каталог данных. Работает так же, как на Linux.
+**Переопределить `HERMES_HOME`:** задайте эту переменную окружения, чтобы указать другой каталог данных, например `%USERPROFILE%\.hermes`, если хотите совпасть со структурой каталогов Linux/WSL. Работает так же, как на Linux.
 
 ## Браузерный инструмент
 
@@ -224,18 +224,18 @@ hermes gateway uninstall   # Удаляет запись schtasks, ярлык в
 
 ### PATH после установки
 
-Установщик добавляет `%LOCALAPPDATA%\hermes\bin` в ваш **пользовательский PATH** через `[Environment]::SetEnvironmentVariable`. Уже открытые терминалы это не подхватят — после установки откройте новое окно PowerShell или новую вкладку Windows Terminal. Закрыть и открыть заново, а не править `$env:PATH += …` вручную, если только вы не понимаете, зачем это делаете.
+Установщик добавляет `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts` в ваш **пользовательский PATH** через `[Environment]::SetEnvironmentVariable`. Уже открытые терминалы это не подхватят — после установки откройте новое окно PowerShell или новую вкладку Windows Terminal. Лучше закрыть и открыть терминал заново, а не править `$env:PATH += …` вручную, если только вы точно не понимаете, зачем это делаете.
 
 Проверка:
 
 ```powershell
-Get-Command hermes        # должен вывести C:\Users\<you>\AppData\Local\hermes\bin\hermes.cmd
+Get-Command hermes        # должен вывести C:\Users\<you>\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe
 hermes --version
 ```
 
 ### Переменные окружения
 
-Hermes понимает и `$env:X` (область процесса), и пользовательские переменные окружения (постоянные, задаваемые в System Properties → Environment Variables). Обычно API-ключи кладут в `%USERPROFILE%\.hermes\.env` — как и на Linux:
+Hermes понимает и `$env:X` (область процесса), и пользовательские переменные окружения (постоянные, задаваемые в System Properties → Environment Variables). Обычно API-ключи кладут в `%LOCALAPPDATA%\hermes\.env` — это ваш `HERMES_HOME`, как и на Linux:
 
 ```
 OPENROUTER_API_KEY=sk-or-...
@@ -262,14 +262,15 @@ TELEGRAM_BOT_TOKEN=...
 hermes uninstall
 ```
 
-Это «чистый» путь — он удаляет запись `schtasks`, ярлык в Startup, shim `hermes.cmd`, стирает `%LOCALAPPDATA%\hermes\hermes-agent\` и сокращает пользовательский PATH. При этом `%USERPROFILE%\.hermes\` остаётся нетронутым (ваш конфиг, auth, skills, sessions, logs) на случай, если вы потом захотите переустановить Hermes.
+Это «чистый» путь — он удаляет запись `schtasks`, ярлык в Startup, shim `hermes.cmd`, стирает `%LOCALAPPDATA%\hermes\hermes-agent\` и сокращает пользовательский PATH. Остальная часть `%LOCALAPPDATA%\hermes\` остаётся нетронутой (конфигурация, данные авторизации, навыки, сессии и журналы) на случай, если вы потом захотите переустановить Hermes.
 
 Если нужно снести вообще всё:
 
 ```powershell
 hermes uninstall
-Remove-Item -Recurse -Force "$env:USERPROFILE\.hermes"
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes"
+# Также удалите legacy CLI/WSL data dir, если когда-то его использовали:
+Remove-Item -Recurse -Force "$env:USERPROFILE\.hermes"
 ```
 
 Подкоманда `hermes uninstall` умеет и такой случай, когда запись schtasks была создана под другим именем задачи (старые установки) — она ищет задачу по install path, а не по жёстко зашитому имени.
@@ -287,7 +288,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\hermes"
 ## Типичные ловушки
 
 **`hermes: command not found` сразу после установки.**
-Откройте новое окно PowerShell. Установщик уже добавил `%LOCALAPPDATA%\hermes\bin` в пользовательский PATH, но существующим shell-сессиям нужен перезапуск, чтобы его увидеть. Пока этого не сделали, можно запускать `& "$env:LOCALAPPDATA\hermes\bin\hermes.cmd"`.
+Откройте новое окно PowerShell. Установщик уже добавил `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts` в пользовательский PATH, но существующим shell-сессиям нужен перезапуск, чтобы его увидеть.
 
 **`WinError 193: %1 is not a valid Win32 application` при запуске инструмента.**
 Вы наткнулись на shebang-скрипт, минуя `.cmd` shim. Hermes резолвит команды через `shutil.which(cmd, path=local_bin)`, чтобы PATHEXT подхватывал `.CMD`. Если вы вызываете инструмент по жёстко заданному пути, переключитесь на `.cmd`-вариант (например, `npx.cmd`, а не `npx`).

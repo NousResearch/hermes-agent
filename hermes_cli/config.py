@@ -1271,6 +1271,21 @@ DEFAULT_CONFIG = {
                                       # global threshold regardless.
     },
 
+    # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
+    # See tools/kanban_tools.py and hermes_cli/kanban_db.py for the actual
+    # implementations. Per-platform notification opt-out is handled by the
+    # kanban dashboard (see ``hermes dashboard`` -> Notifications).
+    "kanban": {
+        # Auto-subscribe the originating gateway/TUI session to task
+        # completion + block events when ``kanban_create`` is called from
+        # inside a session that has a persistent delivery channel. The
+        # agent that dispatched the task will get notified automatically
+        # instead of having to poll. Disable to mirror pre-feature
+        # behaviour — e.g. for a profile that prefers explicit
+        # ``kanban_notify-subscribe`` calls per task.
+        "auto_subscribe_on_create": True,
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {

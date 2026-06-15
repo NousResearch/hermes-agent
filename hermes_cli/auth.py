@@ -318,7 +318,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="alibaba",
         name="Qwen Cloud",
         auth_type="api_key",
-        inference_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        # Default to China region since most users with a DASHSCOPE_API_KEY
+        # are on the aliyun.com console (https://dashscope.console.aliyun.com).
+        # International users (dashscope-intl console) can override via
+        # DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1.
+        inference_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key_env_vars=("DASHSCOPE_API_KEY",),
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),
@@ -334,7 +338,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="minimax-cn",
         name="MiniMax (China)",
         auth_type="api_key",
-        inference_base_url="https://api.minimaxi.com/anthropic",
+        # OpenAI-compatible endpoint. The previous default of `/anthropic`
+        # (Anthropic Messages protocol) caused every call to 401 for users
+        # whose MiniMax CN console only issues OpenAI-compatible keys.
+        # Users on the older Anthropic-protocol endpoint can still override via
+        # MINIMAX_CN_BASE_URL=https://api.minimaxi.com/anthropic.
+        inference_base_url="https://api.minimaxi.com/v1",
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),

@@ -1333,7 +1333,12 @@ def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
 
 
 def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
-    """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
+    """Alibaba default China-region /v1 URL should use chat_completions mode.
+
+    NOTE (2026-06-15 PR): default flipped from dashscope-intl.aliyuncs.com to
+    dashscope.aliyuncs.com because most users are on the aliyun.com (China)
+    console. International users opt in via DASHSCOPE_BASE_URL.
+    """
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
@@ -1343,7 +1348,7 @@ def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch)
 
     assert resolved["provider"] == "alibaba"
     assert resolved["api_mode"] == "chat_completions"
-    assert resolved["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    assert resolved["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 
 def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch):

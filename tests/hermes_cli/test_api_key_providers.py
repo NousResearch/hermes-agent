@@ -111,13 +111,19 @@ class TestProviderRegistry:
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
     def test_base_urls(self):
+        # NOTE (2026-06-15 PR fix/builtin-provider-default-urls): minimax-cn
+        # and alibaba defaults changed to OpenAI-compatible / China-region
+        # URLs. The `minimax` (international) builtin is unchanged — its
+        # Anthropic-protocol default is correct for intl users. See
+        # TestBuiltinProviderDefaultURLs below for the new pin tests.
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
         assert PROVIDER_REGISTRY["zai"].inference_base_url == "https://api.z.ai/api/paas/v4"
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
-        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
+        assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/v1"
+        assert PROVIDER_REGISTRY["alibaba"].inference_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
@@ -511,7 +517,10 @@ class TestResolveApiKeyProviderCredentials:
         creds = resolve_api_key_provider_credentials("minimax-cn")
         assert creds["provider"] == "minimax-cn"
         assert creds["api_key"] == "mmcn-secret-key"
-        assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
+        # 2026-06-15 PR: default flipped from /anthropic to /v1 to match
+        # the OpenAI-compatible keys the MiniMax CN console actually issues.
+        # For Anthropic-protocol opt-in, see TestBuiltinProviderDefaultURLs.
+        assert creds["base_url"] == "https://api.minimaxi.com/v1"
 
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
@@ -1296,3 +1305,61 @@ class TestMinimaxOAuthProvider:
             "doesn't fire the 'No auxiliary LLM provider configured' warning "
             "for every minimax-oauth session."
         )
+
+
+# =============================================================================
+# Built-in provider default URL regression tests
+# =============================================================================
+#
+# These pin the inference_base_url of the 3 built-in api_key providers whose
+# default URL changed in the 2026-06-15 builtin-default-URL PR (the
+# /anthropic → /v1 + dashscope-intl → dashscope.aliyuncs.com fix).
+# Without these, a future "revert to /anthropic because the MiniMax CN
+# console just added a Claude-Compat flag" revert would silently break every
+# user whose key is the default OpenAI-compatible form. See PR description
+# for full motivation.
+
+class TestBuiltinProviderDefaultURLs:
+    """Pin builtin api_key provider inference_base_url defaults.
+
+    Historical context (2026-06-15): MiniMax CN's console only issued
+    OpenAI-compatible keys, so the previous default of
+    https://api.minimaxi.com/anthropic caused every call to 401. DashScope's
+    international default (dashscope-intl.aliyuncs.com) 401'd users on the
+    aliyun.com (China) console. This test pins the corrected defaults so a
+    silent revert triggers CI.
+    """
+
+    def test_minimax_cn_default_is_openai_compatible(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pc = PROVIDER_REGISTRY["minimax-cn"]
+        assert pc.inference_base_url == "https://api.minimaxi.com/v1", (
+            f"minimax-cn builtin default regressed to {pc.inference_base_url!r}; "
+            "the /anthropic default caused 401s for OpenAI-compatible CN keys. "
+            "If you intentionally need /anthropic, set MINIMAX_CN_BASE_URL instead."
+        )
+
+    def test_minimax_cn_default_supports_env_override_to_anthropic(self, monkeypatch):
+        # Users on the older Anthropic-protocol endpoint can still opt in.
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-key")
+        monkeypatch.setenv("MINIMAX_CN_BASE_URL", "https://api.minimaxi.com/anthropic")
+        creds = resolve_api_key_provider_credentials("minimax-cn")
+        assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
+
+    def test_alibaba_default_is_china_region(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pc = PROVIDER_REGISTRY["alibaba"]
+        assert pc.inference_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1", (
+            f"alibaba builtin default regressed to {pc.inference_base_url!r}; "
+            "the dashscope-intl default 401'd users on the aliyun.com (China) console. "
+            "If you intentionally need dashscope-intl, set DASHSCOPE_BASE_URL instead."
+        )
+
+    def test_alibaba_default_supports_env_override_to_intl(self, monkeypatch):
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+        monkeypatch.setenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+        creds = resolve_api_key_provider_credentials("alibaba")
+        assert creds["base_url"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"

@@ -267,6 +267,9 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    # Logical identity — optional stable identifier for deduping the same
+    # plugin when it appears under multiple keys (e.g. bundled vs user copy).
+    logical_id: str = ""
 
 
 @dataclass
@@ -1224,7 +1227,8 @@ class PluginManager:
         enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
-            winners[manifest.key or manifest.name] = manifest
+            winner_key = manifest.logical_id or manifest.key or manifest.name
+            winners[winner_key] = manifest
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
@@ -1476,6 +1480,7 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                logical_id=str(data.get("logical_id", "") or "").strip(),
             )
         except Exception as exc:
             logger.warning(

@@ -144,6 +144,17 @@ ALLOWED_CATEGORIES = {
     "chrome-profile", "cron-output", "other",
 }
 
+_EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
+    "logs", "memories", "sessions", "cron", "cronjobs",
+    "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
+    "hermes-agent", "backups", "profiles", ".worktrees",
+})
+
+_EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
+    ".git", "node_modules", "venv", ".venv",
+    "site-packages", "__pycache__",
+})
+
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(),
 # regardless of what the stored category says.  This is a defense-in-depth
@@ -353,50 +364,41 @@ def quick() -> Dict[str, Any]:
     # and desktop build under HERMES_HOME; a full rglob over that tree can
     # stall the gateway event loop for minutes.
     hermes_home = get_hermes_home()
-    _PROTECTED_TOP_LEVEL = {
-        "logs", "memories", "sessions", "cron", "cronjobs",
-        "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-        "hermes-agent", "backups", "profiles", ".worktrees",
-    }
-    _SWEEP_PRUNE_DIRS = {
-        ".git", "node_modules", "venv", ".venv",
-        "site-packages", "__pycache__",
-    }
     empty_removed = 0
-    sweep_stack: List[Path] = []
+    sweep_stack: List[Tuple[Path, bool]] = []
     try:
         for top in hermes_home.iterdir():
             if (
                 top.is_dir()
                 and not top.is_symlink()
-                and top.name not in _PROTECTED_TOP_LEVEL
-                and top.name not in _SWEEP_PRUNE_DIRS
+                and top.name not in _EMPTY_DIR_PROTECTED_TOP_LEVEL
+                and top.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
             ):
-                sweep_stack.append(top)
+                sweep_stack.append((top, False))
     except OSError:
         sweep_stack = []
 
-    found_dirs: List[Path] = []
     while sweep_stack:
-        dirpath = sweep_stack.pop()
-        found_dirs.append(dirpath)
+        dirpath, visited = sweep_stack.pop()
+        if visited:
+            try:
+                if not any(dirpath.iterdir()):
+                    dirpath.rmdir()
+                    empty_removed += 1
+                    _log(f"DELETED: {dirpath} (empty dir)")
+            except OSError:
+                pass
+            continue
+
+        sweep_stack.append((dirpath, True))
         try:
             for child in dirpath.iterdir():
                 if (
                     child.is_dir()
                     and not child.is_symlink()
-                    and child.name not in _SWEEP_PRUNE_DIRS
+                    and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
                 ):
-                    sweep_stack.append(child)
-        except OSError:
-            pass
-
-    for dirpath in sorted(found_dirs, key=lambda p: len(p.parts), reverse=True):
-        try:
-            if not any(dirpath.iterdir()):
-                dirpath.rmdir()
-                empty_removed += 1
-                _log(f"DELETED: {dirpath} (empty dir)")
+                    sweep_stack.append((child, False))
         except OSError:
             pass
 

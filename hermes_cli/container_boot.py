@@ -28,11 +28,14 @@ from typing import Literal, Sequence
 
 log = logging.getLogger(__name__)
 
-# Only this prior state triggers automatic restart. Everything else
+# Only this desired state triggers automatic restart. Everything else
 # (startup_failed, starting, stopped, missing) registers the slot in
 # the down state and waits for explicit user action — this avoids the
 # crash-loop where a broken gateway keeps being restarted across
-# `docker restart` cycles.
+# `docker restart` cycles. Older installs only have gateway_state;
+# newer lifecycle commands persist desired_state separately so a transient
+# runtime state (draining/startup_failed) does not erase the operator's
+# durable start/stop intent across pod/container recreation.
 _AUTOSTART_STATES = frozenset({"running"})
 
 # Stale runtime files we sweep before recreating service slots. These
@@ -104,7 +107,7 @@ def reconcile_profile_gateways(
         container_argv=container_argv,
         dry_run=dry_run,
     )
-    default_prior_state = legacy_default_state or _read_prior_state(hermes_home)
+    default_prior_state = legacy_default_state or _read_desired_state(hermes_home)
     default_should_start = default_prior_state in _AUTOSTART_STATES
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
@@ -139,7 +142,7 @@ def reconcile_profile_gateways(
                 )
                 continue
 
-            prior_state = _read_prior_state(entry)
+            prior_state = _read_desired_state(entry)
             should_start = prior_state in _AUTOSTART_STATES
 
             if not dry_run:
@@ -188,6 +191,7 @@ def _maybe_migrate_legacy_gateway_run_state(
         import time
         state_file.write_text(json.dumps({
             "gateway_state": "running",
+            "desired_state": "running",
             "timestamp": int(time.time()),
             "migrated_from": "legacy-container-cmd",
         }) + "\n")
@@ -217,15 +221,26 @@ def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
     return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
 
-def _read_prior_state(profile_dir: Path) -> str | None:
-    """Read gateway_state.json's ``gateway_state`` field, or None if
-    missing or unparseable. Unparseable counts as "no prior state" so
-    we don't bork the whole reconciliation on a corrupt file."""
+def _read_desired_state(profile_dir: Path) -> str | None:
+    """Read the persisted gateway desired state for reconciliation.
+
+    Newer state files carry ``desired_state``: operator intent written by
+    s6 lifecycle commands. Older files only carry ``gateway_state``; keep
+    that as a compatibility fallback so existing running/stopped profiles
+    preserve their behavior until the next explicit start/stop.
+
+    Missing or unparseable files count as "no desired state" so we don't
+    bork the whole reconciliation on a corrupt file.
+    """
     state_file = profile_dir / "gateway_state.json"
     if not state_file.exists():
         return None
     try:
-        return json.loads(state_file.read_text()).get("gateway_state")
+        data = json.loads(state_file.read_text())
+        desired_state = data.get("desired_state")
+        if desired_state is not None:
+            return desired_state
+        return data.get("gateway_state")
     except (OSError, json.JSONDecodeError):
         log.warning(
             "could not read %s; treating as no prior state", state_file,

@@ -15210,6 +15210,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     # ------------------------------------------------------------------
 
+    def _should_skip_user_profile_for_source(
+        self,
+        *,
+        source: SessionSource,
+        session_key: Optional[str] = None,
+        user_config: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Return True when the global USER.md owner profile should be hidden.
+
+        The built-in USER.md block describes the agent owner. In gateway chats
+        with other people, injecting it as "USER PROFILE (who the user is)" is
+        an identity hazard: the model can address a contact as the owner even
+        when Current Session Context says otherwise. MEMORY.md stays available
+        for operational/contact facts; only the owner identity profile is
+        suppressed unless this source is proven to be the configured home user.
+        """
+        if not source or source.platform == Platform.LOCAL:
+            return False
+
+        platform = source.platform
+        platform_name = platform.value if hasattr(platform, "value") else str(platform)
+        home_ids: set[str] = set()
+
+        try:
+            home = (
+                self.config.get_home_channel(platform)
+                if getattr(self, "config", None)
+                else None
+            )
+            if home and home.chat_id:
+                home_ids.add(str(home.chat_id))
+        except Exception:
+            pass
+
+        try:
+            cfg = user_config or {}
+            pdata = (cfg.get("platforms") or {}).get(platform_name) or {}
+            hdata = pdata.get("home_channel") or {}
+            if isinstance(hdata, dict) and hdata.get("chat_id"):
+                home_ids.add(str(hdata.get("chat_id")))
+        except Exception:
+            pass
+
+        def _digits(value: str) -> str:
+            return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+        source_values = {
+            str(source.chat_id or ""),
+            str(source.user_id or ""),
+            str(getattr(source, "chat_id_alt", "") or ""),
+            str(getattr(source, "user_id_alt", "") or ""),
+        }
+
+        if home_ids.intersection(source_values):
+            return False
+
+        home_digits = {_digits(value) for value in home_ids if _digits(value)}
+        source_digits = {_digits(value) for value in source_values if _digits(value)}
+        key_parts = [part for part in str(session_key or "").split(":") if part]
+        key_tail_digits = _digits(key_parts[-1]) if key_parts else ""
+        if home_digits and (
+            home_digits.intersection(source_digits) or key_tail_digits in home_digits
+        ):
+            return False
+
+        return True
+
     async def _run_agent(
         self,
         message: str,
@@ -16297,12 +16364,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
+            skip_user_profile = self._should_skip_user_profile_for_source(
+                source=source,
+                session_key=session_key,
+                user_config=user_config,
+            )
+            cache_busting_config = self._extract_cache_busting_config(user_config)
+            cache_busting_config["skip_user_profile"] = skip_user_profile
             _sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
-                cache_keys=self._extract_cache_busting_config(user_config),
+                cache_keys=cache_busting_config,
                 user_id=getattr(source, "user_id", None),
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
@@ -16421,6 +16495,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    skip_user_profile=skip_user_profile,
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,

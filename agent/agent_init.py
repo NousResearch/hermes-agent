@@ -235,6 +235,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    skip_user_profile: bool = False,
 ):
     """
     Initialize the AI Agent.
@@ -1207,7 +1208,15 @@ def init_agent(
         try:
             mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)
-            agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+            # USER.md describes the agent owner. Gateway sessions with
+            # non-owner contacts must not inject it as "who the user is",
+            # or the model can misidentify the current speaker as the owner.
+            # MEMORY.md remains available; only the owner profile is gated.
+            agent._user_profile_enabled = (
+                False
+                if skip_user_profile
+                else mem_config.get("user_profile_enabled", False)
+            )
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore

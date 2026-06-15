@@ -179,6 +179,24 @@ class TestValidateFilePath:
         assert "File must be under one of:" in err
         assert "'malicious.py'" in err
 
+    def test_skill_md_accepted_at_root(self):
+        # SKILL.md is the canonical skill file and must be accepted even
+        # though it does not live under an allowed subdirectory.
+        assert _validate_file_path("SKILL.md") is None
+
+    def test_skill_md_accepted_name_prefixed(self):
+        assert _validate_file_path("my-skill/SKILL.md") is None
+
+    def test_skill_md_traversal_still_rejected(self):
+        # The SKILL.md exception must not weaken the traversal guard.
+        err = _validate_file_path("../SKILL.md")
+        assert err == "Path traversal ('..') is not allowed."
+
+    def test_other_root_md_still_rejected(self):
+        # Only SKILL.md gets the root-level exception, not arbitrary files.
+        err = _validate_file_path("README.md")
+        assert "File must be under one of:" in err
+
 
 # ---------------------------------------------------------------------------
 # CRUD operations

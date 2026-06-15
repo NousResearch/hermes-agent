@@ -257,10 +257,10 @@ auxiliary:
   title_generation:
     provider: openrouter
     model: google/gemini-3-flash-preview
-  context_compression:
+  compression:
     provider: openrouter
     model: google/gemini-3-flash-preview
-  vision_detect:
+  vision:
     provider: openrouter
     model: google/gemini-3-flash-preview
   goal_judge:

@@ -102,7 +102,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +202,35 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
+# Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
+# The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
+# Codex backend hard-caps at 272K (verified live: a ~330K-token request to
+# chatgpt.com/backend-api/codex/responses is rejected with
+# ``context_length_exceeded`` while ~250K succeeds). With a 272K ceiling the
+# default 50% compaction trigger fires at ~136K — wasteful, since the model
+# can hold far more raw context before summarization actually buys anything.
+# We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.5
+# sessions use the window they actually have.
+_CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
+
+
+def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
+    """True for gpt-5.5 accessed through the ChatGPT Codex OAuth backend.
+
+    Matches only the Codex OAuth route (provider ``openai-codex``), not the
+    direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
+    larger context window for the same slug and must keep the user's default
+    compaction threshold. ``gpt-5.5-pro`` and dated snapshots
+    (``gpt-5.5-2026-04-23``) are matched via prefix so the override tracks the
+    family without re-listing every variant.
+    """
+    prov = (provider or "").strip().lower()
+    if prov != "openai-codex":
+        return False
+    bare = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bare == "gpt-5.5" or bare.startswith("gpt-5.5-") or bare.startswith("gpt-5.5.")
+
+
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
@@ -224,18 +253,32 @@ def _fixed_temperature_for_model(
     return None
 
 
-def _compression_threshold_for_model(model: Optional[str]) -> Optional[float]:
+def _compression_threshold_for_model(
+    model: Optional[str],
+    provider: Optional[str] = None,
+    *,
+    allow_codex_gpt55_autoraise: bool = True,
+) -> Optional[float]:
     """Return a context-compression threshold override for specific models.
 
     The threshold is the fraction of the model's context window that must be
     consumed before Hermes triggers summarization.  Higher values delay
     compression and preserve more raw context.
 
+    Per-model/route overrides:
+      - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
+      - gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps the window
+        at 272K and the default 50% trigger would compact at ~136K. Gated by
+        ``allow_codex_gpt55_autoraise`` so the user can opt back down to the
+        global default (the caller passes the config flag through here).
+
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
+    if allow_codex_gpt55_autoraise and _is_codex_gpt55(model, provider):
+        return _CODEX_GPT55_COMPACTION_THRESHOLD
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -265,9 +308,6 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
     "stepfun": "step-3.5-flash",
     "kimi-coding-cn": "kimi-k2-turbo-preview",
     "gmi": "google/gemini-3.1-flash-lite-preview",
-    "minimax": "MiniMax-M2.7",
-    "minimax-oauth": "MiniMax-M2.7-highspeed",
-    "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
@@ -315,6 +355,35 @@ _OR_HEADERS_BASE = {
 
 # Truthy values for boolean env-var parsing.
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _apply_user_default_headers(headers: dict | None) -> dict | None:
+    """Merge user-configured ``model.default_headers`` onto resolved headers.
+
+    User values take precedence over provider/SDK defaults, mirroring the main
+    agent client (``AIAgent._apply_user_default_headers``). This lets a
+    ``custom`` OpenAI-compatible endpoint behind a gateway/WAF that rejects the
+    OpenAI SDK's identifying headers (``User-Agent: OpenAI/Python ...``,
+    ``X-Stainless-*``) override them for auxiliary calls too — otherwise the
+    main turn would succeed but title/compression/vision calls to the same
+    endpoint would still fail. (#40033)
+
+    Returns the merged dict, or the original ``headers`` (possibly ``None``)
+    when nothing is configured. No allocation when there are no overrides.
+    """
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        user_headers = cfg_get(load_config(), "model", "default_headers")
+    except Exception:
+        return headers
+    if not isinstance(user_headers, dict) or not user_headers:
+        return headers
+    merged = dict(headers or {})
+    for key, value in user_headers.items():
+        if value is None:
+            continue
+        merged[str(key)] = str(value)
+    return merged or headers
 
 
 def build_or_headers(or_config: dict | None = None) -> dict:
@@ -568,54 +637,6 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
 # calls to the Codex Responses API so callers don't need any changes.
 
 
-def _convert_content_for_responses(content: Any) -> Any:
-    """Convert chat.completions content to Responses API format.
-
-    chat.completions uses:
-      {"type": "text", "text": "..."}
-      {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
-
-    Responses API uses:
-      {"type": "input_text", "text": "..."}
-      {"type": "input_image", "image_url": "data:image/png;base64,..."}
-
-    If content is a plain string, it's returned as-is (the Responses API
-    accepts strings directly for text-only messages).
-    """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content) if content else ""
-
-    converted: List[Dict[str, Any]] = []
-    for part in content:
-        if not isinstance(part, dict):
-            continue
-        ptype = part.get("type", "")
-        if ptype == "text":
-            converted.append({"type": "input_text", "text": part.get("text", "")})
-        elif ptype == "image_url":
-            # chat.completions nests the URL: {"image_url": {"url": "..."}}
-            image_data = part.get("image_url", {})
-            url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
-            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
-            # Preserve detail if specified
-            detail = image_data.get("detail") if isinstance(image_data, dict) else None
-            if detail:
-                entry["detail"] = detail
-            converted.append(entry)
-        elif ptype in {"input_text", "input_image"}:
-            # Already in Responses format — pass through
-            converted.append(part)
-        else:
-            # Unknown content type — try to preserve as text
-            text = part.get("text", "")
-            if text:
-                converted.append({"type": "input_text", "text": text})
-
-    return converted or ""
-
-
 class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
@@ -628,26 +649,37 @@ class _CodexCompletionsAdapter:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
 
-        # Separate system/instructions from conversation messages.
-        # Convert chat.completions multimodal content blocks to Responses
-        # API format (input_text / input_image instead of text / image_url).
+        # Separate system/instructions from replayable conversation messages,
+        # then route the rest through the SINGLE shared chat->Responses
+        # converter used by the main agent transport
+        # (agent/transports/codex.py). Maintaining a private conversion loop
+        # here let chat-style messages with role="tool" leak straight into
+        # Responses input[] — which the Responses API rejects with
+        # "Invalid value: 'tool'. Supported values are: 'assistant', 'system',
+        # 'developer', and 'user'." (issue #5709, hit hard by flush_memories()
+        # / compression replaying real session history that includes assistant
+        # tool_calls + role="tool" results). The shared converter encodes
+        # assistant tool calls as `function_call` items and tool results as
+        # `function_call_output` items with a valid call_id, so every
+        # Responses path normalizes tool history identically and cannot drift.
+        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
         instructions = "You are a helpful assistant."
-        input_msgs: List[Dict[str, Any]] = []
+        replay_messages: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
             else:
-                input_msgs.append({
-                    "role": role,
-                    "content": _convert_content_for_responses(content),
-                })
+                replay_messages.append(msg)
+
+        input_items = _chat_messages_to_responses_input(replay_messages)
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,
             "instructions": instructions,
-            "input": input_msgs or [{"role": "user", "content": ""}],
+            "input": input_items or [{"role": "user", "content": ""}],
             "store": False,
         }
 
@@ -1112,7 +1144,8 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     normalized = (base_url or "").strip().lower().rstrip("/")
     if not normalized:
         return False
-    if normalized.endswith("/anthropic"):
+    path = urlparse(normalized).path.rstrip("/")
+    if path.endswith("/anthropic") or path.endswith("/anthropic/v1"):
         return True
     hostname = base_url_hostname(normalized)
     if hostname == "api.anthropic.com":
@@ -1455,6 +1488,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                         extra["default_headers"] = dict(_ph_aux.default_headers)
                 except Exception:
                     pass
+            _merged_aux = _apply_user_default_headers(extra.get("default_headers"))
+            if _merged_aux:
+                extra["default_headers"] = _merged_aux
             _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
             return _client, model
@@ -1492,6 +1528,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     extra["default_headers"] = dict(_ph_aux2.default_headers)
             except Exception:
                 pass
+        _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"))
+        if _merged_aux2:
+            extra["default_headers"] = _merged_aux2
         _client = OpenAI(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
         return _client, model
@@ -1882,6 +1921,13 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
     _extra = {"default_query": _dq} if _dq else {}
+    # User-configured model.default_headers override the SDK's identifying
+    # headers (User-Agent: OpenAI/Python ..., X-Stainless-*) on this custom
+    # endpoint's auxiliary calls too — matching the main agent client so the
+    # whole session reaches a gateway/WAF that rejects the SDK fingerprint. (#40033)
+    _custom_headers = _apply_user_default_headers(None)
+    if _custom_headers:
+        _extra["default_headers"] = _custom_headers
     if custom_mode == "codex_responses":
         real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
@@ -2429,6 +2475,25 @@ def _is_connection_error(exc: Exception) -> bool:
     )):
         return True
     return False
+
+
+def _is_transient_transport_error(exc: Exception) -> bool:
+    """Return True for a one-off transport blip worth retrying ONCE on the
+    same provider before any provider/model fallback.
+
+    Covers connection/streaming-close errors (via the canonical
+    ``_is_connection_error`` detector, shared so the two cannot drift) plus a
+    pure 5xx/408 HTTP status. Deliberately narrow: this is the "retry the
+    same target once" gate, distinct from ``_is_payment_error`` /
+    ``_is_auth_error`` / ``_is_rate_limit_error`` which the except-chain
+    handles by switching provider, refreshing creds, or rotating the pool.
+    """
+    if _is_connection_error(exc):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    return isinstance(status, int) and (status == 408 or 500 <= status < 600)
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -3126,7 +3191,7 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
-        explicit_base_url = None
+        explicit_base_url = runtime_base_url or None
         explicit_api_key = None
         if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
             resolved_provider = "custom"
@@ -3251,6 +3316,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
             pass
+    _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
+    if _merged_async:
+        async_kwargs["default_headers"] = _merged_async
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -3538,6 +3606,9 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
+            _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
+            if _merged_custom:
+                extra["default_headers"] = _merged_custom
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -3614,6 +3685,9 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
+                if _headers2:
+                    _extra2["default_headers"] = _headers2
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -3636,6 +3710,9 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
+                        if _fb_headers:
+                            _fb_extra["default_headers"] = _fb_headers
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
@@ -3784,6 +3861,9 @@ def resolve_provider_client(
                     headers.update(_ph_main.default_headers)
             except Exception:
                 pass
+        _merged_main = _apply_user_default_headers(headers)
+        if _merged_main:
+            headers = _merged_main
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
@@ -4221,13 +4301,15 @@ def get_auxiliary_extra_body() -> dict:
     return _nous_extra_body() if auxiliary_is_nous else {}
 
 
-def auxiliary_max_tokens_param(value: int) -> dict:
+def auxiliary_max_tokens_param(value: int, *, model: Optional[str] = None) -> dict:
     """Return the correct max tokens kwarg for the auxiliary client's provider.
-    
+
     OpenRouter and local models use 'max_tokens'. Direct OpenAI with newer
-    models (gpt-4o, o-series, gpt-5+) requires 'max_completion_tokens'.
+    models (gpt-4o, gpt-4.1, gpt-5+, o-series) requires 'max_completion_tokens'.
     The Codex adapter translates max_tokens internally, so we use max_tokens
-    for it as well.
+    for it as well. Pass ``model`` so third-party OpenAI-compatible endpoints
+    fronting the newer families are also recognised — URL-only detection
+    misses the case where a custom base URL serves e.g. ``gpt-5.4``.
     """
     custom_base = _current_custom_base_url()
     or_key = os.getenv("OPENROUTER_API_KEY")
@@ -4236,6 +4318,9 @@ def auxiliary_max_tokens_param(value: int) -> dict:
     if (not or_key
             and _read_nous_auth() is None
             and base_url_hostname(custom_base) in {"api.openai.com", "api.githubcopilot.com"}):
+        return {"max_completion_tokens": value}
+    # ...and for any caller serving a newer OpenAI-family model by name.
+    if model_forces_max_completion_tokens(model):
         return {"max_completion_tokens": value}
     return {"max_tokens": value}
 
@@ -4756,10 +4841,14 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
 
 
 def _convert_openai_images_to_anthropic(messages: list) -> list:
-    """Convert OpenAI ``image_url`` content blocks to Anthropic ``image`` blocks.
+    """Convert OpenAI ``image_url``/``video_url`` blocks to Anthropic format.
 
-    Only touches messages that have list-type content with ``image_url`` blocks;
-    plain text messages pass through unchanged.
+    Converts:
+    - ``image_url`` blocks to Anthropic ``image`` blocks
+    - ``video_url`` blocks to Anthropic ``video`` blocks (MiniMax M3 compat)
+
+    Only touches messages that have list-type content with ``image_url`` or
+    ``video_url`` blocks; plain text messages pass through unchanged.
     """
     converted = []
     for msg in messages:
@@ -4793,6 +4882,39 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
                         "source": {
                             "type": "url",
                             "url": image_url_val,
+                        },
+                    })
+                changed = True
+            elif block.get("type") == "video_url":
+                # MiniMax's Anthropic-compatible endpoint expects a "video"
+                # block (not OpenAI's "video_url", and not "input_video").
+                # See https://platform.minimax.io/docs/api-reference/text-anthropic-api
+                # — the Messages-field table lists type="video" (M3 only,
+                # URL/base64/mm_file://). The source shape mirrors the "image"
+                # block: base64 → {type:"base64", media_type, data}, URL →
+                # {type:"url", url}.
+                video_url_val = (block.get("video_url") or {}).get("url", "")
+                if video_url_val.startswith("data:"):
+                    # Parse data URI: data:<media_type>;base64,<data>
+                    header, _, b64data = video_url_val.partition(",")
+                    media_type = "video/mp4"
+                    if ":" in header and ";" in header:
+                        media_type = header.split(":", 1)[1].split(";", 1)[0]
+                    new_content.append({
+                        "type": "video",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64data,
+                        },
+                    })
+                else:
+                    # URL-based video
+                    new_content.append({
+                        "type": "video",
+                        "source": {
+                            "type": "url",
+                            "url": video_url_val,
                         },
                     })
                 changed = True
@@ -4883,7 +5005,7 @@ def _build_call_kwargs(
 
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
-    if provider == "nous" or auxiliary_is_nous:
+    if provider == "nous":
         merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
     if merged_extra:
         kwargs["extra_body"] = merged_extra
@@ -5050,8 +5172,28 @@ def call_llm(
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
     # then payment fallback.
     try:
-        return _validate_llm_response(
-            client.chat.completions.create(**kwargs), task)
+        # Retry ONCE on the same provider for a one-off transient transport
+        # blip (streaming-close / incomplete chunked read / 5xx / 408) before
+        # the except-chain below escalates to provider/model fallback. A
+        # single dropped connection shouldn't abandon an otherwise-healthy
+        # provider. A second failure (or any non-transient error) falls
+        # through to ``first_err`` and the existing fallback handling
+        # unchanged. This is the unified home for the transient retry that
+        # every auxiliary task (compression, memory flush, title-gen,
+        # session-search, vision) shares. (PR #16587)
+        try:
+            return _validate_llm_response(
+                client.chat.completions.create(**kwargs), task)
+        except Exception as transient_err:
+            if not _is_transient_transport_error(transient_err):
+                raise
+            logger.info(
+                "Auxiliary %s: transient transport error; retrying once on "
+                "the same provider before fallback: %s",
+                task or "call", transient_err,
+            )
+            return _validate_llm_response(
+                client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -5517,8 +5659,22 @@ async def async_call_llm(
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
     try:
-        return _validate_llm_response(
-            await client.chat.completions.create(**kwargs), task)
+        # Retry ONCE on the same provider for a transient transport blip
+        # before the except-chain escalates to fallback — see call_llm()
+        # for the rationale. (PR #16587)
+        try:
+            return _validate_llm_response(
+                await client.chat.completions.create(**kwargs), task)
+        except Exception as transient_err:
+            if not _is_transient_transport_error(transient_err):
+                raise
+            logger.info(
+                "Auxiliary %s (async): transient transport error; retrying "
+                "once on the same provider before fallback: %s",
+                task or "call", transient_err,
+            )
+            return _validate_llm_response(
+                await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)

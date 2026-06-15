@@ -18,6 +18,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    DEFAULT_FALLBACK_CONTEXT,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -218,6 +219,84 @@ class TestDefaultContextLengths:
                 assert actual == expected_ctx, (
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
+
+    def test_glm_52_context_1m(self):
+        """GLM-5.2 must resolve to 1M, not the generic GLM fallback of 202K.
+
+        Context window was verified empirically via needle-in-a-haystack
+        retrieval at 789K prompt tokens on api.z.ai/api/coding/paas/v4
+        (2026-06-13).
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5.2"] == 1_048_576
+        assert DEFAULT_CONTEXT_LENGTHS["glm"] == 202752
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            # GLM-5.2 (1M) must NOT fall through to the generic 202K entry
+            assert get_model_context_length("glm-5.2") == 1_048_576
+            # Vendor-prefixed forms (zai provider, zhipu alias)
+            assert get_model_context_length("zai/glm-5.2") == 1_048_576
+            assert get_model_context_length("zhipu/glm-5.2") == 1_048_576
+            # Older GLM variants still resolve to the generic 202K fallback
+            assert get_model_context_length("glm-5") == 202752
+            assert get_model_context_length("glm-5.1") == 202752
+
+    def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
+        """OpenRouter-routed slugs resolve via the live OR catalog before the
+        hardcoded family catch-all.
+
+        Regression for the claude-fable-5 under-report: a brand-new Anthropic
+        slug that is absent from models.dev but present in OpenRouter's live
+        catalog (with a 1M window) used to fall through to the generic
+        ``"claude": 200000`` entry, because the step-6 OR fallback was gated on
+        ``not effective_provider`` and ``effective_provider`` is "openrouter"
+        for any OpenRouter selection. The dedicated step-5 OR branch must read
+        the live value instead.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        or_url = "https://openrouter.ai/api/v1"
+        live = {
+            "anthropic/claude-fable-5": {"context_length": 1_000_000},
+            "anthropic/claude-haiku-4.5": {"context_length": 200_000},
+        }
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value=live), \
+             mock_patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             mock_patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            # The bug: would have returned 200_000 via the "claude" catch-all.
+            assert get_model_context_length(
+                "anthropic/claude-fable-5", base_url=or_url, provider="openrouter"
+            ) == 1_000_000
+            # A genuinely-200k model still resolves to its real OR value — the
+            # fix reads per-model context, it does not blanket-bump to 1M.
+            assert get_model_context_length(
+                "anthropic/claude-haiku-4.5", base_url=or_url, provider="openrouter"
+            ) == 200_000
+
+    def test_openrouter_kimi_32k_underreport_still_guarded(self):
+        """The live OR branch keeps the Kimi-family 32k underreport guard:
+        a bogus 32768 from OpenRouter for a Kimi slug must NOT win — it falls
+        through to the hardcoded default instead.
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        or_url = "https://openrouter.ai/api/v1"
+        live = {"moonshotai/kimi-k2.6": {"context_length": 32768}}
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value=live), \
+             mock_patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             mock_patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            ctx = get_model_context_length(
+                "moonshotai/kimi-k2.6", base_url=or_url, provider="openrouter"
+            )
+            assert ctx != 32768, "Kimi 32k OR underreport must not be accepted"
 
 
 # =========================================================================
@@ -773,17 +852,24 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_custom_endpoint_without_metadata_skips_name_based_default(self, mock_endpoint_fetch, mock_fetch):
+    def test_custom_endpoint_without_metadata_falls_back_to_catalog(self, mock_endpoint_fetch, mock_fetch):
+        """Custom endpoint with no metadata should fall back to the hardcoded
+        catalog (not 256K) when the model name matches a known entry.
+
+        Previously this returned CONTEXT_PROBE_TIERS[0] (256K) because the
+        custom-endpoint branch short-circuited before the catalog lookup.
+        See #38865.
+        """
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
+        # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
-
-        assert result == CONTEXT_PROBE_TIERS[0]
+        assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
@@ -857,6 +943,64 @@ class TestGetModelContextLength:
         )
 
         assert result == 200000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_custom_endpoint_falls_back_to_hardcoded_catalog(self, mock_fetch):
+        """Custom/proxied endpoint that fails all probes should still resolve
+        via DEFAULT_CONTEXT_LENGTHS instead of returning 256K.
+
+        Regression test for #38865: a corporate Anthropic proxy (custom
+        base_url) caused the custom-endpoint branch to short-circuit before
+        the catalog lookup, capping context at 256K even for models like
+        claude-opus-4-8 that are in the hardcoded catalog with 1M.
+        """
+        mock_fetch.return_value = {}
+
+        # Patch all the probe functions that the custom-endpoint branch calls
+        # so they all fail (return None/empty), simulating a proxy that
+        # doesn't expose Ollama or local-server endpoints.
+        with (
+            patch(
+                "agent.model_metadata._resolve_endpoint_context_length",
+                return_value=None,
+            ),
+            patch(
+                "agent.model_metadata._query_ollama_api_show",
+                return_value=None,
+            ),
+            patch(
+                "agent.model_metadata._query_local_context_length",
+                return_value=None,
+            ),
+            patch(
+                "agent.model_metadata.is_local_endpoint",
+                return_value=False,
+            ),
+        ):
+            # A known model behind a custom proxy should resolve to its
+            # catalog value (1M), NOT the 256K fallback.
+            ctx = get_model_context_length(
+                "claude-opus-4-8",
+                base_url="https://my-gateway.example.com/v1/claude",
+            )
+            assert ctx == 1000000, f"Expected 1000000, got {ctx}"
+
+            # Another known model
+            ctx2 = get_model_context_length(
+                "claude-sonnet-4-6",
+                base_url="https://my-gateway.example.com/v1/claude",
+            )
+            assert ctx2 == 1000000, f"Expected 1000000, got {ctx2}"
+
+            # An unknown model on a custom endpoint should still fall back
+            # to 256K (no catalog match).
+            ctx3 = get_model_context_length(
+                "totally-unknown-model",
+                base_url="https://my-gateway.example.com/v1/claude",
+            )
+            assert ctx3 == DEFAULT_FALLBACK_CONTEXT, (
+                f"Expected {DEFAULT_FALLBACK_CONTEXT}, got {ctx3}"
+            )
 
 
 # =========================================================================
@@ -964,6 +1108,78 @@ class TestFetchModelMetadata:
         mm._model_metadata_cache = {}
         mm._model_metadata_cache_time = 0
 
+    def _isolate_disk_cache(self, monkeypatch, tmp_path):
+        import agent.model_metadata as mm
+        cache_path = tmp_path / "openrouter_model_metadata.json"
+        monkeypatch.setattr(mm, "_get_model_metadata_cache_path", lambda: cache_path)
+        return cache_path
+
+    def test_fresh_disk_cache_skips_network(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        cache_path.write_text(
+            '{"test/model":{"context_length":12345,"name":"Cached","pricing":{}}}',
+            encoding="utf-8",
+        )
+
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            result = fetch_model_metadata()
+
+        mock_get.assert_not_called()
+        assert result["test/model"]["context_length"] == 12345
+
+    def test_force_refresh_bypasses_fresh_disk_cache(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        cache_path.write_text(
+            '{"test/model":{"context_length":12345,"name":"Cached","pricing":{}}}',
+            encoding="utf-8",
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "live/model", "context_length": 67890, "name": "Live"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("agent.model_metadata.requests.get", return_value=mock_response) as mock_get:
+            result = fetch_model_metadata(force_refresh=True)
+
+        assert mock_get.call_count == 1
+        assert "live/model" in result
+        assert "test/model" not in result
+
+    def test_network_success_writes_disk_cache(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "live/model", "context_length": 67890, "name": "Live"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("agent.model_metadata.requests.get", return_value=mock_response):
+            fetch_model_metadata(force_refresh=True)
+
+        assert cache_path.exists()
+        assert "live/model" in cache_path.read_text(encoding="utf-8")
+
+    def test_network_failure_falls_back_to_stale_disk_cache(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        cache_path.write_text(
+            '{"stale/model":{"context_length":50000,"name":"Stale","pricing":{}}}',
+            encoding="utf-8",
+        )
+        old = time.time() - _MODEL_CACHE_TTL - 60
+        import os
+        os.utime(cache_path, (old, old))
+
+        with patch("agent.model_metadata.requests.get", side_effect=Exception("Network error")):
+            result = fetch_model_metadata(force_refresh=True)
+
+        assert result["stale/model"]["context_length"] == 50000
+
     @patch("agent.model_metadata.requests.get")
     def test_caches_result(self, mock_get):
         self._reset_cache()
@@ -1043,10 +1259,11 @@ class TestFetchModelMetadata:
         assert result["test-model"]["context_length"] == 123456
 
     @patch("agent.model_metadata.requests.get")
-    def test_ttl_expiry_triggers_refetch(self, mock_get):
+    def test_ttl_expiry_triggers_refetch(self, mock_get, tmp_path, monkeypatch):
         """Cache expires after _MODEL_CACHE_TTL seconds."""
         import agent.model_metadata as mm
         self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -1058,8 +1275,11 @@ class TestFetchModelMetadata:
         fetch_model_metadata(force_refresh=True)
         assert mock_get.call_count == 1
 
-        # Simulate TTL expiry
+        # Simulate both memory and disk TTL expiry.
         mm._model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL - 1
+        old = time.time() - _MODEL_CACHE_TTL - 1
+        import os
+        os.utime(cache_path, (old, old))
         fetch_model_metadata()
         assert mock_get.call_count == 2  # refetched
 
@@ -1247,3 +1467,59 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+class TestGrok43StaleCacheGuard:
+    """Pre-catalog builds resolved grok-4.3 via the generic 'grok-4' catch-all
+    (256,000) and persisted it before the 'grok-4.3' (1M) catalog entry was
+    added on 2026-05-15.  The step-1 cache guard must drop that stale value
+    and re-resolve to 1M, while leaving correct grok-4 entries (256,000)
+    untouched.
+    """
+
+    def test_suggests_grok_4_3(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_3
+        assert _model_name_suggests_grok_4_3("grok-4.3")
+        assert _model_name_suggests_grok_4_3("grok-4.3-latest")
+        assert _model_name_suggests_grok_4_3("xai/grok-4.3")
+        assert not _model_name_suggests_grok_4_3("grok-4")
+        assert not _model_name_suggests_grok_4_3("grok-4-fast")
+        assert not _model_name_suggests_grok_4_3("grok-4.20")
+
+    def test_stale_grok_4_3_dropped_and_reresolves_to_1m(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.3", base, 256_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.3", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 1_000_000
+
+    def test_correct_grok_4_3_cache_preserved(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.3", base, 1_000_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.3", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 1_000_000
+
+    def test_grok_4_not_clobbered(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        # 256,000 is the CORRECT value for plain grok-4 — guard must not touch it.
+        for slug in ("grok-4", "grok-4-0709"):
+            mm.save_context_length(slug, base, 256_000)
+            ctx = mm.get_model_context_length(
+                slug, base_url=base, api_key="", provider="xai"
+            )
+            assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"

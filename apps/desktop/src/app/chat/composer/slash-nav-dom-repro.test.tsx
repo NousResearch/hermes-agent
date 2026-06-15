@@ -37,7 +37,10 @@ function Harness({
   const refreshTrigger = useCallback(() => {
     const editor = editorRef.current
 
-    if (!editor) {return}
+    if (!editor) {
+      return
+    }
+
     const raw = editor.textContent ?? ''
 
     if (!raw.includes('@') && !raw.includes('/')) {

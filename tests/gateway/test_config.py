@@ -1,5 +1,6 @@
 """Tests for gateway configuration management."""
 
+import logging
 import os
 from unittest.mock import patch
 
@@ -185,7 +186,7 @@ class TestStreamingConfig:
         )
         assert restored.edit_interval == 0.8
         assert restored.buffer_threshold == 24
-        assert restored.fresh_final_after_seconds == 60.0
+        assert restored.fresh_final_after_seconds == 0.0
 
 
 class TestGatewayConfigRoundtrip:
@@ -212,6 +213,43 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+
+    def test_max_concurrent_sessions_from_dict_normalizes_disabled_values(self):
+        assert GatewayConfig.from_dict({}).max_concurrent_sessions is None
+        assert GatewayConfig.from_dict({"max_concurrent_sessions": None}).max_concurrent_sessions is None
+        assert GatewayConfig.from_dict({"max_concurrent_sessions": 0}).max_concurrent_sessions is None
+        assert GatewayConfig.from_dict({"max_concurrent_sessions": -1}).max_concurrent_sessions is None
+
+    def test_max_concurrent_sessions_from_dict_accepts_positive_integer(self):
+        config = GatewayConfig.from_dict({"max_concurrent_sessions": "3"})
+
+        assert config.max_concurrent_sessions == 3
+
+    def test_max_concurrent_sessions_from_dict_ignores_invalid_values(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        config = GatewayConfig.from_dict({"max_concurrent_sessions": "many"})
+
+        assert config.max_concurrent_sessions is None
+        assert any(
+            "Ignoring invalid max_concurrent_sessions='many'" in record.message
+            for record in caplog.records
+        )
+
+    def test_max_concurrent_sessions_from_dict_accepts_nested_fallback(self):
+        config = GatewayConfig.from_dict({"gateway": {"max_concurrent_sessions": 4}})
+
+        assert config.max_concurrent_sessions == 4
+
+    def test_max_concurrent_sessions_top_level_overrides_nested(self):
+        config = GatewayConfig.from_dict(
+            {
+                "gateway": {"max_concurrent_sessions": 4},
+                "max_concurrent_sessions": 2,
+            }
+        )
+
+        assert config.max_concurrent_sessions == 2
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
@@ -308,6 +346,51 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is False
+
+    def test_bridges_top_level_max_concurrent_sessions_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("max_concurrent_sessions: 2\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_sessions == 2
+
+    def test_bridges_nested_max_concurrent_sessions_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  max_concurrent_sessions: 3\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_sessions == 3
+
+    def test_top_level_max_concurrent_sessions_overrides_nested_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "max_concurrent_sessions: 2\n"
+            "gateway:\n"
+            "  max_concurrent_sessions: 3\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.max_concurrent_sessions == 2
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""
@@ -476,6 +559,69 @@ class TestLoadGatewayConfig:
         assert telegram.enabled is True
         assert telegram.token == "top-token"
         assert telegram.extra["reply_prefix"] == "top"
+
+    def test_shared_key_loop_bridges_allow_from_from_nested_platforms(self, tmp_path, monkeypatch):
+        """Regression: shared-key loop must bridge allow_from / require_mention
+        into PlatformConfig.extra even when the platform is configured only
+        under ``platforms:`` (no top-level ``telegram:`` block).
+
+        Before the fix, ``platform_cfg = yaml_cfg.get('telegram')`` returned
+        None for nested-only configs, so the loop skipped the platform entirely
+        and allow_from was silently ignored.  The apply_yaml_config_fn dispatch
+        received the same fix in #44f3e51; the shared-key loop now mirrors it.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  telegram:\n"
+            "    allow_from:\n"
+            "      - \"111222333\"\n"
+            "      - \"444555666\"\n"
+            "    require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.extra.get("allow_from") == ["111222333", "444555666"], (
+            "allow_from configured under platforms.telegram must be bridged "
+            "into PlatformConfig.extra by the shared-key loop"
+        )
+        assert telegram.extra.get("require_mention") is True, (
+            "require_mention configured under platforms.telegram must be "
+            "bridged into PlatformConfig.extra by the shared-key loop"
+        )
+
+    def test_shared_key_loop_bridges_allow_from_from_nested_gateway_platforms(self, tmp_path, monkeypatch):
+        """Same regression check for ``gateway.platforms:`` path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      allow_from:\n"
+            "        - \"777888999\"\n"
+            "      require_mention: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram = config.platforms[Platform.TELEGRAM]
+        assert telegram.extra.get("allow_from") == ["777888999"], (
+            "allow_from configured under gateway.platforms.telegram must be "
+            "bridged into PlatformConfig.extra by the shared-key loop"
+        )
+        assert telegram.extra.get("require_mention") is False
 
     def test_bridges_quoted_false_session_notify_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -666,6 +812,37 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.platforms[Platform.TELEGRAM].extra["disable_link_previews"] is True
+
+    def test_loads_telegram_rich_messages_from_gateway_platform_extra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      extra:\n"
+            "        rich_messages: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
+
+    def test_load_config_default_disables_telegram_rich_messages(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+
+        assert config["telegram"]["extra"]["rich_messages"] is False
 
     def test_bridges_telegram_extra_base_url_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

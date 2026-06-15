@@ -60,6 +60,10 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    // Optional: non-English locales fall back to the English literal in the
+    // component until translated, matching the enriched-profiles keys.
+    gateway?: string;
+    gatewayHint?: string;
     pluginLoadFailed: string;
     pluginNotRegistered: string;
   };
@@ -106,6 +110,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    /** Optional — fall back to English literals until translated. */
+    managingProfile?: string;
+    currentProfileOption?: string;
+    managingProfileBanner?: string;
   };
 
   // ── Status page ──
@@ -293,6 +301,8 @@ export interface Translations {
       discord: string;
       slack: string;
       email: string;
+      needsHomeChannel?: string;
+      noneConfigured?: string;
     };
   };
 
@@ -344,7 +354,8 @@ export interface Translations {
     nameRequired: string;
     nameRule: string;
     invalidName: string;
-    cloneFromDefault: string;
+    cloneFrom: string;
+    cloneFromNone: string;
     allProfiles: string;
     noProfiles: string;
     defaultBadge: string;
@@ -365,6 +376,41 @@ export interface Translations {
     created: string;
     deleted: string;
     renamed: string;
+    // Optional keys added for the enriched profiles experience. Non-English
+    // locales fall back to the English literal in the component until
+    // translated, so these are optional to avoid churning every locale file.
+    activeProfile?: string;
+    activeBadge?: string;
+    setActive?: string;
+    activeSet?: string;
+    gatewayRunning?: string;
+    gatewayStopped?: string;
+    gatewayRunningWarning?: string;
+    aliasBadge?: string;
+    description?: string;
+    descriptionPlaceholder?: string;
+    noDescription?: string;
+    editDescription?: string;
+    descriptionSaved?: string;
+    reviewBadge?: string;
+    autoGenerate?: string;
+    generating?: string;
+    describeFailed?: string;
+    distribution?: string;
+    advancedOptions?: string;
+    cloneAll?: string;
+    noSkillsOption?: string;
+    descriptionOptional?: string;
+    modelOptional?: string;
+    modelInherit?: string;
+    modelLoading?: string;
+    modelNone?: string;
+    editModel?: string;
+    modelSaved?: string;
+    modelSelect?: string;
+    actions?: string;
+    manageSkills?: string;
+    activeSetHint?: string;
   };
 
   // ── Skills page ──
@@ -386,6 +432,10 @@ export interface Translations {
     setupNeeded: string;
     disabledForCli: string;
     more: string;
+    /** Optional — fall back to English literals until translated. */
+    profileSelector?: string;
+    currentProfile?: string;
+    managingProfile?: string;
   };
 
   // ── Config page ──
@@ -500,6 +550,13 @@ export interface Translations {
   theme: {
     title: string;
     switchTheme: string;
+    /** Font-override section (optional — locales fall back to English). */
+    fontTitle?: string;
+    fontDefault?: string;
+    fontDefaultHint?: string;
+    fontSans?: string;
+    fontSerif?: string;
+    fontMono?: string;
   };
 
   // ── Achievements plugin (plugins/hermes-achievements) ──

@@ -99,6 +99,22 @@ def _is_gemini_openai_compat_base_url(base_url: Any) -> bool:
     return normalized.endswith("/openai")
 
 
+def _model_consumes_thought_signature(model: Any) -> bool:
+    """True when the outgoing model is a Gemini family model that requires
+    ``extra_content`` (thought_signature) to be replayed on tool calls.
+
+    Gemini 3 thinking models attach ``extra_content`` to each tool call and
+    reject subsequent requests with HTTP 400 if it is missing. Every other
+    strict OpenAI-compatible provider (Fireworks, Mistral, ...) rejects the
+    request with 400 if ``extra_content`` *is* present. So the field must be
+    kept only when the target model is itself Gemini-family, and stripped
+    otherwise — including when a non-Gemini model inherits stale Gemini
+    ``extra_content`` from earlier in a mixed-provider session.
+    """
+    m = str(model or "").lower()
+    return "gemini" in m or "gemma" in m
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -119,6 +135,14 @@ class ChatCompletionsTransport(ProviderTransport):
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
+        - ``extra_content`` on ``tool_calls`` (Gemini thought_signature) —
+          stripped unless the outgoing ``model`` is itself Gemini-family.
+          Gemini 3 thinking models attach it for replay, but strict providers
+          (Fireworks, Mistral) reject any payload containing it with
+          ``Extra inputs are not permitted, field: 'messages[N].tool_calls[M].extra_content'``.
+          It must be kept for Gemini targets (replay required) and dropped for
+          everyone else, including non-Gemini models that inherited stale
+          Gemini ``extra_content`` earlier in a mixed-provider session.
         - ``tool_name`` on tool-result messages — written by
           ``make_tool_result_message()`` for the SQLite FTS index, but not
           part of the Chat Completions schema. Strict providers (Fireworks,
@@ -137,6 +161,9 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N]._empty_recovery_synthetic'``,
           which then poisons every subsequent request in the session.
         """
+        strip_extra_content = not _model_consumes_thought_signature(
+            kwargs.get("model")
+        )
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -155,7 +182,9 @@ class ChatCompletionsTransport(ProviderTransport):
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
-                        "call_id" in tc or "response_item_id" in tc
+                        "call_id" in tc
+                        or "response_item_id" in tc
+                        or (strip_extra_content and "extra_content" in tc)
                     ):
                         needs_sanitize = True
                         break
@@ -183,6 +212,8 @@ class ChatCompletionsTransport(ProviderTransport):
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)
                         tc.pop("response_item_id", None)
+                        if strip_extra_content:
+                            tc.pop("extra_content", None)
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -240,8 +271,10 @@ class ChatCompletionsTransport(ProviderTransport):
             anthropic_max_output: int | None
             extra_body_additions: dict | None
         """
-        # Codex sanitization: drop reasoning_items / call_id / response_item_id
-        sanitized = self.convert_messages(messages)
+        # Codex sanitization: drop reasoning_items / call_id / response_item_id.
+        # Pass model so the Gemini thought_signature (extra_content) is kept for
+        # Gemini targets and stripped for strict non-Gemini providers.
+        sanitized = self.convert_messages(messages, model=model)
 
         # ── Provider profile: single-path when present ──────────────────
         _profile = params.get("provider_profile")
@@ -538,7 +571,28 @@ class ChatCompletionsTransport(ProviderTransport):
                     api_kwargs[k] = v
 
         if extra_body:
-            api_kwargs["extra_body"] = extra_body
+            # Native Gemini (generativelanguage.googleapis.com, non-/openai)
+            # speaks Google's REST schema, not OpenAI's. OpenAI-style extra_body
+            # keys (tags, reasoning, provider, plugins, …) are unknown fields
+            # there and Gemini rejects the whole request with a non-retryable
+            # HTTP 400 ("Invalid JSON payload received. Unknown name 'tags'").
+            # This happens when a profile that emits extra_body (e.g. the Nous
+            # profile's portal `tags`) is active but the resolved endpoint is a
+            # Gemini base_url — typical when only Google credentials are set and
+            # a fallback/aux call lands on Gemini. The native client only reads
+            # thinking_config from extra_body, so drop everything else here.
+            try:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+                _native_gemini = is_native_gemini_base_url(params.get("base_url"))
+            except Exception:
+                _native_gemini = False
+            if _native_gemini:
+                extra_body = {
+                    k: v for k, v in extra_body.items()
+                    if k in ("thinking_config", "thinkingConfig")
+                }
+            if extra_body:
+                api_kwargs["extra_body"] = extra_body
 
         return api_kwargs
 
@@ -610,8 +664,42 @@ class ChatCompletionsTransport(ProviderTransport):
         if rd:
             provider_data["reasoning_details"] = rd
 
+        # OpenAI structured-refusal field. When a model declines, the SDK
+        # populates ``message.refusal`` with the explanation and leaves
+        # ``content`` empty. OpenAI-compatible proxies that front Anthropic /
+        # Bedrock (e.g. Nous Portal) surface a Claude refusal this way — or via
+        # ``finish_reason="content_filter"`` — instead of the native
+        # ``stop_reason="refusal"``. Without capturing it the refusal looks
+        # like an empty response, so the agent loop retries a deterministic
+        # refusal three times and gives up with "no content after retries".
+        # Promote it to content + a ``content_filter`` finish reason so the
+        # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
+        # ``None`` for normal responses, so this is a no-op in the common case.
+        content = msg.content
+        refusal = getattr(msg, "refusal", None)
+        if refusal is None and hasattr(msg, "model_extra"):
+            _msg_extra = getattr(msg, "model_extra", None) or {}
+            if isinstance(_msg_extra, dict):
+                refusal = _msg_extra.get("refusal")
+        if isinstance(refusal, str) and refusal.strip():
+            # Record the refusal explanation regardless — it's useful provider
+            # metadata even when the model also returned a usable payload.
+            provider_data["refusal"] = refusal
+            _has_text = isinstance(content, str) and content.strip()
+            _has_tool_calls = bool(tool_calls)
+            # Only promote to a terminal ``content_filter`` when the refusal is
+            # the *sole* payload — no visible text and no tool calls. A response
+            # that carries real content (or tool calls) alongside a refusal note
+            # is a normal, usable turn: surfacing it as a failed safety refusal
+            # would discard the model's actual work. In the empty-payload case,
+            # adopt the refusal as content so the loop has something to show.
+            if not _has_text and not _has_tool_calls:
+                content = refusal
+                if finish_reason in (None, "stop"):
+                    finish_reason = "content_filter"
+
         return NormalizedResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,

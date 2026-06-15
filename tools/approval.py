@@ -36,6 +36,14 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+_approval_turn_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_turn_id",
+    default="",
+)
+_approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_tool_call_id",
+    default="",
+)
 
 
 def _fire_approval_hook(hook_name: str, **kwargs) -> None:
@@ -55,6 +63,8 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         # (e.g. bare tool-only imports, minimal test environments).
         return
     try:
+        kwargs.setdefault("turn_id", _approval_turn_id.get())
+        kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() already swallows per-callback errors, so reaching here
@@ -72,6 +82,27 @@ def set_current_session_key(session_key: str) -> contextvars.Token[str]:
 def reset_current_session_key(token: contextvars.Token[str]) -> None:
     """Restore the prior approval session key context."""
     _approval_session_key.reset(token)
+
+
+def set_current_observability_context(
+    *,
+    turn_id: str = "",
+    tool_call_id: str = "",
+) -> tuple[contextvars.Token[str], contextvars.Token[str]]:
+    """Bind active tool correlation IDs to approval hooks."""
+    return (
+        _approval_turn_id.set(turn_id or ""),
+        _approval_tool_call_id.set(tool_call_id or ""),
+    )
+
+
+def reset_current_observability_context(
+    tokens: tuple[contextvars.Token[str], contextvars.Token[str]],
+) -> None:
+    """Restore prior approval hook correlation IDs."""
+    turn_token, tool_token = tokens
+    _approval_tool_call_id.reset(tool_token)
+    _approval_turn_id.reset(turn_token)
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -120,7 +151,13 @@ def _is_gateway_approval_context() -> bool:
     return bool(_get_session_platform())
 
 # Sensitive write targets that should trigger approval even when referenced
-# via shell expansions like $HOME or $HERMES_HOME.
+# via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
+# active profile home path such as /home/hermes/.hermes/config.yaml. The
+# resolved-absolute form is folded into the ~/.hermes/ patterns at detection
+# time by _normalize_command_for_detection() — see the rewrite step there — so
+# these static patterns stay free of any import-time path snapshot (which would
+# go stale when HERMES_HOME is set after this module is imported, e.g. under the
+# hermetic test conftest or any deferred-profile-resolution path).
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
 _HERMES_ENV_PATH = (
     r'(?:~\/\.hermes/|'
@@ -168,6 +205,11 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
     rf'{_HERMES_CONFIG_PATH}|'
+    rf'{_SHELL_RC_FILES}|'
+    rf'{_CREDENTIAL_FILES})'
+)
+_USER_SENSITIVE_WRITE_TARGET = (
+    rf'(?:{_SSH_SENSITIVE_PATH}|'
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
@@ -404,6 +446,27 @@ DANGEROUS_PATTERNS = [
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    # cp/mv/install OVERWRITING a sensitive credential/SSH/shell-rc/Hermes file.
+    # The tee/redirection patterns above already gate _SENSITIVE_WRITE_TARGET
+    # (~/.ssh/*, ~/.netrc/.pgpass/.npmrc/.pypirc, shell rc files,
+    # ~/.hermes/config.yaml/.env), but cp/mv/install was only paired for /etc and
+    # project-relative env/config — so `cp evil ~/.ssh/authorized_keys` (key
+    # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command
+    # injection) slipped through with auto-approve. Same unpaired-door rationale
+    # as #14639 / the sed-tee-redirect pairing on these targets.
+    # Anchor the sensitive target to the command tail so this fires on the
+    # DESTINATION (last arg) only — `cp evil ~/.ssh/authorized_keys` is gated,
+    # but reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
+    # The trailing `[^\s"\']*` consumes the rest of the destination filename
+    # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
+    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # In-place edits mutate the target file directly, bypassing redirection,
+    # tee, and copy/move/install coverage. Gate the same user-controlled
+    # startup/credential files so `sed -i ... ~/.bashrc` and `perl -i ...
+    # ~/.ssh/authorized_keys` cannot silently plant login commands or keys.
+    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
+    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
@@ -412,6 +475,15 @@ DANGEROUS_PATTERNS = [
     # the terminal side is not an open door. See #14639.
     (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
     (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
+    # perl -i and ruby -i perform the same in-place mutation as sed -i but are
+    # not caught by the -e/-c script-execution pattern above (which targets code
+    # evaluation, not file mutation). Pairs the sed -i coverage from #14639.
+    # The -i flag can appear as its own token after other flags
+    # (`perl -p -i -e ... config.yaml`), combined (`perl -pi -e`), or with a
+    # backup suffix (`perl -i.bak`). Match any flag token containing `i`
+    # anywhere in the args, not just the first token — `perl -e '...'` (code
+    # eval, no -i) does not trip because it has no `-...i` flag token.
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
@@ -497,6 +569,86 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
+    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
+    command = re.sub(r"''|\"\"", '', command)
+    # Fold the current user's resolved absolute home path into ~/ at detection
+    # time so static user-sensitive patterns catch /home/alice/.bashrc the same
+    # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
+    # profile/session launchers can set HOME after this module is imported.
+    command = _rewrite_resolved_user_home(command)
+    # Fold the resolved absolute active-profile home path into the canonical
+    # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
+    # gateway deployments the agent often references the resolved absolute path
+    # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
+    # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
+    # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
+    # after this module is imported — as the hermetic test conftest does.
+    command = _rewrite_resolved_hermes_home(command)
+    return command
+
+
+def _rewrite_resolved_user_home(command: str) -> str:
+    """Rewrite the current user's absolute home prefix to ``~/``.
+
+    Resolves HOME at detection time, including its symlink-resolved form, so
+    terminal commands targeting absolute home paths are checked by the same
+    static patterns as tilde and $HOME forms. No-op when HOME is unset or
+    degenerate.
+    """
+    try:
+        home = os.path.expanduser("~")
+        candidates = [
+            home.rstrip("/"),
+            os.path.realpath(home).rstrip("/"),
+        ]
+    except Exception:
+        return command
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        # Require an absolute path below root so a bad HOME cannot rewrite the
+        # whole filesystem namespace.
+        normalized = path.rstrip("/")
+        if not normalized.startswith("/") or normalized.count("/") < 2:
+            continue
+        command = command.replace(normalized + "/", "~/")
+    return command
+
+
+def _rewrite_resolved_hermes_home(command: str) -> str:
+    """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
+
+    Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
+    form) and replaces an occurrence of ``<home>/`` in *command* with
+    ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
+    patterns match. No-op when the path can't be resolved or doesn't appear.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home().expanduser()
+        candidates = [
+            str(home).rstrip("/"),
+            str(home.resolve(strict=False)).rstrip("/"),
+        ]
+    except Exception:
+        return command
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
+        # unrelated paths: require an absolute path with at least one non-root
+        # component. The active profile home is always a real directory like
+        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
+        normalized = path.rstrip("/")
+        if not normalized.startswith("/") or normalized.count("/") < 2:
+            continue
+        command = command.replace(normalized + "/", "~/.hermes/")
     return command
 
 
@@ -1337,6 +1489,9 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
+                # "always" to session scope below, so the UI must not offer it.
+                "allow_permanent": not has_tirith,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
@@ -1544,6 +1699,12 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
+    # Check session/permanent approval — same gate as check_all_command_guards.
+    # Without this, "Approve session" / "Always" choices are stored but never
+    # consulted, so every execute_code call re-prompts the user (#39275).
+    if is_approved(session_key, pattern_key):
+        return {"approved": True, "message": None}
+
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
@@ -1634,9 +1795,15 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "user_consent": False,
         }
 
-    # Approved — one-shot only. Deliberately NO approve_session/approve_permanent:
-    # each execute_code script is distinct arbitrary code, so approval never
-    # persists to future scripts.
+    # Approved — persist based on scope (same logic as check_all_command_guards).
+    if choice == "session":
+        approve_session(session_key, pattern_key)
+    elif choice == "always":
+        approve_session(session_key, pattern_key)
+        approve_permanent(pattern_key)
+        save_permanent_allowlist(_permanent_approved)
+    # choice == "once": no persistence — approval lasts this single call only.
+
     return {"approved": True, "message": None,
             "user_approved": True, "description": description}
 

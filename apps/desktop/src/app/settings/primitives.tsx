@@ -97,7 +97,7 @@ export function ListRow({
         {below}
       </div>
       {action && (
-        <div className={cn('min-w-0', !wide && 'sm:justify-self-end')}>
+        <div className={cn('min-w-0', !wide && (actionBelow ? 'sm:justify-self-stretch' : 'sm:justify-self-end'))}>
           {action}
           {actionBelow && <div className="mt-1 flex justify-end">{actionBelow}</div>}
         </div>

@@ -77,6 +77,7 @@ class ServiceManager(Protocol):
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None: ...
     def unregister_profile_gateway(self, profile: str) -> None: ...
     def list_profile_gateways(self) -> list[str]: ...
@@ -182,6 +183,7 @@ class _RegistrationUnsupportedMixin:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         raise NotImplementedError(
             f"{type(self).__name__} does not support runtime profile "
@@ -830,15 +832,15 @@ class S6ServiceManager:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         """Create the s6 service directory for a profile gateway.
 
         Triggers ``s6-svscanctl -a`` so s6-svscan picks the new directory
-        up immediately. The service is created in the *up* state — to
-        register without auto-starting, follow up with ``stop(profile)``
-        (or pass the start flag via the future ``start_now=False`` arg,
-        which the Phase 4 reconciliation path uses via a ``down``
-        marker file written directly).
+        up immediately.  When *start_now* is ``True`` (the default) the
+        service starts immediately; when ``False`` a ``down`` marker file
+        is written so s6-supervise leaves the service stopped until the
+        user explicitly runs ``hermes -p <profile> gateway start``.
 
         Raises:
             ValueError: if the profile name is invalid or the service
@@ -885,6 +887,13 @@ class S6ServiceManager:
             # dirs. See ``_seed_supervise_skeleton`` for the full
             # rationale.
             _seed_supervise_skeleton(tmp_dir)
+
+            # When start_now is False, write a `down` marker so
+            # s6-supervise does not auto-start the service on rescan.
+            # Mirrors the same pattern in container_boot.py
+            # _register_gateway_slot when start=False.
+            if not start_now:
+                (tmp_dir / "down").touch()
 
             tmp_dir.rename(svc_dir)
         except Exception:

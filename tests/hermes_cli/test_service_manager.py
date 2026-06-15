@@ -586,6 +586,35 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
     ), f"s6-svscanctl -a not invoked; saw: {fake_subprocess_run}"
 
 
+def test_s6_register_start_now_false_writes_down_marker(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """When start_now=False, a `down` marker must be written so
+    s6-supervise does not auto-start the service on rescan."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder", start_now=False)
+
+    svc_dir = s6_scandir / "gateway-coder"
+    assert svc_dir.is_dir()
+    assert (svc_dir / "down").is_file(), (
+        "start_now=False must write a `down` marker file"
+    )
+
+
+def test_s6_register_start_now_true_no_down_marker(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """When start_now=True (default), no `down` marker should exist."""
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.register_profile_gateway("coder")
+
+    svc_dir = s6_scandir / "gateway-coder"
+    assert svc_dir.is_dir()
+    assert not (svc_dir / "down").exists(), (
+        "start_now=True must NOT write a `down` marker file"
+    )
+
+
 def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> None:
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway(

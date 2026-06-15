@@ -38,7 +38,8 @@
   "overrides": {
     "joi": "^18.2.1",
     "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "ws": "7.5.11"
   },
   "browserslist": {
     "production": [

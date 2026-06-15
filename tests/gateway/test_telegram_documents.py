@@ -385,17 +385,51 @@ class TestDocumentDownloadBlock:
         assert "[Content of" not in (event.text or "")
 
     @pytest.mark.asyncio
-    async def test_download_exception_handled(self, adapter):
-        """If get_file() raises, the handler logs the error without crashing."""
+    async def test_download_exception_not_forwarded_as_empty_agent_turn(self, adapter):
+        """If get_file() raises, tell the user directly and do not send an empty agent turn."""
         doc = _make_document(file_name="crash.pdf", file_size=100)
         doc.get_file = AsyncMock(side_effect=RuntimeError("Telegram API down"))
         msg = _make_message(document=doc)
         update = _make_update(msg)
+        adapter.send = AsyncMock(return_value=SendResult(success=True))
+        adapter._file_download_attempts = 1
 
-        # Should not raise
         await adapter._handle_media_message(update, MagicMock())
-        # handle_message should still be called (the handler catches the exception)
-        adapter.handle_message.assert_called_once()
+
+        adapter.handle_message.assert_not_called()
+        adapter.send.assert_awaited_once()
+        notice = adapter.send.await_args.args[1]
+        assert "couldn't download crash.pdf" in notice
+        assert "resend" in notice
+        assert "proxy" in notice
+
+    @pytest.mark.asyncio
+    async def test_document_download_retries_and_passes_timeout_kwargs(self, adapter):
+        """Document downloads use PTB per-call timeout kwargs and retry transient failures."""
+        file_obj = _make_file_obj(b"csv,data\n1,2")
+        doc = _make_document(file_name="data.csv", mime_type="text/csv", file_size=12, file_obj=file_obj)
+        doc.get_file = AsyncMock(side_effect=[RuntimeError("Timed out"), file_obj])
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+        adapter._file_download_read_timeout = 77.0
+        adapter._file_download_connect_timeout = 11.0
+        adapter._file_download_pool_timeout = 12.0
+        adapter._file_download_attempts = 2
+
+        with patch("gateway.platforms.telegram.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        assert doc.get_file.await_count == 2
+        expected_timeouts = {
+            "read_timeout": 77.0,
+            "connect_timeout": 11.0,
+            "pool_timeout": 12.0,
+        }
+        assert doc.get_file.await_args.kwargs == expected_timeouts
+        assert file_obj.download_as_bytearray.await_args.kwargs == expected_timeouts
+        sleep_mock.assert_awaited_once()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls and event.media_types == ["text/csv"]
 
 
 class TestVideoDownloadBlock:

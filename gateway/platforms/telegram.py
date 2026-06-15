@@ -406,6 +406,26 @@ class TelegramAdapter(BasePlatformAdapter):
             value = min(value, max_value)
         return value
 
+    @staticmethod
+    def _env_int_clamped(
+        name: str,
+        default: int,
+        *,
+        min_value: Optional[int] = None,
+        max_value: Optional[int] = None,
+    ) -> int:
+        """Read an integer env var and clamp it to optional bounds."""
+        raw = os.getenv(name)
+        try:
+            value = int(raw) if raw is not None else int(default)
+        except (TypeError, ValueError):
+            value = int(default)
+        if min_value is not None:
+            value = max(value, min_value)
+        if max_value is not None:
+            value = min(value, max_value)
+        return value
+
     @property
     def message_len_fn(self):
         """Telegram measures message length in UTF-16 code units."""
@@ -487,6 +507,31 @@ class TelegramAdapter(BasePlatformAdapter):
             2 * 1024 * 1024 * 1024
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
+        )
+        # File downloads use PTB's per-call Bot.get_file()/File.download_* timeout
+        # kwargs. Keep normal Bot API requests on HTTPXRequest defaults, but allow
+        # slower Telegram file CDN/proxy paths more time and a small retry budget so
+        # supported documents do not fall through as empty agent turns.
+        self._file_download_read_timeout = self._env_float_clamped(
+            "HERMES_TELEGRAM_FILE_DOWNLOAD_READ_TIMEOUT",
+            60.0,
+            min_value=1.0,
+        )
+        self._file_download_connect_timeout = self._env_float_clamped(
+            "HERMES_TELEGRAM_FILE_DOWNLOAD_CONNECT_TIMEOUT",
+            10.0,
+            min_value=1.0,
+        )
+        self._file_download_pool_timeout = self._env_float_clamped(
+            "HERMES_TELEGRAM_FILE_DOWNLOAD_POOL_TIMEOUT",
+            10.0,
+            min_value=1.0,
+        )
+        self._file_download_attempts = self._env_int_clamped(
+            "HERMES_TELEGRAM_FILE_DOWNLOAD_ATTEMPTS",
+            3,
+            min_value=1,
+            max_value=5,
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
@@ -1923,6 +1968,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+                "media_write_timeout": _env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 20.0),
             }
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
@@ -5990,6 +6036,80 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._pending_photo_batch_tasks[batch_key] = asyncio.create_task(self._flush_photo_batch(batch_key))
 
+    def _file_download_timeout_kwargs(self) -> Dict[str, float]:
+        """Timeout kwargs accepted by PTB get_file()/download_as_bytearray()."""
+        return {
+            "read_timeout": self._file_download_read_timeout,
+            "connect_timeout": self._file_download_connect_timeout,
+            "pool_timeout": self._file_download_pool_timeout,
+        }
+
+    async def _download_telegram_media_bytes(self, media: Any, *, label: str) -> tuple[Any, bytes]:
+        """Download a Telegram media object with bounded retry/backoff.
+
+        python-telegram-bot forwards per-call timeout kwargs from get_file() and
+        File.download_as_bytearray() to the underlying request layer.  Use them
+        here instead of relying solely on the Bot-wide HTTPXRequest defaults.
+        """
+        timeout_kwargs = self._file_download_timeout_kwargs()
+        attempts = max(1, getattr(self, "_file_download_attempts", 3))
+        last_error: Optional[Exception] = None
+        for attempt in range(attempts):
+            try:
+                file_obj = await media.get_file(**timeout_kwargs)
+                data = await file_obj.download_as_bytearray(**timeout_kwargs)
+                return file_obj, bytes(data)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= attempts - 1:
+                    break
+                delay = min(2 ** attempt, 5)
+                logger.warning(
+                    "[Telegram] Failed to download %s (attempt %d/%d), retrying in %ss: %s",
+                    label,
+                    attempt + 1,
+                    attempts,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
+
+    async def _notify_document_download_failure(
+        self,
+        msg: Message,
+        event: MessageEvent,
+        *,
+        filename: str,
+        error: Exception,
+    ) -> None:
+        """Tell the user a Telegram document could not be downloaded.
+
+        This is intentionally sent directly to Telegram and not routed through
+        the agent: a failed cache leaves no file path/content for the agent to
+        inspect, and forwarding an empty turn is confusing.
+        """
+        name = filename or "the document"
+        err = str(error) or error.__class__.__name__
+        timeout_hint = " timed out" if "timed out" in err.lower() or "timeout" in err.lower() else " failed"
+        text = (
+            f"I couldn't download {name} from Telegram ({err}). The file download{timeout_hint}. "
+            "Please resend the file, try a smaller file, or check the Telegram proxy/network settings."
+        )
+        metadata: Dict[str, Any] = {}
+        if event.source and event.source.thread_id:
+            metadata["thread_id"] = event.source.thread_id
+        try:
+            await self.send(
+                str(msg.chat.id),
+                text,
+                reply_to=str(msg.message_id),
+                metadata=metadata or None,
+            )
+        except Exception:
+            logger.warning("[Telegram] Failed to send document-download failure notice", exc_info=True)
+
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
@@ -6149,8 +6269,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # payload is actually an image, route it through the image cache
                 # and batching path instead of rejecting it as a document.
                 if ext in _TELEGRAM_IMAGE_EXTENSIONS or doc_mime.startswith("image/"):
-                    file_obj = await doc.get_file()
-                    image_bytes = await file_obj.download_as_bytearray()
+                    _file_obj, raw_image_bytes = await self._download_telegram_media_bytes(
+                        doc, label="image document"
+                    )
+                    image_bytes = raw_image_bytes
                     image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                     try:
                         cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
@@ -6189,9 +6311,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     ext = image_mime_to_ext.get(doc.mime_type, "")
 
                 if ext in SUPPORTED_VIDEO_TYPES:
-                    file_obj = await doc.get_file()
-                    video_bytes = await file_obj.download_as_bytearray()
-                    cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                    _file_obj, raw_video_bytes = await self._download_telegram_media_bytes(
+                        doc, label="video document"
+                    )
+                    cached_path = cache_video_from_bytes(raw_video_bytes, ext=ext)
                     event.media_urls = [cached_path]
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
@@ -6217,9 +6340,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 # Download and cache
-                file_obj = await doc.get_file()
-                doc_bytes = await file_obj.download_as_bytearray()
-                raw_bytes = bytes(doc_bytes)
+                _file_obj, raw_bytes = await self._download_telegram_media_bytes(
+                    doc, label="document"
+                )
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
                 mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
                 event.media_urls = [cached_path]
@@ -6246,6 +6369,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                await self._notify_document_download_failure(
+                    msg,
+                    event,
+                    filename=getattr(doc, "file_name", "") or "",
+                    error=e,
+                )
+                return
 
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

@@ -18,11 +18,26 @@ import pytest
 
 @pytest.fixture
 def gateway_runner():
-    """Minimal GatewayRunner stub with just the method under test bound."""
+    """Minimal GatewayRunner stub with the methods exercised by these
+    tests bound directly off the real class.
+
+    Includes the auto-retry helpers introduced by #28972 because
+    ``_enrich_message_with_vision`` now delegates to them — without
+    these bindings the stub would AttributeError on the very first
+    image and the sanitize-context regression tests below would
+    silently exercise the wrong code path.
+    """
     from gateway.run import GatewayRunner
 
     class _Stub:
         _enrich_message_with_vision = GatewayRunner._enrich_message_with_vision
+        _vision_analyze_with_auto_retry = GatewayRunner._vision_analyze_with_auto_retry
+        _vision_auto_retry_count = staticmethod(GatewayRunner._vision_auto_retry_count)
+        _vision_failure_is_retryable = staticmethod(GatewayRunner._vision_failure_is_retryable)
+        _VISION_AUTO_RETRY_COUNT_DEFAULT = GatewayRunner._VISION_AUTO_RETRY_COUNT_DEFAULT
+        _VISION_AUTO_RETRY_INITIAL_BACKOFF_S = GatewayRunner._VISION_AUTO_RETRY_INITIAL_BACKOFF_S
+        _VISION_AUTO_RETRY_MAX_BACKOFF_S = GatewayRunner._VISION_AUTO_RETRY_MAX_BACKOFF_S
+        _VISION_NONRETRYABLE_HINTS = GatewayRunner._VISION_NONRETRYABLE_HINTS
 
     return _Stub()
 

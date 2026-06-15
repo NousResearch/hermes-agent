@@ -75,6 +75,20 @@ class TestEnsureFreshToken:
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=0)
         assert token == "hch-at-old" and refreshed is False
 
+    def test_fresh_token_served_from_cache_without_disk(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
+        oauth._expiry_cache.clear()
+        # First call seeds the cache from disk.
+        oauth.ensure_fresh_token(path, "hermes", now=0)
+        # Second call must not touch disk while the token is well clear of expiry.
+        monkeypatch.setattr(
+            oauth, "_read_config",
+            lambda *a, **k: pytest.fail("disk must not be read while token is fresh"),
+        )
+        token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=100)
+        assert token == "hch-at-old" and refreshed is False
+
     def test_expired_token_refreshes_and_persists_rotation(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"
         _write(path, {"hosts": {"hermes": _host_block(expires_at=100)}})

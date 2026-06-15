@@ -39,6 +39,16 @@ _REFRESH_TIMEOUT_SECONDS = 15.0
 # refresh token and trip reuse detection.
 _refresh_lock = threading.Lock()
 
+# In-memory expiry cache keyed by (config path, host) → (expires_at, access).
+# Lets the hot path (every memory access calls this) skip the honcho.json read
+# while the token is comfortably live; disk is only touched near expiry, on a
+# cache miss, or when an explicit ``raw`` is supplied. Single-key dict ops are
+# atomic under the GIL, so no separate lock is needed. An access token stays
+# valid until its own expiry regardless of out-of-band rotation, so a stale
+# cache entry can't break auth — it just defers picking up external changes
+# until the token nears expiry and disk is read again.
+_expiry_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
 
 def is_oauth_access_token(value: str | None) -> bool:
     """True when ``value`` is an OAuth access token (vs a static API key)."""
@@ -186,6 +196,7 @@ def _persist_credential(path: Path, host: str, cred: OAuthCredential) -> None:
     block["apiKey"] = cred.access_token
     block["oauth"] = cred.oauth_block()
     _atomic_write_config(path, raw)
+    _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
 
 
 def ensure_fresh_token(
@@ -203,12 +214,23 @@ def ensure_fresh_token(
     ``refreshed=False`` and the fail-open path handles any resulting 401.
     """
     now = time.time() if now is None else now
+    key = (str(path), host)
+
+    # Hot path: trust the cached expiry while the token is well clear of the
+    # skew window — no disk read. Bypassed when an explicit ``raw`` is supplied.
+    if raw is None:
+        cached = _expiry_cache.get(key)
+        if cached is not None and now < cached[0] - _REFRESH_SKEW_SECONDS:
+            return cached[1], False
+
     source = raw if raw is not None else _read_config(path)
     block = (source.get("hosts") or {}).get(host) or {}
     cred = OAuthCredential.from_host_block(block)
     if cred is None:
+        _expiry_cache.pop(key, None)
         return None, False
 
+    _expiry_cache[key] = (cred.expires_at, cred.access_token)
     if not cred.is_expired(now=now):
         return cred.access_token, False
 
@@ -270,6 +292,7 @@ def install_grant(
     granted_config = grant.get("config")
     if apply_config and isinstance(granted_config, dict):
         _deep_merge(raw, granted_config)
+    _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
     hosts = raw.setdefault("hosts", {})
     block = hosts.setdefault(host, {})
     block["apiKey"] = cred.access_token

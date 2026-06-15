@@ -1335,6 +1335,32 @@ class TestWebServerEndpoints:
         defaults = resp.json()
         assert "model" in defaults
 
+    def test_model_fallbacks_round_trip(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "fallbacks": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+                {"provider": "nous", "model": "hermes-4"},
+            ]
+        }
+
+        put_resp = self.client.put("/api/model/fallbacks", json=payload)
+        assert put_resp.status_code == 200
+        assert put_resp.json()["fallbacks"] == payload["fallbacks"]
+
+        get_resp = self.client.get("/api/model/fallbacks")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["fallbacks"] == payload["fallbacks"]
+        assert load_config()["fallback_providers"] == payload["fallbacks"]
+
+    def test_model_fallbacks_reject_missing_model(self):
+        resp = self.client.put(
+            "/api/model/fallbacks",
+            json={"fallbacks": [{"provider": "openrouter", "model": ""}]},
+        )
+        assert resp.status_code == 422
+
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
         assert resp.status_code == 200

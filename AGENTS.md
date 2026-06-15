@@ -210,6 +210,19 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+### UI Tests (Playwright)
+
+UI tests in `tests/web/` use Playwright to drive a headless Chromium instance
+against the live dashboard. After installing the `dev` extra, install the
+browser binary:
+
+```bash
+pip install -e ".[dev]"
+playwright install chromium
+```
+
+UI tests are self-contained: `tests/web/models/conftest.py` boots an isolated dashboard on a dynamic port and tears it down automatically. No manually running dashboard is needed.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.

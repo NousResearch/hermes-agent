@@ -89,7 +89,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, ValidationInfo, field_validator
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -104,7 +104,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, ValidationInfo, field_validator
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -983,6 +983,42 @@ def _apply_main_model_assignment(
         clear_model_endpoint_credentials(model_cfg, clear_api_key=False)
     model_cfg.pop("context_length", None)
     return model_cfg
+
+
+class FallbackProviderEntry(BaseModel):
+    """Single fallback provider entry persisted to config.yaml."""
+
+    provider: str
+    model: str
+    base_url: Optional[str] = None
+    api_mode: Optional[str] = None
+
+    @field_validator("provider", "model", mode="before")
+    @classmethod
+    def _trim_required(cls, value: Any, info: ValidationInfo) -> str:
+        if value is None:
+            raise ValueError(f"fallback {info.field_name} is required")
+        if not isinstance(value, str):
+            raise ValueError(f"fallback {info.field_name} must be a string")
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError(f"fallback {info.field_name} is required")
+        return trimmed
+
+    @field_validator("base_url", "api_mode", mode="before")
+    @classmethod
+    def _trim_optional(cls, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("fallback optional fields must be strings")
+        return value.strip() or None
+
+
+class FallbackProvidersUpdate(BaseModel):
+    """Payload for PUT /api/model/fallbacks."""
+
+    fallbacks: List[FallbackProviderEntry]
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -4171,6 +4207,37 @@ def _apply_model_assignment_sync(
         "model": model,
     }
 
+
+@app.get("/api/model/fallbacks")
+def get_model_fallbacks():
+    """Return the configured fallback provider chain."""
+    try:
+        from hermes_cli.fallback_cmd import read_chain
+
+        cfg = load_config()
+        return {"fallbacks": read_chain(cfg)}
+    except Exception:
+        _log.exception("GET /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to read fallback providers")
+
+
+@app.put("/api/model/fallbacks")
+def set_model_fallbacks(body: FallbackProvidersUpdate):
+    """Persist fallback providers in config.yaml order."""
+    cleaned = [entry.model_dump(exclude_none=True) for entry in body.fallbacks]
+
+    try:
+        from hermes_cli.fallback_cmd import write_chain
+
+        cfg = load_config()
+        write_chain(cfg, cleaned)
+        save_config(cfg)
+        return {"ok": True, "fallbacks": cleaned}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/fallbacks failed")
+        raise HTTPException(status_code=500, detail="Failed to save fallback providers")
 
 
 

@@ -28,7 +28,7 @@ from hermes_cli.fallback_config import get_fallback_chain
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return the normalized fallback chain as a list of dicts.
 
     Accepts both the new list format (``fallback_providers``) and the legacy
@@ -39,12 +39,17 @@ def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return get_fallback_chain(config)
 
 
-def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
+def write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers`` and clear legacy key."""
     config["fallback_providers"] = chain
     # Drop the legacy single-dict key on write so there's only one source of truth.
     if "fallback_model" in config:
         config.pop("fallback_model", None)
+
+
+# Backwards-compatible aliases for older internal callers.
+_read_chain = read_chain
+_write_chain = write_chain
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:
@@ -109,7 +114,7 @@ def cmd_fallback_list(args) -> None:  # noqa: ARG001
     from hermes_cli.config import load_config
 
     config = load_config()
-    chain = _read_chain(config)
+    chain = read_chain(config)
 
     print()
     if not chain:
@@ -203,7 +208,7 @@ def cmd_fallback_add(args) -> None:
     _restore_auth_active_provider(active_provider_before)
 
     final_cfg = load_config()
-    chain = _read_chain(final_cfg)
+    chain = read_chain(final_cfg)
 
     # Reject exact-duplicate fallback entries.
     for existing in chain:
@@ -214,7 +219,7 @@ def cmd_fallback_add(args) -> None:
             return
 
     chain.append(new_entry)
-    _write_chain(final_cfg, chain)
+    write_chain(final_cfg, chain)
     save_config(final_cfg)
 
     print()
@@ -241,7 +246,7 @@ def cmd_fallback_remove(args) -> None:  # noqa: ARG001
     from hermes_cli.config import load_config, save_config
 
     config = load_config()
-    chain = _read_chain(config)
+    chain = read_chain(config)
 
     if not chain:
         print()
@@ -264,7 +269,7 @@ def cmd_fallback_remove(args) -> None:  # noqa: ARG001
         return
 
     removed = chain.pop(idx)
-    _write_chain(config, chain)
+    write_chain(config, chain)
     save_config(config)
 
     print()
@@ -281,7 +286,7 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
     from hermes_cli.config import load_config, save_config
 
     config = load_config()
-    chain = _read_chain(config)
+    chain = read_chain(config)
 
     if not chain:
         print()
@@ -304,7 +309,7 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
         print("  Cancelled — no change.")
         return
 
-    _write_chain(config, [])
+    write_chain(config, [])
     save_config(config)
     print()
     print("  Fallback chain cleared.")

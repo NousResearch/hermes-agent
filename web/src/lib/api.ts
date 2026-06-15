@@ -486,6 +486,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  getConfiguredModels: () =>
+    fetchJSON<FallbacksResponse>("/api/model/fallbacks"),
+  setFallbackChain: (fallbacks: FallbackEntry[]) =>
+    fetchJSON<SetFallbacksResponse>("/api/model/fallbacks", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fallbacks }),
+    }),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -2057,16 +2065,16 @@ export interface ModelOptionsResponse {
   providers?: ModelOptionProvider[];
 }
 
+export interface AuxiliaryModelsResponse {
+  tasks: AuxiliaryTaskAssignment[];
+  main: { provider: string; model: string };
+}
+
 export interface AuxiliaryTaskAssignment {
   task: string;
   provider: string;
   model: string;
-  base_url: string;
-}
-
-export interface AuxiliaryModelsResponse {
-  tasks: AuxiliaryTaskAssignment[];
-  main: { provider: string; model: string };
+  base_url?: string;
 }
 
 export interface MoaModelSlot {
@@ -2125,6 +2133,33 @@ export interface ModelAssignmentResponse {
    *  Switching main never clears aux pins; this lets the UI warn the user
    *  their helper tasks aren't following the switch. Only set on scope:'main'. */
   stale_aux?: StaleAuxAssignment[];
+}
+
+// ── Centralized model config types ──────────────────────────────────────
+
+export interface ModelInfo {
+  id: string;
+  provider: string;
+  model: string;
+  base_url?: string;
+  capabilities?: Record<string, unknown>;
+}
+
+export interface FallbackEntry {
+  provider: string;
+  model: string;
+  base_url?: string;
+  api_mode?: string;
+}
+
+/** Response type for GET /api/model/fallbacks */
+export interface FallbacksResponse {
+  fallbacks: FallbackEntry[];
+}
+
+export interface SetFallbacksResponse {
+  ok: boolean;
+  fallbacks: FallbackEntry[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────

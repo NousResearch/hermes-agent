@@ -161,6 +161,36 @@ class TestFeishuMessageNormalization(unittest.TestCase):
 
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
+    def test_markdown_table_reply_stays_rich_post_with_table_as_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "**结果**\n\n| 模型 | GSM8K |\n|---|---:|\n| GPT-4 | 95.5 |\n\n- 结论：下降"
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+        data = json.loads(payload)
+        rows = data["zh_cn"]["content"]
+        rendered = "\n".join(part["text"] for row in rows for part in row if part.get("tag") == "md")
+
+        self.assertEqual(msg_type, "post")
+        self.assertIn("**结果**", rendered)
+        self.assertIn("```text", rendered)
+        self.assertIn("| 模型 | GSM8K |", rendered)
+        self.assertIn("```", rendered)
+        self.assertIn("- 结论：下降", rendered)
+
+    def test_plain_text_reply_remains_text_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        msg_type, payload = adapter._build_outbound_payload("hello world")
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": "hello world"})
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",

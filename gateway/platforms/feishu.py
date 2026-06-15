@@ -155,7 +155,8 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Feishu post-type 'md' elements do not render tables reliably, so outbound
+# markdown tables are converted into fenced code blocks before sending as post.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -571,6 +572,69 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    stripped = line.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if not cells or any(not cell for cell in cells):
+        return False
+    return all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _is_markdown_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def _convert_markdown_tables_to_code_blocks(content: str) -> str:
+    """Wrap markdown tables in fenced code blocks for Feishu md rendering.
+
+    Feishu's post ``md`` element supports common markdown but not GitHub-style
+    pipe tables. Sending raw tables as ``md`` can render blank content in the
+    client, while sending the whole reply as plain text loses all markdown
+    formatting. Converting only table blocks to ``text`` fences preserves the
+    rest of the reply as rich markdown and keeps the table readable.
+    """
+    if not content or not _MARKDOWN_TABLE_RE.search(content):
+        return content
+
+    lines = content.splitlines()
+    converted: List[str] = []
+    index = 0
+    in_code_block = False
+
+    while index < len(lines):
+        line = lines[index]
+        stripped_line = line.strip()
+
+        if _MARKDOWN_FENCE_OPEN_RE.match(stripped_line) or _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line):
+            in_code_block = not in_code_block
+            converted.append(line)
+            index += 1
+            continue
+
+        if (
+            not in_code_block
+            and index + 1 < len(lines)
+            and _is_markdown_table_row(line)
+            and _is_markdown_table_separator(lines[index + 1])
+        ):
+            table_lines = [line, lines[index + 1]]
+            index += 2
+            while index < len(lines) and _is_markdown_table_row(lines[index]):
+                table_lines.append(lines[index])
+                index += 1
+            converted.extend(["```text", *table_lines, "```"])
+            continue
+
+        converted.append(line)
+        index += 1
+
+    trailing_newline = "\n" if content.endswith("\n") else ""
+    return "\n".join(converted) + trailing_newline
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -4536,12 +4600,13 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables reliably.
+        # Convert just the table blocks to fenced code blocks so the rest of the
+        # reply still renders as rich markdown instead of downgrading everything
+        # to plain text.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            content = _convert_markdown_tables_to_code_blocks(content)
+            return "post", _build_markdown_post_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

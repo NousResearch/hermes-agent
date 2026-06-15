@@ -37,7 +37,7 @@ _HERMES_CORE_TOOLS = [
     # via check_fn in tools/read_terminal_tool.py — hidden outside the GUI).
     "read_terminal",
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
+    "read_file", "write_file", "patch", "search_files", "recursive_context",
     # Vision + image generation
     "vision_analyze", "image_generate",
     # Skills
@@ -188,8 +188,8 @@ TOOLSETS = {
     
 
     "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), search (content + files), and recursive large-context corpus navigation",
+        "tools": ["read_file", "write_file", "patch", "search_files", "recursive_context"],
         "includes": []
     },
     

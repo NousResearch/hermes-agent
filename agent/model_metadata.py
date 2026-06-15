@@ -682,6 +682,19 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
+    # Allow disabling the OpenRouter metadata fetch entirely.  Useful for
+    # air-gapped / proxied deployments where openrouter.ai is unreachable
+    # and the synchronous requests.get() blocks gateway startup for minutes
+    # while urllib3 retries against a proxy that returns 403 on CONNECT.
+    if os.getenv("HERMES_DISABLE_MODEL_METADATA", "").lower() in {"1", "true", "yes"}:
+        if _model_metadata_cache:
+            return _model_metadata_cache
+        disk_cache = _load_model_metadata_disk_cache()
+        if disk_cache:
+            _model_metadata_cache = disk_cache
+            return _model_metadata_cache
+        return {}
+
     if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
         return _model_metadata_cache
 
@@ -695,7 +708,16 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 return _model_metadata_cache
 
     try:
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
+        # Use a (connect_timeout, read_timeout) tuple to fail fast when the
+        # endpoint is unreachable (e.g. corporate proxy returns 403 on
+        # CONNECT).  A single int sets both to the same value; the old
+        # timeout=10 meant urllib3 could block for 10s *per retry stage*
+        # through a proxy, ballooning to minutes on retryable failures.
+        response = requests.get(
+            OPENROUTER_MODELS_URL,
+            timeout=(5, 10),
+            verify=_resolve_requests_verify(),
+        )
         response.raise_for_status()
         data = response.json()
 

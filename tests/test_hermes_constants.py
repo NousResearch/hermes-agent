@@ -8,7 +8,9 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    _is_populated,
     get_default_hermes_root,
+    get_hermes_dir,
     get_hermes_home,
     is_container,
     parse_reasoning_effort,
@@ -298,3 +300,140 @@ class TestSecureParentDir:
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
 
+
+# ---------------------------------------------------------------------------
+# get_hermes_dir — content-aware resolver
+# ---------------------------------------------------------------------------
+
+class TestIsPopulated:
+    """Unit tests for the _is_populated helper."""
+
+    def test_empty_dir_returns_false(self, tmp_path):
+        d = tmp_path / "empty"
+        d.mkdir()
+        assert _is_populated(d) is False
+
+    def test_dir_with_file_returns_true(self, tmp_path):
+        d = tmp_path / "has_file"
+        d.mkdir()
+        (d / "data.txt").write_text("x")
+        assert _is_populated(d) is True
+
+    def test_dir_with_subdir_returns_true(self, tmp_path):
+        d = tmp_path / "has_subdir"
+        d.mkdir()
+        (d / "sub").mkdir()
+        assert _is_populated(d) is True
+
+    def test_nonexistent_path_returns_false(self, tmp_path):
+        assert _is_populated(tmp_path / "nope") is False
+
+    def test_file_not_dir_returns_false(self, tmp_path):
+        f = tmp_path / "file.txt"
+        f.write_text("x")
+        assert _is_populated(f) is False
+
+    def test_permission_error_returns_false(self, tmp_path, monkeypatch):
+        """OS error during iterdir is caught → treated as not populated."""
+        d = tmp_path / "locked"
+        d.mkdir()
+        real_iterdir = Path.iterdir
+
+        def _raise(p):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "iterdir", _raise)
+        assert _is_populated(d) is False
+        monkeypatch.setattr(Path, "iterdir", real_iterdir)
+
+
+class TestGetHermesDir:
+    """Regression tests for the content-aware get_hermes_dir resolver.
+
+    Covers the four cardinal empty/populated combinations plus edge cases
+    requested in the review: file-not-directory, permission errors, and
+    neither path existing.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _set_hermes_home(self, tmp_path, monkeypatch):
+        self.home = tmp_path / ".hermes"
+        self.home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(self.home))
+
+    def _old(self):
+        return self.home / "image_cache"
+
+    def _new(self):
+        return self.home / "cache" / "images"
+
+    # --- Cardinal cases ---
+
+    def test_both_empty_returns_new(self):
+        """Empty legacy stub must not shadow the new consolidated path."""
+        self._old().mkdir()
+        self._new().mkdir(parents=True)
+        assert get_hermes_dir("cache/images", "image_cache") == self._new()
+
+    def test_old_populated_new_empty_returns_old(self):
+        """Populated legacy data must be honoured even when new dir exists."""
+        self._old().mkdir()
+        (self._old() / "photo.jpg").write_bytes(b"\x00")
+        self._new().mkdir(parents=True)
+        assert get_hermes_dir("cache/images", "image_cache") == self._old()
+
+    def test_old_populated_new_absent_returns_old(self):
+        """Populated legacy data wins when new path does not exist."""
+        self._old().mkdir()
+        (self._old() / "photo.jpg").write_bytes(b"\x00")
+        assert get_hermes_dir("cache/images", "image_cache") == self._old()
+
+    def test_old_empty_new_absent_returns_new(self):
+        """Empty legacy stub + no new dir → new path (default for first writes)."""
+        self._old().mkdir()
+        assert get_hermes_dir("cache/images", "image_cache") == self._new()
+
+    def test_both_absent_returns_new(self):
+        """Neither path exists → new path (fresh install)."""
+        assert get_hermes_dir("cache/images", "image_cache") == self._new()
+
+    # --- Edge cases ---
+
+    def test_old_is_file_not_dir(self):
+        """Legacy path is a file, not a directory → treated as absent."""
+        self._old().parent.mkdir(parents=True, exist_ok=True)
+        self._old().write_text("stale")
+        assert get_hermes_dir("cache/images", "image_cache") == self._new()
+
+    def test_old_permission_error_returns_new(self, monkeypatch):
+        """OS error listing legacy dir → fail closed, return new path."""
+        self._old().mkdir()
+        (self._old() / "data").mkdir()  # make it populated
+        real_iterdir = Path.iterdir
+
+        def _raise(p):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "iterdir", _raise)
+        assert get_hermes_dir("cache/images", "image_cache") == self._new()
+        monkeypatch.setattr(Path, "iterdir", real_iterdir)
+
+    def test_new_path_creates_parent_dirs(self):
+        """Returned new path includes intermediate directories."""
+        result = get_hermes_dir("cache/images", "image_cache")
+        assert result == self.home / "cache" / "images"
+
+    def test_pairing_use_case(self):
+        """Simulate the gateway/pairing.py call pattern."""
+        pairing_old = self.home / "pairing"
+        pairing_new = self.home / "platforms" / "pairing"
+
+        # Bootstrap stub (empty) → should resolve to new
+        pairing_old.mkdir()
+        assert get_hermes_dir("platforms/pairing", "pairing") == pairing_new
+
+        # After migration (old populated) → should honour legacy
+        pairing_old.mkdir(exist_ok=True)
+        (pairing_old / "codes.json").write_text("{}")
+        pairing_new.mkdir(parents=True)
+        assert get_hermes_dir("platforms/pairing", "pairing") == pairing_old

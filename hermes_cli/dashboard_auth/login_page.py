@@ -455,7 +455,9 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(
+    *, next_path: str = "", app_redirect: str = "", app_state: str = ""
+) -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` — when set, the post-login landing path the user
@@ -464,20 +466,42 @@ def render_login_html(*, next_path: str = "") -> str:
     end-to-end. The caller (``routes.login_page``) is responsible for
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
+
+    ``app_redirect`` / ``app_state`` — the desktop system-browser sign-in
+    loopback target and nonce. When set, they are threaded onto the
+    OAuth provider buttons (not the local password forms — passkeys live
+    at the IdP, which is the redirect path) so a multi-provider
+    self-hosted gateway can still hand the session back to the app. The
+    caller validates ``app_redirect`` to a loopback URL first; HTML-escaped
+    here as defence in depth.
     """
     providers = list_providers()
     if not providers:
         return _EMPTY_HTML
+
+    from urllib.parse import quote
 
     if next_path:
         # URL-encode then HTML-escape. The URL-encode step matches the
         # gate's ``_safe_next_target`` output shape (also URL-encoded),
         # so a value that round-tripped from /login?next=... back into
         # the button href is byte-identical.
-        from urllib.parse import quote
         next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}"
     else:
         next_qs = ""
+
+    if app_redirect:
+        app_qs = (
+            f"&app_redirect="
+            f"{html.escape(quote(app_redirect, safe=''), quote=True)}"
+        )
+        if app_state:
+            app_qs += (
+                f"&app_state="
+                f"{html.escape(quote(app_state, safe=''), quote=True)}"
+            )
+    else:
+        app_qs = ""
 
     buttons = []
     needs_password_script = False
@@ -488,7 +512,8 @@ def render_login_html(*, next_path: str = "") -> str:
         else:
             buttons.append(
                 f'      <a class="provider-btn" '
-                f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+                f'href="/auth/login?provider={html.escape(p.name, quote=True)}'
+                f'{next_qs}{app_qs}">'
                 f'Sign in with {html.escape(p.display_name)}</a>'
             )
     script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""

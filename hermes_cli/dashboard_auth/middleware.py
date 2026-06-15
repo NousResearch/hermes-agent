@@ -42,6 +42,9 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/auth/logout",
     "/login",
     "/api/auth/providers",
+    # Native-app session handoff: trades a one-time code for the session
+    # cookies, so it must be reachable before any session exists.
+    "/api/auth/desktop-exchange",
     "/assets/",
     "/favicon.ico",
     "/ds-assets/",

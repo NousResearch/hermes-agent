@@ -17,6 +17,7 @@ const {
   AT_COOKIE_VARIANTS,
   RT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildExternalLoginUrl,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
@@ -24,6 +25,7 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  parseLoopbackCallback,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
@@ -393,4 +395,83 @@ test('resolveTestWsUrl (oauth) requires a mintTicket function', async () => {
     () => resolveTestWsUrl('https://gw.example.com', 'oauth', null),
     /mintTicket function is required/
   )
+})
+
+// --- buildExternalLoginUrl (system-browser loopback sign-in) ---
+
+test('buildExternalLoginUrl targets /auth/login with a provider', () => {
+  const url = new URL(
+    buildExternalLoginUrl('https://gw.example.com', {
+      provider: 'pocket-id',
+      appRedirect: 'http://127.0.0.1:54321/callback',
+      appState: 'nonce123'
+    })
+  )
+  assert.equal(url.pathname, '/auth/login')
+  assert.equal(url.searchParams.get('provider'), 'pocket-id')
+  assert.equal(url.searchParams.get('app_redirect'), 'http://127.0.0.1:54321/callback')
+  assert.equal(url.searchParams.get('app_state'), 'nonce123')
+})
+
+test('buildExternalLoginUrl targets the /login picker when no provider given', () => {
+  const url = new URL(
+    buildExternalLoginUrl('https://gw.example.com', {
+      appRedirect: 'http://127.0.0.1:5000/callback',
+      appState: 'n'
+    })
+  )
+  assert.equal(url.pathname, '/login')
+  assert.equal(url.searchParams.has('provider'), false)
+  assert.equal(url.searchParams.get('app_redirect'), 'http://127.0.0.1:5000/callback')
+})
+
+test('buildExternalLoginUrl preserves a gateway path prefix', () => {
+  const url = new URL(
+    buildExternalLoginUrl('https://gw.example.com/hermes', {
+      provider: 'p',
+      appRedirect: 'http://127.0.0.1:5000/callback',
+      appState: 'n'
+    })
+  )
+  assert.equal(url.pathname, '/hermes/auth/login')
+})
+
+// --- parseLoopbackCallback ---
+
+test('parseLoopbackCallback returns the handoff code on a matching state', () => {
+  const { code } = parseLoopbackCallback(
+    '/callback?code=handoff-abc&state=nonce123',
+    'nonce123'
+  )
+  assert.equal(code, 'handoff-abc')
+})
+
+test('parseLoopbackCallback rejects a state mismatch (CSRF guard)', () => {
+  assert.throws(
+    () => parseLoopbackCallback('/callback?code=x&state=wrong', 'nonce123'),
+    /state mismatch/
+  )
+})
+
+test('parseLoopbackCallback rejects a missing code', () => {
+  assert.throws(
+    () => parseLoopbackCallback('/callback?state=nonce123', 'nonce123'),
+    /no handoff code/
+  )
+})
+
+test('parseLoopbackCallback surfaces a provider error param', () => {
+  assert.throws(
+    () => parseLoopbackCallback('/callback?error=access_denied&state=n', 'n'),
+    /access_denied/
+  )
+})
+
+test('parseLoopbackCallback flags non-callback paths as ignorable', () => {
+  try {
+    parseLoopbackCallback('/favicon.ico', 'nonce123')
+    assert.fail('expected throw')
+  } catch (err) {
+    assert.equal(err.ignore, true)
+  }
 })

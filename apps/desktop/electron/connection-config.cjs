@@ -269,10 +269,68 @@ function cookiesHaveLiveSession(cookies) {
   )
 }
 
+/**
+ * Build the gateway URL to open in the system browser for a loopback
+ * (RFC 8252) sign-in, so the IdP ceremony runs in the real browser where
+ * passkeys / Touch ID / WebAuthn work — unlike the embedded login window.
+ *
+ * Omitting `provider` targets the gateway's picker page; pass one to skip it.
+ * `appRedirect` (the app's loopback listener) and `appState` (a CSRF nonce)
+ * are the values the gateway round-trips back as the one-time handoff code.
+ *
+ * @param {string} baseUrl  normalized gateway base URL
+ * @param {{ provider?: string, appRedirect: string, appState: string }} opts
+ * @returns {string}
+ */
+function buildExternalLoginUrl(baseUrl, { provider, appRedirect, appState } = {}) {
+  const parsed = new URL(baseUrl)
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+  const path = provider ? '/auth/login' : '/login'
+  const url = new URL(`${parsed.origin}${prefix}${path}`)
+  if (provider) url.searchParams.set('provider', provider)
+  url.searchParams.set('app_redirect', appRedirect)
+  if (appState) url.searchParams.set('app_state', appState)
+  return url.toString()
+}
+
+/**
+ * Parse the loopback `/callback` request the system browser is redirected to
+ * after sign-in, returning the one-time handoff `code`. Enforces the
+ * `app_state` nonce so an unrelated local request can't drive the exchange.
+ *
+ * @param {string} requestUrl  the listener's request URL (path + query)
+ * @param {string} expectedState  the nonce minted for this login attempt
+ * @returns {{ code: string }}
+ * @throws if the path is not the callback, state mismatches, or code missing
+ */
+function parseLoopbackCallback(requestUrl, expectedState) {
+  // Base is irrelevant — we only read path + query from a relative URL.
+  const parsed = new URL(requestUrl, 'http://127.0.0.1')
+  if (parsed.pathname !== '/callback') {
+    const err = new Error(`Unexpected loopback path: ${parsed.pathname}`)
+    err.ignore = true
+    throw err
+  }
+  const error = parsed.searchParams.get('error')
+  if (error) {
+    throw new Error(`Sign-in failed at the provider: ${error}`)
+  }
+  const state = parsed.searchParams.get('state') || ''
+  if (!expectedState || state !== expectedState) {
+    throw new Error('Loopback sign-in state mismatch (possible CSRF).')
+  }
+  const code = parsed.searchParams.get('code') || ''
+  if (!code) {
+    throw new Error('Loopback callback carried no handoff code.')
+  }
+  return { code }
+}
+
 module.exports = {
   AT_COOKIE_VARIANTS,
   RT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildExternalLoginUrl,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
@@ -280,6 +338,7 @@ module.exports = {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  parseLoopbackCallback,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,

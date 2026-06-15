@@ -58,6 +58,7 @@ const {
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const {
   authModeFromStatus,
+  buildExternalLoginUrl,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
@@ -65,6 +66,7 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  parseLoopbackCallback,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
@@ -3912,6 +3914,141 @@ function openOauthLoginWindow(baseUrl) {
   })
 }
 
+function loopbackResultHtml(title, detail) {
+  const esc = s =>
+    String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
+  return (
+    '<!doctype html><meta charset="utf-8">' +
+    '<title>' + esc(title) + '</title>' +
+    '<body style="font:16px system-ui;margin:3rem auto;max-width:28rem;text-align:center">' +
+    '<h2>' + esc(title) + '</h2><p>' + esc(detail) + '</p></body>'
+  )
+}
+
+// The embedded login window cannot raise the OS passkey / Touch ID / WebAuthn
+// prompt, so passwordless IdP sign-in dead-ends there (issue #42448). This
+// runs the IdP ceremony in the user's real browser instead (RFC 8252 loopback
+// redirect): open the gateway login URL with shell.openExternal, capture the
+// gateway's one-time handoff code on an ephemeral 127.0.0.1 listener, and
+// trade it at /api/auth/desktop-exchange THROUGH the OAuth partition so the
+// Set-Cookie lands in the same jar the rest of the OAuth REST path reads.
+// `oauthProviders` is the non-password provider list from
+// /api/auth/providers; a lone entry lets us skip the gateway's picker page.
+function openOauthLoginExternal(baseUrl, oauthProviders = []) {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let server = null
+    let timeoutTimer = null
+
+    const finish = err => {
+      if (settled) return
+      settled = true
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      try {
+        if (server) server.close()
+      } catch {
+        // listener already torn down
+      }
+      if (err) reject(err)
+      else resolve({ baseUrl, ok: true })
+    }
+
+    const appState = crypto.randomBytes(16).toString('hex')
+
+    server = http.createServer((req, res) => {
+      let parsed
+      try {
+        parsed = parseLoopbackCallback(req.url, appState)
+      } catch (error) {
+        // A browser preflight (e.g. /favicon.ico) is not the callback —
+        // 404 it without settling the login.
+        if (error && error.ignore) {
+          res.statusCode = 404
+          res.end('Not found')
+          return
+        }
+        res.statusCode = 400
+        res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        res.end(loopbackResultHtml('Sign-in failed', 'Close this tab and try again from Hermes.'))
+        finish(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
+      fetchJsonViaOauthSession(`${baseUrl}/api/auth/desktop-exchange`, {
+        method: 'POST',
+        body: { code: parsed.code, state: appState },
+        timeoutMs: 10_000
+      })
+        .then(() => {
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'text/html; charset=utf-8')
+          res.end(loopbackResultHtml('Signed in to Hermes', 'Close this tab and return to the app.'))
+          finish(null)
+        })
+        .catch(error => {
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'text/html; charset=utf-8')
+          res.end(loopbackResultHtml('Sign-in could not be completed', 'Close this tab and try again from Hermes.'))
+          finish(error instanceof Error ? error : new Error(String(error)))
+        })
+    })
+
+    server.on('error', error =>
+      finish(error instanceof Error ? error : new Error(String(error)))
+    )
+
+    // Ephemeral port, loopback interface only — never reachable off-host.
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      const port = addr && typeof addr === 'object' ? addr.port : null
+      if (!port) {
+        finish(new Error('Could not start the local sign-in listener.'))
+        return
+      }
+      const appRedirect = `http://127.0.0.1:${port}/callback`
+      const provider = oauthProviders.length === 1 ? oauthProviders[0].name : undefined
+      let loginUrl
+      try {
+        loginUrl = buildExternalLoginUrl(normalizeRemoteBaseUrl(baseUrl), {
+          provider,
+          appRedirect,
+          appState
+        })
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
+      if (!openExternalUrl(loginUrl)) {
+        finish(new Error('Could not open the system browser for sign-in.'))
+      }
+    })
+
+    // Generous window: the user may be hunting for a YubiKey or completing MFA.
+    timeoutTimer = setTimeout(() => {
+      finish(new Error('Sign-in timed out. Please try again.'))
+    }, 5 * 60_000)
+  })
+}
+
+// Probe whether a gateway supports the system-browser handoff. A gateway that
+// predates this feature (or the Nous-hosted path) omits `app_handoff`, so the
+// caller falls back to the embedded login window. Network/HTTP failures are
+// swallowed into "unsupported" for the same fallback.
+async function gatewayAppHandoffInfo(baseUrl) {
+  try {
+    const body = await fetchJsonViaOauthSession(`${baseUrl}/api/auth/providers`, {
+      method: 'GET',
+      timeoutMs: 8_000
+    })
+    const providers = Array.isArray(body?.providers) ? body.providers : []
+    return {
+      supported: body?.app_handoff === true,
+      oauthProviders: providers.filter(p => p && !p.supports_password)
+    }
+  } catch {
+    return { supported: false, oauthProviders: [] }
+  }
+}
+
 // JSON request routed through the OAuth session partition so the HttpOnly
 // session cookie is attached automatically by Electron's net stack. Used for
 // authed REST against a gated gateway, including minting WS tickets.
@@ -5394,7 +5531,16 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
   // remote config with authMode='oauth' first, then calls this. We normalize
   // the URL defensively so a login can be driven from a raw URL too.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
-  await openOauthLoginWindow(baseUrl)
+  // Prefer the system browser when the gateway advertises the loopback
+  // handoff AND exposes an OAuth (non-password) provider — that path lets
+  // passkeys / Touch ID work (issue #42448). Otherwise keep the embedded
+  // window, so older gateways and the Nous-hosted path are unaffected.
+  const handoff = await gatewayAppHandoffInfo(baseUrl)
+  if (handoff.supported && handoff.oauthProviders.length > 0) {
+    await openOauthLoginExternal(baseUrl, handoff.oauthProviders)
+  } else {
+    await openOauthLoginWindow(baseUrl)
+  }
   return { ok: true, baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 })
 ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {

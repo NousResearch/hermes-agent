@@ -136,8 +136,20 @@ async def login_page(request: Request) -> HTMLResponse:
     next_path = _validate_post_login_target(
         request.query_params.get("next", "")
     )
+    # Desktop system-browser sign-in threads its loopback handoff target
+    # through /login when the gateway has more than one provider (the
+    # single-provider case skips the page and hits /auth/login directly).
+    # Validated to a loopback URL here; /auth/login re-validates on click.
+    app_redirect = _validate_app_redirect(
+        request.query_params.get("app_redirect", "")
+    )
+    app_state = request.query_params.get("app_state", "") if app_redirect else ""
     return HTMLResponse(
-        render_login_html(next_path=next_path),
+        render_login_html(
+            next_path=next_path,
+            app_redirect=app_redirect,
+            app_state=app_state,
+        ),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 
@@ -167,6 +179,13 @@ async def api_auth_providers() -> Any:
             }
             for p in providers
         ],
+        # Capability flag for native apps: this gateway can complete the
+        # OAuth round trip in the system browser and hand the session back
+        # to a loopback redirect (see app_handoff + /api/auth/desktop-exchange).
+        # The desktop app feature-detects on this before opening the
+        # system browser, and falls back to its embedded login window when
+        # absent — so older gateways and the Nous-hosted path keep working.
+        "app_handoff": True,
     }
 
 
@@ -176,7 +195,13 @@ async def api_auth_providers() -> Any:
 
 
 @router.get("/auth/login", name="auth_login")
-async def auth_login(request: Request, provider: str, next: str = ""):
+async def auth_login(
+    request: Request,
+    provider: str,
+    next: str = "",
+    app_redirect: str = "",
+    app_state: str = "",
+):
     p = get_provider(provider)
     if p is None:
         raise HTTPException(
@@ -221,6 +246,19 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     if safe_next:
         from urllib.parse import quote
         pkce = f"{pkce};next={quote(safe_next, safe='')}"
+    # Carry the native-app loopback handoff target through the round trip
+    # the same way ``next`` rides: real IDPs only echo ``code`` + ``state``
+    # on the callback, so the server-set PKCE cookie is the only channel
+    # that survives. ``app_redirect`` is validated to a loopback http URL
+    # so an attacker who reaches /auth/login directly can't redirect the
+    # one-time handoff code to a host they control. ``app_state`` is the
+    # app's own CSRF/correlation nonce, echoed back verbatim.
+    safe_app_redirect = _validate_app_redirect(app_redirect)
+    if safe_app_redirect:
+        from urllib.parse import quote
+        pkce = f"{pkce};app_redirect={quote(safe_app_redirect, safe='')}"
+        if app_state:
+            pkce = f"{pkce};app_state={quote(app_state, safe='')}"
     set_pkce_cookie(
         resp, payload=pkce, use_https=detect_https(request),
         prefix=_prefix(request),
@@ -263,6 +301,11 @@ async def auth_callback(
     # next= query parameter on the callback URL is attacker-controlled
     # and MUST be ignored.
     next_from_cookie = parts.get("next", "")
+    # Native-app loopback handoff target + nonce, set by /auth/login when
+    # the desktop app drives the flow. Same cookie-only trust model as
+    # ``next``: re-validated below before use.
+    app_redirect_from_cookie = parts.get("app_redirect", "")
+    app_state_from_cookie = parts.get("app_state", "")
 
     p = get_provider(provider_name)
     if p is None:
@@ -332,6 +375,49 @@ async def auth_callback(
         ip=_client_ip(request),
     )
 
+    # Native-app system-browser handoff. This callback ran in the user's
+    # real browser, so the OS passkey / Touch ID / WebAuthn prompt could
+    # fire (the whole point — issue #42448). But the session cookie must
+    # land in the APP, not the browser. So rather than set cookies here we
+    # mint a single-use handoff code bound to the session and 302 to the
+    # app's loopback listener carrying only that code; the app trades it at
+    # ``POST /api/auth/desktop-exchange`` for the cookies. No session
+    # cookie is set on the browser, so no stray session is left behind. An
+    # invalid/absent app_redirect simply falls through to the normal
+    # browser-cookie path below.
+    if app_redirect_from_cookie:
+        safe_app_redirect = _validate_app_redirect(app_redirect_from_cookie)
+        if safe_app_redirect:
+            from urllib.parse import (
+                unquote,
+                urlencode,
+                urlparse,
+                urlunparse,
+            )
+
+            from hermes_cli.dashboard_auth.app_handoff import mint_handoff
+
+            handoff_code = mint_handoff(
+                access_token=session.access_token,
+                refresh_token=session.refresh_token,
+                expires_at=session.expires_at,
+            )
+            app_state = (
+                unquote(app_state_from_cookie)
+                if app_state_from_cookie else ""
+            )
+            parsed = urlparse(safe_app_redirect)
+            handoff_query = urlencode(
+                {"code": handoff_code, "state": app_state}
+            )
+            sep = "&" if parsed.query else ""
+            target = urlunparse(
+                parsed._replace(query=f"{parsed.query}{sep}{handoff_query}")
+            )
+            resp = RedirectResponse(url=target, status_code=302)
+            clear_pkce_cookie(resp, prefix=_prefix(request))
+            return resp
+
     expires_in = max(60, session.expires_at - int(time.time()))
     # Honour the ``next=`` value the gate's _unauth_response set in the
     # /login redirect URL and that /auth/login persisted into the PKCE
@@ -385,6 +471,109 @@ def _validate_post_login_target(raw: str) -> str:
     if decoded == "/api" or decoded.startswith("/api/"):
         return ""
     return decoded
+
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _validate_app_redirect(raw: str) -> str:
+    """Return ``raw`` (URL-decoded) if it's a safe loopback http URL, else "".
+
+    The desktop app passes ``app_redirect`` so ``/auth/callback`` can bounce
+    the one-time handoff code to its ephemeral local listener. This value
+    survives the full OAuth round trip in the server-set PKCE cookie, but it
+    enters via the URL at ``/auth/login`` — so an attacker could craft
+    ``/auth/login?provider=…&app_redirect=https://evil.example/grab`` to try
+    to exfiltrate a handoff code. We therefore accept ONLY an ``http://``
+    URL whose host is a loopback literal and which carries an explicit port
+    (the app's ephemeral listener) and an absolute path. That confines the
+    handoff code to a listener on the same machine.
+    """
+    if not raw:
+        return ""
+    from urllib.parse import unquote, urlparse
+
+    decoded = unquote(raw)
+    try:
+        parsed = urlparse(decoded)
+    except ValueError:
+        return ""
+    # Loopback listeners are plain http; never accept https (or anything
+    # else) here — the only valid target is a local socket.
+    if parsed.scheme != "http":
+        return ""
+    if (parsed.hostname or "") not in _LOOPBACK_HOSTS:
+        return ""
+    # Credentials in the authority are never legitimate here.
+    if parsed.username or parsed.password:
+        return ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return ""
+    if port is None:
+        return ""
+    if not parsed.path.startswith("/"):
+        return ""
+    return decoded
+
+
+# ---------------------------------------------------------------------------
+# Public: native-app session handoff (desktop system-browser sign-in)
+# ---------------------------------------------------------------------------
+
+
+class _DesktopExchangeBody(BaseModel):
+    code: str
+    state: str = ""
+
+
+@router.post("/api/auth/desktop-exchange", name="auth_desktop_exchange")
+async def auth_desktop_exchange(request: Request, body: _DesktopExchangeBody):
+    """Trade a one-time handoff code for the dashboard session cookies.
+
+    Completes the desktop system-browser sign-in: the app obtained the
+    handoff code on its loopback listener after ``/auth/callback`` ran in
+    the user's real browser. The app POSTs the code here through its OAuth
+    session partition; we set the same HttpOnly session cookies the browser
+    flow would (``set_session_cookies``), which land in the app's cookie
+    jar. All token material stays server-side — the app never sees a token,
+    only the opaque code.
+
+    Allowlisted past the auth gate (it is the thing that establishes the
+    session). The code is single-use, short-TTL, and 256-bit, so a missing
+    or stale code is the only meaningful failure and brute force is
+    infeasible — no rate limiting needed.
+    """
+    from hermes_cli.dashboard_auth.app_handoff import (
+        HandoffInvalid,
+        consume_handoff,
+    )
+
+    try:
+        material = consume_handoff(body.code)
+    except HandoffInvalid:
+        audit_log(
+            AuditEvent.LOGIN_FAILURE,
+            reason="invalid_handoff_code",
+            ip=_client_ip(request),
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired handoff code",
+        )
+
+    expires_in = max(60, int(material["expires_at"]) - int(time.time()))
+    resp = JSONResponse({"ok": True})
+    set_session_cookies(
+        resp,
+        access_token=str(material["access_token"]),
+        refresh_token=str(material["refresh_token"]),
+        access_token_expires_in=expires_in,
+        use_https=detect_https(request),
+        prefix=_prefix(request),
+    )
+    return resp
 
 
 # ---------------------------------------------------------------------------

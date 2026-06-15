@@ -967,6 +967,26 @@ def test_create_parses_triage_string_true(worker_env):
         conn.close()
 
 
+def test_create_accepts_model_override(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    out = kt._handle_create({
+        "title": "use pinned model",
+        "assignee": "peer",
+        "model": "openai/gpt-5-codex",
+    })
+    d = json.loads(out)
+
+    assert d["ok"] is True
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, d["task_id"])
+        assert task.model_override == "openai/gpt-5-codex"
+    finally:
+        conn.close()
+
+
 def test_create_rejects_bad_triage(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({
@@ -2010,3 +2030,11 @@ def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worke
     d = json.loads(out)
     assert d["ok"] is True, d
     assert d["subscribed"] is False, d
+
+
+def test_kanban_create_schema_exposes_model_override():
+    from tools import kanban_tools as kt
+
+    props = kt.KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert props["model"]["type"] == "string"
+    assert "model" not in kt.KANBAN_CREATE_SCHEMA["parameters"].get("required", [])

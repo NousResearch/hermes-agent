@@ -91,6 +91,20 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_create_accepts_model_override(kanban_home):
+    out = kc.run_slash(
+        "create 'ship with pinned model' --assignee alice "
+        "--model-override openai/gpt-5-codex --json"
+    )
+    task = json.loads(out)
+
+    assert task["model_override"] == "openai/gpt-5-codex"
+
+    with kb.connect() as conn:
+        stored = kb.get_task(conn, task["id"])
+    assert stored.model_override == "openai/gpt-5-codex"
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

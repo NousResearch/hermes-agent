@@ -252,7 +252,24 @@ class Mem0MemoryProvider(MemoryProvider):
                 return self._client
             try:
                 from mem0 import MemoryClient
-                self._client = MemoryClient(api_key=self._api_key)
+                # FD-LEAK FIX (2026-06-14): the mem0 SDK builds httpx.Client with
+                # NO connection limits + no keepalive expiry, so idle keepalive
+                # sockets the server half-closes pile up as CLOSE_WAIT fds and
+                # never get reaped — they starved the long-lived gateway process
+                # to its 256-fd ceiling (49 CLOSE_WAIT to api.mem0.ai observed).
+                # Pass a bounded client: cap the pool and expire idle conns so the
+                # pool actively closes them. The SDK sets base_url + auth headers
+                # on the client we hand it (see MemoryClient.__init__ client= path).
+                import httpx
+                bounded = httpx.Client(
+                    timeout=300,
+                    limits=httpx.Limits(
+                        max_connections=10,
+                        max_keepalive_connections=5,
+                        keepalive_expiry=30.0,
+                    ),
+                )
+                self._client = MemoryClient(api_key=self._api_key, client=bounded)
                 return self._client
             except ImportError:
                 raise RuntimeError("mem0 package not installed. Run: pip install mem0ai")

@@ -403,8 +403,10 @@ class ClaudeCodeACPClient:
     * ``--effort <level>`` — set reasoning effort (default/low/medium/high/
       xhigh/max)
 
-    Unrecognised flags are left in ``acp_args`` and passed through to the
-    ACP subprocess (which silently ignores unknown CLI arguments).
+    Unrecognised flags in ``acp_args`` are dropped — they are NOT passed
+    to the subprocess. The subprocess argv is the fixed
+    ``_launch_command + _launch_args`` from ``_resolve_command()`` /
+    ``_resolve_args()`` (default: ``npx -y @agentclientprotocol/claude-agent-acp``).
     """
 
     _provider_label = "claude-code-acp"
@@ -478,11 +480,18 @@ class ClaudeCodeACPClient:
         self.api_key = api_key or self._provider_label
         self.base_url = base_url or self._marker_base_url
         self._default_headers = dict(default_headers or {})
-        # acp_command is a routing placeholder (e.g. "claude-code-acp") set by delegate_task
-        # to distinguish Claude vs Copilot providers — it is NOT used for subprocess argv.
-        # The real subprocess command comes from _resolve_command() (env var / default "npx").
-        self._acp_command = self._resolve_command()
-        self._acp_args = list(acp_args or args or self._resolve_args())
+        # Fixed subprocess launch argv — always npx + npm package, never user-configurable.
+        # The acp_command parameter passed by delegate_task is a routing placeholder
+        # (e.g. "claude-code-acp") to distinguish Claude vs Copilot providers — it is
+        # NOT used for subprocess argv. The real launch command comes from
+        # _resolve_command() (env var / default "npx"); the launch args come from
+        # _resolve_args() (env var / default ["-y", "<npm package>"]).
+        self._launch_command = self._resolve_command()
+        self._launch_args = self._resolve_args()
+        # Runtime ACP config directives (--model, --effort, --permission-mode).
+        # Parsed by _apply_acp_arg_directives() into _pending_session_configs,
+        # flushed to session/set_config_option after session/new.
+        self._acp_args = list(acp_args or args or [])
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
@@ -516,11 +525,13 @@ class ClaudeCodeACPClient:
         self._pending_model: str | None = None
         self._pending_session_configs: dict[str, str] = {}
 
-        # Scan acp_args for recognized directive flags (--model, --permission-mode,
-        # --effort) and queue them into _pending_session_configs.  These are
-        # flushed via session/set_config_option after session/new in
-        # _ensure_session().  Unrecognised flags remain in acp_args and are
-        # passed to the subprocess (which silently ignores them).
+        # Scan _acp_args (runtime directives from caller) for recognized
+        # flags (--model, --permission-mode, --effort) and queue them into
+        # _pending_session_configs. These are flushed via
+        # session/set_config_option after session/new in _ensure_session().
+        # Unrecognised flags are dropped — they are NOT passed to the subprocess
+        # (the subprocess argv is the fixed _launch_command + _launch_args
+        # from _resolve_command() / _resolve_args()).
         self._apply_acp_arg_directives()
 
         self._trace_lock = threading.Lock()
@@ -579,7 +590,7 @@ class ClaudeCodeACPClient:
         """
         try:
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                [self._launch_command] + self._launch_args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -590,7 +601,7 @@ class ClaudeCodeACPClient:
         except FileNotFoundError as exc:
             envs = "/".join(self._env_command_vars) if self._env_command_vars else "the launcher path"
             raise RuntimeError(
-                f"Could not start {self._provider_label} command '{self._acp_command}'. "
+                f"Could not start {self._provider_label} command '{self._launch_command}'. "
                 f"Install it or set {envs}."
             ) from exc
 
@@ -1252,8 +1263,8 @@ class ClaudeCodeACPClient:
 
         Each matched flag is queued into ``_pending_session_configs`` (for
         ``session_config`` channel directives).  Unrecognised flags are
-        left in ``self._acp_args`` — the ACP subprocess silently ignores
-        unknown CLI arguments.
+        dropped — they are NOT passed to the ACP subprocess (the subprocess
+        argv is the fixed ``_launch_command + _launch_args``).
 
         Only the first occurrence of each non-repeatable flag is honoured.
         """

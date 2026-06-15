@@ -49,7 +49,7 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 | Path | Purpose |
 |---|---|
 | `plugin.yaml` | manifest |
-| `__init__.py` | `register(ctx)` — registers 5 tools + `on_session_end` hook + `hermes meet` CLI |
+| `__init__.py` | `register(ctx)` — registers 5 tools + session-finalize cleanup hook + `hermes meet` CLI |
 | `meet_bot.py` | Playwright bot subprocess (standalone, `python -m plugins.google_meet.meet_bot`) |
 | `process_manager.py` | local bot lifecycle + `enqueue_say` |
 | `tools.py` | agent-facing tools + node-routing helper |
@@ -125,7 +125,7 @@ hermes meet node ping my-mac
 - Guest mode is the default. Saved Google auth from `hermes meet auth` is reused
   only with `--use-auth-state` / `use_auth_state=true`, because it changes the
   identity and meeting permissions used to join.
-- Hermes session-end cleanup leaves active calls by default, even with a
+- Hermes session-finalize cleanup leaves active calls by default, even with a
   duration set. Use `--persist-after-session` / `persist_after_session=true`
   only when the user explicitly wants a detached bot.
 - One active meeting per (gateway, node) pair. A second `meet_join` leaves the first.

@@ -87,7 +87,7 @@ Run `hermes meet setup` to preflight local prereqs.
 2. **Announce yourself** — no auto-consent. Say (in whatever channel the user is watching): "A Hermes agent bot is in this call taking notes."
 3. **Poll** — `meet_status()` for liveness, `meet_transcript(last=20)` for recent captions. Don't re-read the whole transcript every turn.
 4. **Speak (realtime only)** — `meet_say(text="...")` queues text for TTS. The speech lags by ~2s. Don't spam it.
-5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave. Session-end cleanup leaves by default; set `persist_after_session=true` only when the user explicitly wants the bot detached from the Hermes session.
+5. **Leave** — `meet_leave()` when done, or set `duration="30m"` on `meet_join` for auto-leave. Session-finalize cleanup leaves by default; set `persist_after_session=true` only when the user explicitly wants the bot detached from the Hermes session.
 6. **Follow up** — read `meet_transcript()` in full, summarize, and use regular tools to send the recap, file issues, schedule followups.
 
 ## Tool reference

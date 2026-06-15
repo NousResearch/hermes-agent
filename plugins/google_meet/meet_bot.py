@@ -1284,7 +1284,7 @@ def _start_realtime_speaker(
     def _stop_fn():
         return stop_flag.get("stop", False)
 
-    rt["speaker_stop"] = lambda: stop_flag.__setitem__("stop", stop_flag.get("stop", False))
+    rt["speaker_stop"] = lambda: stop_flag.__setitem__("stop", True)
 
     speaker = RealtimeSpeaker(
         session=session,
@@ -1320,13 +1320,52 @@ def _start_realtime_speaker(
                     "--format=s16le",
                     "--channels=1",
                     f"--device={sink}",
-                    str(pcm_path),
                 ],
-                stdin=_sp.DEVNULL,
+                stdin=_sp.PIPE,
                 stdout=_sp.DEVNULL,
                 stderr=_sp.DEVNULL,
             )
             rt["pcm_pump"] = proc
+
+            def _linux_pcm_pump_loop():
+                offset = 0
+                try:
+                    while not stop_flag.get("stop", False):
+                        if proc.poll() is not None:
+                            break
+                        try:
+                            with pcm_path.open("rb") as fh:
+                                fh.seek(offset)
+                                chunk = fh.read()
+                        except FileNotFoundError:
+                            chunk = b""
+                        if chunk:
+                            offset += len(chunk)
+                            if proc.stdin is None:
+                                break
+                            try:
+                                proc.stdin.write(chunk)
+                                proc.stdin.flush()
+                            except (BrokenPipeError, OSError):
+                                break
+                        else:
+                            time.sleep(0.05)
+                except Exception as e:
+                    state.set(error=f"linux pcm pump crashed: {e}")
+                finally:
+                    try:
+                        if proc.stdin is not None:
+                            proc.stdin.close()
+                    except Exception:
+                        pass
+
+            t_pump = threading.Thread(
+                target=_linux_pcm_pump_loop,
+                name="meet-pcm-pump",
+                daemon=True,
+            )
+            t_pump.start()
+            rt["pcm_pump_thread"] = t_pump
         except FileNotFoundError:
             state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
     elif platform_tag == "darwin":
@@ -1714,15 +1753,21 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             context.close()
             browser.close()
             # v2: teardown PCM pump, speaker thread, and audio bridge.
-            if rt.get("pcm_pump"):
-                try:
-                    rt["pcm_pump"].terminate()
-                    rt["pcm_pump"].wait(timeout=3)
-                except Exception:
-                    pass
             if rt["speaker_stop"]:
                 try:
                     rt["speaker_stop"]()
+                except Exception:
+                    pass
+            if rt.get("pcm_pump_thread") is not None:
+                try:
+                    rt["pcm_pump_thread"].join(timeout=3.0)
+                except Exception:
+                    pass
+            if rt.get("pcm_pump"):
+                try:
+                    if rt["pcm_pump"].poll() is None:
+                        rt["pcm_pump"].terminate()
+                    rt["pcm_pump"].wait(timeout=3)
                 except Exception:
                     pass
             if rt["speaker_thread"] is not None:
@@ -1800,6 +1845,13 @@ def _classify_meet_ui(
             re.search(r"Returning to home screen", text, re.IGNORECASE)
             or re.search(r"Return to home screen", text, re.IGNORECASE)
         )
+        or re.search(
+            r"No one can join a meeting unless invited or admitted by the host",
+            text,
+            re.IGNORECASE,
+        )
+        or re.search(r"You were removed from the meeting", text, re.IGNORECASE)
+        or re.search(r"No one responded to your request to join", text, re.IGNORECASE)
     )
     denied = bool(
         denied

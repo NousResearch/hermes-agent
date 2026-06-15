@@ -93,8 +93,8 @@ class NodeClient:
             payload["session_id"] = session_id
         return self._rpc("start_bot", payload)
 
-    def stop(self) -> Dict[str, Any]:
-        return self._rpc("stop", {})
+    def stop(self, reason: str = "requested") -> Dict[str, Any]:
+        return self._rpc("stop", {"reason": str(reason or "requested")})
 
     def status(self) -> Dict[str, Any]:
         return self._rpc("status", {})

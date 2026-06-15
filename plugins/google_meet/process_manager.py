@@ -2,8 +2,8 @@
 
 Single active meeting at a time. Stores the running pid + out_dir in a
 session-scoped state file under ``$HERMES_HOME/workspace/meetings/.active.json``
-so tool calls across turns can find the bot, and ``on_session_end`` can clean
-it up.
+so tool calls across turns can find the bot, and session-finalize cleanup can
+leave calls owned by the ending session.
 
 The bot runs as a detached subprocess — we don't hold file descriptors open,
 so the parent agent loop can't block on it. We communicate via files only.

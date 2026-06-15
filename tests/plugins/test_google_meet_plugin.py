@@ -7,7 +7,7 @@ Covers the safety-gated pieces that don't require Playwright:
   * Status / transcript writes round-trip through the file-backed state
   * Tool handlers return well-formed JSON under all branches
   * Process manager refuses unsafe URLs and clears stale state cleanly
-  * ``_on_session_end`` hook is defensive (no-ops when no bot active)
+  * Meet cleanup hooks are defensive and only finalization stops live bots
 
 Does NOT spawn a real Chromium — we mock ``subprocess.Popen`` where needed.
 """
@@ -15,6 +15,7 @@ Does NOT spawn a real Chromium — we mock ``subprocess.Popen`` where needed.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import shutil
@@ -1013,7 +1014,7 @@ def test_meet_leave_no_active():
 
 
 # ---------------------------------------------------------------------------
-# _on_session_end — defensive cleanup
+# Session cleanup hooks — per-turn end is a no-op; finalization stops owned bots
 # ---------------------------------------------------------------------------
 
 def test_on_session_end_noop_when_nothing_active():
@@ -1024,17 +1025,35 @@ def test_on_session_end_noop_when_nothing_active():
     stop_mock.assert_not_called()
 
 
-def test_on_session_end_stops_live_bot():
+def test_on_session_end_does_not_stop_live_bot():
     from plugins.google_meet import _on_session_end
     from plugins.google_meet import pm
 
     with patch.object(pm, "status", return_value={"ok": True, "alive": True, "duration": None}), \
          patch.object(pm, "stop") as stop_mock:
         _on_session_end()
+    stop_mock.assert_not_called()
+
+
+def test_on_session_finalize_stops_matching_session_bot():
+    from plugins.google_meet import _on_session_finalize
+    from plugins.google_meet import pm
+
+    with patch.object(
+        pm,
+        "status",
+        return_value={
+            "ok": True,
+            "alive": True,
+            "sessionId": "session-a",
+            "persistAfterSession": False,
+        },
+    ), patch.object(pm, "stop") as stop_mock:
+        _on_session_finalize(session_id="session-a")
     stop_mock.assert_called_once_with(reason="session ended")
 
 
-def test_on_session_end_stops_matching_session_bot():
+def test_on_session_end_does_not_stop_matching_session_bot():
     from plugins.google_meet import _on_session_end
     from plugins.google_meet import pm
 
@@ -1049,11 +1068,11 @@ def test_on_session_end_stops_matching_session_bot():
         },
     ), patch.object(pm, "stop") as stop_mock:
         _on_session_end(session_id="session-a")
-    stop_mock.assert_called_once_with(reason="session ended")
+    stop_mock.assert_not_called()
 
 
-def test_on_session_end_does_not_stop_other_session_bot():
-    from plugins.google_meet import _on_session_end
+def test_on_session_finalize_does_not_stop_other_session_bot():
+    from plugins.google_meet import _on_session_finalize
     from plugins.google_meet import pm
 
     with patch.object(
@@ -1066,22 +1085,66 @@ def test_on_session_end_does_not_stop_other_session_bot():
             "persistAfterSession": False,
         },
     ), patch.object(pm, "stop") as stop_mock:
-        _on_session_end(session_id="session-b")
+        _on_session_finalize(session_id="session-b")
     stop_mock.assert_not_called()
 
 
-def test_on_session_end_stops_duration_limited_bot_by_default():
-    from plugins.google_meet import _on_session_end
+def test_on_session_finalize_stops_matching_remote_node_bot():
+    from plugins.google_meet import _on_session_finalize
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    with patch("plugins.google_meet.pm.status", return_value={"ok": False}), \
+         patch(
+             "plugins.google_meet.node.client.NodeClient.status",
+             return_value={
+                 "ok": True,
+                 "alive": True,
+                 "sessionId": "session-a",
+                 "persistAfterSession": False,
+             },
+         ), patch("plugins.google_meet.node.client.NodeClient.stop", return_value={"ok": True}) as stop_mock:
+        _on_session_finalize(session_id="session-a")
+
+    stop_mock.assert_called_once_with(reason="session ended")
+
+
+def test_on_session_finalize_does_not_stop_other_session_remote_node_bot():
+    from plugins.google_meet import _on_session_finalize
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    with patch("plugins.google_meet.pm.status", return_value={"ok": False}), \
+         patch(
+             "plugins.google_meet.node.client.NodeClient.status",
+             return_value={
+                 "ok": True,
+                 "alive": True,
+                 "sessionId": "session-a",
+                 "persistAfterSession": False,
+             },
+         ), patch("plugins.google_meet.node.client.NodeClient.stop", return_value={"ok": True}) as stop_mock:
+        _on_session_finalize(session_id="session-b")
+
+    stop_mock.assert_not_called()
+
+
+def test_on_session_finalize_stops_duration_limited_bot_by_default():
+    from plugins.google_meet import _on_session_finalize
     from plugins.google_meet import pm
 
     with patch.object(pm, "status", return_value={"ok": True, "alive": True, "duration": "20m"}), \
          patch.object(pm, "stop") as stop_mock:
-        _on_session_end()
+        _on_session_finalize()
     stop_mock.assert_called_once_with(reason="session ended")
 
 
-def test_on_session_end_keeps_explicitly_detached_bot_running():
-    from plugins.google_meet import _on_session_end
+def test_on_session_finalize_keeps_explicitly_detached_bot_running():
+    from plugins.google_meet import _on_session_finalize
     from plugins.google_meet import pm
 
     with patch.object(
@@ -1094,7 +1157,7 @@ def test_on_session_end_keeps_explicitly_detached_bot_running():
             "persistAfterSession": True,
         },
     ), patch.object(pm, "stop") as stop_mock:
-        _on_session_end()
+        _on_session_finalize()
     stop_mock.assert_not_called()
 
 
@@ -1135,7 +1198,7 @@ def test_register_wires_tools_cli_and_hook_on_linux():
         "meet_join", "meet_status", "meet_transcript", "meet_leave", "meet_say",
     }
     assert calls["cli"] == ["meet"]
-    assert calls["hooks"] == ["on_session_end"]
+    assert calls["hooks"] == ["on_session_finalize"]
 
 
 # ---------------------------------------------------------------------------
@@ -1850,6 +1913,18 @@ def test_classify_meet_ui_marks_return_home_denial_terminal():
     assert result["terminalDenied"] is True
 
 
+def test_classify_meet_ui_marks_policy_denial_terminal_without_join_click():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        "No one can join a meeting unless invited or admitted by the host",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert result["denied"] is True
+    assert result["terminalDenied"] is True
+
+
 def test_classify_meet_ui_preserves_in_call_signal_with_transient_call_error():
     from plugins.google_meet.meet_bot import _classify_meet_ui
 
@@ -2373,6 +2448,69 @@ def test_realtime_session_counters_initialized():
     sess = RealtimeSession(api_key="sk-test", audio_sink_path=None)
     assert sess.audio_bytes_out == 0
     assert sess.last_audio_out_at is None
+
+
+def test_start_realtime_speaker_linux_streams_pcm_to_paplay_stdin(tmp_path):
+    from plugins.google_meet.meet_bot import (
+        SAY_PCM_FILENAME,
+        _BotState,
+        _start_realtime_speaker,
+    )
+
+    popen_calls = []
+
+    class _FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def connect(self):
+            return None
+
+    class _FakeSpeaker:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_until_stopped(self, _stop_fn):
+            return None
+
+    class _FakeProc:
+        def __init__(self, argv, **kwargs):
+            self.argv = list(argv)
+            self.kwargs = kwargs
+            self.stdin = io.BytesIO()
+            popen_calls.append(self)
+
+        def poll(self):
+            return None
+
+    state = _BotState(
+        out_dir=tmp_path,
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    rt = {}
+    stop_flag = {"stop": True}
+
+    with patch("plugins.google_meet.realtime.openai_client.RealtimeSession", _FakeSession), \
+         patch("plugins.google_meet.realtime.openai_client.RealtimeSpeaker", _FakeSpeaker), \
+         patch("subprocess.Popen", _FakeProc):
+        _start_realtime_speaker(
+            rt=rt,
+            out_dir=tmp_path,
+            bridge_info={"platform": "linux", "write_target": "hermes_meet_sink"},
+            api_key="sk-test",
+            model="gpt-test",
+            voice="alloy",
+            instructions="Test",
+            stop_flag=stop_flag,
+            state=state,
+        )
+
+    assert popen_calls
+    proc = popen_calls[0]
+    assert str(tmp_path / SAY_PCM_FILENAME) not in proc.argv
+    assert proc.kwargs["stdin"] == subprocess.PIPE
+    assert "pcm_pump_thread" in rt
 
 
 # ---------------------------------------------------------------------------

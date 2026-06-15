@@ -331,6 +331,7 @@ class TestSlackProxyBehavior:
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
+                self.registered_views = []
                 created_apps.append(self)
 
             def event(self, event_type):
@@ -351,6 +352,14 @@ class TestSlackProxyBehavior:
 
             def action(self, action_id):
                 self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def view(self, callback_id):
+                self.registered_views.append(callback_id)
 
                 def decorator(fn):
                     return fn
@@ -414,6 +423,7 @@ class TestSlackProxyBehavior:
                 self.registered_events = []
                 self.registered_commands = []
                 self.registered_actions = []
+                self.registered_views = []
                 created_apps.append(self)
 
             def event(self, event_type):
@@ -434,6 +444,14 @@ class TestSlackProxyBehavior:
 
             def action(self, action_id):
                 self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def view(self, callback_id):
+                self.registered_views.append(callback_id)
 
                 def decorator(fn):
                     return fn

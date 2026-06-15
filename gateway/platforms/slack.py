@@ -785,6 +785,14 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_draft_action)
 
+            # Plan 067 Phase 1 — the /work deterministic dispatch surface:
+            # preset buttons (regex action_id) + Custom-goal button open a modal;
+            # the modal's view_submission POSTs straight to the orchestrator sensor.
+            from gateway.work_surface import CUSTOM_ACTION_ID, SUBMIT_CALLBACK_ID
+            self._app.action(_re.compile(r"^work_preset_"))(self._handle_work_preset_action)
+            self._app.action(CUSTOM_ACTION_ID)(self._handle_work_custom_action)
+            self._app.view(SUBMIT_CALLBACK_ID)(self._handle_work_submit_view)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token, proxy=proxy_url)
             _apply_slack_proxy(self._handler.client, proxy_url)
@@ -3515,6 +3523,155 @@ class SlackAdapter(BasePlatformAdapter):
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
 
+    # ------------------------------------------------------------------
+    # Plan 067 Phase 1 — the /work deterministic dispatch surface
+    # ------------------------------------------------------------------
+
+    async def _handle_work_command(self, command: dict) -> None:
+        """Render the ``/work`` preset menu (or ``/work help``) ephemerally.
+
+        This is the deterministic surface: NO agent loop, NO LLM tool-selection.
+        The buttons it posts open a modal whose submission dispatches directly.
+        """
+        from gateway import work_surface
+
+        text = (command.get("text") or "").strip().lower()
+        channel_id = command.get("channel_id", "")
+        user_id = command.get("user_id", "")
+        presets = work_surface.load_presets()
+
+        if text in {"help", "-h", "--help", "?"}:
+            await self._post_work_ephemeral(
+                channel_id, user_id, text=work_surface.build_help_text(presets)
+            )
+            return
+
+        blocks = work_surface.build_menu_blocks(presets)
+        await self._post_work_ephemeral(
+            channel_id, user_id, text="Launch autonomous work", blocks=blocks
+        )
+
+    async def _post_work_ephemeral(self, channel_id, user_id, *, text, blocks=None) -> None:
+        """Post an ephemeral /work message to the invoking user (fail-soft)."""
+        try:
+            kwargs: Dict[str, Any] = {"channel": channel_id, "user": user_id, "text": text}
+            if blocks:
+                kwargs["blocks"] = blocks
+            await self._get_client(channel_id).chat_postEphemeral(**kwargs)
+        except Exception as e:  # noqa: BLE001 - fail-soft UX
+            logger.warning("[Slack] /work ephemeral post failed: %s", e)
+
+    async def _handle_work_preset_action(self, ack, body, action) -> None:
+        """A preset button was clicked — open the pre-filled dispatch modal."""
+        await ack()
+        from gateway import work_surface
+
+        preset_id = (action.get("value") or "").strip()
+        channel_id = (body.get("channel") or {}).get("id", "")
+        trigger_id = body.get("trigger_id", "")
+        preset = work_surface.find_preset(preset_id)
+        view = work_surface.build_modal_view(preset, channel_id=channel_id)
+        await self._open_work_modal(channel_id, trigger_id, view)
+
+    async def _handle_work_custom_action(self, ack, body, action) -> None:
+        """The Custom-goal button was clicked — open an empty dispatch modal."""
+        await ack()
+        from gateway import work_surface
+
+        channel_id = (body.get("channel") or {}).get("id", "")
+        trigger_id = body.get("trigger_id", "")
+        view = work_surface.build_modal_view(None, channel_id=channel_id)
+        await self._open_work_modal(channel_id, trigger_id, view)
+
+    async def _open_work_modal(self, channel_id, trigger_id, view) -> None:
+        try:
+            await self._get_client(channel_id).views_open(trigger_id=trigger_id, view=view)
+        except Exception as e:  # noqa: BLE001 - fail-soft UX
+            logger.error("[Slack] /work views_open failed: %s", e)
+
+    async def _handle_work_submit_view(self, ack, body, view) -> None:
+        """The dispatch modal was submitted — POST straight to the sensor.
+
+        Bypasses ``plan_lifecycle``'s coverage/question logic by calling
+        ``_post_to_sensor`` directly with a complete, validated payload.
+        """
+        import asyncio as _asyncio
+        import os as _os
+        import uuid as _uuid
+
+        from gateway import work_surface
+
+        user = body.get("user") or {}
+        user_id = user.get("id", "")
+        user_name = user.get("name") or user.get("username") or "unknown"
+
+        # Authorization: only SLACK_ALLOWED_USERS may dispatch (deny-by-default
+        # when the var is set). Mirrors the approval-button handler.
+        allowed_csv = _os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed = {u.strip() for u in allowed_csv.split(",") if u.strip()}
+            if "*" not in allowed and user_id not in allowed:
+                await ack(
+                    response_action="errors",
+                    errors={"goal": "You are not authorized to dispatch autonomous work."},
+                )
+                logger.warning("[Slack] /work dispatch denied for %s (%s)", user_name, user_id)
+                return
+
+        # Parse + validate; surface field errors inline (keeps the modal open).
+        plan_id = f"plan-{_uuid.uuid4().hex[:8]}"
+        try:
+            payload = work_surface.parse_view_submission(view, plan_id=plan_id)
+        except work_surface.WorkValidationError as exc:
+            await ack(response_action="errors", errors={exc.block_id: exc.message})
+            return
+
+        # Accept the submission (closes the modal); dispatch + report async.
+        await ack()
+
+        meta = work_surface.read_private_metadata(view)
+        channel_id = meta.get("channel_id", "")
+
+        secret = _os.environ.get("LINEAR_WEBHOOK_SECRET", "")
+        sensor_url = _os.environ.get(
+            "ORCHESTRATOR_SENSOR_URL",
+            "http://orchestrator-sensor.agentic-stack.internal:8765",
+        )
+        if not secret:
+            await self._post_work_result(
+                channel_id, user_id,
+                ":x: `LINEAR_WEBHOOK_SECRET` is not set — cannot dispatch "
+                "(deploy 067 Phase 0 / VSI-0 first).",
+            )
+            return
+
+        from tools.plan_lifecycle_tool import _post_to_sensor
+
+        try:
+            response_body = await _asyncio.to_thread(
+                _post_to_sensor,
+                sensor_base_url=sensor_url,
+                secret=secret,
+                payload=payload,
+            )
+        except RuntimeError as exc:
+            await self._post_work_result(channel_id, user_id, f":x: Dispatch failed: {exc}")
+            return
+
+        summary = work_surface.format_dispatch_result(plan_id, response_body)
+        await self._post_work_result(channel_id, user_id, summary)
+        logger.info("[Slack] /work dispatched plan %s by %s (%s)", plan_id, user_name, user_id)
+
+    async def _post_work_result(self, channel_id, user_id, text) -> None:
+        """Post the dispatch result to the channel, or DM the operator (fail-soft)."""
+        try:
+            if channel_id:
+                await self._get_client(channel_id).chat_postMessage(channel=channel_id, text=text)
+            else:
+                await self._app.client.chat_postMessage(channel=user_id, text=text)
+        except Exception as e:  # noqa: BLE001 - fail-soft UX
+            logger.warning("[Slack] /work result post failed: %s", e)
+
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.
 
@@ -3538,6 +3695,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Track which workspace owns this channel
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
+
+        # Plan 067 Phase 1 — /work is a DETERMINISTIC Block Kit surface, not an
+        # agent prompt. Intercept it before the message/agent path so dispatch
+        # never depends on LLM tool-selection (Plan 067 reason #2).
+        if slash_name == "work":
+            await self._handle_work_command(command)
+            return
 
         if slash_name in {"hermes", ""}:
             # Legacy /hermes <subcommand> [args] routing + free-form questions.

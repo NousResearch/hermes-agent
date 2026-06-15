@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "source": "agentic-hub docs/system/PLAN-LIFECYCLE-SPECS.md (vendored; this fork cannot import agentic-hub)",
+  "note": "Keep in sync with the source spec library. success_criteria/constraints are lists (matching the plan_lifecycle tool's POST payload shape).",
+  "presets": [
+    {
+      "id": "strata-coverage",
+      "title": "strata coverage",
+      "subtitle": "context-coverage visibility",
+      "goal": "Add a `strata coverage <repo_dir>` subcommand to the Strata CLI in `orchestrator/strata/` (cli.py + core.py). It walks the significant directories under `<repo_dir>` and prints a table with one row per directory showing whether it has `CONTEXT.md` / `DECISIONS.md` / `RESEARCH.md`, and whether each is stale (`reconciled_sha` behind that directory's `git log`), plus an overall coverage %. Reuse the existing `nearest_file` / `staleness` / `validate` helpers — do not reimplement them. Add unit tests in `orchestrator/tests/test_strata.py`.",
+      "operator": "blake",
+      "repos": ["blakeaber/agentic-hub"],
+      "budget_usd": 25.0,
+      "success_criteria": [
+        "`strata coverage <dir>` prints the per-directory table + a coverage %",
+        "new unit tests pass",
+        "ruff clean",
+        "python-CI green"
+      ],
+      "constraints": [
+        "Python + pytest only",
+        "no new dependencies",
+        "no Atlas/network calls",
+        "edits confined to `orchestrator/strata/` and its tests"
+      ]
+    },
+    {
+      "id": "strata-lint",
+      "title": "strata lint",
+      "subtitle": "DECISIONS honesty-rule enforcement",
+      "goal": "Add a `strata lint <path>` subcommand to `orchestrator/strata/` that reads each `DECISIONS.md` entry and checks it declares an `enforcement:` value (a CI test, CODEOWNERS, hook, or IAM) OR is explicitly labelled `ADVISORY`. Print one FAIL line per non-compliant entry and exit 1 if any fail, else exit 0. Parse entries from the `<!-- strata:decision ... -->` blocks the templates use. Add unit tests in `orchestrator/tests/test_strata.py` covering a compliant file, a missing-enforcement entry, and an ADVISORY-labelled entry.",
+      "operator": "blake",
+      "repos": ["blakeaber/agentic-hub"],
+      "budget_usd": 25.0,
+      "success_criteria": [
+        "`strata lint` exits 1 + prints the offending entry for a decision with no enforcement and no ADVISORY label",
+        "exits 0 on a compliant file",
+        "tests pass",
+        "ruff clean",
+        "python-CI green"
+      ],
+      "constraints": [
+        "Python + pytest only",
+        "no new dependencies",
+        "no network",
+        "edits confined to `orchestrator/strata/` and its tests"
+      ]
+    },
+    {
+      "id": "strata-lift",
+      "title": "strata lift",
+      "subtitle": "local quick lift-summary",
+      "goal": "Add a `strata lift <runs_dir>` subcommand to `orchestrator/strata/` that reads local RunRecord JSON (`<runs_dir>/**/record.json`) and prints a quick tally: count of first-attempt phases WITH context (`context_shas` non-empty) vs WITHOUT (empty) vs A/B-suppressed (`context_suppressed` true), and the first-pass completion rate (`status == \"completed\"`) per arm. Read-only. It is a lightweight LOCAL complement to army-of-one's `atlas.eval.strata_lift` (no Atlas, no network). Add unit tests with fixture record dicts in `orchestrator/tests/test_strata.py`.",
+      "operator": "blake",
+      "repos": ["blakeaber/agentic-hub"],
+      "budget_usd": 25.0,
+      "success_criteria": [
+        "`strata lift <dir>` over fixture records prints the WITH/WITHOUT/suppressed counts + per-arm first-pass rates",
+        "running it never modifies any file",
+        "tests pass",
+        "ruff clean",
+        "python-CI green"
+      ],
+      "constraints": [
+        "Python + pytest only",
+        "read-only (no writes)",
+        "no network",
+        "edits confined to `orchestrator/strata/` and its tests"
+      ]
+    },
+    {
+      "id": "drain-run-summary",
+      "title": "Drain run summary → Slack",
+      "subtitle": "use case #30 / #41-C",
+      "goal": "After a drain run completes, post a concise summary to Slack. Add a PURE summary-builder function in `orchestrator/` that takes a list of RunRecords for a run and returns Slack-friendly text: plan_id, each phase with its status, PR URLs opened, total spend, and the WITH-vs-suppressed context tally. Wire the drain to post it to a channel from an env var, reusing the EXISTING slack-sdk client + token path already used by the deploy-approval / watchdog code (do not add a new Slack client or secret). The post must be fail-soft — a Slack error never fails the drain. Unit-test the pure builder (the Slack post is mocked).",
+      "operator": "blake",
+      "repos": ["blakeaber/agentic-hub"],
+      "budget_usd": 25.0,
+      "success_criteria": [
+        "the pure builder produces the correct summary from a list of RunRecords (tested)",
+        "the drain posts it to the configured channel with the Slack client mocked in tests",
+        "the post is fail-soft",
+        "tests pass",
+        "ruff clean",
+        "python-CI green"
+      ],
+      "constraints": [
+        "Python + pytest only",
+        "no new AWS resources / no terraform",
+        "reuse the existing slack-sdk client + token path",
+        "fail-soft Slack post"
+      ]
+    },
+    {
+      "id": "backlog-seed-tool",
+      "title": "Backlog-seed tool",
+      "subtitle": "Self-Building Backlog (#30)",
+      "goal": "Add a tool/CLI under `orchestrator/` that reads OPEN \"Todo\" issues for a Linear team (READ-ONLY — never mutate Linear) and emits drain-ready phase spec files under `plans/<plan_id>/phases/<plan_id>-N.md`, each with Scope / Verification Steps / Acceptance Criteria derived from the issue's title + description, so backlog items become autonomously drainable. Implement the issue→spec transformation as a PURE function and unit-test it; the Linear fetch can be mocked. Reuse the existing Linear client in `orchestrator/linear/`.",
+      "operator": "blake",
+      "repos": ["blakeaber/agentic-hub"],
+      "budget_usd": 25.0,
+      "success_criteria": [
+        "a pure transform turns a Linear issue dict into a valid phase-spec markdown with Scope/Verification/Acceptance (tested)",
+        "the tool writes one spec file per Todo issue under `plans/<plan_id>/phases/`",
+        "Linear is never mutated",
+        "tests pass",
+        "ruff clean",
+        "python-CI green"
+      ],
+      "constraints": [
+        "Python + pytest only",
+        "READ-ONLY on Linear",
+        "no new dependencies",
+        "writes only under `plans/`"
+      ]
+    }
+  ]
+}

@@ -113,6 +113,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
+    # Plan 067 Phase 1 — deterministic autonomous-work launcher. Surfaced as a
+    # native Slack slash so it appears in the app manifest; the Slack adapter
+    # intercepts it BEFORE the agent loop (it is a Block Kit menu, not a prompt).
+    CommandDef("work", "Launch autonomous work — preset menu + guided dispatch", "Session",
+               gateway_only=True, args_hint="[help]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

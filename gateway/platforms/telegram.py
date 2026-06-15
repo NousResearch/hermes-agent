@@ -461,6 +461,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        # Set to True by the reconnect watcher so bootstrap polling does not
+        # discard the updates Telegram queued while we were offline.
+        self._is_reconnect: bool = False
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -2049,7 +2052,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=not self._is_reconnect,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -2082,7 +2085,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=not self._is_reconnect,
                     error_callback=_polling_error_callback,
                 )
             

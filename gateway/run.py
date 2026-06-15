@@ -5829,6 +5829,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
+                    # Tell the adapter this is a reconnect so bootstrap
+                    # polling/webhook preserves queued updates instead of
+                    # dropping them (Telegram-specific, harmless on others).
+                    if hasattr(adapter, '_is_reconnect'):
+                        adapter._is_reconnect = True
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:

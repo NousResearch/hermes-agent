@@ -627,6 +627,16 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
+                
+                # Protect against boot-time PID reuse/collisions (e.g. another system
+                # service starting at the exact same clock tick). If the running process
+                # does not look like a gateway, and we successfully read its command line,
+                # the lock is stale.
+                if not stale and existing_pid is not None and not _looks_like_gateway_process(existing_pid):
+                    live_cmdline = _read_process_cmdline(existing_pid)
+                    if live_cmdline is not None:
+                        stale = True
+
                 # When start_time comparison is unavailable (macOS / Windows
                 # have no /proc, so both sides are None), fall back to
                 # checking the live process command line.  When cmdline is

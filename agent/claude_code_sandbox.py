@@ -53,12 +53,13 @@ _PREAMBLE = "\n\n".join(_SHARED_PREAMBLE_LINES)
 
 @dataclass(frozen=True)
 class SandboxComponents:
-    """设计期固定的组件包含决策,运行时不再推导。
+    """Component inclusion is fixed at design time — not re-derived at runtime.
 
-    默认值(全 True)匹配当前 primary-agent 行为——SOUL.md / memory / skills /
-    .mcp.json / toolbelt / platform block / settings.local.json 全部启用。
-    各 preset 按 feature 组合命名(不按 caller 名字),复用 3 个真实存在的
-    AIAgent flag(skip_context_files / load_soul_identity / skip_memory)推导。
+    Defaults (all True) match the current primary-agent behavior: SOUL.md /
+    memory / skills / .mcp.json / toolbelt / platform block / settings.local.json
+    are all enabled. Each preset is named after its feature combination (not
+    after the caller) and is derived from the three real AIAgent flags
+    (``skip_context_files`` / ``load_soul_identity`` / ``skip_memory``).
 
     These flags are read by the inner helpers via the ``include=`` keyword
     argument — see :func:`_load_soul`, :func:`_build_memory_block`,
@@ -88,15 +89,16 @@ SANDBOX_PRESETS: Dict[str, SandboxComponents] = {
         include_settings=True,
     ),
     # Subagent / curator / ignore_rules / feishu_comment — only preamble +
-    # toolbelt + platform + settings + mcp (mcp 永远保留:subagent 需要找
-    # hermes 工具)。SOUL/memory/skills 全跳过。
+    # toolbelt + platform + settings + mcp (.mcp.json always retained:
+    # subagents need to discover hermes tools). Skip SOUL/memory/skills.
     "minimal": SandboxComponents(
         include_soul=False, include_memory=False, include_skills=False,
         include_mcp=True, include_toolbelt=True, include_platform=True,
         include_settings=True,
     ),
-    # Cron-no-workdir — 保留 SOUL(尊重 load_soul_identity 契约)+ skills +
-    # mcp(同上) + toolbelt/platform/settings,跳过 memory(cron 永远 skip)。
+    # Cron-no-workdir — keep SOUL (honors the ``load_soul_identity`` contract) +
+    # skills + .mcp.json (same reason as minimal) + toolbelt/platform/settings,
+    # skip memory (cron always skips).
     "cron_no_workdir": SandboxComponents(
         include_soul=True, include_memory=False, include_skills=True,
         include_mcp=True, include_toolbelt=True, include_platform=True,
@@ -106,12 +108,13 @@ SANDBOX_PRESETS: Dict[str, SandboxComponents] = {
 
 
 def _resolve_preset(agent: Any) -> str:
-    """纯推导:复用 agent 现有的 3 个 flag,不引入新属性。
+    """Pure derivation: reuses the agent's three existing flags, no new attrs.
 
-    重要:原版的 is_subagent / is_curator / is_background_review / is_cron
-    在代码里根本不存在(rg 0 hits),不能用。这里只用
-    skip_context_files / load_soul_identity / skip_memory 三个真实存在的
-    flag → callsite 真正零改动。
+    Important: the original ``is_subagent`` / ``is_curator`` /
+    ``is_background_review`` / ``is_cron`` symbols don't exist in the
+    codebase (rg 0 hits) — they can't be used. Only the three real flags
+    (``skip_context_files`` / ``load_soul_identity`` / ``skip_memory``)
+    drive the lookup, so callsites stay unchanged.
     """
     skip_ctx = bool(getattr(agent, "skip_context_files", False))
     load_soul = bool(getattr(agent, "load_soul_identity", False))
@@ -122,11 +125,11 @@ def _resolve_preset(agent: Any) -> str:
     if not skip_ctx and skip_mem:
         return "primary_minus_memory"
     if skip_ctx and load_soul and skip_mem:
-        # 同时覆盖 cron-no-workdir 和未来的 subagent_with_soul (YAGNI)
+        # Covers both cron-no-workdir and any future subagent_with_soul (YAGNI)
         return "cron_no_workdir"
     if skip_ctx and not load_soul and skip_mem:
         return "minimal"
-    return "primary"  # 兜底,理论上到不了
+    return "primary"  # fallback — unreachable in practice
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +270,7 @@ def build_session_sandbox(
     preset_name = _resolve_preset(agent)
     components = SANDBOX_PRESETS[preset_name]
 
-    # 2. Manifest digest reflects components (preset 变了 → digest 变 → 强制重建)
+    # 2. Manifest digest reflects components (preset change → digest change → force rebuild)
     manifest_path = sandbox / SANDBOX_MANIFEST
     inputs = _collect_manifest_inputs(
         hermes_home=hermes_home, platform=platform, model=model,
@@ -291,7 +294,7 @@ def build_session_sandbox(
     soul_text = _load_soul(hermes_home, include=components.include_soul)
     memory_block = _build_memory_block(agent, include=components.include_memory)
 
-    # 5. Skills: include=False 时清理 stale dir,include=True 时扁平化写入
+    # 5. Skills: include=False → drop stale dir; include=True → flatten-write
     skills_out = sandbox / ".claude" / "skills"
     if skills_out.exists():
         shutil.rmtree(skills_out, ignore_errors=True)
@@ -317,7 +320,7 @@ def build_session_sandbox(
     )
     (sandbox / "CLAUDE.md").write_text(claude_md, encoding="utf-8")
 
-    # 7. settings.local.json (include_settings=False 时清理 stale)
+    # 7. settings.local.json (include_settings=False → drop stale)
     if components.include_settings:
         # _write_settings_local writes <sandbox>/.claude/settings.local.json
         # without mkdir-ing the parent. The old code always implicitly
@@ -330,7 +333,7 @@ def build_session_sandbox(
         if stale_settings.exists():
             stale_settings.unlink()
 
-    # 8. .mcp.json (include_mcp=False 时清理 stale;子 agent 永远保留 mcp)
+    # 8. .mcp.json (include_mcp=False → drop stale; subagent keeps mcp always)
     if components.include_mcp:
         _write_mcp_json(
             sandbox,

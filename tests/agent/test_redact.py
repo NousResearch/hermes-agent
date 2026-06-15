@@ -57,6 +57,13 @@ class TestKnownPrefixes:
         result = redact_sensitive_text("key=sk-short1234567")
         assert "***" in result
 
+    def test_notion_integration_token(self):
+        """Notion internal integration tokens (ntn_ prefix) must be redacted."""
+        text = "Use this token: ntn_abc123def456ghi789jkl"
+        result = redact_sensitive_text(text)
+        assert "ntn_abc123def456ghi789jkl" not in result
+        assert "ntn_" in result  # prefix preserved for debugging
+
 
 class TestEnvAssignments:
     def test_export_api_key(self):

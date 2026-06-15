@@ -672,6 +672,85 @@ class TestSaveSessionLogRedactsSecrets:
         assert parts[1]["image_url"]["url"].startswith("data:image")
 
 
+class TestDumpApiRequestRedactsSecrets:
+    """Regression: request_dump_*.json must not contain plaintext secrets (#46583)."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_redaction_enabled(self, monkeypatch):
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+    def test_redacts_secret_in_request_body(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        api_kwargs = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "Use key sk-abc123def456ghi789jklm for API calls"},
+                {"role": "user", "content": "hello"},
+            ],
+        }
+        dump_file = agent._dump_api_request_debug(api_kwargs, reason="test")
+        assert dump_file is not None
+        snapshot = dump_file.read_text(encoding="utf-8")
+        assert "sk-abc123def456ghi789jklm" not in snapshot
+
+    def test_redacts_notion_token_in_body(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        api_kwargs = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "tool", "content": "Notion API token: ntn_abc123def456ghi789jkl"},
+            ],
+        }
+        dump_file = agent._dump_api_request_debug(api_kwargs, reason="test")
+        snapshot = dump_file.read_text(encoding="utf-8")
+        assert "ntn_abc123def456ghi789jkl" not in snapshot
+
+    def test_redacts_error_message(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        api_kwargs = {"model": "gpt-4o", "messages": []}
+        error = Exception("Auth failed with key ghp_abc123def456ghi789jklm")
+        dump_file = agent._dump_api_request_debug(api_kwargs, reason="test", error=error)
+        snapshot = dump_file.read_text(encoding="utf-8")
+        assert "ghp_abc123def456ghi789jklm" not in snapshot
+
+    def test_redacts_env_key_in_body(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        api_kwargs = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "NOTION_API_KEY=secrettokenvalue123456789"},
+            ],
+        }
+        dump_file = agent._dump_api_request_debug(api_kwargs, reason="test")
+        snapshot = dump_file.read_text(encoding="utf-8")
+        assert "secrettokenvalue123456789" not in snapshot
+
+    def test_stdout_also_redacted(self, agent, tmp_path, monkeypatch, capsys):
+        agent.logs_dir = tmp_path
+        monkeypatch.setenv("HERMES_DUMP_REQUEST_STDOUT", "1")
+        api_kwargs = {
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "user", "content": "Token: hf_abc123def456ghi789jklm"},
+            ],
+        }
+        agent._dump_api_request_debug(api_kwargs, reason="test")
+        captured = capsys.readouterr()
+        assert "hf_abc123def456ghi789jklm" not in captured.out
+
+    def test_non_secret_content_preserved(self, agent, tmp_path):
+        agent.logs_dir = tmp_path
+        api_kwargs = {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Hello, how are you?"}],
+        }
+        dump_file = agent._dump_api_request_debug(api_kwargs, reason="test")
+        snapshot = dump_file.read_text(encoding="utf-8")
+        assert "Hello, how are you?" in snapshot
+        assert "gpt-4o" in snapshot
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

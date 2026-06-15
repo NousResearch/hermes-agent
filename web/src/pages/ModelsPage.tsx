@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
+  AlertTriangle,
   Brain,
   ChevronDown,
   Cpu,
@@ -196,6 +197,7 @@ function UseAsMenu({
   model,
   isMain,
   mainAuxTask,
+  disabled = false,
   onAssigned,
 }: {
   provider: string;
@@ -204,6 +206,7 @@ function UseAsMenu({
   isMain: boolean;
   /** If this model is assigned to a specific aux task, that task's key. */
   mainAuxTask: string | null;
+  disabled?: boolean;
   onAssigned(): void;
 }) {
   const [open, setOpen] = useState(false);
@@ -270,7 +273,7 @@ function UseAsMenu({
         size="sm"
         outlined
         onClick={() => setOpen((v) => !v)}
-        disabled={busy}
+        disabled={busy || disabled}
         className="h-6 px-2 text-xs uppercase"
         prefix={busy ? <Spinner /> : null}
       >
@@ -375,6 +378,7 @@ function ModelCard({
   const provider = entry.provider || modelVendor(entry.model);
   const totalTokens = entry.input_tokens + entry.output_tokens;
   const caps = entry.capabilities;
+  const isAvailable = entry.available !== false;
 
   const isMain =
     !!main &&
@@ -409,6 +413,11 @@ function ModelCard({
               {mainAuxTask && (
                 <span className="inline-flex items-center bg-purple-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-purple-600 dark:text-purple-400">
                   aux · {mainAuxTask}
+                </span>
+              )}
+              {!isAvailable && (
+                <span className="inline-flex items-center gap-1 bg-amber-500/10 px-1.5 py-0.5 text-display text-xs font-medium tracking-wider text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="h-2.5 w-2.5" /> unavailable
                 </span>
               )}
             </div>
@@ -457,12 +466,19 @@ function ModelCard({
               model={entry.model}
               isMain={isMain}
               mainAuxTask={mainAuxTask}
+              disabled={!isAvailable}
               onAssigned={onAssigned}
             />
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-3">
+        {!isAvailable && (
+          <p className="text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+            This model stays visible because it appears in session history, but
+            it is not in the current provider inventory.
+          </p>
+        )}
         {showTokens && (
           <>
             <TokenBar
@@ -841,6 +857,8 @@ export default function ModelsPage() {
   const [showTokens, setShowTokens] = useState(false);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
+  const unavailableCount =
+    data?.models.filter((entry) => entry.available === false).length ?? 0;
 
   useEffect(() => {
     api
@@ -923,7 +941,13 @@ export default function ModelsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) load();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [load]);
 
   // Model assignments can change outside this page (config editor, chat
@@ -1036,6 +1060,12 @@ export default function ModelsPage() {
 
       {data && (
         <>
+          <p className="text-xs leading-relaxed text-text-tertiary">
+            Models shown here come from recent session history. Use refresh to
+            re-check the current provider inventory.
+            {unavailableCount > 0 &&
+              ` ${unavailableCount} historical model${unavailableCount === 1 ? " is" : "s are"} currently unavailable and can't be reassigned from this page.`}
+          </p>
           {data.models.length > 0 ? (
             <div className="grid min-w-0 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {data.models.map((m, i) => (

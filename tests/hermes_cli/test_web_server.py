@@ -3420,6 +3420,62 @@ class TestNewEndpoints:
         assert row["api_calls"] == 9
         assert row["avg_tokens_per_session"] == 13_550
 
+    def test_models_analytics_marks_history_models_missing_from_current_inventory(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="history-model-available",
+                source="cli",
+                model="anthropic/claude-sonnet-4",
+            )
+            db.update_token_counts(
+                "history-model-available",
+                input_tokens=120,
+                output_tokens=30,
+                billing_provider="openrouter",
+            )
+            db.create_session(
+                session_id="history-model-missing",
+                source="cli",
+                model="llama3.1:8b",
+            )
+            db.update_token_counts(
+                "history-model-missing",
+                input_tokens=80,
+                output_tokens=20,
+                billing_provider="ollama",
+            )
+        finally:
+            db.close()
+
+        inventory_payload = {
+            "providers": [
+                {"slug": "openrouter", "models": ["anthropic/claude-sonnet-4"]},
+                {"slug": "ollama", "models": ["llama3.2:3b"]},
+            ],
+            "model": "",
+            "provider": "",
+        }
+
+        with patch(
+            "hermes_cli.inventory.load_picker_context",
+            return_value=MagicMock(),
+        ), patch(
+            "hermes_cli.inventory.build_models_payload",
+            return_value=inventory_payload,
+        ):
+            resp = self.client.get("/api/analytics/models?days=7")
+
+        assert resp.status_code == 200
+        rows = {
+            (row["provider"], row["model"]): row
+            for row in resp.json()["models"]
+        }
+        assert rows[("openrouter", "anthropic/claude-sonnet-4")]["available"] is True
+        assert rows[("ollama", "llama3.1:8b")]["available"] is False
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

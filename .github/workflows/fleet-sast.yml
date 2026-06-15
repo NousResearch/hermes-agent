@@ -1,0 +1,41 @@
+# Fleet-added (Apollo/greploop posture-B floor). NOT upstream — do not expect on NousResearch/hermes-agent.
+# Provides the `sast` deterministic-floor component. Diff-aware where it helps, full-tree gate at ERROR.
+name: Fleet SAST (semgrep)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-sast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sast:
+    name: sast
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install semgrep
+        run: pip install "semgrep==1.46.0"
+
+      - name: Run semgrep (ERROR severity gate)
+        run: |
+          semgrep \
+            --config=p/python \
+            --config=p/secrets \
+            --severity=ERROR \
+            --error \
+            --quiet \
+            hermes/

@@ -383,7 +383,8 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        className: cn('px-1', yoloActive && 'bg-(--chrome-action-hover)'),
+        className: cn('px-1.5', yoloActive && 'bg-(--chrome-action-hover)'),
+        detail: yoloActive ? copy.yoloBypassed : copy.yoloManual,
         hidden: !showYoloToggle,
         icon: yoloActive ? (
           <ZapFilled className="size-3.5 shrink-0" />
@@ -391,6 +392,7 @@ export function useStatusbarItems({
           <Zap className="size-3.5 shrink-0 opacity-70" />
         ),
         id: 'yolo',
+        label: copy.yoloLabel,
         onSelect: modifiers => void toggleYolo(modifiers),
         title: yoloActive ? copy.yoloOn : copy.yoloOff,
         variant: 'action'

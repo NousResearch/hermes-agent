@@ -1674,6 +1674,9 @@ export interface Translations {
       openContextUsage: string
       session: string
       runtimeSessionElapsed: string
+      yoloLabel: string
+      yoloManual: string
+      yoloBypassed: string
       yoloOn: string
       yoloOff: string
       modelNone: string

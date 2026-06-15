@@ -34,6 +34,8 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+_DNS_RESOLUTION_TIMEOUT_SECONDS = 5.0
+
 
 def normalize_url_for_request(url: str) -> str:
     """Return an ASCII-safe HTTP URL for Hermes-owned URL tools.
@@ -394,9 +396,22 @@ def is_safe_url(url: str) -> bool:
 
 
 async def async_is_safe_url(url: str) -> bool:
-    """Same rules as :func:`is_safe_url`, but run the DNS work off the event loop.
+    """Same rules as :func:`is_safe_url`, but bound DNS waits off the event loop.
 
     ``socket.getaddrinfo`` can block; call this from async code paths (gateway,
     ``web_extract_tool``, vision download hooks) instead of ``is_safe_url``.
     """
-    return await asyncio.to_thread(is_safe_url, url)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(is_safe_url, url),
+            timeout=_DNS_RESOLUTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Blocked request - DNS resolution timed out during URL safety check: %s",
+            url,
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Blocked request - async URL safety check error for %s: %s", url, exc)
+        return False

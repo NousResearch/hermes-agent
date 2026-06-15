@@ -1,5 +1,6 @@
 """Tests for SSRF protection in url_safety module."""
 
+import asyncio
 import socket
 from unittest.mock import patch
 
@@ -224,7 +225,7 @@ class TestIsSafeUrl:
 
 
 class TestAsyncIsSafeUrl:
-    """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""
+    """async_is_safe_url must match is_safe_url without unbounded DNS waits."""
 
     @pytest.mark.asyncio
     async def test_public_url_allowed(self):
@@ -239,6 +240,17 @@ class TestAsyncIsSafeUrl:
             (2, 1, 6, "", ("127.0.0.1", 0)),
         ]):
             assert await async_is_safe_url("http://localhost:8080/") is False
+
+    @pytest.mark.asyncio
+    async def test_dns_timeout_fails_closed(self, monkeypatch):
+        async def never_returns(*_args, **_kwargs):
+            await asyncio.sleep(60)
+            return True
+
+        monkeypatch.setattr("tools.url_safety._DNS_RESOLUTION_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr("tools.url_safety.asyncio.to_thread", never_returns)
+
+        assert await async_is_safe_url("https://slow-dns.example/") is False
 
 
 class TestIsBlockedIp:

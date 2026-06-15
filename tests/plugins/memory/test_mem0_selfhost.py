@@ -120,8 +120,10 @@ def test_selfhost_tools_use_direct_rest_with_api_key_and_response_mapping(monkey
     assert add_call["body"]["agent_id"] == "daedalus"
     assert search_call["body"]["query"] == "needle"
     assert search_call["body"]["user_id"] == "ace"
-    assert search_call["body"]["agent_id"] == "daedalus"
-    assert profile_call["query"] == {"user_id": ["ace"], "agent_id": ["daedalus"]}
+    # search is a READ -> user-scoped only, no agent_id
+    assert "agent_id" not in search_call["body"]
+    # mem0_profile -> get_all (READ) -> user-scoped only, no agent_id
+    assert profile_call["query"] == {"user_id": ["ace"]}
 
 
 def test_selfhost_delete_uses_rest_delete_after_read_before_destroy(monkeypatch, tmp_path):
@@ -254,7 +256,8 @@ def test_mem0_json_overrides_selfhost_env_config(monkeypatch, tmp_path):
     assert calls[0]["netloc"] == "file-host"
     assert calls[0]["api_key"] == "file-key"
     assert calls[0]["body"]["user_id"] == "file-user"
-    assert calls[0]["body"]["agent_id"] == "file-agent"
+    # search is a READ -> user-scoped only, no agent_id injected
+    assert "agent_id" not in calls[0]["body"]
 
 
 def test_selfhost_401_surfaces_error_and_records_failure_without_fabricated_memory(monkeypatch, tmp_path):
@@ -279,7 +282,7 @@ def test_selfhost_401_surfaces_error_and_records_failure_without_fabricated_memo
     assert provider._consecutive_failures == 1
 
 
-def test_direct_rest_client_scopes_user_and_agent_even_when_caller_omits_them():
+def test_direct_rest_client_scopes_writes_both_reads_user_only():
     """B3/B4: on a shared multi-agent store, add/search/get_all with NO explicit scope
     must still be constrained to the client's configured user_id AND agent_id —
     never querying or writing globally."""
@@ -296,25 +299,32 @@ def test_direct_rest_client_scopes_user_and_agent_even_when_caller_omits_them():
 
     client._request = _fake_request
 
-    # add() with no user_id/agent_id kwargs must inject both
+    # add() (WRITE) with no user_id/agent_id kwargs must inject BOTH (attribution + B4)
     client.add([{"role": "user", "content": "x"}])
     assert sent[-1]["body"]["user_id"] == "ace"
     assert sent[-1]["body"]["agent_id"] == "daedalus"
 
-    # search() with no filters must inject both
+    # search() (READ) injects user_id ONLY — NOT agent_id. Reads are user-scoped for
+    # cross-session recall, and historical memories stored agent-scoped-without-user
+    # would be silently dropped by an agent AND-filter (the live-cutover 0-results bug).
     client.search(query="q")
     assert sent[-1]["body"]["user_id"] == "ace"
-    assert sent[-1]["body"]["agent_id"] == "daedalus"
+    assert "agent_id" not in sent[-1]["body"]
 
-    # get_all() with no filters must inject both
+    # get_all() (READ) likewise injects user_id ONLY, never agent_id.
     client.get_all()
     assert sent[-1]["params"]["user_id"] == "ace"
-    assert sent[-1]["params"]["agent_id"] == "daedalus"
+    assert "agent_id" not in sent[-1]["params"]
 
-    # an explicit caller filter is respected (not overridden)
+    # an explicit caller READ filter is respected (user override, still no agent injected)
     client.search(query="q", filters={"user_id": "other"})
     assert sent[-1]["body"]["user_id"] == "other"
-    assert sent[-1]["body"]["agent_id"] == "daedalus"
+    assert "agent_id" not in sent[-1]["body"]
+
+    # an explicit agent_id in a READ filter IS honored (caller opted in)
+    client.search(query="q", filters={"agent_id": "explicit"})
+    assert sent[-1]["body"]["agent_id"] == "explicit"
+    assert sent[-1]["body"]["user_id"] == "ace"
 
 
 def _count_open_fds() -> int:

@@ -117,17 +117,27 @@ class _DirectRestMem0Client:
             import ssl
             self._ssl_context = ssl.create_default_context(cafile=bundle)
 
-    def _scope(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Inject the client's configured user_id AND agent_id as scope defaults.
+    def _scope(self, filters: Optional[Dict[str, Any]] = None,
+               *, scope_agent: bool = True) -> Dict[str, Any]:
+        """Inject the client's configured user_id (always) and agent_id (writes only).
 
         Defense-in-depth on a multi-agent shared store: a caller that omits a scope
-        must still be constrained to this client's user_id/agent_id, never querying
-        or writing across the whole store (B3/B4).
+        must still be constrained to this client's user_id, never querying or writing
+        across the whole store (B3/B4).
+
+        scope_agent=True (writes/add): also inject agent_id for attribution.
+        scope_agent=False (reads/search/get_all): user_id floor ONLY — do NOT add
+        agent_id. The provider deliberately reads user-scoped (see
+        Mem0MemoryProvider._read_filters) so cross-session recall works; and most
+        historical memories were stored agent-scoped WITHOUT a user_id, so ANDing
+        agent_id onto a read silently drops them (the live-cutover 0-results bug:
+        agent-only=20 hits vs agent+user=2). A caller that passes an explicit
+        agent_id in `filters` is always respected.
         """
         scope = dict(filters or {})
         if self._user_id and not scope.get("user_id"):
             scope["user_id"] = self._user_id
-        if self._agent_id and not scope.get("agent_id"):
+        if scope_agent and self._agent_id and not scope.get("agent_id"):
             scope["agent_id"] = self._agent_id
         return {k: v for k, v in scope.items() if v is not None and v != ""}
 
@@ -189,7 +199,10 @@ class _DirectRestMem0Client:
         return self._request("POST", "/memories", body=body)
 
     def search(self, query=None, filters=None, rerank=False, top_k=10, **kwargs):
-        body = {"query": query or "", **self._scope(filters)}
+        # reads scope to user_id only (scope_agent=False): cross-session recall +
+        # match historical agent-scoped-without-user memories. Explicit agent_id in
+        # filters is still honored by _scope.
+        body = {"query": query or "", **self._scope(filters, scope_agent=False)}
         response = self._request("POST", "/search", body=body)
         try:
             limit = int(top_k)
@@ -204,7 +217,9 @@ class _DirectRestMem0Client:
         return response
 
     def get_all(self, filters=None, **kwargs):
-        return self._request("GET", "/memories", params=self._scope(filters))
+        # reads scope to user_id only (see search) — agent-scoped recall would drop
+        # historical agent-without-user memories.
+        return self._request("GET", "/memories", params=self._scope(filters, scope_agent=False))
 
     def get(self, memory_id):
         mid = urllib.parse.quote(str(memory_id), safe="")

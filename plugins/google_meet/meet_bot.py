@@ -136,16 +136,23 @@ class _BotState:
         self.realtime = False
         self.realtime_ready = False
         self.realtime_device: Optional[str] = None
+        self.realtime_audio_pump_status = "disabled"
+        self.realtime_audio_pump_tool: Optional[str] = None
+        self.realtime_audio_pump_pid: Optional[int] = None
+        self.realtime_audio_pump_return_code: Optional[int] = None
+        self.realtime_audio_pump_error: Optional[str] = None
         self.audio_bytes_out: int = 0
         self.last_audio_out_at: Optional[float] = None
         self.last_barge_in_at: Optional[float] = None
         self.leave_reason: Optional[str] = None
+        self.unresolved_caption_drops = 0
+        self.last_unresolved_caption_at: Optional[float] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
         self._seen_transcript_segments: set = set()
-        self._transcript_entries: list[tuple[str, str, str]] = []
-        self._last_caption_text_by_speaker: dict[str, str] = {}
+        self._transcript_entries: list[tuple[str, str, str, str]] = []
+        self._last_caption_text_by_caption_key: dict[str, str] = {}
         out_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_path = out_dir / "transcript.txt"
         self.caption_debug_path = out_dir / "caption_debug.jsonl"
@@ -191,7 +198,7 @@ class _BotState:
 
     def _rewrite_transcript(self) -> None:
         with self.transcript_path.open("w", encoding="utf-8") as f:
-            for ts, speaker, text in self._transcript_entries:
+            for ts, speaker, text, _caption_key in self._transcript_entries:
                 f.write(f"[{ts}] {speaker}: {text}\n")
         self.transcript_lines = len(self._transcript_entries)
 
@@ -226,6 +233,7 @@ class _BotState:
         *,
         combine_with_previous: bool = False,
         allow_revision: bool = True,
+        caption_key: str = "",
     ) -> None:
         text = (text or "").strip()
         if not text:
@@ -239,16 +247,19 @@ class _BotState:
                     ts,
                     combine_with_previous=combine_with_previous and idx == 0,
                     allow_revision=idx == 0,
+                    caption_key=caption_key,
                 )
             return
 
-        segment_key = f"{speaker}|{text}"
+        segment_key = f"{caption_key}|{speaker}|{text}" if caption_key else f"{speaker}|{text}"
         if segment_key in self._seen_transcript_segments:
             return
 
         recent_start = max(0, len(self._transcript_entries) - 24)
         for idx in range(len(self._transcript_entries) - 1, recent_start - 1, -1):
-            _, previous_speaker, previous_text = self._transcript_entries[idx]
+            _, previous_speaker, previous_text, previous_caption_key = self._transcript_entries[idx]
+            if caption_key and previous_caption_key != caption_key:
+                continue
             if previous_speaker != speaker:
                 continue
             if (
@@ -256,21 +267,26 @@ class _BotState:
                 and self._is_caption_revision(previous_text, text)
                 and len(text) <= MAX_TRANSCRIPT_TEXT_LEN
             ):
-                self._transcript_entries[idx] = (ts, speaker, text)
-                self._seen_transcript_segments.add(f"{speaker}|{text}")
+                self._transcript_entries[idx] = (ts, speaker, text, caption_key)
+                self._seen_transcript_segments.add(segment_key)
                 self._rewrite_transcript()
                 return
             if combine_with_previous:
                 combined = f"{previous_text} {text}".strip()
                 if len(combined) <= MAX_TRANSCRIPT_TEXT_LEN:
-                    self._transcript_entries[idx] = (ts, speaker, combined)
-                    self._seen_transcript_segments.add(f"{speaker}|{combined}")
+                    self._transcript_entries[idx] = (ts, speaker, combined, caption_key)
+                    combined_key = (
+                        f"{caption_key}|{speaker}|{combined}"
+                        if caption_key
+                        else f"{speaker}|{combined}"
+                    )
+                    self._seen_transcript_segments.add(combined_key)
                     self._rewrite_transcript()
                     return
             break
 
         self._seen_transcript_segments.add(segment_key)
-        self._transcript_entries.append((ts, speaker, text))
+        self._transcript_entries.append((ts, speaker, text, caption_key))
         self.transcript_lines = len(self._transcript_entries)
         line = f"[{ts}] {speaker}: {text}\n"
         # Atomic-ish append — good enough for a single-writer.
@@ -284,20 +300,22 @@ class _BotState:
         *,
         speaker_source: Optional[str] = None,
         speaker_debug: Optional[dict] = None,
+        caption_id: Optional[str] = None,
     ) -> None:
         """Append a caption line if we haven't seen this exact (speaker, text)."""
-        speaker = (speaker or "").strip() or "Unknown"
+        speaker = (speaker or "").strip()
         text = (text or "").strip()
         if not text:
             return
         if speaker_source:
             self.last_speaker_source = speaker_source
         debug_enabled = _debug_status_enabled()
+        unresolved_speaker = not speaker or speaker.lower() == "unknown"
         if debug_enabled and isinstance(speaker_debug, dict):
             candidates = speaker_debug.get("candidates")
             if isinstance(candidates, list):
                 self.last_speaker_candidates = candidates[:20]
-            if speaker == "Unknown":
+            if unresolved_speaker:
                 debug_line = {
                     "ts": time.time(),
                     "text": text[:300],
@@ -306,26 +324,41 @@ class _BotState:
                 }
                 with self.caption_debug_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(debug_line, ensure_ascii=True) + "\n")
-        key = f"{speaker}|{text}"
+        if unresolved_speaker:
+            now = time.time()
+            self.unresolved_caption_drops += 1
+            self.last_unresolved_caption_at = now
+            self._flush()
+            return
+
+        caption_id = (caption_id or "").strip()
+        caption_key = f"row:{caption_id}" if caption_id else f"speaker:{speaker}"
+        key = f"{caption_key}|{speaker}|{text}"
         if key in self._seen:
             return
         self._seen.add(key)
         ts = self._touch_caption_progress()
-        previous_full = self._last_caption_text_by_speaker.get(speaker, "")
-        self._last_caption_text_by_speaker[speaker] = text
+        previous_full = self._last_caption_text_by_caption_key.get(caption_key, "")
+        self._last_caption_text_by_caption_key[caption_key] = text
 
         if previous_full:
             suffix = self._caption_suffix(previous_full, text)
             if suffix:
-                self._record_caption_segment(speaker, suffix, ts, combine_with_previous=True)
+                self._record_caption_segment(
+                    speaker,
+                    suffix,
+                    ts,
+                    combine_with_previous=True,
+                    caption_key=caption_key,
+                )
                 self._flush()
                 return
             if self._is_caption_revision(previous_full, text):
-                self._record_caption_segment(speaker, text, ts)
+                self._record_caption_segment(speaker, text, ts, caption_key=caption_key)
                 self._flush()
                 return
 
-        self._record_caption_segment(speaker, text, ts)
+        self._record_caption_segment(speaker, text, ts, caption_key=caption_key)
         self._flush()
 
     # -------- status file ----------------------------------------------
@@ -362,10 +395,17 @@ class _BotState:
             "realtime": self.realtime,
             "realtimeReady": self.realtime_ready,
             "realtimeDevice": self.realtime_device,
+            "realtimeAudioPumpStatus": self.realtime_audio_pump_status,
+            "realtimeAudioPumpTool": self.realtime_audio_pump_tool,
+            "realtimeAudioPumpPid": self.realtime_audio_pump_pid,
+            "realtimeAudioPumpReturnCode": self.realtime_audio_pump_return_code,
+            "realtimeAudioPumpError": self.realtime_audio_pump_error,
             "audioBytesOut": self.audio_bytes_out,
             "lastAudioOutAt": self.last_audio_out_at,
             "lastBargeInAt": self.last_barge_in_at,
             "leaveReason": self.leave_reason,
+            "unresolvedCaptionDrops": self.unresolved_caption_drops,
+            "lastUnresolvedCaptionAt": self.last_unresolved_caption_at,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -419,7 +459,9 @@ _CAPTION_OBSERVER_JS = r"""
   window.__hermesMeetLastFallbackText = '';
   window.__hermesMeetKnownSpeakers = [];
   window.__hermesMeetCaptionRegionAttached = false;
-  window.__hermesMeetLastTextBySpeaker = {};
+  window.__hermesMeetLastTextByCaptionKey = {};
+  window.__hermesMeetCaptionRowIds = new WeakMap();
+  window.__hermesMeetNextCaptionRowId = 1;
 
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
@@ -457,6 +499,29 @@ _CAPTION_OBSERVER_JS = r"""
     value = value.replace(/[,.:\-]+$/g, '').trim();
     if (!value || value.length > 80) return '';
     return value;
+  }
+
+  function captionRowId(row) {
+    if (!row || typeof row !== 'object') return '';
+    if (!window.__hermesMeetCaptionRowIds.has(row)) {
+      const nextId = `caption-row-${window.__hermesMeetNextCaptionRowId++}`;
+      window.__hermesMeetCaptionRowIds.set(row, nextId);
+    }
+    return window.__hermesMeetCaptionRowIds.get(row);
+  }
+
+  function captionRowForLabel(label) {
+    if (!label) return null;
+    if (typeof label.closest === 'function') {
+      const row = label.closest('div[jsname="dsyhDe"], div.CNusmb, div.TBMuR, div.nMcdL');
+      if (row) return row;
+    }
+    for (let node = label.parentElement; node; node = node.parentElement) {
+      const text = node.innerText || '';
+      const children = Array.from(node.children || []);
+      if (children.length >= 2 && text) return node;
+    }
+    return null;
   }
 
   function escapeRegExp(value) {
@@ -614,7 +679,7 @@ _CAPTION_OBSERVER_JS = r"""
     }
   }
 
-  function pushSpeakerSegments(rawText, names) {
+  function pushSpeakerSegments(rawText, names, captionIdPrefix = 'segment') {
     const text = trimCaptionChrome(rawText);
     if (!text) return false;
     const knownNames = names && names.length ? names : inferParticipantNames();
@@ -645,7 +710,7 @@ _CAPTION_OBSERVER_JS = r"""
       const next = deduped[i + 1];
       const segment = trimCaptionChrome(text.slice(current.end, next ? next.index : undefined));
       if (segment) {
-        pushEntry(current.speaker, segment);
+        pushEntry(current.speaker, segment, `${captionIdPrefix}:${current.index}:${current.speaker}`);
         emitted = true;
       }
     }
@@ -662,13 +727,13 @@ _CAPTION_OBSERVER_JS = r"""
     return trimCaptionChrome(text);
   }
 
-  function trimSeenCaptionPrefix(speaker, rawText) {
+  function trimSeenCaptionPrefix(speaker, rawText, captionId) {
     const text = trimCaptionChrome(rawText);
     if (!text) return '';
-    const key = cleanSpeakerName(speaker) || '__unknown__';
-    const previous = window.__hermesMeetLastTextBySpeaker[key] || '';
+    const key = captionId ? `row:${captionId}` : (cleanSpeakerName(speaker) || '__unknown__');
+    const previous = window.__hermesMeetLastTextByCaptionKey[key] || '';
     if (text === previous) return '';
-    window.__hermesMeetLastTextBySpeaker[key] = text;
+    window.__hermesMeetLastTextByCaptionKey[key] = text;
     return text;
   }
 
@@ -700,10 +765,11 @@ _CAPTION_OBSERVER_JS = r"""
     for (const label of labels) {
       const speaker = cleanSpeakerName(label.innerText);
       if (!speaker) continue;
+      const captionId = captionRowId(captionRowForLabel(label));
 
       const nearbyText = nearbyCaptionText(label, speaker);
       if (nearbyText) {
-        pushEntry(speaker, nearbyText);
+        pushEntry(speaker, nearbyText, captionId);
         emitted = true;
         continue;
       }
@@ -712,7 +778,7 @@ _CAPTION_OBSERVER_JS = r"""
       for (let depth = 0; node && depth < 7; depth += 1) {
         const text = textAfterSpeaker(node.innerText || '', speaker);
         if (text) {
-          pushEntry(speaker, text);
+          pushEntry(speaker, text, captionId);
           emitted = true;
           break;
         }
@@ -722,22 +788,24 @@ _CAPTION_OBSERVER_JS = r"""
     return emitted;
   }
 
-  function pushEntry(speaker, text) {
+  function pushEntry(speaker, text, captionId = '') {
     if (!text || !text.trim()) return;
     const rowSpeaker = cleanSpeakerName(speaker);
     if (rowSpeaker) rememberSpeaker(rowSpeaker);
     const inferred = rowSpeaker
       ? { speaker: rowSpeaker, source: 'captionRow', candidates: [] }
       : inferActiveSpeaker();
-    const captionText = trimSeenCaptionPrefix(inferred.speaker, text);
+    const captionText = trimSeenCaptionPrefix(inferred.speaker, text, captionId);
     if (!captionText) return;
-    window.__hermesMeetQueue.push({
+    const entry = {
       ts: Date.now(),
       speaker: inferred.speaker,
       speakerSource: inferred.source,
       speakerDebug: { candidates: inferred.candidates },
       text: captionText,
-    });
+    };
+    if (captionId) entry.captionId = captionId;
+    window.__hermesMeetQueue.push(entry);
   }
 
   function scan(root) {
@@ -751,7 +819,7 @@ _CAPTION_OBSERVER_JS = r"""
         const txtEl = row.querySelector('div.bh44bd, span[jsname="tgaKEf"], div.iTTPOb');
         const speaker = spkEl ? spkEl.innerText : '';
         const text = txtEl ? txtEl.innerText : row.innerText;
-        pushEntry(speaker, text);
+        pushEntry(speaker, text, captionRowId(row));
       });
       return;
     }
@@ -1041,6 +1109,43 @@ def _probe_local_media_state(page) -> dict:
     return result
 
 
+def _local_media_state_is_safe(media_state: dict, *, realtime_enabled: bool) -> bool:
+    """Return True when local media state satisfies the selected privacy mode."""
+    camera_off = media_state.get("local_camera_on") is False
+    if realtime_enabled:
+        return camera_off
+    return camera_off and media_state.get("local_microphone_on") is False
+
+
+def _ensure_local_media_before_join(
+    page,
+    state: _BotState,
+    *,
+    realtime_enabled: bool,
+    attempts: int = 3,
+) -> bool:
+    """Disable local media and fail closed if the state cannot be proven safe."""
+    for _idx in range(max(1, attempts)):
+        _disable_local_media(
+            page,
+            disable_microphone=not realtime_enabled,
+            disable_camera=True,
+        )
+        media_state = _probe_local_media_state(page)
+        state.set(**media_state)
+        if _local_media_state_is_safe(media_state, realtime_enabled=realtime_enabled):
+            return True
+        _wait_for_ui(page, 250)
+
+    state.set(
+        error="local media state unsafe before join",
+        leave_reason="unsafe_media_state",
+        exited=True,
+        phase="exited",
+    )
+    return False
+
+
 def _probe_local_media_state_js(page) -> dict:
     script = r"""
     (() => {
@@ -1266,10 +1371,26 @@ def _start_pcm_file_pump(
 
     def _pcm_pump_loop():
         offset = 0
+        ready_reported = False
         try:
             while not stop_flag.get("stop", False):
-                if proc.poll() is not None:
+                return_code = proc.poll()
+                if return_code is not None:
+                    state.set(
+                        realtime_ready=False,
+                        realtime_audio_pump_status="exited",
+                        realtime_audio_pump_return_code=return_code,
+                    )
                     break
+                if not ready_reported:
+                    state.set(
+                        realtime_ready=True,
+                        realtime_audio_pump_status="ready",
+                        realtime_audio_pump_pid=getattr(proc, "pid", None),
+                        realtime_audio_pump_return_code=None,
+                        realtime_audio_pump_error=None,
+                    )
+                    ready_reported = True
                 try:
                     with pcm_path.open("rb") as fh:
                         fh.seek(offset)
@@ -1279,16 +1400,32 @@ def _start_pcm_file_pump(
                 if chunk:
                     offset += len(chunk)
                     if proc.stdin is None:
+                        state.set(
+                            realtime_ready=False,
+                            realtime_audio_pump_status="exited",
+                            realtime_audio_pump_error=f"{error_prefix} pcm pump stdin unavailable",
+                        )
                         break
                     try:
                         proc.stdin.write(chunk)
                         proc.stdin.flush()
-                    except (BrokenPipeError, OSError):
+                    except (BrokenPipeError, OSError) as e:
+                        state.set(
+                            realtime_ready=False,
+                            realtime_audio_pump_status="exited",
+                            realtime_audio_pump_error=f"{error_prefix} pcm pump write failed: {e}",
+                            realtime_audio_pump_return_code=proc.poll(),
+                        )
                         break
                 else:
                     time.sleep(0.05)
         except Exception as e:
-            state.set(error=f"{error_prefix} pcm pump crashed: {e}")
+            state.set(
+                realtime_ready=False,
+                realtime_audio_pump_status="exited",
+                realtime_audio_pump_error=f"{error_prefix} pcm pump crashed: {e}",
+                error=f"{error_prefix} pcm pump crashed: {e}",
+            )
         finally:
             try:
                 if proc.stdin is not None:
@@ -1305,8 +1442,15 @@ def _start_pcm_file_pump(
     rt["pcm_pump_thread"] = t_pump
 
 
-def _teardown_realtime(rt: dict) -> None:
+def _teardown_realtime(rt: dict, state: Optional[_BotState] = None) -> None:
     """Best-effort cleanup for realtime session, pump, and audio bridge."""
+    if state is not None and (
+        rt.get("enabled") or rt.get("session") or rt.get("pcm_pump")
+    ):
+        state.set(
+            realtime_ready=False,
+            realtime_audio_pump_status="teardown",
+        )
     if rt.get("speaker_stop"):
         try:
             rt["speaker_stop"]()
@@ -1426,6 +1570,14 @@ def _start_realtime_speaker(
         import subprocess as _sp
 
         sink = (bridge_info or {}).get("write_target") or "hermes_meet_sink"
+        state.set(
+            realtime_ready=False,
+            realtime_audio_pump_status="starting",
+            realtime_audio_pump_tool="paplay",
+            realtime_audio_pump_pid=None,
+            realtime_audio_pump_return_code=None,
+            realtime_audio_pump_error=None,
+        )
         try:
             proc = _sp.Popen(
                 [
@@ -1441,6 +1593,7 @@ def _start_realtime_speaker(
                 stderr=_sp.DEVNULL,
             )
             rt["pcm_pump"] = proc
+            state.set(realtime_audio_pump_pid=getattr(proc, "pid", None))
             _start_pcm_file_pump(
                 rt=rt,
                 pcm_path=pcm_path,
@@ -1450,7 +1603,12 @@ def _start_realtime_speaker(
                 error_prefix="linux",
             )
         except FileNotFoundError:
-            state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
+            state.set(
+                realtime_ready=False,
+                realtime_audio_pump_status="missing_tool",
+                realtime_audio_pump_error="paplay not found",
+                error="paplay not found — install pulseaudio-utils for realtime on Linux",
+            )
     elif platform_tag == "darwin":
         # macOS: use ffmpeg to tail-read speaker.pcm and write it to the
         # BlackHole output device. The user must have BlackHole selected
@@ -1463,7 +1621,24 @@ def _start_realtime_speaker(
 
         device_name = (bridge_info or {}).get("write_target") or "BlackHole 2ch"
         if _shutil.which("ffmpeg"):
+            state.set(
+                realtime_ready=False,
+                realtime_audio_pump_status="starting",
+                realtime_audio_pump_tool="ffmpeg",
+                realtime_audio_pump_pid=None,
+                realtime_audio_pump_return_code=None,
+                realtime_audio_pump_error=None,
+            )
             try:
+                audio_device_index = _mac_audio_device_index(device_name)
+                if audio_device_index is None:
+                    state.set(
+                        realtime_ready=False,
+                        realtime_audio_pump_status="missing_tool",
+                        realtime_audio_pump_error=f"macOS audio device not found: {device_name}",
+                        error=f"macOS audio device not found: {device_name}",
+                    )
+                    return
                 proc = _sp.Popen(
                     [
                         "ffmpeg",
@@ -1471,7 +1646,7 @@ def _start_realtime_speaker(
                         "-f", "s16le", "-ar", "24000", "-ac", "1",
                         "-i", "pipe:0",
                         "-f", "audiotoolbox",
-                        "-audio_device_index", _mac_audio_device_index(device_name),
+                        "-audio_device_index", audio_device_index,
                         "-",
                     ],
                     stdin=_sp.PIPE,
@@ -1479,6 +1654,7 @@ def _start_realtime_speaker(
                     stderr=_sp.DEVNULL,
                 )
                 rt["pcm_pump"] = proc
+                state.set(realtime_audio_pump_pid=getattr(proc, "pid", None))
                 _start_pcm_file_pump(
                     rt=rt,
                     pcm_path=pcm_path,
@@ -1488,20 +1664,36 @@ def _start_realtime_speaker(
                     error_prefix="macOS",
                 )
             except FileNotFoundError:
-                state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+                state.set(
+                    realtime_ready=False,
+                    realtime_audio_pump_status="missing_tool",
+                    realtime_audio_pump_error="ffmpeg not found",
+                    error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS",
+                )
             except Exception as e:
-                state.set(error=f"macOS pcm pump failed to start: {e}")
+                state.set(
+                    realtime_ready=False,
+                    realtime_audio_pump_status="exited",
+                    realtime_audio_pump_error=f"macOS pcm pump failed to start: {e}",
+                    error=f"macOS pcm pump failed to start: {e}",
+                )
         else:
-            state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+            state.set(
+                realtime_ready=False,
+                realtime_audio_pump_status="missing_tool",
+                realtime_audio_pump_tool="ffmpeg",
+                realtime_audio_pump_error="ffmpeg not found",
+                error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS",
+            )
 
 
-def _mac_audio_device_index(device_name: str) -> str:
+def _mac_audio_device_index(device_name: str) -> Optional[str]:
     """Return the ffmpeg ``-audio_device_index`` for *device_name*, as a string.
 
     Probes ``ffmpeg -f avfoundation -list_devices true -i ''`` (which prints
     the device table on stderr) and matches *device_name* case-insensitively.
-    Defaults to ``"0"`` if the device can't be found — caller will get a
-    misrouted stream but not a crash, and the error will be obvious.
+    Returns ``None`` when the device cannot be found so realtime speech fails
+    closed instead of routing audio to an arbitrary device.
     """
     import subprocess as _sp
 
@@ -1513,7 +1705,7 @@ def _mac_audio_device_index(device_name: str) -> str:
             timeout=10,
         )
     except Exception:
-        return "0"
+        return None
     # ffmpeg prints the table on stderr. Lines look like:
     #   [AVFoundation indev @ 0x...] [0] BlackHole 2ch
     import re as _re
@@ -1525,7 +1717,7 @@ def _mac_audio_device_index(device_name: str) -> str:
             continue
         if m.group(2).strip().lower() == needle:
             return m.group(1)
-    return "0"
+    return None
 
 
 def _apply_meet_proxy_args(chrome_args: list[str]) -> None:
@@ -1675,8 +1867,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
-            _disable_local_media(page, disable_microphone=not rt["enabled"])
-            state.set(**_probe_local_media_state(page))
+            if not _ensure_local_media_before_join(
+                page,
+                state,
+                realtime_enabled=rt["enabled"],
+            ):
+                return 5
             _try_guest_name(page, guest_name)
             join_clicked = _click_join(page, state)
 
@@ -1709,8 +1905,6 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     stop_flag=stop_flag,
                     state=state,
                 )
-                if rt["session"] is not None:
-                    state.set(realtime_ready=True)
 
             # Admission + drain loop. Runs until SIGTERM, duration expiry,
             # or the page detects "You were removed / you left the
@@ -1746,6 +1940,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 ):
                     last_admission_check = now
                     if not state.join_attempted_at:
+                        if not _ensure_local_media_before_join(
+                            page,
+                            state,
+                            realtime_enabled=rt["enabled"],
+                        ):
+                            return 5
                         _try_guest_name(page, guest_name)
                         if _click_join(page, state):
                             state.set(join_attempted_at=now)
@@ -1779,11 +1979,13 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             text = str(entry.get("text", ""))
                             speaker_source = str(entry.get("speakerSource", ""))
                             speaker_debug = entry.get("speakerDebug")
+                            caption_id = str(entry.get("captionId", ""))
                             state.record_caption(
                                 speaker=speaker,
                                 text=text,
                                 speaker_source=speaker_source,
                                 speaker_debug=speaker_debug if isinstance(speaker_debug, dict) else None,
+                                caption_id=caption_id,
                             )
                             # Barge-in: if the bot is currently generating
                             # audio AND a real human just spoke, cancel the
@@ -1857,7 +2059,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 browser.close()
             except Exception:
                 pass
-        _teardown_realtime(rt)
+        _teardown_realtime(rt, state)
 
 
 def _try_guest_name(page, guest_name: str) -> None:

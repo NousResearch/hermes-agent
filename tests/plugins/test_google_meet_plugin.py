@@ -195,6 +195,28 @@ def test_bot_state_splits_growing_same_speaker_caption_before_it_gets_too_long(t
     assert status["transcriptLines"] == 2
 
 
+def test_bot_state_revises_matching_caption_row_without_collapsing_same_speaker_rows(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "Shared prefix first thought.", caption_id="row-a")
+    state.record_caption("Alex Rivera", "Shared prefix second thought.", caption_id="row-b")
+    state.record_caption(
+        "Alex Rivera",
+        "Shared prefix first thought with more detail.",
+        caption_id="row-a",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Shared prefix first thought with more detail.",
+        "Alex Rivera: Shared prefix second thought.",
+    ]
+
+
 def test_bot_state_splits_single_long_caption_segment(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 
@@ -255,9 +277,30 @@ def test_bot_state_ignores_blank_text(tmp_path):
     state.record_caption("", "text but no speaker")
 
     status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["transcriptLines"] == 0
+    assert status["unresolvedCaptionDrops"] == 1
+    transcript_path = tmp_path / "s" / "transcript.txt"
+    assert not transcript_path.exists() or "Unknown:" not in transcript_path.read_text()
+
+
+def test_bot_state_drops_unknown_speaker_caption_rows(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "s"
+    state = _BotState(out_dir=out, meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+
+    state.record_caption("Unknown", "text but no resolved speaker")
+    state.record_caption("unknown", "text but still unresolved")
+    state.record_caption("Alice", "resolved text")
+
+    transcript = (out / "transcript.txt").read_text()
+    assert "Unknown:" not in transcript
+    assert "Alice: resolved text" in transcript
+
+    status = json.loads((out / "status.json").read_text())
     assert status["transcriptLines"] == 1
-    # blank-speaker falls back to "Unknown"
-    assert "Unknown: text but no speaker" in (tmp_path / "s" / "transcript.txt").read_text()
+    assert status["unresolvedCaptionDrops"] == 2
 
 
 def test_bot_state_writes_caption_debug_for_unknown_speaker_when_debug_enabled(tmp_path, monkeypatch):
@@ -284,6 +327,8 @@ def test_bot_state_writes_caption_debug_for_unknown_speaker_when_debug_enabled(t
     assert status["lastSpeakerSource"] == "unresolved"
     assert status["lastSpeakerCandidates"] == speaker_debug["candidates"]
     assert status["captionDebugPath"].endswith("caption_debug.jsonl")
+    assert status["transcriptLines"] == 0
+    assert status["unresolvedCaptionDrops"] == 1
 
     debug_lines = (tmp_path / "s" / "caption_debug.jsonl").read_text().splitlines()
     assert len(debug_lines) == 1
@@ -584,6 +629,7 @@ def test_caption_observer_body_fallback_splits_live_caption_shape():
             "speaker": "Alex Rivera",
             "speakerSource": "captionRow",
             "speakerDebug": {"candidates": []},
+            "captionId": entries[0]["captionId"],
             "text": "like that, but whatever.",
         }
     ]
@@ -680,6 +726,105 @@ def test_caption_observer_emits_full_text_for_growing_visible_caption_row():
         ("Alex Rivera", "Testing the first caption. New words from the same row."),
     ]
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
+
+
+def test_caption_observer_emits_stable_caption_ids_for_visible_rows():
+    entries = _run_caption_observer_js(
+        body_text="",
+        caption_text="",
+        speaking_label="",
+        caption_label_rows=[
+            ("Alex Rivera", "Shared prefix first thought."),
+            ("Alex Rivera", "Shared prefix second thought."),
+        ],
+        caption_label_updates=[
+            [
+                ("Alex Rivera", "Shared prefix first thought with more detail."),
+                ("Alex Rivera", "Shared prefix second thought."),
+            ],
+        ],
+    )
+
+    simplified = [(entry["speaker"], entry["text"], entry.get("captionId")) for entry in entries]
+    assert simplified[0][0:2] == ("Alex Rivera", "Shared prefix first thought.")
+    assert simplified[1][0:2] == ("Alex Rivera", "Shared prefix second thought.")
+    assert simplified[2][0:2] == ("Alex Rivera", "Shared prefix first thought with more detail.")
+    assert simplified[0][2]
+    assert simplified[1][2]
+    assert simplified[0][2] != simplified[1][2]
+    assert simplified[2][2] == simplified[0][2]
+    assert all(entry["speakerSource"] == "captionRow" for entry in entries)
+
+
+def test_caption_observer_caption_ids_preserve_same_speaker_rows_in_bot_state(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    entries = _run_caption_observer_js(
+        body_text="",
+        caption_text="",
+        speaking_label="",
+        caption_label_rows=[
+            ("Alex Rivera", "Shared prefix first thought."),
+            ("Alex Rivera", "Shared prefix second thought."),
+        ],
+        caption_label_updates=[
+            [
+                ("Alex Rivera", "Shared prefix first thought with more detail."),
+                ("Alex Rivera", "Shared prefix second thought."),
+            ],
+        ],
+    )
+    state = _BotState(out_dir=tmp_path / "session", meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    for entry in entries:
+        state.record_caption(
+            entry.get("speaker", ""),
+            entry.get("text", ""),
+            speaker_source=entry.get("speakerSource"),
+            speaker_debug=entry.get("speakerDebug"),
+            caption_id=entry.get("captionId"),
+        )
+
+    transcript = (tmp_path / "session" / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Shared prefix first thought with more detail.",
+        "Alex Rivera: Shared prefix second thought.",
+    ]
+
+
+def test_caption_observer_fallback_segments_preserve_same_speaker_rows_in_bot_state(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    entries = _run_caption_observer_js(
+        body_text=(
+            "Pin Alex Rivera to your main screen\n"
+            "More options for Alex Rivera\n"
+        ),
+        caption_text=(
+            "Alex Rivera Shared prefix first thought. "
+            "Alex Rivera Shared prefix second thought."
+        ),
+        speaking_label="",
+    )
+    state = _BotState(out_dir=tmp_path / "session", meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    for entry in entries:
+        state.record_caption(
+            entry.get("speaker", ""),
+            entry.get("text", ""),
+            speaker_source=entry.get("speakerSource"),
+            speaker_debug=entry.get("speakerDebug"),
+            caption_id=entry.get("captionId"),
+        )
+
+    transcript = (tmp_path / "session" / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Shared prefix first thought.",
+        "Alex Rivera: Shared prefix second thought.",
+    ]
+    assert entries[0].get("captionId") != entries[1].get("captionId")
 
 
 def test_caption_observer_emits_initial_large_visible_caption_for_python_split():
@@ -903,6 +1048,42 @@ def test_transcript_does_not_read_last_meeting_by_default_after_status_clears_de
     assert "no active meeting" in transcript["reason"]
 
 
+def test_transcript_clears_dead_active_pointer_without_prior_status_call(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = tmp_path / "abc-defg-hij"
+    out_dir.mkdir()
+    (out_dir / "status.json").write_text(json.dumps({
+        "meetingId": "abc-defg-hij",
+        "exited": True,
+        "leaveReason": "duration_expired",
+    }))
+    (out_dir / "transcript.txt").write_text(
+        "[10:00:00] Alex Rivera: one\n",
+        encoding="utf-8",
+    )
+    pm._write_active({
+        "pid": 11111,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+        "session_id": "session-a",
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=False):
+        default_read = pm.transcript()
+        finished_read = pm.transcript(include_finished=True, session_id="session-a")
+
+    assert default_read["ok"] is False
+    assert "no active meeting" in default_read["reason"]
+    assert finished_read["ok"] is True
+    assert finished_read["active"] is False
+    assert finished_read["fromLast"] is True
+    assert finished_read["stale"] is True
+    assert pm._read_active() is None
+
+
 def test_transcript_can_explicitly_read_finished_meeting_after_status_clears_dead_active_pointer(tmp_path):
     from plugins.google_meet import process_manager as pm
 
@@ -988,13 +1169,14 @@ def test_transcript_reads_last_n_lines(tmp_path):
         "[10:00:02] Alice: three\n"
     )
     pm._write_active({
-        "pid": 0, "meeting_id": "abc-defg-hij",
+        "pid": 12345, "meeting_id": "abc-defg-hij",
         "out_dir": str(meeting_dir),
         "url": "https://meet.google.com/abc-defg-hij",
         "started_at": 0,
     })
 
-    res = pm.transcript(last=2)
+    with patch.object(pm, "_pid_alive", return_value=True):
+        res = pm.transcript(last=2)
     assert res["ok"] is True
     assert res["total"] == 3
     assert len(res["lines"]) == 2
@@ -1375,6 +1557,7 @@ def test_enqueue_say_rejects_dead_realtime_bot(tmp_path):
         "inCall": True,
         "realtime": True,
         "realtimeReady": True,
+        "realtimeAudioPumpStatus": "ready",
     }))
     pm._write_active({
         "pid": 12345, "meeting_id": "abc-defg-hij",
@@ -1414,6 +1597,34 @@ def test_enqueue_say_rejects_realtime_before_bot_is_ready(tmp_path):
     assert not (out_dir / "say_queue.jsonl").exists()
 
 
+def test_enqueue_say_rejects_realtime_when_audio_pump_is_not_ready(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": True,
+        "realtimeAudioPumpStatus": "exited",
+        "realtimeAudioPumpReturnCode": 1,
+        "error": None,
+        "exited": False,
+    }))
+    pm._write_active({
+        "pid": 12345, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "realtime",
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=True):
+        res = pm.enqueue_say("hello everyone")
+
+    assert res["ok"] is False
+    assert "audio pump is not ready" in res["reason"]
+    assert not (out_dir / "say_queue.jsonl").exists()
+
+
 def test_enqueue_say_writes_jsonl_in_realtime_mode():
     from plugins.google_meet import process_manager as pm
 
@@ -1423,6 +1634,7 @@ def test_enqueue_say_writes_jsonl_in_realtime_mode():
         "inCall": True,
         "realtime": True,
         "realtimeReady": True,
+        "realtimeAudioPumpStatus": "ready",
         "error": None,
         "exited": False,
     }))
@@ -1455,6 +1667,7 @@ def test_realtime_queue_preserves_append_during_consumer_rewrite(tmp_path):
         "inCall": True,
         "realtime": True,
         "realtimeReady": True,
+        "realtimeAudioPumpStatus": "ready",
     }))
     pm._write_active({
         "pid": 12345, "meeting_id": "abc-defg-hij",
@@ -1762,6 +1975,7 @@ def test_node_server_say_uses_realtime_queue(tmp_path):
         "inCall": True,
         "realtime": True,
         "realtimeReady": True,
+        "realtimeAudioPumpStatus": "ready",
     }))
     pm._write_active({
         "pid": 12345,
@@ -1941,6 +2155,9 @@ def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
     status = json.loads((tmp_path / "s" / "status.json").read_text())
     for key in (
         "realtime", "realtimeReady", "realtimeDevice",
+        "realtimeAudioPumpStatus", "realtimeAudioPumpTool",
+        "realtimeAudioPumpPid", "realtimeAudioPumpReturnCode",
+        "realtimeAudioPumpError",
         "audioBytesOut", "lastAudioOutAt", "lastBargeInAt",
         "joinAttemptedAt", "leaveReason",
         "phase", "lastHeartbeatAt", "lastProgressAt",
@@ -1949,6 +2166,7 @@ def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
         assert key in status, f"missing v2 telemetry key: {key}"
     assert status["realtime"] is False
     assert status["realtimeReady"] is False
+    assert status["realtimeAudioPumpStatus"] == "disabled"
     assert status["audioBytesOut"] == 0
     assert status["phase"] == "starting"
 
@@ -2829,6 +3047,54 @@ def test_start_realtime_speaker_darwin_streams_pcm_to_ffmpeg_stdin(tmp_path):
     assert "pipe:0" in proc.argv
     assert proc.kwargs["stdin"] == subprocess.PIPE
     assert "pcm_pump_thread" in rt
+
+
+def test_start_realtime_speaker_darwin_fails_when_audio_device_is_missing(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _start_realtime_speaker
+
+    class _FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def connect(self):
+            return None
+
+    class _FakeSpeaker:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_until_stopped(self, _stop_fn):
+            return None
+
+    state = _BotState(
+        out_dir=tmp_path,
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    rt = {}
+
+    with patch("plugins.google_meet.realtime.openai_client.RealtimeSession", _FakeSession), \
+         patch("plugins.google_meet.realtime.openai_client.RealtimeSpeaker", _FakeSpeaker), \
+         patch("shutil.which", return_value="/usr/local/bin/ffmpeg"), \
+         patch("plugins.google_meet.meet_bot._mac_audio_device_index", return_value=None), \
+         patch("subprocess.Popen") as popen:
+        _start_realtime_speaker(
+            rt=rt,
+            out_dir=tmp_path,
+            bridge_info={"platform": "darwin", "write_target": "BlackHole 2ch"},
+            api_key="sk-test",
+            model="gpt-test",
+            voice="alloy",
+            instructions="Test",
+            stop_flag={"stop": True},
+            state=state,
+        )
+
+    popen.assert_not_called()
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["realtimeReady"] is False
+    assert status["realtimeAudioPumpStatus"] == "missing_tool"
+    assert "audio device not found" in status["realtimeAudioPumpError"]
 
 
 def test_run_bot_tears_down_realtime_resources_on_navigation_failure(tmp_path, monkeypatch):
@@ -3880,6 +4146,65 @@ def test_probe_local_media_state_uses_live_meet_status_text():
         "local_microphone_on": True,
         "local_camera_on": False,
     }
+
+
+def test_ensure_local_media_before_join_fails_closed_for_unknown_transcribe_media(tmp_path, monkeypatch):
+    from plugins.google_meet import meet_bot
+    from plugins.google_meet.meet_bot import _BotState, _ensure_local_media_before_join
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    calls = []
+
+    monkeypatch.setattr(
+        meet_bot,
+        "_disable_local_media",
+        lambda page, *, disable_microphone=True, disable_camera=True: calls.append(
+            (disable_microphone, disable_camera)
+        ) or 0,
+    )
+    monkeypatch.setattr(
+        meet_bot,
+        "_probe_local_media_state",
+        lambda page: {"local_microphone_on": None, "local_camera_on": False},
+    )
+
+    assert _ensure_local_media_before_join(object(), state, realtime_enabled=False, attempts=2) is False
+    assert calls == [(True, True), (True, True)]
+
+    status = json.loads((tmp_path / "meet" / "status.json").read_text())
+    assert status["phase"] == "exited"
+    assert status["exited"] is True
+    assert status["leaveReason"] == "unsafe_media_state"
+    assert "local media state unsafe" in status["error"]
+
+
+def test_ensure_local_media_before_join_allows_realtime_mic_but_requires_camera_off(tmp_path, monkeypatch):
+    from plugins.google_meet import meet_bot
+    from plugins.google_meet.meet_bot import _BotState, _ensure_local_media_before_join
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    monkeypatch.setattr(meet_bot, "_disable_local_media", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        meet_bot,
+        "_probe_local_media_state",
+        lambda page: {"local_microphone_on": True, "local_camera_on": False},
+    )
+
+    assert _ensure_local_media_before_join(object(), state, realtime_enabled=True, attempts=1) is True
+
+    status = json.loads((tmp_path / "meet" / "status.json").read_text())
+    assert status["localMicrophoneOn"] is True
+    assert status["localCameraOn"] is False
+    assert status["error"] is None
 
 
 def test_disable_local_media_uses_keyboard_shortcuts_when_controls_are_hidden():

@@ -352,6 +352,11 @@ def transcript(
     """
     active = _read_active()
     from_last = False
+    if active:
+        pid = int(active.get("pid", 0) or 0)
+        if not pid or not _pid_alive(pid):
+            _clear_active()
+            active = None
     if not active and include_finished:
         active = _read_last()
         from_last = bool(active)
@@ -453,6 +458,8 @@ def enqueue_say(text: str) -> Dict[str, Any]:
         return {"ok": False, "reason": "active realtime meeting is not in call yet"}
     if not (bot_status.get("realtime") and bot_status.get("realtimeReady")):
         return {"ok": False, "reason": "realtime is not ready"}
+    if bot_status.get("realtimeAudioPumpStatus") != "ready":
+        return {"ok": False, "reason": "realtime audio pump is not ready"}
 
     queue_path = out_dir / "say_queue.jsonl"
     entry = {"id": uuid.uuid4().hex[:12], "text": text}

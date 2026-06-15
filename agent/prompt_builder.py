@@ -173,10 +173,46 @@ SESSION_SEARCH_GUIDANCE = (
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
+    "skill with skill_manage so you can reuse it next time.\\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
+)
+
+TODO_GUIDANCE = (
+    "Use todo for any task with 3+ steps or when the user provides multiple tasks. "
+    "Create the plan BEFORE you start working — not after. "
+    "Mark items completed immediately when done. "
+    "If something fails, cancel it and add a revised item. "
+    "Never leave stale items — the list must reflect reality, not intentions. "
+    "Without todo, you lose track of multi-step work after context compaction."
+)
+
+CLARIFY_GUIDANCE = (
+    "Use clarify instead of guessing when the user's request is ambiguous, "
+    "has meaningful trade-offs, or needs a decision before proceeding. "
+    "Do NOT use clarify for simple yes/no confirmation of dangerous commands — "
+    "the terminal tool handles that. Prefer making a reasonable default choice "
+    "yourself when the decision is low-stakes."
+)
+
+PROCESS_GUIDANCE = (
+    "After starting a background process with terminal(background=true), "
+    "use process(action='poll') to check progress or process(action='wait') to "
+    "block until done. Never leave a background process unmonitored — "
+    "if you started it, you are responsible for its output."
+)
+
+CRONJOB_GUIDANCE = (
+    "When the user asks for something recurring, periodic, or scheduled, "
+    "suggest cronjob — don't just do it once and forget. "
+    "Examples: daily briefings, monitoring, cleanup tasks, heartbeat checks."
+)
+
+TOOL_SEARCH_GUIDANCE = (
+    "When you need a tool that isn't in your core set, use tool_search to find it "
+    "before telling the user you can't do something. "
+    "MCP and plugin tools are loaded on demand — they exist even if you can't see them."
 )
 
 KANBAN_GUIDANCE = (

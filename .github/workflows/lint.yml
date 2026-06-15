@@ -15,12 +15,12 @@ on:
       - "**/*.md"
       - "docs/**"
       - "website/**"
+
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "website/**"
 
 permissions:
   contents: read
@@ -153,7 +153,6 @@ jobs:
                 body: fullBody,
               });
             }
-
 
   ruff-blocking:
     # Enforce the rules in pyproject.toml [tool.ruff.lint.select]. Currently

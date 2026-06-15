@@ -11,16 +11,13 @@ on:
       - 'docker/**'
       - '.github/workflows/docker-publish.yml'
       - '.github/actions/hermes-smoke-test/**'
+
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
   pull_request:
     branches: [main]
-    paths:
-      - '**/*.py'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'Dockerfile'
-      - 'docker/**'
-      - '.github/workflows/docker-publish.yml'
-      - '.github/actions/hermes-smoke-test/**'
+
   release:
     types: [published]
 

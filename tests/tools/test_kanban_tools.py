@@ -1812,3 +1812,193 @@ def test_board_param_in_all_schemas():
         assert "board" not in schema["parameters"].get("required", []), (
             f"{schema['name']} marks board as required; must be optional"
         )
+
+
+# ---------------------------------------------------------------------------
+# kanban_create auto-subscribe behaviour
+#
+# When a worker calls kanban_create from inside a session that has a
+# persistent delivery channel, the originating session should be
+# subscribed to the new task's completion/block events automatically.
+# - Gateway sessions: HERMES_SESSION_PLATFORM + HERMES_SESSION_CHAT_ID set.
+# - TUI sessions: HERMES_SESSION_KEY (or HERMES_SESSION_ID) set, with
+#   the platform/chat_id ContextVars intentionally empty.
+# - CLI / cron / test sessions: no delivery channel -> no subscription.
+# - Config gate kanban.auto_subscribe_on_create: false -> no subscription
+#   even when the session has a delivery channel.
+# ---------------------------------------------------------------------------
+
+def _list_subs_for_task(task_id):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        return list(kb.list_notify_subs(conn, task_id))
+    finally:
+        conn.close()
+
+
+def _sub_index(subs):
+    """Normalise a list of notify-subs (dicts or objects) into dicts
+    keyed by platform+chat_id, so assertions work regardless of the
+    return shape."""
+    out = []
+    for s in subs:
+        if isinstance(s, dict):
+            out.append(s)
+        else:
+            out.append({
+                "platform": getattr(s, "platform", None),
+                "chat_id": getattr(s, "chat_id", None),
+                "thread_id": getattr(s, "thread_id", None),
+                "user_id": getattr(s, "user_id", None),
+            })
+    return out
+
+
+def test_create_subscribes_gateway_session(monkeypatch, worker_env):
+    """A gateway session (platform + chat_id set) gets auto-subscribed
+    to its own kanban_create result, and the response surfaces the
+    ``subscribed`` flag so the orchestrator can react."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+
+    out = kt._handle_create({
+        "title": "auto-sub gateway",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    new_tid = d["task_id"]
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(new_tid))
+    assert len(subs) == 1
+    s = subs[0]
+    assert s["platform"] == "telegram"
+    assert s["chat_id"] == "chat-42"
+    assert s["thread_id"] == "thread-7"
+    assert s["user_id"] == "user-9"
+
+
+def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
+    """TUI / desktop sessions don't have a platform/chat_id (single
+    local channel), but the parent process exports HERMES_SESSION_KEY.
+    We should still auto-subscribe, with platform='tui' and
+    chat_id=<key>."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_KEY", "tui-session-abc")
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    out = kt._handle_create({
+        "title": "auto-sub tui",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    new_tid = d["task_id"]
+    assert d["subscribed"] is True, d
+
+    subs = _sub_index(_list_subs_for_task(new_tid))
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "tui"
+    assert subs[0]["chat_id"] == "tui-session-abc"
+
+
+def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
+    """CLI / cron / test sessions have no persistent delivery channel.
+    _maybe_auto_subscribe returns False and no row is written."""
+    from tools import kanban_tools as kt
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    out = kt._handle_create({
+        "title": "no sub cli",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is False, d
+
+    assert _list_subs_for_task(d["task_id"]) == []
+
+
+def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env, tmp_path):
+    """The config gate kanban.auto_subscribe_on_create=false must
+    suppress auto-subscription even when the session has a delivery
+    channel. This is the knob that addresses the upstream design
+    concern from PR #19718 (reverted in #19721) — users who want
+    explicit kanban_notify-subscribe calls per task get that."""
+    # worker_env already created <tmp>/.hermes; use a fresh sibling
+    # home to avoid mkdir() colliding with the worker's directory.
+    home = tmp_path / "gate-home" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: false\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "channel-1")
+
+    from tools import kanban_tools as kt
+    out = kt._handle_create({
+        "title": "no sub gated",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is False, d
+
+    assert _list_subs_for_task(d["task_id"]) == []
+
+
+def test_create_partial_session_context_no_subscribe(monkeypatch, worker_env):
+    """Only one of (platform, chat_id) set -> no implicit subscribe.
+    Either both are set (gateway) or neither (TUI / CLI); partial is
+    ambiguous and the safe default is to skip."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+
+    out = kt._handle_create({
+        "title": "no sub partial",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["subscribed"] is False, d
+
+
+def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
+    """If add_notify_sub itself raises (e.g. DB locked, schema drift),
+    _maybe_auto_subscribe must NOT bubble that up and fail the parent
+    kanban_create. The function returns False and the parent create
+    still succeeds with subscribed=False."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
+
+    from hermes_cli import kanban_db as kb
+
+    def _boom(*a, **kw):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(kb, "add_notify_sub", _boom)
+
+    out = kt._handle_create({
+        "title": "auto-sub tolerates add_notify_sub failure",
+        "assignee": "peer",
+    })
+    d = json.loads(out)
+    assert d["ok"] is True, d
+    assert d["subscribed"] is False, d

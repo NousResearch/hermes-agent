@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { attachmentDisplayText, coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -35,6 +35,12 @@ describe('optimisticAttachmentRef', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'file', refText: '@file:src/a.ts', previewUrl: DATA_URL }))).toBe(
       '@file:src/a.ts'
     )
+  })
+
+  it('drops malformed stale attachment entries without throwing', () => {
+    expect(optimisticAttachmentRef(undefined)).toBeNull()
+    expect(optimisticAttachmentRef({ kind: 'file', refText: '@file:missing-id' } as never)).toBeNull()
+    expect(attachmentDisplayText(undefined)).toBeNull()
   })
 })
 

@@ -4,7 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
-import type { ComposerAttachment } from '@/store/composer'
+import { type ComposerAttachment, isComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
@@ -154,7 +154,11 @@ export function pathLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
 
-export function attachmentDisplayText(attachment: ComposerAttachment): string | null {
+export function attachmentDisplayText(attachment: ComposerAttachment | null | undefined): string | null {
+  if (!isComposerAttachment(attachment)) {
+    return null
+  }
+
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
   }
@@ -187,7 +191,11 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
  */
-export function optimisticAttachmentRef(attachment: ComposerAttachment): string | null {
+export function optimisticAttachmentRef(attachment: ComposerAttachment | null | undefined): string | null {
+  if (!isComposerAttachment(attachment)) {
+    return null
+  }
+
   if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:')) {
     return attachment.previewUrl
   }

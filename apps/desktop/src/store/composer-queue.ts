@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { ComposerAttachment } from './composer'
+import { type ComposerAttachment, isComposerAttachment } from './composer'
 
 export interface QueuedPromptEntry {
   id: string
@@ -70,7 +70,7 @@ const queueFor = (sid: string) => $queuedPromptsBySession.get()[sid] ?? []
 
 const nextId = () => `queued-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
+const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.filter(isComposerAttachment).map(a => ({ ...a }))
 
 export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEntry[] => {
   const sid = sidOf(key)

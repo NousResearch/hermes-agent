@@ -31,6 +31,7 @@ import {
   $composerAttachments,
   clearComposerAttachments,
   type ComposerAttachment,
+  isComposerAttachment,
   setComposerAttachmentUploadState,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
@@ -549,7 +550,7 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(isComposerAttachment)
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -1297,7 +1298,7 @@ export function usePromptActions({
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(isComposerAttachment)
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')

@@ -17,6 +17,20 @@ export interface ComposerAttachment {
   uploadState?: 'uploading' | 'error'
 }
 
+export function isComposerAttachment(value: unknown): value is ComposerAttachment {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const row = value as Partial<ComposerAttachment>
+
+  return (
+    typeof row.id === 'string' &&
+    typeof row.label === 'string' &&
+    (row.kind === 'image' || row.kind === 'file' || row.kind === 'folder' || row.kind === 'terminal' || row.kind === 'url')
+  )
+}
+
 export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})

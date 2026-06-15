@@ -34,8 +34,6 @@ from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import markdown as _md
-
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -91,28 +89,36 @@ _HERMES_EMAIL_ELEMENT_STYLES = [
     ("table", 'style="border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;"'),
     ("th", 'style="background:#667eea;color:#fff;padding:8px 12px;text-align:left;font-weight:600;"'),
     ("td", 'style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"'),
-    ("tr:nth-child(even)", 'style="background:#f7fafc;"'),
+    ("tr", 'style="border-bottom:1px solid #e2e8f0;"'),
     ("code", 'style="background:#edf2f7;padding:2px 5px;border-radius:3px;font-size:13px;font-family:Menlo,Monaco,Consolas,monospace;"'),
     ("pre", 'style="background:#2d3748;color:#e2e8f0;padding:16px;border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.5;"'),
-    ("pre code", 'style="background:transparent;padding:0;color:inherit;"'),
     ("a", 'style="color:#667eea;text-decoration:none;"'),
     ("strong", 'style="color:#1a202c;"'),
     ("em", 'style="color:#4a5568;"'),
     ("hr", 'style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;"'),
 ]
 
+
 def _style_html_email(html: str) -> str:
     """Inject inline CSS styles into HTML elements for email client compat."""
     import re
     for tag, style in _HERMES_EMAIL_ELEMENT_STYLES:
-        # Handle tags with and without existing attributes
+        # Skip tags that already have a style attribute to avoid duplication
+        # Use negative lookahead: only match <tag that is NOT followed by ...style=
         html = re.sub(
-            rf'<{tag}(\s|>)',
+            rf'<{tag}(?!\s+style=)(\s|>)',
             rf'<{tag} {style}\1',
             html,
         )
+    # Special handling: <code> inside <pre> should be transparent
+    # Match <pre ...>...<code> and apply override style
+    html = re.sub(
+        r'(<pre[^>]*>.*?)<code(?!\s+style=)(\s|>)',
+        r'\1<code style="background:transparent;padding:0;color:inherit;"\2',
+        html,
+        flags=re.DOTALL,
+    )
     return html
-# Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
     "mailer-daemon", "postmaster", "bounce", "notifications@",
@@ -416,10 +422,13 @@ class EmailAdapter(BasePlatformAdapter):
         hang. Falls back to default resolution if no A records exist.
         Thread-safe — no global state is mutated.
         """
-        # Try IPv4 first
-        addrs = socket.getaddrinfo(
-            self._smtp_host, self._smtp_port, socket.AF_INET, socket.SOCK_STREAM,
-        )
+        # Try IPv4 first — gaierror means no A records (IPv6-only host)
+        try:
+            addrs = socket.getaddrinfo(
+                self._smtp_host, self._smtp_port, socket.AF_INET, socket.SOCK_STREAM,
+            )
+        except socket.gaierror:
+            addrs = []
         if not addrs:
             # No A records — fall back to default (may include IPv6)
             addrs = socket.getaddrinfo(
@@ -705,6 +714,7 @@ class EmailAdapter(BasePlatformAdapter):
         # HTML version with inline CSS (if enabled)
         if self._html_format:
             try:
+                import markdown as _md
                 html_body = _md.markdown(
                     body,
                     extensions=["tables", "fenced_code", "nl2br"],

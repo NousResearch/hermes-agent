@@ -1001,6 +1001,7 @@ Subcommands:
 | `check` | Check installed hub skills for upstream updates. |
 | `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |
+| `validate` | Run read-only integrity checks for selected skill sources. Use `--bundled` for bundled skills shipped with Hermes. |
 | `uninstall` | Remove a hub-installed skill. |
 | `reset` | Un-stick a bundled skill flagged as `user_modified` by clearing its manifest entry. With `--restore`, also replaces the user copy with the bundled version. |
 | `opt-out` | Stop bundled skills from being seeded into the active profile. Writes a `.no-bundled-skills` marker so the installer, `hermes update`, and any sync skip bundled-skill seeding. Safe by default — nothing on disk is touched. With `--remove`, also deletes already-present bundled skills that are **unmodified** (user-edited, hub-installed, and hand-written skills are never removed; previews and confirms first, `--yes` to skip). |
@@ -1025,6 +1026,9 @@ hermes skills install https://sharethis.chat/SKILL.md                     # Dire
 hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
 hermes skills check
 hermes skills update
+hermes skills validate --bundled
+hermes skills validate --bundled --json
+hermes skills validate --bundled --check related-skills
 hermes skills config
 hermes skills reset google-workspace
 hermes skills reset google-workspace --restore --yes

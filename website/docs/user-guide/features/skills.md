@@ -461,6 +461,7 @@ hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
+hermes skills validate --bundled                  # Report bundled skill integrity drift
 hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
 hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
@@ -833,6 +834,24 @@ The same command works in chat as a slash command:
 Each profile has its own `.bundled_manifest` under its own `HERMES_HOME`, so `hermes -p coder skills reset <name>` only affects that profile.
 :::
 
+## Bundled skill validation (`hermes skills validate --bundled`)
+
+Bundled skills are copied from the Hermes repo into `~/.hermes/skills/`, but they are not curated or patched by the Skill Curator. To inspect them without mutating anything, run:
+
+```bash
+hermes skills validate --bundled
+hermes skills validate --bundled --json
+hermes skills validate --bundled --check related-skills
+```
+
+The validator is intentionally local and read-only. It reports deterministic integrity issues such as missing bundled `scripts/`, `references/`, or `templates/` files, `related_skills` entries that do not resolve to bundled skill names, `skill_view(...)` / `skill_manage(...)` references that point at unknown bundled skills, and Hermes tool names accidentally shown as shell commands inside `bash` fences.
+
+Checks are named units (`local-file-references`, `related-skills`, `skill-tool-references`, `bash-fence-tools`) so future source-aware checks can be added without changing the command shape. For open-source-backed skills that evolve upstream, add a new check and expose it through `--check` instead of baking network freshness into the default local report.
+
+:::note
+This is an integrity report, not the Skill Curator. It does not rewrite bundled skills and it does not perform network freshness checks against third-party APIs or documentation.
+:::
+
 ### Slash commands (inside chat)
 
 All the same commands work with `/skills`:
@@ -841,6 +860,7 @@ All the same commands work with `/skills`:
 /skills browse
 /skills search react --source skills-sh
 /skills search https://mintlify.com/docs --source well-known
+/skills validate --bundled
 /skills inspect skills-sh/vercel-labs/json-render/json-render-react
 /skills install openai/skills/skill-creator --force
 /skills check

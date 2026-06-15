@@ -1069,6 +1069,78 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         c.print()
 
 
+def do_validate(
+    *,
+    bundled: bool = False,
+    bundled_dir: Optional[Path] = None,
+    json_output: bool = False,
+    checks: Optional[List[str]] = None,
+    console: Optional[Console] = None,
+) -> int:
+    """Run read-only integrity checks against selected skill sources."""
+    c = console or _console
+
+    if not bundled:
+        c.print("[bold red]Error:[/] choose a validation scope, e.g. --bundled\n")
+        return 0
+
+    from tools.bundled_skill_validator import validate_bundled_skills
+    from tools.skills_sync import _get_bundled_dir
+
+    root = Path(bundled_dir) if bundled_dir is not None else _get_bundled_dir()
+    try:
+        issues = validate_bundled_skills(root, checks=checks)
+    except ValueError as exc:
+        c.print(f"[bold red]Error:[/] {exc}\n")
+        return 0
+
+    if json_output:
+        payload = [
+            {
+                "severity": issue.severity,
+                "code": issue.code,
+                "skill": issue.skill,
+                "path": str(_display_issue_path(issue.path, root)),
+                "line": issue.line,
+                "target": issue.target,
+                "message": issue.message,
+            }
+            for issue in issues
+        ]
+        c.print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return len(issues)
+
+    if not issues:
+        c.print("[bold green]Bundled skill validation passed.[/]\n")
+        return 0
+
+    c.print(f"[bold yellow]Bundled skill validation found {len(issues)} issue(s).[/]\n")
+    table = Table()
+    table.add_column("Severity", style="bold")
+    table.add_column("Skill", style="cyan")
+    table.add_column("Issue")
+    table.add_column("Target", style="magenta")
+    table.add_column("Location", style="dim")
+    for issue in issues:
+        table.add_row(
+            issue.severity,
+            issue.skill,
+            issue.code,
+            issue.target,
+            f"{_display_issue_path(issue.path, root)}:{issue.line}",
+        )
+    c.print(table)
+    c.print()
+    return len(issues)
+
+
+def _display_issue_path(path: Path, root: Path) -> Path:
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return path
+
+
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
@@ -1619,6 +1691,12 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "validate":
+        do_validate(
+            bundled=getattr(args, "bundled", False),
+            json_output=getattr(args, "json", False),
+            checks=getattr(args, "check", None),
+        )
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1654,7 +1732,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|validate|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1803,6 +1881,22 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         deep = "--deep" in args
         do_audit(name=name, console=c, deep=deep)
 
+    elif action == "validate":
+        checks: List[str] = []
+        i = 0
+        while i < len(args):
+            if args[i] == "--check" and i + 1 < len(args):
+                checks.append(args[i + 1])
+                i += 2
+            else:
+                i += 1
+        do_validate(
+            bundled="--bundled" in args,
+            json_output="--json" in args,
+            checks=checks or None,
+            console=c,
+        )
+
     elif action == "uninstall":
         if not args:
             c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
@@ -1882,6 +1976,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]validate[/] --bundled          Validate bundled skill integrity\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"

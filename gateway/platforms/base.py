@@ -2041,9 +2041,9 @@ class BasePlatformAdapter(ABC):
 
         Default strips markdown formatting and truncates to 4000 chars.
         """
-        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', text)
-        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-        text = re.sub(r'\*(.+?)\*', r'\1', text)
+        text = re.sub(r'\*\*\*(\S.+?\S)\*\*\*', r'\1', text)
+        text = re.sub(r'\*\*(\S.+?\S)\*\*', r'\1', text)
+        text = re.sub(r'\*(\S.+?\S)\*', r'\1', text)
         text = re.sub(r'[_`#\[\]()]', '', text)
         return text[:4000].strip()
 

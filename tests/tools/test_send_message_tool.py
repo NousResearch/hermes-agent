@@ -913,6 +913,145 @@ class TestSendToPlatformChunking:
         ]
 
 
+class TestMatrixMediaLiveAdapterReuse:
+    """Verify _send_matrix_via_adapter reuses the live gateway adapter
+    when available, avoiding per-message E2EE re-init storms (#46310)."""
+
+    def test_live_adapter_skips_connect_disconnect(self, tmp_path):
+        """When a live gateway adapter exists, no connect() or disconnect()
+        should be called — the persistent E2EE session is reused."""
+        img_path = tmp_path / "photo.png"
+        img_path.write_bytes(b"\x89PNG\r\n")
+
+        calls = []
+
+        class LiveAdapter:
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$text")
+
+            async def send_image_file(self, chat_id, path, metadata=None):
+                calls.append(("send_image_file", chat_id, path))
+                return SimpleNamespace(success=True, message_id="$img")
+
+        live_adapter = LiveAdapter()
+        fake_runner = SimpleNamespace(
+            adapters={Platform.MATRIX: live_adapter}
+        )
+
+        with patch(
+            "gateway.run._gateway_runner_ref",
+            return_value=fake_runner,
+        ), patch.dict(
+            sys.modules, {"gateway.platforms.matrix": SimpleNamespace()}
+        ):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "here is an image",
+                    media_files=[(str(img_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "$img"
+        # Only send + send_image_file; no connect / disconnect
+        assert calls == [
+            ("send", "!room:example.com", "here is an image"),
+            ("send_image_file", "!room:example.com", str(img_path)),
+        ]
+
+    def test_live_adapter_not_available_falls_back_to_ephemeral(self, tmp_path):
+        """When _gateway_runner_ref returns None, the ephemeral adapter
+        path (connect + disconnect) is used as before."""
+        doc_path = tmp_path / "doc.pdf"
+        doc_path.write_bytes(b"%PDF-1.4")
+
+        calls = []
+
+        class EphemeralAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message))
+                return SimpleNamespace(success=True, message_id="$txt")
+
+            async def send_document(self, chat_id, path, metadata=None):
+                calls.append(("send_document", chat_id, path))
+                return SimpleNamespace(success=True, message_id="$doc")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=EphemeralAdapter)
+
+        with patch(
+            "gateway.run._gateway_runner_ref", return_value=None
+        ), patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "report attached",
+                    media_files=[(str(doc_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "report attached"),
+            ("send_document", "!room:example.com", str(doc_path)),
+            ("disconnect",),
+        ]
+
+    def test_live_adapter_no_matrix_adapter_falls_back(self):
+        """When the runner exists but has no Matrix adapter registered,
+        fall back to ephemeral."""
+        calls = []
+
+        class EphemeralAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send",))
+                return SimpleNamespace(success=True, message_id="$txt")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        # Runner exists but adapters dict has no MATRIX key
+        fake_runner = SimpleNamespace(adapters={})
+        fake_module = SimpleNamespace(MatrixAdapter=EphemeralAdapter)
+
+        with patch(
+            "gateway.run._gateway_runner_ref",
+            return_value=fake_runner,
+        ), patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "!room:example.com",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        assert ("connect",) in calls
+        assert ("disconnect",) in calls
+
+
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send
 # ---------------------------------------------------------------------------

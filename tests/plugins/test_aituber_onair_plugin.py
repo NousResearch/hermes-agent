@@ -498,7 +498,7 @@ def test_run_command_uses_sanitized_default_env(monkeypatch, tmp_path):
 
 
 def test_obs_registry_candidates_skips_non_windows(monkeypatch):
-    monkeypatch.setattr(core.os, "name", "posix", raising=False)
+    monkeypatch.setattr(core, "_is_windows", lambda: False)
 
     assert (
         core._obs_candidates_from_uninstall_registry(
@@ -509,7 +509,7 @@ def test_obs_registry_candidates_skips_non_windows(monkeypatch):
 
 
 def test_obs_registry_candidates_reads_install_location(monkeypatch):
-    monkeypatch.setattr(core.os, "name", "nt", raising=False)
+    monkeypatch.setattr(core, "_is_windows", lambda: True)
 
     class FakeKey:
         def __init__(self, name: str) -> None:

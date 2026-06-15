@@ -1470,7 +1470,7 @@ def _obs_exe_candidates() -> list[Path]:
 
 
 def _obs_candidates_from_uninstall_registry(root: str) -> list[Path]:
-    if os.name != "nt":
+    if not _is_windows():
         return []
     try:
         import winreg

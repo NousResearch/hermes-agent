@@ -830,3 +830,123 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+# ------------------------------------------------------------------
+# Tapback reactions
+# ------------------------------------------------------------------
+
+class TestBlueBubblesReactions:
+    """Tests for add_reaction and remove_reaction methods."""
+
+    def test_add_reaction_requires_message_id(self, monkeypatch):
+        """add_reaction returns error when message_id is missing."""
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.add_reaction("chat-id", "👍")
+        )
+        assert result["success"] is False
+        assert "message_id" in result["error"]
+
+    def test_add_reaction_returns_error_without_client(self, monkeypatch):
+        """add_reaction fails gracefully when not connected."""
+        adapter = _make_adapter(monkeypatch)
+        # client is None by default
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.add_reaction("chat-id", "👍", "msg-123")
+        )
+        assert result["success"] is False
+        assert "Not connected" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_sends_native_tapback(self, monkeypatch):
+        """Native tapbacks (❤️👍👎😂‼️❓) use /api/v1/message/tapback endpoint."""
+        adapter = _make_adapter(monkeypatch)
+        posted = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            posted.append(payload)
+            return {"status": 200}
+
+        # Set client to non-None to pass the check
+        adapter.client = type("MockClient", (), {"post": lambda *a, **k: None})()
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.add_reaction("user@example.com", "👍", "msg-123")
+
+        assert result["success"] is True
+        assert posted[0]["associatedMessageType"] == 2001  # like
+        assert posted[0]["messageGuid"] == "msg-123"
+
+    @pytest.mark.asyncio
+    async def test_add_reaction_sends_custom_emoji(self, monkeypatch):
+        """Non-native emoji use /api/v1/message/react endpoint."""
+        adapter = _make_adapter(monkeypatch)
+        posted = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            posted.append(payload)
+            return {"status": 200}
+
+        adapter.client = type("MockClient", (), {"post": lambda *a, **k: None})()
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.add_reaction("user@example.com", "🎉", "msg-456")
+
+        assert result["success"] is True
+        assert "emoji" in posted[0]
+        assert posted[0]["emoji"] == "🎉"
+
+    def test_remove_reaction_requires_message_id(self, monkeypatch):
+        """remove_reaction returns error when message_id is missing."""
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.remove_reaction("chat-id")
+        )
+        assert result["success"] is False
+        assert "message_id" in result["error"]
+
+    def test_remove_reaction_returns_error_without_client(self, monkeypatch):
+        """remove_reaction fails gracefully when not connected."""
+        adapter = _make_adapter(monkeypatch)
+        # client is None by default
+        import asyncio
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.remove_reaction("chat-id", "msg-123")
+        )
+        assert result["success"] is False
+        assert "Not connected" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_remove_reaction_returns_success(self, monkeypatch):
+        """remove_reaction attempts removal with tapback codes 3000-3005."""
+        adapter = _make_adapter(monkeypatch)
+        posted = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            posted.append(payload)
+            return {"status": 200}
+
+        adapter.client = type("MockClient", (), {"post": lambda *a, **k: None})()
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.remove_reaction("user@example.com", "msg-789")
+
+        assert result["success"] is True
+        # Should have attempted removal with codes 3000-3005
+        assert len(posted) == 6

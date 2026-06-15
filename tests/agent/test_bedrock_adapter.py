@@ -1663,3 +1663,52 @@ class TestCallConverseStreamIamFallback:
         assert result.choices[0].message.content == "hi"
         # Not a stale connection — client stays cached.
         assert _bedrock_runtime_client_cache.get("us-east-1") is client
+
+
+# ---------------------------------------------------------------------------
+# boto3 version check
+# ---------------------------------------------------------------------------
+
+
+class TestRequireBoto3VersionCheck:
+    """Test that _require_boto3() rejects boto3 versions older than 1.34.59."""
+
+    def test_raises_runtime_error_when_boto3_too_old(self):
+        """boto3 < 1.34.59 should raise RuntimeError with upgrade instructions."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.34.46"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            with pytest.raises(RuntimeError, match="does not support converse_stream"):
+                _require_boto3()
+
+    def test_accepts_boto3_at_minimum_version(self):
+        """boto3 == 1.34.59 should be accepted."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.34.59"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            result = _require_boto3()
+            assert result is fake_boto3
+
+    def test_accepts_newer_boto3(self):
+        """boto3 > 1.34.59 should be accepted."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "1.42.89"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            result = _require_boto3()
+            assert result is fake_boto3
+
+    def test_accepts_boto3_with_unparseable_version(self):
+        """If version string can't be parsed, don't block on version check."""
+        from agent.bedrock_adapter import _require_boto3
+
+        fake_boto3 = MagicMock()
+        fake_boto3.__version__ = "dev"
+        with patch.dict("sys.modules", {"boto3": fake_boto3}):
+            result = _require_boto3()
+            assert result is fake_boto3

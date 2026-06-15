@@ -93,7 +93,13 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 3  # origin probe + git fetch + git rev-list
+    # Expired cache forces a recheck: the upstream path fetches origin and
+    # counts HEAD..origin/main. (A leading fork-tracking remote probe also
+    # runs; assert the upstream-path calls are present rather than an exact
+    # count so the test survives the fork-detection probe.)
+    issued = [c.args[0] for c in mock_run.call_args_list if c.args]
+    assert ["git", "fetch", "origin", "--quiet"] in issued
+    assert ["git", "rev-list", "--count", "HEAD..origin/main"] in issued
 
 
 def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
@@ -124,7 +130,9 @@ def test_check_for_updates_official_ssh_origin_uses_https_probe(tmp_path):
     with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
         result = banner._check_via_local_git(repo_dir)
 
-    assert result == banner.UPDATE_AVAILABLE_NO_COUNT
+    behind, baseline = result
+    assert behind == banner.UPDATE_AVAILABLE_NO_COUNT
+    assert baseline == banner.BASELINE_UPSTREAM
     assert ["git", "fetch", "origin", "--quiet"] not in calls
 
 
@@ -278,3 +286,164 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()
+
+
+# ---------------------------------------------------------------------------
+# Fork-tracking baseline (inverted topology: origin = upstream, myfork = fork)
+# ---------------------------------------------------------------------------
+
+
+def _fork_cfg():
+    from hermes_cli.fork_tracking import ForkTrackingConfig
+    return ForkTrackingConfig(upstream_remote="origin", fork_remote="myfork")
+
+
+def test_check_via_local_git_fork_tracking_counts_against_fork(tmp_path):
+    """On a fork-tracking checkout the count is HEAD..myfork/main, fetching myfork.
+
+    Regression: the banner perpetually nagged on a synced fork checkout because
+    it measured behind-ness against origin/main (NousResearch upstream) instead
+    of the fork the machine actually tracks and deploys from.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "fetch", "myfork", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..myfork/main"]:
+            return MagicMock(returncode=0, stdout="0\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.fork_tracking.detect_fork_tracking", return_value=_fork_cfg()), \
+         patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        behind, baseline = banner._check_via_local_git(repo_dir)
+
+    assert behind == 0
+    assert baseline == banner.BASELINE_FORK
+    # Fetched the fork, NOT origin, and counted against the fork ref.
+    assert ["git", "fetch", "myfork", "--quiet"] in calls
+    assert ["git", "fetch", "origin", "--quiet"] not in calls
+    assert ["git", "rev-list", "--count", "HEAD..origin/main"] not in calls
+
+
+def test_check_via_local_git_fork_tracking_reports_drift(tmp_path):
+    """When the local tree drifts behind myfork/main, report the fork-relative count."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "myfork", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..myfork/main"]:
+            return MagicMock(returncode=0, stdout="4\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.fork_tracking.detect_fork_tracking", return_value=_fork_cfg()), \
+         patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        behind, baseline = banner._check_via_local_git(repo_dir)
+
+    assert behind == 4
+    assert baseline == banner.BASELINE_FORK
+
+
+def test_check_via_local_git_non_fork_unchanged(tmp_path):
+    """Non-fork install (no myfork remote) keeps the exact upstream behavior.
+
+    Invariant guarding the common case: when fork-tracking does not apply the
+    count is still HEAD..origin/main, fetching origin, baseline == upstream.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd == ["git", "remote", "get-url", "origin"]:
+            # Canonical convention: origin is the user's own (non-official) fork.
+            return MagicMock(returncode=0, stdout="https://github.com/me/hermes-agent.git\n")
+        if cmd == ["git", "fetch", "origin", "--quiet"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd == ["git", "rev-list", "--count", "HEAD..origin/main"]:
+            return MagicMock(returncode=0, stdout="7\n")
+        raise AssertionError(f"unexpected git command: {cmd!r}")
+
+    with patch("hermes_cli.fork_tracking.detect_fork_tracking", return_value=None), \
+         patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        behind, baseline = banner._check_via_local_git(repo_dir)
+
+    assert behind == 7
+    assert baseline == banner.BASELINE_UPSTREAM
+    assert ["git", "fetch", "origin", "--quiet"] in calls
+    assert not any(c[:2] == ["git", "fetch"] and "myfork" in c for c in calls)
+
+
+def test_fork_cache_carries_baseline_back(tmp_path, monkeypatch):
+    """A fork-baseline cache surfaces its behind count AND sets the fork baseline.
+
+    The cache stores the baseline alongside behind; reading it back must set the
+    module baseline so the render picks the fork-appropriate remedy copy.
+    """
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({
+        "ts": time.time(), "behind": 9, "rev": None,
+        "ver": banner.VERSION, "baseline": banner.BASELINE_FORK,
+    }))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+
+    with patch("hermes_cli.config.detect_install_method", return_value="source"), \
+         patch("hermes_cli.banner.subprocess.run") as mock_run:
+        result = banner.check_for_updates()
+
+    assert result == 9
+    assert banner.get_update_baseline() == banner.BASELINE_FORK
+    # Fresh cache hit -> no git probes.
+    mock_run.assert_not_called()
+
+
+def test_check_for_updates_persists_fork_baseline(tmp_path, monkeypatch):
+    """check_for_updates writes the measured baseline into the cache."""
+    import hermes_cli.banner as banner
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_REVISION", raising=False)
+    # Force the repo_dir resolution to land on HERMES_HOME/hermes-agent by
+    # pointing banner.__file__ at a location with no .git of its own.
+    fake_banner = tmp_path / "elsewhere" / "hermes_cli" / "banner.py"
+    fake_banner.parent.mkdir(parents=True, exist_ok=True)
+    fake_banner.touch()
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+
+    with patch("hermes_cli.config.detect_install_method", return_value="source"), \
+         patch("hermes_cli.banner._check_via_local_git",
+               return_value=(0, banner.BASELINE_FORK)) as mock_check:
+        result = banner.check_for_updates()
+
+    assert result == 0
+    mock_check.assert_called_once()
+    written = json.loads(cache_file.read_text())
+    assert written["baseline"] == banner.BASELINE_FORK
+    assert banner.get_update_baseline() == banner.BASELINE_FORK

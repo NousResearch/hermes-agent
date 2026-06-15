@@ -192,12 +192,69 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind origin/main in a local checkout."""
+# Baselines the behind-count can be measured against. "upstream" is the
+# canonical case (count behind origin/main, remedy = `hermes update`).
+# "fork" is the inverted-topology operator case (count behind myfork/main,
+# remedy = the fork-sync workflow, NOT `hermes update`).
+BASELINE_UPSTREAM = "upstream"
+BASELINE_FORK = "fork"
+
+
+def _resolve_fork_tracking(repo_dir: Path):
+    """Return a ForkTrackingConfig when *repo_dir* is a fork-tracking checkout.
+
+    Read-only consumer of ``hermes_cli.fork_tracking`` — the resolver returns
+    a config only when ``origin`` is the official upstream AND a separate
+    non-official fork remote (``myfork`` by convention) is present, else None.
+    Any import/detection failure degrades to None (canonical behavior).
+    """
+    try:
+        from hermes_cli.fork_tracking import detect_fork_tracking
+        return detect_fork_tracking(["git"], repo_dir)
+    except Exception:
+        return None
+
+
+def _check_via_local_git(repo_dir: Path) -> tuple[Optional[int], str]:
+    """Count commits the local checkout is behind its tracking baseline.
+
+    Returns ``(behind, baseline)`` where *baseline* is ``BASELINE_FORK`` for an
+    inverted-topology fork-tracking checkout (count behind ``myfork/main``) or
+    ``BASELINE_UPSTREAM`` for the canonical case (count behind ``origin/main``).
+    *behind* is ``None`` when the check could not be computed.
+    """
+    # Fork-tracking checkout (origin = upstream, myfork = the deployed fork):
+    # measure drift against the fork we actually track, fetching the fork
+    # remote — never origin/main, which would perpetually nag the operator.
+    cfg = _resolve_fork_tracking(repo_dir)
+    if cfg is not None:
+        try:
+            subprocess.run(
+                ["git", "fetch", cfg.fork_remote, "--quiet"],
+                capture_output=True, timeout=10,
+                cwd=str(repo_dir),
+            )
+        except Exception:
+            pass  # Offline or timeout — use stale refs, that's fine
+
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", f"HEAD..{cfg.fork_ref}"],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(repo_dir),
+            )
+            if result.returncode == 0:
+                return int(result.stdout.strip()), BASELINE_FORK
+        except Exception:
+            pass
+        return None, BASELINE_FORK
+
+    # Canonical upstream-tracking install — behavior below stays byte-identical.
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        return _check_via_rev(head_rev) if head_rev else None
+        behind = _check_via_rev(head_rev) if head_rev else None
+        return behind, BASELINE_UPSTREAM
 
     try:
         subprocess.run(
@@ -215,10 +272,10 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             cwd=str(repo_dir),
         )
         if result.returncode == 0:
-            return int(result.stdout.strip())
+            return int(result.stdout.strip()), BASELINE_UPSTREAM
     except Exception:
         pass
-    return None
+    return None, BASELINE_UPSTREAM
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:
@@ -297,11 +354,14 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check. The version guard matters for pip installs:
-    # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
-    # changes VERSION but leaves rev unchanged (both None), and without this
-    # the stale "behind" count would survive the upgrade for up to 6h. See #34491.
+    # Read cache — invalidate if the embedded rev OR installed version OR the
+    # measured baseline has changed since the last check. The version guard
+    # matters for pip installs: `check_via_pypi()` compares against VERSION, so
+    # a `pip install --upgrade` changes VERSION but leaves rev unchanged (both
+    # None), and without this the stale "behind" count would survive the
+    # upgrade for up to 6h. See #34491. The baseline guard prevents a
+    # fork-tracking checkout from reading an upstream-baseline cache (or vice
+    # versa) — the two count against different refs and must not cross-pollute.
     now = time.time()
     try:
         if cache_file.exists():
@@ -311,10 +371,12 @@ def check_for_updates() -> Optional[int]:
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
             ):
+                _set_update_baseline(cached.get("baseline", BASELINE_UPSTREAM))
                 return cached.get("behind")
     except Exception:
         pass
 
+    baseline = BASELINE_UPSTREAM
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
@@ -327,11 +389,16 @@ def check_for_updates() -> Optional[int]:
         if not (repo_dir / ".git").exists():
             behind = check_via_pypi()
         else:
-            behind = _check_via_local_git(repo_dir)
+            behind, baseline = _check_via_local_git(repo_dir)
+
+    _set_update_baseline(baseline)
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({
+                "ts": now, "behind": behind, "rev": embedded_rev,
+                "ver": VERSION, "baseline": baseline,
+            })
         )
     except Exception:
         pass
@@ -497,6 +564,22 @@ def format_banner_version_label() -> str:
 
 _update_result: Optional[int] = None
 _update_check_done = threading.Event()
+
+# Tracks which baseline the most recent behind-count was measured against
+# (BASELINE_UPSTREAM or BASELINE_FORK). The banner reads it to choose the
+# correct remedy copy: `hermes update` for upstream installs, the fork-sync
+# workflow for fork-tracking checkouts.
+_update_baseline: str = BASELINE_UPSTREAM
+
+
+def _set_update_baseline(baseline: str) -> None:
+    global _update_baseline
+    _update_baseline = baseline or BASELINE_UPSTREAM
+
+
+def get_update_baseline() -> str:
+    """Return the baseline the last behind-count was measured against."""
+    return _update_baseline
 
 
 def prefetch_update_check():
@@ -797,12 +880,23 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         behind = get_update_result(timeout=0.5)
         if behind is not None and behind != 0:
             from hermes_cli.config import get_managed_update_command, recommended_update_command
+            fork_tracking = get_update_baseline() == BASELINE_FORK
             if behind > 0:
                 commits_word = "commit" if behind == 1 else "commits"
-                right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                    f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
-                )
+                if fork_tracking:
+                    # Fork-tracking checkout: `hermes update` is the wrong
+                    # remedy (it resets to upstream). The fork-sync workflow
+                    # integrates upstream; the operator usually just needs to
+                    # let the live checkout catch up to its own fork.
+                    right_lines.append(
+                        f"[bold yellow]⚠ {behind} {commits_word} behind your fork[/]"
+                        f"[dim yellow] — sync the live checkout to myfork/main[/]"
+                    )
+                else:
+                    right_lines.append(
+                        f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+                        f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
+                    )
             else:
                 # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
                 # exists but not by how much, and we don't know how the user

@@ -52,6 +52,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _SecretValue,
 )
 
 logger = logging.getLogger(__name__)
@@ -628,6 +629,11 @@ class WebhookAdapter(BasePlatformAdapter):
         _route_model_keys = ("model", "provider", "base_url", "api_key", "api_mode")
         _route_override = {k: route_config[k] for k in _route_model_keys if route_config.get(k)}
         if _route_override and self.gateway_runner is not None:
+            # Wrap api_key so it is redacted if the override dict is ever logged,
+            # repr'd, or serialized by a plugin/debug path, while still being
+            # unwrapped by _apply_session_model_override when the agent starts.
+            if "api_key" in _route_override:
+                _route_override["api_key"] = _SecretValue(_route_override["api_key"])
             # Derive the same session key the runner will use so the override is found.
             _resolved_key = session_chat_id
             try:
@@ -643,7 +649,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_name,
                 session_chat_id,
                 _resolved_key,
-                {k: ("***" if k == "api_key" else v) for k, v in _route_override.items()},
+                _route_override,
             )
 
         # Non-blocking — return 202 Accepted immediately

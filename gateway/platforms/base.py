@@ -24,6 +24,32 @@ from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
+
+class _SecretValue(str):
+    """A str-like value that masks itself in logs, repr, and JSON serialization.
+
+    Stores the real secret internally and exposes it only via ``get_secret()``.
+    This prevents accidental leakage when the containing dict is printed,
+    repr'd, or serialized by code that does not explicitly know how to unwrap
+    it.  Because the value serializes as ``"***"``, JSON dumps are safe by
+    default; callers that need the real key must intentionally call
+    ``get_secret()``.
+    """
+
+    __slots__ = ("_real_value",)
+
+    def __new__(cls, value: str):
+        obj = super().__new__(cls, "***")
+        obj._real_value = value
+        return obj
+
+    def __repr__(self) -> str:
+        return "***"
+
+    def get_secret(self) -> str:
+        return self._real_value
+
+
 # Audio file extensions Hermes recognizes for native audio delivery.
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.

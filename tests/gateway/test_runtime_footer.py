@@ -253,6 +253,21 @@ def test_resolve_prefix_platform_label_extends_global_labels():
     assert cfg["labels"]["gpt-5.5"] == "[tg-gpt]"
 
 
+def test_resolve_prefix_accepts_legacy_label_aliases():
+    user = {
+        "display": {
+            "runtime_prefix": {"enabled": True, "map": {"gpt-5.5": "[map-gpt]"}},
+            "platforms": {
+                "telegram": {"runtime_prefix": {"markers": {"glm-5.2": "[marker-glm]"}}}
+            },
+        }
+    }
+    cfg = resolve_prefix_config(user, "telegram")
+    assert cfg["enabled"] is True
+    assert cfg["labels"]["gpt-5.5"] == "[map-gpt]"
+    assert cfg["labels"]["glm-5.2"] == "[marker-glm]"
+
+
 def test_build_runtime_prefix_uses_exact_configured_label():
     assert (
         build_runtime_prefix(

@@ -178,14 +178,27 @@ def resolve_prefix_config(
     }
     cfg = (user_config or {}).get("display") or {}
 
+    def _merge_labels(prefix_cfg: dict[str, Any]) -> None:
+        labels_cfg = (
+            prefix_cfg.get("labels")
+            or prefix_cfg.get("map")
+            or prefix_cfg.get("markers")
+        )
+        if not isinstance(labels_cfg, dict):
+            return
+        labels = dict(resolved["labels"])
+        for key, value in labels_cfg.items():
+            label_key = str(key).strip()
+            label_value = str(value).strip()
+            if label_key and label_value:
+                labels[label_key] = label_value
+        resolved["labels"] = labels
+
     global_cfg = cfg.get("runtime_prefix")
     if isinstance(global_cfg, dict):
         if "enabled" in global_cfg:
             resolved["enabled"] = bool(global_cfg.get("enabled"))
-        if isinstance(global_cfg.get("labels"), dict):
-            labels = dict(resolved["labels"])
-            labels.update({str(k): str(v) for k, v in global_cfg["labels"].items()})
-            resolved["labels"] = labels
+        _merge_labels(global_cfg)
 
     if platform_key:
         platforms = cfg.get("platforms") or {}
@@ -195,12 +208,7 @@ def resolve_prefix_config(
             if isinstance(plat_prefix, dict):
                 if "enabled" in plat_prefix:
                     resolved["enabled"] = bool(plat_prefix.get("enabled"))
-                if isinstance(plat_prefix.get("labels"), dict):
-                    labels = dict(resolved["labels"])
-                    labels.update(
-                        {str(k): str(v) for k, v in plat_prefix["labels"].items()}
-                    )
-                    resolved["labels"] = labels
+                _merge_labels(plat_prefix)
 
     return resolved
 

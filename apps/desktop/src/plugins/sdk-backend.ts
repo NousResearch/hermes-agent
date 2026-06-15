@@ -83,6 +83,14 @@ export async function fetchJSON<T = unknown>(
  * does not parse, does not throw on non-2xx. Cross-origin to the renderer
  * (file:// or 5174) → backend (127.0.0.1:<port>); auth via the session-token
  * header (token mode). OAuth-cookie mode rides along via `credentials`.
+ *
+ * v1 SCOPE (loopback/token-first): in OAuth-remote mode the authenticated
+ * HttpOnly cookies live in the dedicated `persist:hermes-remote-oauth` Electron
+ * session, which this renderer-side `fetch` (default partition) cannot attach —
+ * so plugin raw endpoints (e.g. kanban attachment upload/download) would 401
+ * under an OAuth-remote gateway. v1 targets the loopback/token backend where
+ * the header auth above is sufficient; an OAuth-partitioned main-process raw
+ * fetch IPC is a documented follow-up. (review: codex P2)
  */
 export async function authedFetch(
   url: string,
@@ -124,15 +132,27 @@ export async function buildWsUrl(
   const qs = new URLSearchParams(params ?? {});
   qs.set(authName, authValue);
 
-  return `${wsProto}//${httpBase.host}${path}?${qs}`;
+  // Preserve any path prefix on the backend origin (e.g. a remote gateway
+  // mounted at https://host/hermes) so the socket lands at /hermes/api/...,
+  // mirroring how REST calls build `${baseUrl}${path}`. Without this, plugin
+  // sockets behind a reverse proxy / prefixed deployment connect to the wrong
+  // path. (review: codex P2)
+  const prefix = httpBase.pathname.replace(/\/+$/, "");
+
+  return `${wsProto}//${httpBase.host}${prefix}${path}?${qs}`;
 }
 
 /** Resolve the `[authParamName, authParamValue]` pair for a WS connect. */
 export async function buildWsAuthParam(): Promise<[string, string]> {
   const conn = await getConnection();
 
-  // Gated (oauth) mode would need a single-use ticket; the desktop's loopback
-  // backend uses token mode, which the gateway accepts via ?token=.
+  // v1 SCOPE (loopback/token-first): an OAuth-gated remote backend needs a
+  // single-use ws-ticket (POST /api/auth/ws-ticket via the OAuth session)
+  // rather than ?token=. The desktop's loopback backend uses token mode, so v1
+  // targets that; plugin WebSockets under an OAuth-remote gateway are a
+  // documented follow-up (route through the main-process OAuth session, as the
+  // web SDK does). Returning the (possibly empty) token keeps loopback working.
+  // (review: codex P2)
   return ["token", conn.token ?? ""];
 }
 

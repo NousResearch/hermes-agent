@@ -55,7 +55,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIsNotNone(home)
         self.assertEqual(home.chat_id, "user@test.com")
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"LOCALAPPDATA": os.getcwd()}, clear=True)
     def test_email_not_loaded_without_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()

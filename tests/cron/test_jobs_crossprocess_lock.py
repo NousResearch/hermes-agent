@@ -22,16 +22,24 @@ import time
 import pytest
 
 from cron import jobs
-from hermes_constants import get_hermes_home
+
 
 # Repo root (parent of the ``cron`` package) so the child process can import it.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(jobs.__file__)))
 
 
 @pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
-def test_jobs_lock_excludes_another_process(tmp_path):
+def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
+    cron_dir = tmp_path / "cron"
+    output_dir = cron_dir / "output"
+    monkeypatch.setattr(jobs, "CRON_DIR", cron_dir)
+    monkeypatch.setattr(jobs, "JOBS_FILE", cron_dir / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", output_dir)
+
     ready = tmp_path / "child_holds_lock"
     release = tmp_path / "child_may_release"
+    blocker_started = tmp_path / "blocker_started"
+    blocker_acquired = tmp_path / "blocker_acquired"
     holder = tmp_path / "holder.py"
     holder.write_text(
         textwrap.dedent(
@@ -39,6 +47,10 @@ def test_jobs_lock_excludes_another_process(tmp_path):
             import sys, time, pathlib
             sys.path.insert(0, {_REPO_ROOT!r})
             from cron import jobs
+
+            jobs.CRON_DIR = pathlib.Path({str(cron_dir)!r})
+            jobs.JOBS_FILE = jobs.CRON_DIR / "jobs.json"
+            jobs.OUTPUT_DIR = jobs.CRON_DIR / "output"
 
             with jobs._jobs_lock():
                 pathlib.Path({str(ready)!r}).write_text("1")
@@ -52,7 +64,27 @@ def test_jobs_lock_excludes_another_process(tmp_path):
         )
     )
 
+    blocker = tmp_path / "blocker.py"
+    blocker.write_text(
+        textwrap.dedent(
+            f"""
+            import sys, pathlib
+            sys.path.insert(0, {_REPO_ROOT!r})
+            from cron import jobs
+
+            jobs.CRON_DIR = pathlib.Path({str(cron_dir)!r})
+            jobs.JOBS_FILE = jobs.CRON_DIR / "jobs.json"
+            jobs.OUTPUT_DIR = jobs.CRON_DIR / "output"
+
+            pathlib.Path({str(blocker_started)!r}).write_text("1")
+            with jobs._jobs_lock():
+                pathlib.Path({str(blocker_acquired)!r}).write_text("1")
+            """
+        )
+    )
+
     child = subprocess.Popen([sys.executable, str(holder)])
+    blocker_child = None
     try:
         # Wait until the child is inside the critical section.
         for _ in range(1000):
@@ -63,19 +95,32 @@ def test_jobs_lock_excludes_another_process(tmp_path):
 
         # While the child holds it, a non-blocking acquire of the SAME lock file
         # from this process must fail. A threading.Lock could never block here.
-        # Resolve the lock path at runtime (not jobs._JOBS_LOCK_FILE, which is
-        # bound at import time) so it matches the child even when the test suite
-        # redirects HERMES_HOME to a per-test tempdir.
-        lock_file = get_hermes_home() / "cron" / ".jobs.lock"
+        lock_file = jobs._jobs_lock_file()
         fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT)
         try:
             with pytest.raises(OSError):
                 jobs.fcntl.flock(fd, jobs.fcntl.LOCK_EX | jobs.fcntl.LOCK_NB)
         finally:
             os.close(fd)
+
+        # A second _jobs_lock() caller in another process should block until the
+        # holder releases, rather than falling through with only a process-local
+        # threading lock.
+        blocker_child = subprocess.Popen([sys.executable, str(blocker)])
+        for _ in range(1000):
+            if blocker_started.exists():
+                break
+            time.sleep(0.01)
+        assert blocker_started.exists(), "blocker process never started"
+        time.sleep(0.05)
+        assert not blocker_acquired.exists(), "second process entered _jobs_lock() while held"
     finally:
         release.write_text("1")
         child.wait(timeout=15)
+        if blocker_child is not None:
+            blocker_child.wait(timeout=15)
+
+    assert blocker_acquired.exists(), "second process did not acquire _jobs_lock() after release"
 
     # Once the child has released, the lock is freely acquirable again.
     with jobs._jobs_lock():

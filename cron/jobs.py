@@ -55,7 +55,8 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 # In-process lock protecting load_jobs→modify→save_jobs cycles.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
+_jobs_file_lock = threading.RLock()
+_jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -80,34 +81,52 @@ def _jobs_lock():
     (field updates only — no agent execution), so contention resolves in
     milliseconds. If neither fcntl nor msvcrt is available the manager still
     provides in-process locking, matching the historical behaviour.
+
+    Nested calls in the same thread reuse the held lock so legacy callers that
+    invoke save_jobs() inside a broader mutation section don't deadlock or try
+    to reacquire the advisory file lock.
     """
-    with _jobs_file_lock:
-        lock_fd = None
-        try:
-            ensure_dirs()
-            lock_fd = open(_jobs_lock_file(), "w", encoding="utf-8")
-            if fcntl is not None:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            elif msvcrt is not None:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
-        except (OSError, IOError) as e:
-            # Never let a locking failure take down cron writes — fall back to
-            # in-process-only protection (still held via _jobs_file_lock).
-            logger.warning("jobs.json cross-process lock unavailable (%s); "
-                           "proceeding with in-process lock only", e)
+    depth = getattr(_jobs_lock_state, "depth", 0)
+    if depth:
+        _jobs_lock_state.depth = depth + 1
         try:
             yield
         finally:
-            if lock_fd is not None:
-                try:
-                    if fcntl is not None:
-                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                    elif msvcrt is not None:
-                        msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
-                finally:
-                    lock_fd.close()
+            _jobs_lock_state.depth -= 1
+        return
+
+    with _jobs_file_lock:
+        _jobs_lock_state.depth = 1
+        lock_fd = None
+        try:
+            try:
+                ensure_dirs()
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd.seek(0)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+            except (OSError, IOError) as e:
+                # Never let a locking failure take down cron writes — fall back to
+                # in-process-only protection (still held via _jobs_file_lock).
+                logger.warning("jobs.json cross-process lock unavailable (%s); "
+                               "proceeding with in-process lock only", e)
+            try:
+                yield
+            finally:
+                if lock_fd is not None:
+                    try:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                    except (OSError, IOError):
+                        pass
+                    finally:
+                        lock_fd.close()
+        finally:
+            _jobs_lock_state.depth = 0
 
 # Fields on a cron job that must never change after creation. ``id`` is used
 # as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
@@ -532,8 +551,8 @@ def load_jobs() -> List[Dict[str, Any]]:
     )
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage. Caller must hold _jobs_lock()."""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
@@ -549,6 +568,12 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage."""
+    with _jobs_lock():
+        _save_jobs_unlocked(jobs)
 
 
 def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
@@ -1045,7 +1070,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
 
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
-    """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
+    """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]

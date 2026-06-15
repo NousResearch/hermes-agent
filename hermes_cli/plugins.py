@@ -1001,7 +1001,8 @@ class PluginContext:
         """Register a lifecycle hook callback.
 
         Unknown hook names produce a warning but are still stored so
-        forward-compatible plugins don't break.
+        forward-compatible plugins don't break. Registering the same
+        callback for the same plugin and hook is idempotent.
         """
         if hook_name not in VALID_HOOKS:
             logger.warning(
@@ -1011,6 +1012,16 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        plugin_key = self.manifest.key or self.manifest.name
+        callback_id = f"{plugin_key}:{hook_name}:{id(callback)}"
+        if callback_id in self._manager._hook_callback_ids:
+            logger.debug(
+                "Plugin %s hook %s callback already registered; skipping duplicate",
+                self.manifest.name,
+                hook_name,
+            )
+            return
+        self._manager._hook_callback_ids.add(callback_id)
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
@@ -1113,6 +1124,9 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Deduplication set for hook callbacks: (plugin_key, hook_name, callback_id).
+        # Cleared on each forced discovery so re-registration during reload is possible.
+        self._hook_callback_ids: Set[str] = set()
 
     # -----------------------------------------------------------------------
     # Public
@@ -1146,6 +1160,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._hook_callback_ids.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep

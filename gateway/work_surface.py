@@ -303,7 +303,21 @@ def read_private_metadata(view: dict[str, Any]) -> dict[str, str]:
 
 
 def format_dispatch_result(plan_id: str, response_body: dict[str, Any]) -> str:
-    """Slack-friendly success summary mirroring the plan_lifecycle tool."""
+    """Slack-friendly summary of a dispatch.
+
+    067 Phase 2: the sensor now decomposes asynchronously on the drain worker
+    and returns immediately ({accepted, message, …}) — so the phase issues
+    aren't created yet at response time. Prefer the sensor's own message when
+    the response is the async ``accepted`` shape; fall back to the legacy
+    inline summary (issues created synchronously) otherwise.
+    """
+    if response_body.get("accepted"):
+        msg = response_body.get("message") or (
+            f"Plan *{plan_id}* accepted — decomposing on the worker; "
+            "the phase issues will appear in Linear shortly."
+        )
+        return f":rocket: {msg}"
+
     created = response_body.get("created_issue_ids", []) or []
     phases = response_body.get("phase_ids", []) or []
     signaled = response_body.get("signaled", False)

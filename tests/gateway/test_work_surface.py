@@ -200,6 +200,24 @@ def test_format_dispatch_result_empty():
     assert "Drain signaled: False" in text
 
 
+def test_format_dispatch_result_async_accepted_uses_message():
+    # 067 Phase 2: the sensor returns an async accepted shape with a message.
+    text = work_surface.format_dispatch_result(
+        "plan-z",
+        {"accepted": True, "plan_id": "plan-z", "workflow_id": "decompose-plan-z",
+         "message": "Plan plan-z accepted — decomposing on the worker; issues will appear in Linear shortly."},
+    )
+    assert "decomposing on the worker" in text
+    # Must NOT show the misleading "(none returned)" sync summary.
+    assert "none returned" not in text
+
+
+def test_format_dispatch_result_async_accepted_without_message_has_fallback():
+    text = work_surface.format_dispatch_result("plan-z", {"accepted": True})
+    assert "plan-z" in text
+    assert "none returned" not in text
+
+
 def test_build_help_text_lists_presets():
     text = work_surface.build_help_text(work_surface.load_presets())
     assert "/work" in text

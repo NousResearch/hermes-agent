@@ -178,11 +178,46 @@ def test_unset_or_blank_host_uses_existing_memoryclient_path(monkeypatch, tmp_pa
     # — the whole-module swap pollutes other tests under random ordering (see helper above).
     monkeypatch.setattr(_real_mem0, "MemoryClient", FakeMemoryClient)
 
+    # Capture the bounded-client limits the fallback passes, without poking httpx internals.
+    captured_limits = {}
+    try:
+        import httpx
+        has_httpx = True
+        _RealClient = httpx.Client
+
+        class _CapturingClient(_RealClient):
+            def __init__(self, *args, **kw):
+                limits = kw.get("limits")
+                if limits is not None:
+                    captured_limits["max_connections"] = limits.max_connections
+                    captured_limits["max_keepalive_connections"] = limits.max_keepalive_connections
+                    captured_limits["keepalive_expiry"] = limits.keepalive_expiry
+                super().__init__(*args, **kw)
+
+        monkeypatch.setattr(httpx, "Client", _CapturingClient)
+    except ImportError:
+        has_httpx = False
+
     provider = Mem0MemoryProvider()
     provider.initialize("test-session")
     provider._get_client()
 
-    assert constructed == [{"api_key": "cloud-key"}]
+    # Exactly one MemoryClient constructed, always with the api_key.
+    assert len(constructed) == 1
+    assert constructed[0].get("api_key") == "cloud-key"
+    # When httpx is importable the cloud fallback must hand the SDK a *bounded*
+    # client (limits + keepalive_expiry) so idle keepalive sockets don't rot into
+    # CLOSE_WAIT and leak fds in a long-lived gateway (HANDOFF-fd-leak-client-pool.md).
+    if has_httpx:
+        assert "client" in constructed[0], "cloud fallback must pass a bounded httpx.Client"
+        assert captured_limits == {
+            "max_connections": 10,
+            "max_keepalive_connections": 5,
+            "keepalive_expiry": 30.0,
+        }
+    else:
+        # No httpx -> graceful degradation to the default (unbounded) client.
+        assert "client" not in constructed[0]
 
 
 def test_mem0_json_overrides_selfhost_env_config(monkeypatch, tmp_path):
@@ -280,3 +315,109 @@ def test_direct_rest_client_scopes_user_and_agent_even_when_caller_omits_them():
     client.search(query="q", filters={"user_id": "other"})
     assert sent[-1]["body"]["user_id"] == "other"
     assert sent[-1]["body"]["agent_id"] == "daedalus"
+
+
+def _count_open_fds() -> int:
+    """Best-effort open-fd count for THIS process, cross-platform.
+
+    Linux: count /proc/self/fd entries. macOS/BSD: fall back to psutil if present,
+    else resource-based proc fd listing via /dev/fd. The soak test asserts a
+    *plateau*, so an approximate-but-consistent counter is sufficient.
+    """
+    import os
+    for path in ("/proc/self/fd", "/dev/fd"):
+        if os.path.isdir(path):
+            try:
+                return len(os.listdir(path))
+            except OSError:
+                continue
+    try:
+        import psutil  # type: ignore
+        return psutil.Process().num_fds()
+    except Exception:
+        return -1
+
+
+def test_direct_rest_client_fd_count_plateaus_under_soak(tmp_path):
+    """REAL regression test for HANDOFF-fd-leak-client-pool.md.
+
+    Drive thousands of real add/search calls through the real _DirectRestMem0Client
+    (urllib, real sockets) against a real loopback HTTP server in ONE process, and
+    assert the open-fd count PLATEAUS rather than growing monotonically. This is the
+    end-to-end proof the client doesn't strand sockets — a unit test on pool config
+    can't catch a path that leaks fds; only exercising the real socket lifecycle can.
+
+    The direct-REST client uses urllib with a per-call `with urlopen(...)` that closes
+    each connection, so it must not accumulate CLOSE_WAIT/idle fds. If a future change
+    swaps in a pooled client without bounding it, this test fails.
+    """
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    fd_probe = _count_open_fds()
+    if fd_probe < 0:
+        pytest.skip("no way to count fds on this platform (no /proc, /dev/fd, or psutil)")
+
+    class _Handler(BaseHTTPRequestHandler):
+        def _reply(self):
+            body = json.dumps({"results": []}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            if length:
+                self.rfile.read(length)
+            self._reply()
+
+        def do_GET(self):
+            self._reply()
+
+        def log_message(self, format, *args):
+            pass  # silence
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        from importlib import import_module
+        mod = import_module("plugins.memory.mem0")
+        client = mod._DirectRestMem0Client(
+            host=f"http://127.0.0.1:{port}",
+            admin_api_key="k",
+            agent_id="daedalus",
+            user_id="ace",
+        )
+
+        # Warm up so transient import/buffer fds aren't counted as growth.
+        for _ in range(50):
+            client.add([{"role": "user", "content": "warmup"}])
+            client.search(query="warmup")
+
+        baseline = _count_open_fds()
+
+        # Soak: thousands of real round-trips in one long-lived process.
+        n = 2000
+        for i in range(n):
+            client.add([{"role": "user", "content": f"memory {i}"}])
+            client.search(query=f"query {i}")
+
+        peak = _count_open_fds()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # The fd count must PLATEAU. A leaking client would grow ~1 fd per call
+    # (thousands); a non-leaking one stays flat give-or-take a small jitter from
+    # GC timing and the server's own worker threads. Allow generous slack but far
+    # below the per-call-leak signal.
+    growth = peak - baseline
+    assert growth < 50, (
+        f"fd count grew by {growth} over {n} calls "
+        f"(baseline={baseline}, peak={peak}) — client is leaking sockets/fds"
+    )

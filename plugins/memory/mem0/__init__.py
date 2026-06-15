@@ -390,7 +390,30 @@ class Mem0MemoryProvider(MemoryProvider):
                 return self._client
             try:
                 from mem0 import MemoryClient
-                self._client = MemoryClient(api_key=self._api_key)
+                # Bound the SDK's httpx pool. The mem0 SDK builds httpx.Client with
+                # no limits + no keepalive expiry, so idle keepalive sockets the edge
+                # half-closes rot into CLOSE_WAIT and leak fds in a long-lived gateway
+                # (the incident in HANDOFF-fd-leak-client-pool.md). A bounded client
+                # with keepalive_expiry actively reaps idle conns. The SDK's client=
+                # path sets base_url + auth on the client we pass (mem0/client/main.py
+                # v2.0.4). Self-hosted mode uses _DirectRestMem0Client (stdlib urllib,
+                # per-call close — leak-proof) so this only guards the cloud fallback.
+                try:
+                    import httpx
+                    bounded = httpx.Client(
+                        timeout=300,
+                        limits=httpx.Limits(
+                            max_connections=10,
+                            max_keepalive_connections=5,
+                            keepalive_expiry=30.0,
+                        ),
+                    )
+                    self._client = MemoryClient(api_key=self._api_key, client=bounded)
+                except (ImportError, TypeError):
+                    # httpx absent, or a future SDK that no longer accepts client=:
+                    # fall back to the default client (latent leak returns — pin/verify
+                    # the SDK client= contract on upgrade, per the handoff).
+                    self._client = MemoryClient(api_key=self._api_key)
                 return self._client
             except ImportError:
                 raise RuntimeError("mem0 package not installed. Run: pip install mem0ai")

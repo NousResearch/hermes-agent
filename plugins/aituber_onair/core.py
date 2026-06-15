@@ -8,13 +8,14 @@ import platform
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 try:
     from hermes_constants import get_hermes_home
@@ -143,6 +144,10 @@ CONFIGURE_HAKUA_SCHEMA = {
             "tts_speed": {
                 "type": "number",
                 "description": "Default local TTS speed multiplier.",
+            },
+            "youtube_live_id": {
+                "type": "string",
+                "description": "Optional YouTube live video id or URL for Hermes-side comment monitoring. API keys stay in environment variables.",
             },
         },
     },
@@ -285,6 +290,57 @@ YOUTUBE_READY_SCHEMA = {
     },
 }
 
+YOUTUBE_COMMENTS_STATUS_SCHEMA = {
+    "name": "aituber_onair_youtube_comments_status",
+    "description": "Show the Hermes-side YouTube Live comment monitor status for Hakua.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+START_YOUTUBE_COMMENTS_SCHEMA = {
+    "name": "aituber_onair_start_youtube_comments",
+    "description": "Start a Hermes-side YouTube Live comment monitor that asks Hakua to answer with local voice.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "live_id": {
+                "type": "string",
+                "description": "YouTube live video id or watch URL. Falls back to AITUBER_ONAIR_YOUTUBE_LIVE_ID/YOUTUBE_LIVE_ID.",
+            },
+            "api_key_env": {
+                "type": "string",
+                "description": "Environment variable that contains a YouTube Data API key. Default auto-detects AITUBER_ONAIR_YOUTUBE_API_KEY, YOUTUBE_API_KEY, GOOGLE_API_KEY.",
+            },
+            "poll_seconds": {
+                "type": "number",
+                "minimum": 2,
+                "maximum": 120,
+            },
+            "skip_existing": {
+                "type": "boolean",
+                "description": "Mark comments seen on the first poll as handled instead of answering them.",
+            },
+            "play": {
+                "type": "boolean",
+                "description": "Play Hakua's synthesized answer on the local desktop audio device. Default: true.",
+            },
+        },
+    },
+}
+
+STOP_YOUTUBE_COMMENTS_SCHEMA = {
+    "name": "aituber_onair_stop_youtube_comments",
+    "description": "Stop the Hermes-side YouTube Live comment monitor.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "force": {
+                "type": "boolean",
+                "description": "Use force-kill if graceful termination does not finish.",
+            },
+        },
+    },
+}
+
 TTS_STATUS_SCHEMA = {
     "name": "aituber_onair_tts_status",
     "description": "Show local irodoriTTS and VOICEVOX readiness for Hakua voice output.",
@@ -365,6 +421,10 @@ def _active_file() -> Path:
 
 def _tts_active_file() -> Path:
     return _workspace_root() / "tts-active.json"
+
+
+def _youtube_comments_active_file() -> Path:
+    return _workspace_root() / "youtube-comments-active.json"
 
 
 def _log_file(name: str) -> Path:
@@ -1465,6 +1525,267 @@ def _obs_status() -> dict[str, Any]:
     }
 
 
+def _youtube_live_id(explicit: Any = None) -> str:
+    cfg = _plugin_config()
+    raw = (
+        _path_text(explicit)
+        or _path_text(cfg.get("youtube_live_id"))
+        or _path_text(os.environ.get("AITUBER_ONAIR_YOUTUBE_LIVE_ID"))
+        or _path_text(os.environ.get("YOUTUBE_LIVE_ID"))
+    )
+    if not raw:
+        return ""
+    return _extract_youtube_live_id(raw)
+
+
+def _extract_youtube_live_id(value: str) -> str:
+    text = _path_text(value)
+    if not text:
+        return ""
+    parsed = urllib.parse.urlparse(text)
+    if parsed.netloc:
+        host = parsed.netloc.lower()
+        query = urllib.parse.parse_qs(parsed.query)
+        if "v" in query and query["v"]:
+            return query["v"][0].strip()
+        parts = [part for part in parsed.path.split("/") if part]
+        if host.endswith("youtu.be") and parts:
+            return parts[0].strip()
+        if parts and parts[0] in {"live", "shorts", "embed"} and len(parts) > 1:
+            return parts[1].strip()
+    return text.strip()
+
+
+def _youtube_api_key_env_name(explicit: Any = None) -> str:
+    explicit_text = _path_text(explicit)
+    if explicit_text:
+        return explicit_text
+    for name in (
+        "AITUBER_ONAIR_YOUTUBE_API_KEY",
+        "YOUTUBE_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        if os.environ.get(name):
+            return name
+    return "AITUBER_ONAIR_YOUTUBE_API_KEY"
+
+
+def _youtube_api_key_from_env(env_name: str) -> str:
+    return _path_text(os.environ.get(env_name))
+
+
+def _youtube_api_get(endpoint: str, params: dict[str, str]) -> dict[str, Any]:
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(f"{endpoint}?{query}", method="GET")
+    with urllib.request.urlopen(request, timeout=15) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    data = json.loads(raw)
+    return data if isinstance(data, dict) else {}
+
+
+def youtube_live_chat_id(live_id: str, api_key: str) -> str:
+    data = _youtube_api_get(
+        "https://youtube.googleapis.com/youtube/v3/videos",
+        {"part": "liveStreamingDetails", "id": live_id, "key": api_key},
+    )
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        return ""
+    details = items[0].get("liveStreamingDetails", {})
+    if not isinstance(details, dict):
+        return ""
+    return _path_text(details.get("activeLiveChatId"))
+
+
+def fetch_youtube_live_comments(
+    *,
+    live_chat_id: str,
+    api_key: str,
+    page_token: str = "",
+) -> dict[str, Any]:
+    params = {
+        "part": "authorDetails,snippet",
+        "liveChatId": live_chat_id,
+        "key": api_key,
+    }
+    if page_token:
+        params["pageToken"] = page_token
+    data = _youtube_api_get(
+        "https://youtube.googleapis.com/youtube/v3/liveChat/messages",
+        params,
+    )
+    comments: list[dict[str, str]] = []
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
+        author = (
+            item.get("authorDetails")
+            if isinstance(item.get("authorDetails"), dict)
+            else {}
+        )
+        text_details = snippet.get("textMessageDetails")
+        super_chat = snippet.get("superChatDetails")
+        comment_text = ""
+        if isinstance(text_details, dict):
+            comment_text = _path_text(text_details.get("messageText"))
+        if not comment_text and isinstance(super_chat, dict):
+            comment_text = _path_text(super_chat.get("userComment"))
+        if not comment_text:
+            continue
+        comments.append(
+            {
+                "id": _path_text(item.get("id")),
+                "author": _path_text(author.get("displayName")) or "viewer",
+                "text": comment_text,
+                "published_at": _path_text(snippet.get("publishedAt")),
+            }
+        )
+    return {
+        "ok": "error" not in data,
+        "comments": comments,
+        "next_page_token": _path_text(data.get("nextPageToken")),
+        "polling_interval_ms": int(data.get("pollingIntervalMillis") or 0),
+        "error": data.get("error"),
+    }
+
+
+def _youtube_comments_active_status() -> dict[str, Any]:
+    active = _read_json_file(_youtube_comments_active_file())
+    if not active:
+        return {"ok": False, "reason": "no active YouTube comment monitor"}
+    pid = int(active.get("pid") or 0)
+    alive = _pid_alive(pid)
+    return {**active, "ok": True, "alive": alive, "pid": pid}
+
+
+def youtube_comments_status(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    live_id = _youtube_live_id(values.get("live_id"))
+    api_key_env = _youtube_api_key_env_name(values.get("api_key_env"))
+    return {
+        "ok": True,
+        "live_id_present": bool(live_id),
+        "live_id": live_id,
+        "api_key_env": api_key_env,
+        "api_key_present": bool(_youtube_api_key_from_env(api_key_env)),
+        "active": _youtube_comments_active_status(),
+        "active_file": str(_youtube_comments_active_file()),
+    }
+
+
+def start_youtube_comments(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    live_id = _youtube_live_id(values.get("live_id"))
+    api_key_env = _youtube_api_key_env_name(values.get("api_key_env"))
+    api_key = _youtube_api_key_from_env(api_key_env)
+    if not live_id:
+        return {
+            "ok": False,
+            "error": "YouTube live video id is required.",
+            "env": "AITUBER_ONAIR_YOUTUBE_LIVE_ID or YOUTUBE_LIVE_ID",
+        }
+    if not api_key:
+        return {
+            "ok": False,
+            "error": "YouTube Data API key environment variable is not set.",
+            "api_key_env": api_key_env,
+            "env": "AITUBER_ONAIR_YOUTUBE_API_KEY, YOUTUBE_API_KEY, or GOOGLE_API_KEY",
+        }
+
+    existing = _youtube_comments_active_status()
+    if existing.get("alive") and not values.get("force"):
+        return {
+            "ok": True,
+            "already_running": True,
+            "active": existing,
+        }
+    if existing.get("alive") and values.get("force"):
+        stop_youtube_comments({"force": True})
+
+    log_path = _log_file("youtube-comments.log")
+    poll_seconds = max(2.0, min(120.0, float(values.get("poll_seconds") or 10.0)))
+    play = values.get("play")
+    if play is None:
+        play = True
+    cmd = [
+        sys.executable,
+        "-m",
+        "plugins.aituber_onair.youtube_comments_worker",
+        "--live-id",
+        live_id,
+        "--api-key-env",
+        api_key_env,
+        "--poll-seconds",
+        str(poll_seconds),
+    ]
+    if values.get("skip_existing"):
+        cmd.append("--skip-existing")
+    if play:
+        cmd.append("--play")
+    env = _child_process_env(
+        {
+            api_key_env: api_key,
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+        }
+    )
+    with log_path.open("ab") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(Path(__file__).resolve().parents[2]),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+    record = {
+        "pid": proc.pid,
+        "live_id": live_id,
+        "api_key_env": api_key_env,
+        "poll_seconds": poll_seconds,
+        "play": bool(play),
+        "log_path": str(log_path),
+        "started_at": time.time(),
+        "command": [
+            part if part != api_key else "<redacted>" for part in cmd
+        ],
+    }
+    _write_json_file(_youtube_comments_active_file(), record)
+    return {"ok": True, "active": record}
+
+
+def stop_youtube_comments(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    active = _youtube_comments_active_status()
+    if not active.get("ok"):
+        return active
+    pid = int(active.get("pid") or 0)
+    if not active.get("alive"):
+        try:
+            _youtube_comments_active_file().unlink()
+        except FileNotFoundError:
+            pass
+        return {"ok": True, "stopped": True, "was_alive": False}
+    try:
+        from gateway.status import terminate_pid
+
+        terminate_pid(pid, force=bool((values or {}).get("force")))
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "pid": pid}
+    for _ in range(20):
+        if not _pid_alive(pid):
+            try:
+                _youtube_comments_active_file().unlink()
+            except FileNotFoundError:
+                pass
+            return {"ok": True, "stopped": True, "pid": pid}
+        time.sleep(0.2)
+    return {
+        "ok": False,
+        "error": "comment monitor still appears alive; retry with force=true",
+        "pid": pid,
+    }
+
+
 def youtube_ready(values: dict[str, Any] | None = None) -> dict[str, Any]:
     values = values or {}
     require_obs = values.get("require_obs")
@@ -1473,10 +1794,14 @@ def youtube_ready(values: dict[str, Any] | None = None) -> dict[str, Any]:
     require_tts_ready = bool(values.get("require_tts_ready"))
 
     payload = status()
-    active = payload.get("active") if isinstance(payload.get("active"), dict) else {}
-    tts = payload.get("tts") if isinstance(payload.get("tts"), dict) else {}
+    active_raw = payload.get("active")
+    active = cast(dict[str, Any], active_raw) if isinstance(active_raw, dict) else {}
+    tts_raw = payload.get("tts")
+    tts = cast(dict[str, Any], tts_raw) if isinstance(tts_raw, dict) else {}
+    config_raw = payload.get("config")
+    config = cast(dict[str, Any], config_raw) if isinstance(config_raw, dict) else {}
     obs = _obs_status()
-    avatar_url = str(payload.get("config", {}).get("url") or "")
+    avatar_url = str(config.get("url") or "")
     avatar_running = bool(active.get("alive") and active.get("url_ready"))
     tts_ready = bool(tts.get("ready"))
     obs_ready = bool(obs.get("installed")) or not require_obs
@@ -1567,6 +1892,18 @@ def handle_youtube_ready(args: dict[str, Any] | None = None) -> str:
     return _json(youtube_ready(args or {}))
 
 
+def handle_youtube_comments_status(args: dict[str, Any] | None = None) -> str:
+    return _json(youtube_comments_status(args or {}))
+
+
+def handle_start_youtube_comments(args: dict[str, Any] | None = None) -> str:
+    return _json(start_youtube_comments(args or {}))
+
+
+def handle_stop_youtube_comments(args: dict[str, Any] | None = None) -> str:
+    return _json(stop_youtube_comments(args or {}))
+
+
 def status() -> dict[str, Any]:
     cfg = _plugin_config()
     repo = resolve_repo_root()
@@ -1632,6 +1969,7 @@ def status() -> dict[str, Any]:
             "tts_speed": _plugin_tts_speed() or "provider default",
             "voicevox_url": _plugin_voicevox_url(),
             "voicevox_speaker": _plugin_voicevox_speaker(),
+            "youtube_live_id": _youtube_live_id() or "",
         },
         "paths": {
             "repo_root": str(repo) if repo else "",
@@ -1648,6 +1986,7 @@ def status() -> dict[str, Any]:
         },
         "codex_sdk": codex_sdk,
         "tts": tts,
+        "youtube_comments": youtube_comments_status({}),
         "active": active,
         "readiness": readiness,
         "recommended_actions": recommended,
@@ -1707,6 +2046,9 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
     tts_speed = _plugin_tts_speed(values.get("tts_speed"))
     if tts_speed is not None:
         entry["tts_speed"] = tts_speed
+    youtube_live_id = _youtube_live_id(values.get("youtube_live_id"))
+    if youtube_live_id:
+        entry["youtube_live_id"] = youtube_live_id
     model = _path_text(values.get("model"))
     if model:
         entry["model"] = model
@@ -1729,6 +2071,7 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "voicevox_engine_exe": entry.get("voicevox_engine_exe", ""),
         "tts_voice": entry.get("tts_voice", ""),
         "tts_speed": entry.get("tts_speed", ""),
+        "youtube_live_id": entry.get("youtube_live_id", ""),
     }
 
 
@@ -2229,6 +2572,9 @@ HELP = """aituber commands:
   /aituber say --speak <prompt>
   /aituber smoke
   /aituber youtube-ready
+  /aituber comments-status
+  /aituber start-comments <youtube-live-id-or-url>
+  /aituber stop-comments
 """
 
 
@@ -2265,6 +2611,20 @@ def handle_slash(raw_args: str) -> str:
         return handle_smoke({})
     if command in {"youtube-ready", "youtube", "onair-ready"}:
         return handle_youtube_ready({})
+    if command in {"comments-status", "comment-status"}:
+        return handle_youtube_comments_status({})
+    if command in {"start-comments", "comments-start", "onair-comments"}:
+        live_id = next((arg for arg in argv[1:] if not arg.startswith("--")), "")
+        return handle_start_youtube_comments(
+            {
+                "live_id": live_id,
+                "skip_existing": "--skip-existing" in argv,
+                "play": "--no-play" not in argv,
+                "force": "--force" in argv,
+            }
+        )
+    if command in {"stop-comments", "comments-stop"}:
+        return handle_stop_youtube_comments({"force": "--force" in argv})
     if command == "say":
         prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
         return handle_say(

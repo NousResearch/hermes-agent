@@ -28,6 +28,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     configure.add_argument("--voicevox-engine-exe", default="")
     configure.add_argument("--tts-voice", default="")
     configure.add_argument("--tts-speed", type=float, default=None)
+    configure.add_argument("--youtube-live-id", default="")
 
     subs.add_parser("status", help="Show AITuber OnAir bridge readiness")
 
@@ -103,6 +104,31 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     youtube_ready.add_argument("--no-require-obs", action="store_true")
     youtube_ready.add_argument("--require-tts-ready", action="store_true")
 
+    start_comments = subs.add_parser(
+        "start-comments",
+        aliases=["comments-start", "onair-comments"],
+        help="Start Hermes-side YouTube Live comment reactions",
+    )
+    start_comments.add_argument("--live-id", default="")
+    start_comments.add_argument("--api-key-env", default="")
+    start_comments.add_argument("--poll-seconds", type=float, default=None)
+    start_comments.add_argument("--skip-existing", action="store_true")
+    start_comments.add_argument("--no-play", action="store_true")
+    start_comments.add_argument("--force", action="store_true")
+
+    subs.add_parser(
+        "comments-status",
+        aliases=["comment-status"],
+        help="Show YouTube Live comment monitor status",
+    )
+
+    stop_comments = subs.add_parser(
+        "stop-comments",
+        aliases=["comments-stop"],
+        help="Stop Hermes-side YouTube Live comment reactions",
+    )
+    stop_comments.add_argument("--force", action="store_true")
+
     subparser.set_defaults(func=aituber_onair_command)
 
 
@@ -111,7 +137,7 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
     if not command:
         print(
             "usage: hermes aituber-onair "
-            "{configure,status,prepare,start,stop,tts-status,start-tts,speak,say,smoke,youtube-ready}"
+            "{configure,status,prepare,start,stop,tts-status,start-tts,speak,say,smoke,youtube-ready,start-comments,comments-status,stop-comments}"
         )
         return 2
     if command in {"configure", "setup"}:
@@ -130,6 +156,7 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "voicevox_engine_exe": getattr(args, "voicevox_engine_exe", ""),
                     "tts_voice": getattr(args, "tts_voice", ""),
                     "tts_speed": getattr(args, "tts_speed", None),
+                    "youtube_live_id": getattr(args, "youtube_live_id", ""),
                 }
             )
         )
@@ -229,6 +256,25 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "require_tts_ready": getattr(args, "require_tts_ready", False),
                 }
             )
+        )
+    if command in {"start-comments", "comments-start", "onair-comments"}:
+        return _print(
+            core.start_youtube_comments(
+                {
+                    "live_id": getattr(args, "live_id", ""),
+                    "api_key_env": getattr(args, "api_key_env", ""),
+                    "poll_seconds": getattr(args, "poll_seconds", None),
+                    "skip_existing": getattr(args, "skip_existing", False),
+                    "play": not getattr(args, "no_play", False),
+                    "force": getattr(args, "force", False),
+                }
+            )
+        )
+    if command in {"comments-status", "comment-status"}:
+        return _print(core.youtube_comments_status({}))
+    if command in {"stop-comments", "comments-stop"}:
+        return _print(
+            core.stop_youtube_comments({"force": getattr(args, "force", False)})
         )
     print("unknown aituber-onair command")
     return 2

@@ -60,6 +60,9 @@ def test_registers_tools_slash_and_cli_command():
     assert "aituber_onair_speak" in names
     assert "aituber_onair_say" in names
     assert "aituber_onair_youtube_ready" in names
+    assert "aituber_onair_youtube_comments_status" in names
+    assert "aituber_onair_start_youtube_comments" in names
+    assert "aituber_onair_stop_youtube_comments" in names
     assert all(tool["toolset"] == "aituber-onair" for tool in ctx.tools)
     assert "aituber" in ctx.commands
     assert "aituber-onair" in ctx.cli_commands
@@ -619,3 +622,77 @@ def test_youtube_ready_passes_with_running_avatar_and_obs(monkeypatch):
     assert result["avatar_url"] == "http://127.0.0.1:5175/"
     assert result["obs_browser_source"]["recommended_source_type"] == "Browser Source"
     assert "stream_key" in result["youtube_encoder"]
+
+
+def test_extract_youtube_live_id_from_watch_and_live_urls():
+    assert (
+        core._extract_youtube_live_id("https://www.youtube.com/watch?v=abc123XYZ")
+        == "abc123XYZ"
+    )
+    assert core._extract_youtube_live_id("https://youtu.be/abc123XYZ") == "abc123XYZ"
+    assert (
+        core._extract_youtube_live_id("https://www.youtube.com/live/abc123XYZ")
+        == "abc123XYZ"
+    )
+
+
+def test_start_youtube_comments_requires_secret_env(monkeypatch):
+    monkeypatch.delenv("AITUBER_ONAIR_YOUTUBE_API_KEY", raising=False)
+    monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    result = core.start_youtube_comments({"live_id": "abc123XYZ"})
+
+    assert result["ok"] is False
+    assert "API key" in result["error"]
+    assert result["api_key_env"] == "AITUBER_ONAIR_YOUTUBE_API_KEY"
+
+
+def test_youtube_comments_status_reports_presence_without_key_value(monkeypatch):
+    monkeypatch.setenv("AITUBER_ONAIR_YOUTUBE_API_KEY", "secret-youtube-key")
+    monkeypatch.setattr(core, "_plugin_config", lambda: {"youtube_live_id": "abc123XYZ"})
+    monkeypatch.setattr(
+        core,
+        "_youtube_comments_active_status",
+        lambda: {"ok": False, "reason": "none"},
+    )
+
+    result = core.youtube_comments_status({})
+
+    assert result["ok"] is True
+    assert result["live_id"] == "abc123XYZ"
+    assert result["api_key_present"] is True
+    assert "secret-youtube-key" not in json.dumps(result)
+
+
+def test_start_youtube_comments_spawns_worker_without_recording_api_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path)
+    monkeypatch.setenv("AITUBER_ONAIR_YOUTUBE_API_KEY", "secret-youtube-key")
+    popen_calls = []
+
+    class FakeProc:
+        pid = 34567
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
+
+    result = core.start_youtube_comments(
+        {
+            "live_id": "https://www.youtube.com/watch?v=live-123",
+            "poll_seconds": 1,
+            "skip_existing": True,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["active"]["pid"] == 34567
+    assert result["active"]["poll_seconds"] == 2.0
+    assert "secret-youtube-key" not in json.dumps(result)
+    cmd, kwargs = popen_calls[0]
+    assert "plugins.aituber_onair.youtube_comments_worker" in cmd
+    assert "--skip-existing" in cmd
+    assert kwargs["env"]["AITUBER_ONAIR_YOUTUBE_API_KEY"] == "secret-youtube-key"

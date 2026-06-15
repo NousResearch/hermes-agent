@@ -2939,16 +2939,12 @@ class DiscordAdapter(BasePlatformAdapter):
         allowed_users = getattr(self, "_allowed_user_ids", set()) or set()
         allowed_roles = getattr(self, "_allowed_role_ids", set()) or set()
         if user is None or getattr(user, "id", None) is None:
-            # No identifiable user. With any user/role allowlist
-            # configured, fail closed rather than raise AttributeError
-            # on ``interaction.user.id`` below.
+            # No identifiable user — fail closed even with allow-all opt-in.
+            # Downstream slash handlers (_build_slash_event, etc.) require
+            # interaction.user.id and do not synthesize a safe identity.
             if allowed_users or allowed_roles:
                 return (False, "missing interaction.user with allowlist configured")
-            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-                return (True, None)
-            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
-                return (True, None)
-            return (False, "missing interaction.user without allow-all opt-in")
+            return (False, "missing interaction.user")
 
         user_id = str(user.id)
         # Pass guild + is_dm so role check is scoped to the originating
@@ -5765,6 +5761,10 @@ def _component_check_auth(
       - user is approved in the pairing store -> allow
       - otherwise -> reject
     """
+    user = getattr(interaction, "user", None)
+    if user is None or getattr(user, "id", None) is None:
+        return False
+
     if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
         return True
     if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
@@ -5780,9 +5780,6 @@ def _component_check_auth(
     role_set = set(allowed_role_ids or set())
     has_users = bool(user_set)
     has_roles = bool(role_set)
-    user = getattr(interaction, "user", None)
-    if user is None:
-        return False
 
     # Resolve user ID once for both allowlist and pairing checks.
     try:

@@ -97,6 +97,8 @@ def _isolate_discord_env(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HIDE_SLASH_COMMANDS",
         "DISCORD_ALLOW_BOTS",
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -461,6 +463,40 @@ async def test_missing_user_denied_when_no_allowlist_configured(adapter):
     """interaction.user is None without allow-all opt-in: fail closed."""
     interaction = _make_interaction("100200300", user=None)
     assert await adapter._check_slash_authorization(interaction, "/help") is False
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    ["GATEWAY_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS"],
+)
+@pytest.mark.asyncio
+async def test_missing_user_denied_even_with_allow_all(adapter, monkeypatch, env_name):
+    """Malformed slash payloads missing user stay fail-closed with allow-all."""
+    monkeypatch.setenv(env_name, "true")
+    interaction = _make_interaction("100200300", user=None)
+    allowed, reason = adapter._evaluate_slash_authorization(interaction)
+    assert allowed is False
+    assert reason == "missing interaction.user"
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_simple_slash_missing_user_does_not_crash(adapter, monkeypatch):
+    """_run_simple_slash must reject missing-user payloads before _build_slash_event."""
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    interaction = _make_interaction("100200300", user=None)
+    interaction.response.defer = AsyncMock()
+    interaction.edit_original_response = AsyncMock()
+    interaction.delete_original_response = AsyncMock()
+    adapter.handle_message = AsyncMock()
+    adapter._build_slash_event = MagicMock()
+
+    await adapter._run_simple_slash(interaction, "/help")
+
+    adapter._build_slash_event.assert_not_called()
+    adapter.handle_message.assert_not_awaited()
+    interaction.response.defer.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

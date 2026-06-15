@@ -39,23 +39,10 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 
-# Default topic allowlist if config doesn't specify one. Built from the
-# pre-Helios integration audit (project_pre_helios_integration_audit.md) —
-# the P0/P1 feeds Hermes-Phoebe needs to see to be on the mesh.
-_DEFAULT_WATCH_TOPICS: List[str] = [
-    "phoebe/atlas/speak",
-    "phoebe/orion/think_signal",
-    "phoebe/orion/alert",
-    "phoebe/sentinel/speak",
-    "phoebe/security/status",
-    "phoebe/presence/state",
-    "phoebe/banshee/desk_presence",
-    "phoebe/luna/first_seen",
-    "phoebe/luna/face_confirmed",
-    "phoebe/castor/episode_tagged",
-    "phoebe/castor/facts_extracted",
-    "phoebe/wake",
-]
+# No default topic allowlist -- subscriptions are explicit. Set
+# PlatformConfig.extra["watch_topics"] to the topics this gateway should
+# observe; empty means subscribe to nothing.
+_DEFAULT_WATCH_TOPICS: List[str] = []
 
 
 def check_mqtt_requirements() -> bool:
@@ -136,8 +123,7 @@ class MQTTAdapter(BasePlatformAdapter):
         self._observational: bool = bool(extra.get("observational", True))
         log_default = (
             pathlib.Path.home()
-            / "PhoebeVault"
-            / "Devlog"
+            / ".hermes"
             / f"mqtt-stream-{datetime.now().strftime('%Y-%m')}.md"
         )
         self._observe_log_path: Optional[pathlib.Path] = pathlib.Path(
@@ -152,6 +138,7 @@ class MQTTAdapter(BasePlatformAdapter):
         self._client: Optional["mqtt.Client"] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._connected = False
+        self._connect_rejected = False
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -196,8 +183,20 @@ class MQTTAdapter(BasePlatformAdapter):
             self._client.loop_start()
 
             self._running = True
+            # Wait for the broker CONNACK before reporting success -- otherwise
+            # connect() returns True even when the broker rejects auth (rc=5).
+            for _ in range(50):
+                if self._connected or self._connect_rejected:
+                    break
+                await asyncio.sleep(0.1)
+            if not self._connected:
+                logger.warning(
+                    "[%s] Broker did not accept connection to %s:%d (rejected or timed out)",
+                    self.name, self._broker_host, self._broker_port,
+                )
+                return False
             logger.info(
-                "[%s] Connecting to %s:%d as %s (%d topics)",
+                "[%s] Connected to %s:%d as %s (%d topics)",
                 self.name, self._broker_host, self._broker_port, self._username, len(self._watch_topics),
             )
             return True
@@ -223,6 +222,7 @@ class MQTTAdapter(BasePlatformAdapter):
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc != 0:
+            self._connect_rejected = True
             logger.warning("[%s] Broker rejected connection, rc=%s", self.name, rc)
             return
         self._connected = True

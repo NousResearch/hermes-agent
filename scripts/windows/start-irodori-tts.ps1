@@ -29,11 +29,19 @@ if ([string]::IsNullOrWhiteSpace($HfCacheRoot)) {
 }
 $hfHubCache = Join-Path $HfCacheRoot "hub"
 New-Item -ItemType Directory -Force -Path $hfHubCache | Out-Null
+$torchCacheRoot = Join-Path $env:LOCALAPPDATA "hermes\torch-cache"
+$torchInductorCache = Join-Path $torchCacheRoot "inductor"
+New-Item -ItemType Directory -Force -Path $torchInductorCache | Out-Null
+if ([string]::IsNullOrWhiteSpace($env:USER) -and -not [string]::IsNullOrWhiteSpace($env:USERNAME)) {
+    $env:USER = $env:USERNAME
+}
 $env:HF_HOME = $HfCacheRoot
 $env:HF_HUB_CACHE = $hfHubCache
 $env:HUGGINGFACE_HUB_CACHE = $hfHubCache
 $env:HF_HUB_ENABLE_HF_TRANSFER = "0"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
+$env:TORCH_HOME = $torchCacheRoot
+$env:TORCHINDUCTOR_CACHE_DIR = $torchInductorCache
 
 $healthUrl = "http://${HostName}:${Port}/health"
 try {

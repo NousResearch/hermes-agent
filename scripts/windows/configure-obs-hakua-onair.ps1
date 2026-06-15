@@ -98,7 +98,7 @@ $browserSource = [ordered]@{
     hotkeys = [ordered]@{}
     deinterlace_mode = 0
     deinterlace_field_order = 0
-    monitoring_type = 2
+    monitoring_type = 0
     private_settings = [ordered]@{}
 }
 
@@ -212,6 +212,8 @@ ColorRange=Partial
 [Audio]
 MonitoringDeviceId=default
 MonitoringDeviceName=Default
+DesktopDevice1=default
+DesktopDevice1Name=Default
 SampleRate=48000
 ChannelSetup=Stereo
 "@ | Set-Content -LiteralPath $profilePath -Encoding UTF8

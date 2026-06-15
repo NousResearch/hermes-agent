@@ -637,7 +637,8 @@ def _plugin_avatar_port(avatar_kind: str, explicit: Any = None) -> int:
 
 def _plugin_tts_provider(explicit: Any = None) -> str:
     cfg = _plugin_config()
-    raw = explicit if explicit is not None else cfg.get("tts_provider")
+    explicit_text = _path_text(explicit)
+    raw = explicit_text if explicit_text else cfg.get("tts_provider")
     provider = _path_text(raw).lower() or DEFAULT_TTS_PROVIDER
     if provider in {"off", "disabled"}:
         return "none"
@@ -674,7 +675,8 @@ def _plugin_voicevox_engine_exe(explicit: Any = None) -> str:
 
 def _plugin_tts_voice(explicit: Any = None) -> str:
     cfg = _plugin_config()
-    raw = explicit if explicit is not None else cfg.get("tts_voice")
+    explicit_text = _path_text(explicit)
+    raw = explicit_text if explicit_text else cfg.get("tts_voice")
     return _path_text(raw)
 
 

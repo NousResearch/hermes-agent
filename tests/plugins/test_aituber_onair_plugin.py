@@ -172,7 +172,7 @@ def test_irodori_speech_uses_configured_hakua_voice(monkeypatch, tmp_path):
     )
 
     result = core._synthesize_irodori(
-        {"text": "hello", "output_path": str(tmp_path / "voice.wav")}
+        {"text": "hello", "output_path": str(tmp_path / "voice.wav"), "voice": ""}
     )
 
     assert result["ok"] is True

@@ -346,15 +346,15 @@ def test_fixed_divisor_default_and_out_of_range_fallback():
     import importlib
     import agent.model_metadata as mm
     import os
-    # Default (no env) is 4.2.
+    # Default (no env) is 4.5.
     os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
     importlib.reload(mm)
-    assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.2, "default fixed divisor must be 4.2"
-    # Absurd / malformed values (typo guard) fall back to the 4.2 default.
+    assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.5, "default fixed divisor must be 4.5"
+    # Absurd / malformed values (typo guard) fall back to the 4.5 default.
     for bad in ("0", "999", "-3", "notanumber", ""):
         os.environ["HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED"] = bad
         importlib.reload(mm)
-        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.2, f"{bad!r} should fall back to 4.2"
+        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.5, f"{bad!r} should fall back to 4.5"
     os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
     importlib.reload(mm)
 

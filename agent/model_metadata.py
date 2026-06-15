@@ -168,13 +168,18 @@ COMPOSITION_CHARS_PER_TOKEN = _composition_chars_per_token()
 # different content and was MEASURED to pack LOOSER. Pooled live measurement
 # (n=60 claude-opus full-tool near-zero-history turns across two turns.db's) put
 # the REAL fixed ratio at ~4.38 chars/tok (median 4.45); o200k/gpt-5.x measured
-# ~4.09. So /3.5 over-counts the fixed prefix by ~20-25%. 4.2 is the chosen
-# divisor: it lands the post-deploy acceptance gate measured/est at mean ~0.96
-# (estimate ~4% high = early-warning safe side) across both families, where 4.0
-# over-counts too hard (mean ~0.92, only 40% of turns in the [0.90,1.05] band)
-# and 4.35 would tip half the turns into under-estimate. Applied to ALL families
-# by fiat (the fixed bytes are identical across models, only tokenizer density
-# varies, and it clustered 4.09-4.45); override via
+# ~4.09. So /3.5 over-counts the fixed prefix by ~20-25%. 4.5 is the chosen
+# divisor (one global number for ALL gateways, by Ace 2026-06-15 -- consistency
+# over per-host tuning). Post-deploy LIVE measurement of real fixed density
+# (back-out context_used - non-fixed on post-reload full-tool rows) put
+# Apollo/default at ~4.36 chars/tok and Aegis at ~4.83 (smaller SOUL + fewer
+# tools tokenize denser); o200k/gpt-5.x ~4.09. 4.5 is the first single divisor
+# that lands BOTH high-traffic gateways inside the [0.90,1.05] acceptance band:
+# Apollo 4.5/4.36 = ~1.03 (3% under, safe), Aegis 4.5/4.83 = ~0.93 (7% over,
+# safe). 4.2 left Aegis at ~0.87 (just under band); 4.5 fixes that without
+# tipping Apollo into a dangerous under-count. Applied to ALL families by fiat
+# (the fixed bytes are identical across models, only tokenizer density varies,
+# and it clustered 4.09-4.83); override via
 # HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED if a family proves materially
 # different. Same 2.0-8.0 clamp; display-only, never billing. Two divisors on
 # purpose: accurate-but-slightly-conservative on the stable fixed prefix, more
@@ -189,7 +194,7 @@ def _composition_chars_per_token_fixed() -> float:
                 return val
         except (TypeError, ValueError):
             pass
-    return 4.2
+    return 4.5
 
 
 COMPOSITION_CHARS_PER_TOKEN_FIXED = _composition_chars_per_token_fixed()

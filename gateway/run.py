@@ -12318,7 +12318,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
-                from tools.process_registry import process_registry as _pr_check
+                from tools.process_registry import format_process_notification, process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
                     _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
@@ -12334,12 +12334,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
                     else:
                         _out = _raw
-                    synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
-                        f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
-                        f"Output:\n{_out}]"
-                    )
+                    synth_text = format_process_notification({
+                        "type": "completion",
+                        "session_id": session_id,
+                        "command": session.command,
+                        "exit_code": session.exit_code,
+                        "completion_reason": getattr(session, "completion_reason", "exited"),
+                        "termination_source": getattr(session, "termination_source", ""),
+                        "output": _out,
+                    })
+                    if not synth_text:
+                        break
                     source = self._build_process_event_source({
                         "session_id": session_id,
                         "session_key": session_key,

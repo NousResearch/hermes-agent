@@ -100,6 +100,8 @@ class ProcessSession:
     started_at: float = 0.0                     # time.time() of spawn
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
+    completion_reason: str = "exited"           # exited|killed|lost|failed_start|already_exited
+    termination_source: str = ""                # process.kill|kill_all|backend_lost|failed_start
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
@@ -720,10 +722,14 @@ class ProcessRegistry:
                 session.exit_code = int(result.get("returncode", -1))
                 if session.exit_code == 0:
                     session.exit_code = -1
+                session.completion_reason = "failed_start"
+                session.termination_source = "failed_start"
                 session.output_buffer = result.get("output", "").strip()
         except Exception as e:
             session.exited = True
             session.exit_code = -1
+            session.completion_reason = "failed_start"
+            session.termination_source = "failed_start"
             session.output_buffer = f"Failed to start: {e}"
 
         if not session.exited:
@@ -774,7 +780,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
             session.exited = True
-            session.exit_code = session.process.returncode
+            if session.completion_reason != "killed":
+                session.exit_code = session.process.returncode
+                session.completion_reason = "exited"
             self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -820,6 +828,8 @@ class ProcessRegistry:
                     except (ValueError, IndexError):
                         session.exit_code = -1
                     session.exited = True
+                    if session.completion_reason != "killed":
+                        session.completion_reason = "exited"
                     self._move_to_finished(session)
                     return
 
@@ -827,6 +837,8 @@ class ProcessRegistry:
                 # Environment might be gone (sandbox reaped, etc.)
                 session.exited = True
                 session.exit_code = -1
+                session.completion_reason = "lost"
+                session.termination_source = "backend_lost"
                 self._move_to_finished(session)
                 return
 
@@ -858,7 +870,9 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
         session.exited = True
-        session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+        if session.completion_reason != "killed":
+            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+            session.completion_reason = "exited"
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -886,6 +900,8 @@ class ProcessRegistry:
                 "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
                 "output": output_tail,
             })
 
@@ -985,7 +1001,9 @@ class ProcessRegistry:
                 if len(session.output_buffer) > session.max_output_chars:
                     session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
-            session.exit_code = rc
+            if session.completion_reason != "killed":
+                session.exit_code = rc
+                session.completion_reason = "exited"
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",
@@ -1018,6 +1036,8 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            result["completion_reason"] = session.completion_reason
+            result["termination_source"] = session.termination_source
             self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
@@ -1106,6 +1126,8 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
                     "output": strip_ansi(session.output_buffer[-2000:]),
                 }
                 if timeout_note:
@@ -1137,7 +1159,7 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str) -> dict:
+    def kill_process(self, session_id: str, *, source: str = "process.kill") -> dict:
         """Kill a background process."""
         session = self.get(session_id)
         if session is None:
@@ -1201,9 +1223,16 @@ class ProcessRegistry:
                 }
             session.exited = True
             session.exit_code = -15  # SIGTERM
+            session.completion_reason = "killed"
+            session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
-            return {"status": "killed", "session_id": session.id}
+            return {
+                "status": "killed",
+                "session_id": session.id,
+                "completion_reason": session.completion_reason,
+                "termination_source": session.termination_source,
+            }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -1347,7 +1376,7 @@ class ProcessRegistry:
 
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id)
+            result = self.kill_process(session.id, source="kill_all")
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -1532,9 +1561,24 @@ def format_process_notification(evt: dict) -> "str | None":
 
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
+    _reason = evt.get("completion_reason") or "exited"
+    _source = evt.get("termination_source") or ""
+    _signal = ""
+    if _exit in {-15, 143, "-15", "143"}:
+        _signal = ", SIGTERM"
+    if _reason == "killed":
+        _status = f"terminated by {_source or 'Hermes'}"
+    elif _reason == "lost":
+        _status = "marked lost because the process backend disappeared"
+    elif _reason == "failed_start":
+        _status = "failed to start"
+    elif _exit == 0:
+        _status = "completed normally"
+    else:
+        _status = "exited"
     return (
-        f"[IMPORTANT: Background process {_sid} completed "
-        f"(exit code {_exit}).\n"
+        f"[IMPORTANT: Background process {_sid} {_status} "
+        f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )

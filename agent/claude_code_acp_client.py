@@ -478,7 +478,10 @@ class ClaudeCodeACPClient:
         self.api_key = api_key or self._provider_label
         self.base_url = base_url or self._marker_base_url
         self._default_headers = dict(default_headers or {})
-        self._acp_command = acp_command or command or self._resolve_command()
+        # acp_command is a routing placeholder (e.g. "claude-code-acp") set by delegate_task
+        # to distinguish Claude vs Copilot providers — it is NOT used for subprocess argv.
+        # The real subprocess command comes from _resolve_command() (env var / default "npx").
+        self._acp_command = self._resolve_command()
         self._acp_args = list(acp_args or args or self._resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)

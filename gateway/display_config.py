@@ -13,6 +13,11 @@ Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
 top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
 sets an explicit per-platform override.
 
+Exception: Telegram ``tool_progress`` is final-answer-first by default and does
+not inherit the global ``display.tool_progress`` setting.  It must be opted in
+explicitly via ``display.platforms.telegram.tool_progress`` (or the legacy
+``display.tool_progress_overrides.telegram`` key during migration).
+
 Backward compatibility: ``display.tool_progress_overrides`` is still read as a
 fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
 config migration (version bump) automatically moves the old format into the new
@@ -143,6 +148,14 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
+# Some chat surfaces have stricter user-visible noise requirements than the
+# CLI/global display defaults.  These settings may still be enabled with an
+# explicit per-platform override, but should not be inherited from the global
+# display block.
+_SKIP_GLOBAL_FOR_PLATFORM_SETTING: dict[str, set[str]] = {
+    "telegram": {"tool_progress"},
+}
+
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
@@ -192,7 +205,12 @@ def resolve_display_setting(
     # 2. Global user setting (display.<key>).  Skip display.streaming because
     # that key controls only CLI terminal streaming; gateway token streaming is
     # governed by the top-level streaming config plus per-platform overrides.
-    if setting != "streaming":
+    # Also skip platform/setting pairs that intentionally require explicit
+    # per-platform opt-in (for example, Telegram tool-progress bubbles).
+    if (
+        setting != "streaming"
+        and setting not in _SKIP_GLOBAL_FOR_PLATFORM_SETTING.get(platform_key, set())
+    ):
         val = display_cfg.get(setting)
         if val is not None:
             return _normalise(setting, val)

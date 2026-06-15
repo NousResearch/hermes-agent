@@ -246,9 +246,21 @@ def _make_runner(adapter):
     return runner
 
 
+def _write_display_config(tmp_path, config):
+    import yaml
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+
+def _opt_in_telegram_tool_progress(tmp_path, mode="all", **extra_display):
+    display = {"platforms": {"telegram": {"tool_progress": mode}}}
+    display.update(extra_display)
+    _write_display_config(tmp_path, {"display": display})
+
+
 @pytest.mark.asyncio
 async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    _opt_in_telegram_tool_progress(tmp_path)
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -296,6 +308,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
 @pytest.mark.asyncio
 async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    _opt_in_telegram_tool_progress(tmp_path)
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -335,6 +348,7 @@ async def test_run_agent_progress_edits_keep_originating_topic_metadata(monkeypa
 async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(monkeypatch, tmp_path):
     """Telegram DM progress must not reuse event message id as thread metadata."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    _opt_in_telegram_tool_progress(tmp_path)
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -371,6 +385,47 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
     assert adapter.sent
     assert adapter.sent[0]["metadata"] is None
     assert all(call["metadata"] is None for call in adapter.typing)
+
+
+@pytest.mark.asyncio
+async def test_telegram_tool_progress_env_fallback_is_suppressed(monkeypatch, tmp_path):
+    """Telegram should not show tool-progress bubbles from global/env fallback."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-telegram-no-progress",
+        session_key="agent:main:telegram:dm:12345",
+        event_message_id="777",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio
@@ -492,8 +547,14 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     fake_run_agent.AIAgent = LongPreviewAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    # Write config.yaml so _run_agent picks up tool_preview_length
-    config = {"display": {"tool_preview_length": preview_length}}
+    # Write config.yaml so _run_agent picks up tool_preview_length and the
+    # explicit Telegram opt-in required to show tool progress on that platform.
+    config = {
+        "display": {
+            "tool_preview_length": preview_length,
+            "platforms": {"telegram": {"tool_progress": "all"}},
+        }
+    }
     (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
     adapter = ProgressCaptureAdapter()
@@ -690,7 +751,21 @@ async def _run_with_agent(
     adapter_cls=ProgressCaptureAdapter,
 ):
     if config_data:
+        import copy
         import yaml
+
+        config_data = copy.deepcopy(config_data)
+        display = config_data.get("display")
+        if platform == Platform.TELEGRAM and isinstance(display, dict):
+            requested_tool_progress = display.get("tool_progress")
+            platforms = display.setdefault("platforms", {})
+            if (
+                requested_tool_progress is not None
+                and requested_tool_progress != "off"
+                and isinstance(platforms, dict)
+                and "telegram" not in platforms
+            ):
+                platforms["telegram"] = {"tool_progress": requested_tool_progress}
 
         (tmp_path / "config.yaml").write_text(yaml.dump(config_data), encoding="utf-8")
 

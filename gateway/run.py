@@ -13481,9 +13481,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _platforms_cfg = _display_cfg.get("platforms") or {}
         _platform_cfg = _platforms_cfg.get(platform_key) or {}
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = (
-            "tool_progress" in _display_cfg
-            or (
+        _platform_tool_progress_configured = (
+            (
                 isinstance(_platform_cfg, dict)
                 and "tool_progress" in _platform_cfg
             )
@@ -13492,11 +13491,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and platform_key in _legacy_tp_overrides
             )
         )
-        progress_mode = (
-            _env_tp
-            if _env_tp and not _tool_progress_configured
-            else (_resolved_tp or _env_tp or "all")
+        _tool_progress_configured = (
+            "tool_progress" in _display_cfg
+            or _platform_tool_progress_configured
         )
+        # Telegram tool progress is intentionally final-answer-first unless the
+        # operator explicitly opts in for Telegram itself.  Do not let the CLI /
+        # global env fallback re-enable user-visible tool telemetry there.
+        if platform_key == "telegram" and not _platform_tool_progress_configured:
+            progress_mode = _resolved_tp or "off"
+        else:
+            progress_mode = (
+                _env_tp
+                if _env_tp and not _tool_progress_configured
+                else (_resolved_tp or _env_tp or "all")
+            )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform

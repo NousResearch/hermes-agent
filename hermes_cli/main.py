@@ -10753,8 +10753,24 @@ def cmd_dashboard(args):
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
         env = os.environ.copy()
-        # Drop the profile HERMES_HOME so the child binds the machine root.
-        env.pop("HERMES_HOME", None)
+        # Pin the child to the machine ROOT, not the launching profile's
+        # HERMES_HOME.  We must resolve the root explicitly instead of just
+        # dropping HERMES_HOME: in the Docker layout the machine root is
+        # /opt/data (set via `ENV HERMES_HOME=/opt/data`), so an unset
+        # HERMES_HOME falls back to $HOME/.hermes = /opt/data/.hermes — an
+        # empty, auto-seeded home where the dashboard sees only the default
+        # profile and the install-method stamp is missing (so the Docker
+        # update-button guard also misfires).  get_default_hermes_root()
+        # returns the root for both layouts: ~/.hermes for a standard install
+        # and /opt/data for Docker (it strips a trailing profiles/<name>).
+        # See the support report for the double-mount workaround this avoids.
+        try:
+            from hermes_constants import get_default_hermes_root
+            env["HERMES_HOME"] = str(get_default_hermes_root())
+        except Exception:
+            # Best-effort: if root resolution fails, fall back to the prior
+            # behaviour (drop HERMES_HOME) rather than block the reroute.
+            env.pop("HERMES_HOME", None)
         # On Windows, os.execvpe() does not truly replace the process — it
         # spawns via CreateProcess then the parent exits.  Under Python 3.14+
         # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when

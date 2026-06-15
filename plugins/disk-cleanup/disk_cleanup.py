@@ -348,36 +348,57 @@ def quick() -> Dict[str, Any]:
         else:
             new_tracked.append(item)
 
-    # Remove empty dirs under HERMES_HOME (but leave HERMES_HOME itself and
-    # a short list of well-known top-level state dirs alone — a fresh install
-    # has these empty, and deleting them would surprise the user).
+    # Remove empty dirs under HERMES_HOME, but never recurse into known
+    # durable state trees.  Some installs place the Hermes checkout, venv,
+    # and desktop build under HERMES_HOME; a full rglob over that tree can
+    # stall the gateway event loop for minutes.
     hermes_home = get_hermes_home()
     _PROTECTED_TOP_LEVEL = {
         "logs", "memories", "sessions", "cron", "cronjobs",
         "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
         "hermes-agent", "backups", "profiles", ".worktrees",
     }
+    _SWEEP_PRUNE_DIRS = {
+        ".git", "node_modules", "venv", ".venv",
+        "site-packages", "__pycache__",
+    }
     empty_removed = 0
+    sweep_stack: List[Path] = []
     try:
-        for dirpath in sorted(hermes_home.rglob("*"), reverse=True):
-            if not dirpath.is_dir() or dirpath == hermes_home:
-                continue
-            try:
-                rel_parts = dirpath.relative_to(hermes_home).parts
-            except ValueError:
-                continue
-            # Skip the well-known top-level state dirs themselves.
-            if len(rel_parts) == 1 and rel_parts[0] in _PROTECTED_TOP_LEVEL:
-                continue
-            try:
-                if not any(dirpath.iterdir()):
-                    dirpath.rmdir()
-                    empty_removed += 1
-                    _log(f"DELETED: {dirpath} (empty dir)")
-            except OSError:
-                pass
+        for top in hermes_home.iterdir():
+            if (
+                top.is_dir()
+                and not top.is_symlink()
+                and top.name not in _PROTECTED_TOP_LEVEL
+                and top.name not in _SWEEP_PRUNE_DIRS
+            ):
+                sweep_stack.append(top)
     except OSError:
-        pass
+        sweep_stack = []
+
+    found_dirs: List[Path] = []
+    while sweep_stack:
+        dirpath = sweep_stack.pop()
+        found_dirs.append(dirpath)
+        try:
+            for child in dirpath.iterdir():
+                if (
+                    child.is_dir()
+                    and not child.is_symlink()
+                    and child.name not in _SWEEP_PRUNE_DIRS
+                ):
+                    sweep_stack.append(child)
+        except OSError:
+            pass
+
+    for dirpath in sorted(found_dirs, key=lambda p: len(p.parts), reverse=True):
+        try:
+            if not any(dirpath.iterdir()):
+                dirpath.rmdir()
+                empty_removed += 1
+                _log(f"DELETED: {dirpath} (empty dir)")
+        except OSError:
+            pass
 
     save_tracked(new_tracked)
     _log(

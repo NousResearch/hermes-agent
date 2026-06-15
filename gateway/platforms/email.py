@@ -44,6 +44,80 @@ from gateway.platforms.base import (
 from gateway.config import Platform, PlatformConfig
 
 logger = logging.getLogger(__name__)
+
+# ── HTML Email Styling ──────────────────────────────────────────────────────
+# Inline CSS for maximum email client compatibility (Gmail, Outlook, Apple Mail).
+
+_HERMES_EMAIL_CSS = """\
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f7;">
+<div style="max-width:680px;margin:0 auto;background:#ffffff;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.6;color:#2d3748;padding:32px;">
+
+"""
+
+_HERMES_EMAIL_FOOTER = """\
+
+<div style="margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0;
+  font-size:12px;color:#a0aec0;">
+  Sent by <strong>Hermes Agent</strong> &middot;
+  <a href="https://hermes-agent.nousresearch.com" style="color:#667eea;text-decoration:none;">
+    hermes-agent.nousresearch.com
+  </a>
+</div>
+</div>
+</body>
+</html>
+"""
+
+# Inline CSS per element for email client compat (Gmail strips <style> blocks)
+_HERMES_EMAIL_ELEMENT_STYLES = [
+    ("h1", 'style="font-size:24px;font-weight:700;color:#1a202c;margin:24px 0 12px;border-bottom:2px solid #667eea;padding-bottom:8px;"'),
+    ("h2", 'style="font-size:20px;font-weight:700;color:#2d3748;margin:24px 0 10px;border-bottom:1px solid #e2e8f0;padding-bottom:6px;"'),
+    ("h3", 'style="font-size:17px;font-weight:600;color:#4a5568;margin:18px 0 8px;"'),
+    ("h4", 'style="font-size:15px;font-weight:600;color:#718096;margin:14px 0 6px;"'),
+    ("p", 'style="margin:0 0 12px;"'),
+    ("ul", 'style="margin:0 0 12px;padding-left:24px;"'),
+    ("ol", 'style="margin:0 0 12px;padding-left:24px;"'),
+    ("li", 'style="margin-bottom:4px;"'),
+    ("blockquote", 'style="margin:12px 0;padding:12px 16px;border-left:4px solid #667eea;background:#f7fafc;color:#4a5568;font-style:italic;"'),
+    ("table", 'style="border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;"'),
+    ("th", 'style="background:#667eea;color:#fff;padding:8px 12px;text-align:left;font-weight:600;"'),
+    ("td", 'style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"'),
+    ("tr", 'style="border-bottom:1px solid #e2e8f0;"'),
+    ("code", 'style="background:#edf2f7;padding:2px 5px;border-radius:3px;font-size:13px;font-family:Menlo,Monaco,Consolas,monospace;"'),
+    ("pre", 'style="background:#2d3748;color:#e2e8f0;padding:16px;border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.5;"'),
+    ("a", 'style="color:#667eea;text-decoration:none;"'),
+    ("strong", 'style="color:#1a202c;"'),
+    ("em", 'style="color:#4a5568;"'),
+    ("hr", 'style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;"'),
+]
+
+
+def _style_html_email(html: str) -> str:
+    """Inject inline CSS styles into HTML elements for email client compat."""
+    import re
+    for tag, style in _HERMES_EMAIL_ELEMENT_STYLES:
+        # Skip tags that already have a style attribute to avoid duplication
+        # Use negative lookahead: only match <tag that is NOT followed by ...style=
+        html = re.sub(
+            rf'<{tag}(?!\s+style=)(\s|>)',
+            rf'<{tag} {style}\1',
+            html,
+        )
+    # Special handling: <code> inside <pre> should be transparent
+    # Match <pre ...>...<code> and apply override style
+    html = re.sub(
+        r'(<pre[^>]*>.*?)<code(?!\s+style=)(\s|>)',
+        r'\1<code style="background:transparent;padding:0;color:inherit;"\2',
+        html,
+        flags=re.DOTALL,
+    )
+    return html
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -262,6 +336,20 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
+
+        # HTML email format — converts Markdown bodies to styled HTML.
+        #   platforms:
+        #     email:
+        #       html_format: true   # default: true (enabled)
+        #
+        # SECURITY NOTE: The Markdown library passes through raw HTML by default.
+        # We intentionally do NOT sanitize with bleach/allowlists because:
+        #   1. Hermes generates its own email bodies (LLM output, not user input)
+        #   2. Emails are sent to the configured address (self-to-self)
+        #   3. The config toggle provides a kill-switch: set html_format: false
+        # If the threat model changes (e.g. forwarding untrusted content),
+        # add bleach.clean() here with an allowed-tags list.
+        self._html_format = extra.get("html_format", True)
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -553,7 +641,22 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
+        # Plain text fallback
         msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        # HTML version with inline CSS (if enabled)
+        if self._html_format:
+            try:
+                import markdown as _md
+                html_body = _md.markdown(
+                    body,
+                    extensions=["tables", "fenced_code", "nl2br"],
+                )
+                html_body = _style_html_email(html_body)
+                html_email = _HERMES_EMAIL_CSS + html_body + _HERMES_EMAIL_FOOTER
+                msg.attach(MIMEText(html_email, "html", "utf-8"))
+            except Exception as e:
+                logger.warning("[Email] HTML conversion failed, sending plain only: %s", e)
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:

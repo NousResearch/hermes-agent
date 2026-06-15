@@ -1584,10 +1584,13 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     model = _plugin_model(values.get("model"))
     response_length = _plugin_response_length(values.get("response_length"))
     timeout = int(values.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+    prompt_path = _workspace_root() / "prompts" / f"hakua-once-{int(time.time() * 1000)}.txt"
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(prompt, encoding="utf-8")
     cmd = [
         node,
         str(script),
-        f"--once={prompt}",
+        f"--onceFile={prompt_path}",
         f"--name={character_name}",
         f"--systemPrompt={_plugin_system_prompt()}",
         f"--responseLength={response_length}",

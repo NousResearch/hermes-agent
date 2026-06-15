@@ -6,7 +6,7 @@ Hermes を **コーディングエージェントではなくローカル秘書*
 
 | 役割 | HuggingFace repo id | alias | ポート |
 |------|---------------------|-------|--------|
-| 主モデル | `mradermacher/Huihui-gemma-4-12B-it-abliterated-GGUF:Q4_K_M` | `huihui-gemma-4-12b` | 8080 |
+| 主モデル | `yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M` | `yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M` | 8080 |
 | フォールバック | `NousResearch/Hermes-3-Llama-3.1-8B-GGUF:Q4_K_M` | `hermes3-8b-fallback` | 8081 |
 | 軽量補助 | `unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M` | `phi4-mini-aux` | 8082 |
 
@@ -57,8 +57,9 @@ powershell -ExecutionPolicy Bypass -File scripts/windows/test-irodori-tts.ps1
 | 変数 | 既定値 |
 |------|--------|
 | `HERMES_LLAMA_SERVER_EXE` | `%LOCALAPPDATA%\Programs\llama-turboquant\bin\llama-server.exe` |
-| `HERMES_LLAMA_MODEL` | `mradermacher/Huihui-gemma-4-12B-it-abliterated-GGUF:Q4_K_M` |
-| `HERMES_LLAMA_ALIAS` | `huihui-gemma-4-12b` |
+| `HERMES_LLAMA_MODEL` | `yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M` |
+| `HERMES_LLAMA_GGUF_PATH` | 空なら `--hf-repo`、ローカル運用では `~/.hermes/.env` で実GGUFへ設定 |
+| `HERMES_LLAMA_ALIAS` | `yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M` |
 | `HERMES_LLAMA_HOST` | `127.0.0.1` |
 | `HERMES_LLAMA_PORT` | `8080` |
 | `HERMES_LLAMA_CTX` | `65536` |

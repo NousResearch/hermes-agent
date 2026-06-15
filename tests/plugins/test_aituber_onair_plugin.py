@@ -195,7 +195,10 @@ def test_run_hakua_once_dispatches_codex_character_cli(monkeypatch, tmp_path):
     cmd, cwd, env, timeout_seconds = calls[0]
     assert cmd[0] == "node"
     assert "index.js" in cmd[1]
-    assert "--once=挨拶して" in cmd
+    once_file_args = [arg for arg in cmd if arg.startswith("--onceFile=")]
+    assert len(once_file_args) == 1
+    once_file = Path(once_file_args[0].split("=", 1)[1])
+    assert once_file.read_text(encoding="utf-8") == "挨拶して"
     assert env["CODEX_CHARACTER_NAME"] == "はくあ"
     assert env["CODEX_CHARACTER_SYSTEM_PROMPT"] == "Hakua prompt"
     assert cwd == repo

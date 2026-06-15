@@ -1,5 +1,5 @@
 # Local secretary runtime — llama.cpp primary launcher (RTX 3060 profile)
-# Loads Huihui Gemma 4 12B via llama-server -hf/--hf-repo with --jinja for tool calling.
+# Loads the configured Gemma 4 coder GGUF via local path or llama-server -hf/--hf-repo with --jinja for tool calling.
 
 param(
     [switch]$SkipFallbackOnFailure,
@@ -50,9 +50,9 @@ if (-not $env:HF_HUB_CACHE) {
 New-Item -ItemType Directory -Path $env:HF_HUB_CACHE -Force | Out-Null
 
 $ServerExe = Resolve-Default "HERMES_LLAMA_SERVER_EXE" (Join-Path $env:LOCALAPPDATA "Programs\llama-turboquant\bin\llama-server.exe")
-$ModelRepo = Resolve-Default "HERMES_LLAMA_MODEL" "mradermacher/Huihui-gemma-4-12B-it-abliterated-GGUF:Q4_K_M"
+$ModelRepo = Resolve-Default "HERMES_LLAMA_MODEL" "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M"
 $ModelPath = Resolve-Default "HERMES_LLAMA_GGUF_PATH" ""
-$Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "huihui-gemma-4-12b"
+$Alias = Resolve-Default "HERMES_LLAMA_ALIAS" "yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q4_K_M"
 $HostName = Resolve-Default "HERMES_LLAMA_HOST" "127.0.0.1"
 $Port = [int](Resolve-Default "HERMES_LLAMA_PORT" "8080")
 $Ctx = [int](Resolve-Default "HERMES_LLAMA_CTX" "65536")

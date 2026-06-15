@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
 import queue
@@ -1032,7 +1033,21 @@ class GatewayStreamConsumer:
         last_message_id: Optional[str] = None
         last_successful_chunk = ""
         sent_any_chunk = False
+        # Dedup: track chunk content digests to prevent duplicate sends
+        # when a transient error causes a retry that also succeeds.
+        _sent_chunk_digests: set[str] = set()
         for chunk in chunks:
+            chunk_digest = hashlib.md5(chunk.encode()).hexdigest()
+            if chunk_digest in _sent_chunk_digests:
+                logger.debug(
+                    "stream_consumer: skipping duplicate chunk (digest=%s)",
+                    chunk_digest,
+                )
+                self._already_sent = True
+                self._message_id = last_message_id
+                self._last_sent_text = last_successful_chunk
+                sent_any_chunk = True
+                continue
             # Try sending with one retry on flood-control errors.
             result = None
             for attempt in range(2):
@@ -1074,6 +1089,7 @@ class GatewayStreamConsumer:
             sent_any_chunk = True
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
+            _sent_chunk_digests.add(chunk_digest)
             # Each fallback chunk is a fresh platform message — notify
             # so any stale tool-progress bubble gets closed off.
             self._notify_new_message()

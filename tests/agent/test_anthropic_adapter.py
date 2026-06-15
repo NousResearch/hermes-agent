@@ -27,6 +27,7 @@ from agent.anthropic_adapter import (
     run_oauth_setup_token,
 )
 from agent.transports import get_transport
+from utils import merge_later_user_text
 
 
 # ---------------------------------------------------------------------------
@@ -1638,8 +1639,7 @@ class TestRoleAlternation:
         _, result = convert_messages_to_anthropic(messages)
         assert len(result) == 1
         assert result[0]["role"] == "user"
-        assert "Hello" in result[0]["content"]
-        assert "World" in result[0]["content"]
+        assert result[0]["content"] == merge_later_user_text("Hello", "World")
 
     def test_preserves_proper_alternation(self):
         messages = [

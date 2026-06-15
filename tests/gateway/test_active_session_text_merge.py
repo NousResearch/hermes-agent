@@ -37,6 +37,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.session import SessionSource, build_session_key
+from utils import merge_later_user_text
 
 
 def _make_event(
@@ -128,7 +129,7 @@ async def test_rapid_text_followups_accumulate_instead_of_replacing():
     await adapter.handle_message(_make_event("part three"))
 
     pending = adapter._pending_messages[session_key]
-    assert pending.text == "part two\npart three"
+    assert pending.text == merge_later_user_text("part two", "part three")
     assert not adapter._active_sessions[session_key].is_set()
 
 
@@ -147,12 +148,18 @@ async def test_debounce_buffers_rapid_text_then_flushes_to_pending():
     assert session_key not in adapter._pending_messages
 
     await adapter.handle_message(_make_event("part three"))
-    assert _debounced_event(adapter, session_key).text == "part two\npart three"
+    assert _debounced_event(adapter, session_key).text == merge_later_user_text(
+        "part two",
+        "part three",
+    )
 
     await asyncio.sleep(0.15)
 
     assert session_key not in adapter._text_debounce
-    assert adapter._pending_messages[session_key].text == "part two\npart three"
+    assert adapter._pending_messages[session_key].text == merge_later_user_text(
+        "part two",
+        "part three",
+    )
 
 
 @pytest.mark.asyncio
@@ -184,7 +191,10 @@ async def test_debounce_resets_timer_on_new_arrival():
 
     await asyncio.sleep(0.2)
     assert session_key not in adapter._text_debounce
-    assert adapter._pending_messages[session_key].text == "one\ntwo\nthree"
+    assert adapter._pending_messages[session_key].text == merge_later_user_text(
+        merge_later_user_text("one", "two"),
+        "three",
+    )
 
 
 @pytest.mark.asyncio

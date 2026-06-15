@@ -23,7 +23,11 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, normalize_proxy_env_vars
+from utils import (
+    base_url_host_matches,
+    merge_later_user_text,
+    normalize_proxy_env_vars,
+)
 
 # NOTE: `import anthropic` is deliberately NOT at module top — the SDK pulls
 # ~220 ms of imports (anthropic.types, anthropic.lib.tools._beta_runner, etc.)
@@ -2008,7 +2012,7 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
                 prev_content = fixed[-1]["content"]
                 curr_content = m["content"]
                 if isinstance(prev_content, str) and isinstance(curr_content, str):
-                    fixed[-1]["content"] = prev_content + "\n" + curr_content
+                    fixed[-1]["content"] = merge_later_user_text(prev_content, curr_content)
                 elif isinstance(prev_content, list) and isinstance(curr_content, list):
                     fixed[-1]["content"] = prev_content + curr_content
                 else:

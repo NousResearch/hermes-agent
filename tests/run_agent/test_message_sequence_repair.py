@@ -10,6 +10,7 @@ recovery every turn.
 """
 
 from run_agent import AIAgent
+from utils import merge_later_user_text
 
 
 def _bare_agent():
@@ -90,7 +91,7 @@ def test_repair_merges_consecutive_user_messages():
     assert repairs == 1
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
-    assert messages[0]["content"] == "first\n\nsecond"
+    assert messages[0]["content"] == merge_later_user_text("first", "second")
 
 
 def test_repair_preserves_user_content_when_one_side_empty():

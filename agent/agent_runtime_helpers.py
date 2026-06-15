@@ -37,7 +37,13 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
-from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
+from utils import (
+    atomic_json_write,
+    base_url_host_matches,
+    base_url_hostname,
+    env_var_enabled,
+    merge_later_user_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -362,8 +368,9 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     Repairs applied:
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
-      2. Consecutive ``user`` messages — merged with newline separator
-         so no user input is lost.
+      2. Consecutive ``user`` messages — merged with an explicit
+         later-message boundary so no user input is lost and the model
+         can still see where one user thought ended and the next began.
 
     Deliberately does NOT rewind orphan ``assistant(tool_calls)+tool``
     pairs that precede a user message — that pattern IS valid when the
@@ -428,11 +435,7 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             # content alone — collapsing image/audio blocks risks
             # mangling the attachment structure.
             if isinstance(prev_content, str) and isinstance(new_content, str):
-                prev["content"] = (
-                    (prev_content + "\n\n" + new_content)
-                    if prev_content and new_content
-                    else (prev_content or new_content)
-                )
+                prev["content"] = merge_later_user_text(prev_content, new_content)
                 repairs += 1
                 continue
         merged.append(msg)

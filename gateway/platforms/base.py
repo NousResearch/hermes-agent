@@ -20,7 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import merge_later_user_text, normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -1617,10 +1617,11 @@ def merge_pending_message_event(
     events. Merge those into the existing queued event so the next turn sees
     the whole burst.
 
-    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
+    When ``merge_text`` is enabled, rapid follow-up TEXT events are merged
     instead of replacing the pending turn. This is used for Telegram bursty
     follow-ups so a multi-part user thought is not silently truncated to only
-    the last queued fragment.
+    the last queued fragment, while still preserving a visible boundary between
+    later messages.
     """
     existing = pending_messages.get(session_key)
     if existing:
@@ -1660,7 +1661,7 @@ def merge_pending_message_event(
             and event.message_type == MessageType.TEXT
         ):
             if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+                existing.text = merge_later_user_text(existing.text or "", event.text)
             return
 
     pending_messages[session_key] = event
@@ -3598,11 +3599,7 @@ class BasePlatformAdapter(ABC):
             store[session_key] = state
         else:
             if event.text:
-                state.event.text = (
-                    f"{state.event.text}\n{event.text}"
-                    if state.event.text
-                    else event.text
-                )
+                state.event.text = merge_later_user_text(state.event.text or "", event.text)
             latest_message_id = getattr(event, "message_id", None)
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:

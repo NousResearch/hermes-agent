@@ -15,7 +15,7 @@ import os
 import re
 import uuid
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -475,7 +475,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         payload = {
             "addresses": [address],
             "message": message,
-            "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+            "tempGuid": f"temp-{datetime.now(timezone.utc).timestamp()}",
         }
         try:
             res = await self._api_post("/api/v1/chat/new", payload)
@@ -531,7 +531,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
             payload: Dict[str, Any] = {
                 "chatGuid": guid,
-                "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+                "tempGuid": f"temp-{datetime.now(timezone.utc).timestamp()}",
                 "message": chunk,
             }
             if reply_to and self._private_api_enabled and self._helper_connected:
@@ -730,8 +730,102 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return False
 
     # ------------------------------------------------------------------
-    # Tapback reactions
+    # Tapback reactions (outbound)
     # ------------------------------------------------------------------
+
+    async def add_reaction(
+        self, chat_id: str, emoji: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Send an emoji reaction (tapback) to a message.
+
+        Maps ❤️👍👎😂‼️❓ to native iMessage tapbacks. Other emoji are sent as
+        custom-emoji reactions.
+
+        Without ``message_id``, returns an error — BlueBubbles requires an explicit
+        target message GUID to attach the reaction.
+        """
+        if not message_id:
+            return {
+                "success": False,
+                "error": "message_id is required for BlueBubbles reactions",
+            }
+
+        if not self.client:
+            return {"success": False, "error": "Not connected"}
+
+        # Map emoji to tapback codes
+        _EMOJI_TO_TAPBACK = {
+            "❤️": 2000, "👍": 2001, "👎": 2002,
+            "😂": 2003, "‼️": 2004, "❓": 2005,
+            "love": 2000, "like": 2001, "dislike": 2002,
+            "laugh": 2003, "emphasize": 2004, "question": 2005,
+        }
+
+        tapback_code = _EMOJI_TO_TAPBACK.get(emoji)
+
+        try:
+            payload = {
+                "messageGuid": message_id,
+                "chatGuid": await self._resolve_chat_guid(chat_id),
+                "tempGuid": f"temp-{datetime.now(timezone.utc).timestamp()}",
+            }
+
+            if tapback_code:
+                # Native iMessage tapback
+                payload["associatedMessageType"] = tapback_code
+                endpoint = "/api/v1/message/tapback"
+            else:
+                # Custom emoji reaction (via send with special flag)
+                payload["emoji"] = emoji
+                endpoint = "/api/v1/message/react"
+
+            await self._api_post(endpoint, payload)
+            return {"success": True, "message_id": message_id}
+        except Exception as exc:
+            logger.debug("[bluebubbles] add_reaction failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> Dict[str, Any]:
+        """Remove a reaction from a message.
+
+        Sends a tapback removal (code 3000-3005) to withdraw the reaction.
+        Best-effort; after a gateway restart the reaction ID is lost and
+        removal may fail.
+        """
+        if not message_id:
+            return {
+                "success": False,
+                "error": "message_id is required for BlueBubbles reactions",
+            }
+
+        if not self.client:
+            return {"success": False, "error": "Not connected"}
+
+        try:
+            guid = await self._resolve_chat_guid(chat_id)
+            if not guid:
+                return {"success": False, "error": f"Chat not found: {chat_id}"}
+
+            payload = {
+                "messageGuid": message_id,
+                "chatGuid": guid,
+                "tempGuid": f"temp-{datetime.now(timezone.utc).timestamp()}",
+            }
+
+            # Use associatedMessageType 3000-3005 for tapback removal
+            # We don't know which tapback was sent, so we try to remove all variants
+            for code in range(3000, 3006):
+                payload["associatedMessageType"] = code
+                try:
+                    await self._api_post("/api/v1/message/tapback", payload)
+                except Exception:
+                    # Continue trying other codes on failure
+                    pass
+
+            return {"success": True, "message_id": message_id}
+        except Exception as exc:
+            logger.debug("[bluebubbles] remove_reaction failed: %s", exc)
+            return {"success": False, "error": str(exc)}
 
     # ------------------------------------------------------------------
     # Chat info

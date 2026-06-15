@@ -327,6 +327,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    "xai-oauth": "grok-4.3",  # explicit vision-capable model for xAI OAuth main provider
 }
 
 # Providers whose endpoint does not accept image input, even though the

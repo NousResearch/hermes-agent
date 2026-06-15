@@ -102,6 +102,37 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _has_oauth_provider_config() -> bool:
+    """Return True when at least one OAuth-backed provider is logged in."""
+    checks = []
+    try:
+        from hermes_cli.auth import (
+            get_codex_auth_status,
+            get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
+            get_nous_auth_status,
+            get_xai_oauth_auth_status,
+        )
+
+        checks = [
+            get_codex_auth_status,
+            get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
+            get_nous_auth_status,
+            get_xai_oauth_auth_status,
+        ]
+    except Exception:
+        return False
+
+    for check in checks:
+        try:
+            if (check() or {}).get("logged_in"):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -135,8 +166,23 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
     updated_unavailable = []
+    enabled_cli_toolsets: set[str] | None = None
+    try:
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.tools_config import _get_platform_tools
+
+        enabled_cli_toolsets = _get_platform_tools(
+            read_raw_config(),
+            "cli",
+            include_default_mcp_servers=False,
+        )
+    except Exception:
+        enabled_cli_toolsets = None
+
     for item in unavailable:
         name = item.get("name")
+        if enabled_cli_toolsets is not None and name not in enabled_cli_toolsets:
+            continue
         if _is_kanban_worker_env_gate(item):
             if "kanban" not in updated_available:
                 updated_available.append("kanban")
@@ -654,6 +700,8 @@ def run_doctor(args):
         content = env_path.read_text(encoding="utf-8")
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
+        elif _has_oauth_provider_config():
+            check_ok("OAuth provider configured")
         else:
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'hermes setup' to configure API keys")

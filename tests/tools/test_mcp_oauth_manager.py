@@ -8,6 +8,7 @@ import json
 import os
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,6 +16,12 @@ pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",
 )
+
+
+def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = is_tty
+    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 def test_manager_is_singleton():
@@ -29,6 +36,7 @@ def test_manager_is_singleton():
 def test_manager_get_or_build_provider_caches(tmp_path, monkeypatch):
     """Calling get_or_build_provider twice with same name returns same provider."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
     from tools.mcp_oauth_manager import MCPOAuthManager
 
     mgr = MCPOAuthManager()
@@ -40,6 +48,7 @@ def test_manager_get_or_build_provider_caches(tmp_path, monkeypatch):
 def test_manager_get_or_build_rebuilds_on_url_change(tmp_path, monkeypatch):
     """Changing the URL discards the cached provider."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
     from tools.mcp_oauth_manager import MCPOAuthManager
 
     mgr = MCPOAuthManager()
@@ -51,6 +60,7 @@ def test_manager_get_or_build_rebuilds_on_url_change(tmp_path, monkeypatch):
 def test_manager_remove_evicts_cache(tmp_path, monkeypatch):
     """remove(name) evicts the provider from cache AND deletes disk files."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
     from tools.mcp_oauth_manager import MCPOAuthManager
 
     # Pre-seed tokens on disk
@@ -132,6 +142,7 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     )
     reset_manager_for_tests()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
 
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
@@ -230,3 +241,18 @@ async def test_force_login_runs_authorization_without_401(tmp_path, monkeypatch)
     assert provider.persisted is True
     assert sent_requests == [("POST", "https://auth.example/token", 12.0)]
     assert mgr._entries["srv"].last_mtime_ns == token_file.stat().st_mtime_ns
+
+
+def test_manager_fails_fast_noninteractive_without_cached_tokens(tmp_path, monkeypatch):
+    """A daemon without cached MCP OAuth tokens must not enter browser auth."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch, is_tty=False)
+    from tools.mcp_oauth import OAuthNonInteractiveError
+    from tools.mcp_oauth_manager import MCPOAuthManager
+
+    mgr = MCPOAuthManager()
+
+    with pytest.raises(OAuthNonInteractiveError, match="non-interactive"):
+        mgr.get_or_build_provider("linear", "https://mcp.linear.app/mcp", None)
+
+    assert mgr._entries["linear"].provider is None

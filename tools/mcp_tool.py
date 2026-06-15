@@ -89,6 +89,7 @@ import shutil
 import sys
 import threading
 import time
+from typing import Callable
 from datetime import datetime
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
@@ -2673,6 +2674,33 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
+    """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
+    try:
+        from hermes_cli.mcp_security import validate_mcp_server_entry as _validate_mcp_server_entry
+    except Exception:
+        _validate_mcp_server_entry: Callable[[str, dict[str, Any]], list[str]] | None = None
+
+    if _validate_mcp_server_entry is None:
+        return servers
+
+    safe_servers = {}
+    for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            safe_servers[name] = cfg
+            continue
+        issues = _validate_mcp_server_entry(name, cfg)
+        if issues:
+            logger.warning(
+                "Skipping suspicious MCP server '%s': %s",
+                name,
+                "; ".join(issues),
+            )
+            continue
+        safe_servers[name] = cfg
+    return safe_servers
+
+
 def _load_mcp_config() -> Dict[str, dict]:
     """Read ``mcp_servers`` from the Hermes config file.
 
@@ -2701,7 +2729,12 @@ def _load_mcp_config() -> Dict[str, dict]:
             load_hermes_dotenv()
         except Exception:
             pass
-        return {name: _interpolate_env_vars(cfg) for name, cfg in servers.items()}
+        safe_servers: Dict[str, dict] = {}
+        for name, cfg in _filter_suspicious_mcp_servers(servers).items():
+            interpolated = _interpolate_env_vars(cfg)
+            if isinstance(interpolated, dict):
+                safe_servers[name] = interpolated
+        return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)
         return {}
@@ -3648,6 +3681,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("MCP SDK not available -- skipping explicit MCP registration")
         return []
 
+    servers = _filter_suspicious_mcp_servers(servers)
     if not servers:
         logger.debug("No explicit MCP servers provided")
         return []

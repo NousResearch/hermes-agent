@@ -1643,9 +1643,13 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # Persist multimodal tool results as their text summary only —
+                # base64 images would bloat the session DB and aren't useful
+                # for cross-session replay.
                 if _is_multimodal_tool_result(content):
                     content = _multimodal_text_summary(content)
                 elif isinstance(content, list):
+                    # List of OpenAI-style content parts: strip images, keep text.
                     _txt = []
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "text":

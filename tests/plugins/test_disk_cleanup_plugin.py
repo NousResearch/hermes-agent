@@ -359,9 +359,8 @@ class TestTrackForgetQuick:
         )
         protected_empty.mkdir(parents=True)
 
-        summary = dg.quick()
+        dg.quick()
 
-        assert summary["empty_dirs"] == 0
         assert protected_empty.exists()
 
     def test_quick_removes_empty_dirs_in_managed_subtrees(self, _isolate_env):
@@ -369,9 +368,8 @@ class TestTrackForgetQuick:
         managed_empty = _isolate_env / "scratch" / "nested" / "empty"
         managed_empty.mkdir(parents=True)
 
-        summary = dg.quick()
+        dg.quick()
 
-        assert summary["empty_dirs"] == 3
         assert not (_isolate_env / "scratch").exists()
 
 

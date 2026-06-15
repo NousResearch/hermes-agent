@@ -337,3 +337,63 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     root_tok.parent.mkdir(parents=True, exist_ok=True)
     root_tok.write_text("x")
     assert "MCP token" in (get_read_block_error(str(root_tok)) or "")
+
+
+def test_sibling_profile_credentials_blocked(tmp_path, monkeypatch):
+    """Credential stores in sibling profiles must also be blocked (#46411).
+
+    A session in the default/root profile should NOT be able to read
+    ``auth.json`` or ``.anthropic_oauth.json`` from a sibling profile
+    under ``<root>/profiles/<other>/``.
+    """
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    active = root / "profiles" / "active"
+    sibling = root / "profiles" / "sibling"
+    active.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: active)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error
+
+    # Sibling profile auth.json: blocked
+    sib_auth = sibling / "auth.json"
+    sib_auth.write_text('{"token": "sibling_secret"}')
+    err = get_read_block_error(str(sib_auth))
+    assert err is not None, "sibling profile auth.json must be blocked"
+    assert "credential store" in err
+
+    # Sibling profile .anthropic_oauth.json: blocked
+    sib_oauth = sibling / ".anthropic_oauth.json"
+    sib_oauth.write_text('{"key": "sibling_oauth"}')
+    err = get_read_block_error(str(sib_oauth))
+    assert err is not None, "sibling profile .anthropic_oauth.json must be blocked"
+
+    # Sibling profile mcp-tokens dir: blocked
+    sib_mcp = sibling / "mcp-tokens"
+    sib_mcp.mkdir()
+    (sib_mcp / "token.json").write_text("secret")
+    err = get_read_block_error(str(sib_mcp))
+    assert err is not None, "sibling profile mcp-tokens/ must be blocked"
+
+    # Sibling profile webhook_subscriptions.json: blocked
+    sib_webhook = sibling / "webhook_subscriptions.json"
+    sib_webhook.write_text("{}")
+    err = get_read_block_error(str(sib_webhook))
+    assert err is not None, "sibling profile webhook_subscriptions.json must be blocked"
+
+    # Non-credential file in sibling profile: NOT blocked
+    sib_readme = sibling / "README.md"
+    sib_readme.write_text("# sibling")
+    err = get_read_block_error(str(sib_readme))
+    assert err is None, "non-credential file in sibling profile should be readable"
+
+    # Third sibling profile: also blocked
+    third = root / "profiles" / "third"
+    third.mkdir(parents=True)
+    third_auth = third / "auth.json"
+    third_auth.write_text('{"token": "third_secret"}')
+    err = get_read_block_error(str(third_auth))
+    assert err is not None, "third sibling profile auth.json must be blocked"

@@ -206,6 +206,19 @@ def get_read_block_error(path: str) -> Optional[str]:
         except Exception:
             continue
 
+    # Also enumerate sibling profile directories under <root>/profiles/
+    # so credential stores in other profiles are blocked too (#46411).
+    try:
+        profiles_dir = _hermes_root_path().resolve() / "profiles"
+        if profiles_dir.is_dir():
+            for child in profiles_dir.iterdir():
+                if child.is_dir():
+                    real = child.resolve()
+                    if real not in hermes_dirs:
+                        hermes_dirs.append(real)
+    except Exception:
+        pass
+
     # Skills .hub: prompt-injection carriers.
     for hd in hermes_dirs:
         blocked_dirs = [

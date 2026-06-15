@@ -8,7 +8,11 @@ Workers MUST import from here rather than redefining the shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+import logging
 from typing import Any, Dict, List, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,7 +62,9 @@ class TurnRecord:
     comp_skills_tokens: Optional[int] = None
     comp_skills_count: Optional[int] = None
     comp_framing_tokens: Optional[int] = None
-    # Per-call composition history JSON (list of breakdown dicts) for forensics.
+    # Per-call composition history JSON. OLD rows contain a list of composition
+    # dicts. NEW rows contain {composition, output_tokens, reasoning_tokens} so
+    # finished/unfinished output can be derived without a schema migration.
     comp_calls_json: Optional[str] = None
     cost_usd: Optional[float] = None
     cost_status: str = "unknown"                   # estimated|included|unknown|partial
@@ -78,6 +84,46 @@ class TurnRecord:
         d = asdict(self)
         d.pop("tool_calls", None)
         return d
+
+
+def _normalize_call(entry):
+    # NEW shape: {"composition": {...}, "output_tokens": int, "reasoning_tokens": int}.
+    # The NEW comprehension always writes top-level "output_tokens" (even when 0),
+    # so its presence is a total, unambiguous OLD/NEW discriminator. Do NOT compound
+    # it with "composition"/"fixed_tokens" tests.
+    if isinstance(entry, dict) and "output_tokens" in entry:
+        return entry.get("composition"), entry.get("output_tokens"), entry.get("reasoning_tokens")
+    # OLD shape: the entry IS the composition dict (or None) → no per-call output known.
+    return entry, None, None
+
+
+def turn_output_split(comp_calls, output_billed, *, turn_id: str | None = None):
+    """Return (finished, unfinished) or (None, None) if the split is unknown."""
+    if not comp_calls:
+        return (None, None)
+    per_call = [_normalize_call(e) for e in comp_calls]
+    outs = [o for (_c, o, _r) in per_call]
+    if any(o is None for o in outs):
+        return (None, None)
+    try:
+        int_outs = []
+        for o in outs:
+            if o is None:
+                return (None, None)
+            int_outs.append(int(o))
+        billed = int(output_billed or 0)
+    except (TypeError, ValueError):
+        return (None, None)
+    finished = int_outs[-1]
+    if billed < finished:
+        logger.warning(
+            "blackbox output split clamp turn_id=%s output_billed=%s finished=%s",
+            turn_id or "",
+            billed,
+            finished,
+        )
+    unfinished = max(0, billed - finished)
+    return (finished, unfinished)
 
 
 def tools_summary(tools: List[str]) -> str:

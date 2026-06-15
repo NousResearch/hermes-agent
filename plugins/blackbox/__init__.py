@@ -182,7 +182,7 @@ def _comp_get(usage: dict[str, Any], key: str) -> int | None:
 
 
 def _comp_calls_json(usage: dict[str, Any]) -> str | None:
-    """Serialize per-call composition history to a compact JSON blob (or None)."""
+    """Serialize per-call composition/output history to a compact JSON blob."""
     calls = usage.get("composition_calls")
     if not calls:
         return None

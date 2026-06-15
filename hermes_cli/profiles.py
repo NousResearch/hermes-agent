@@ -1268,7 +1268,7 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     if not mgr.supports_runtime_registration():
         return  # host backend; no-op
     try:
-        mgr.register_profile_gateway(profile_name)
+        mgr.register_profile_gateway(profile_name, start_now=False)
     except ValueError:
         # Already registered (e.g. the container-boot reconciler ran
         # first and brought up a stale slot). That's fine.

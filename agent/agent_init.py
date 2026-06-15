@@ -1077,7 +1077,6 @@ def init_agent(
     agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
-    agent._session_db_failed = False
     agent._session_db_create_fail_count = 0
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,

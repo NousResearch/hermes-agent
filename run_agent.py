@@ -523,9 +523,8 @@ class AIAgent:
                 cwd=_launch_cwd_for_session(source),
             )
             self._session_db_created = True
-            if self._session_db_failed:
+            if self._session_db_create_fail_count:
                 failed_count = self._session_db_create_fail_count
-                self._session_db_failed = False
                 self._session_db_create_fail_count = 0
                 logger.info("Session DB creation recovered after %d failures",
                             failed_count)
@@ -533,7 +532,6 @@ class AIAgent:
             # Transient failure (e.g. SQLite lock). Keep _session_db alive —
             # _session_db_created stays False so next run_conversation() retries.
             self._session_db_create_fail_count += 1
-            self._session_db_failed = True
             logger.error(
                 "Session DB creation failed (#%d consecutive): %s",
                 self._session_db_create_fail_count, e
@@ -1496,33 +1494,11 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
-        # If DB persistence is degraded, immediately write JSONL fallback
-        # for unflushed messages only — avoid duplicating already-persisted rows.
-        if (self._session_db_failed or not self._session_db) and messages:
-            try:
-                from hermes_constants import get_hermes_home
-                sid = getattr(self, 'session_id', 'unknown')
-                base = Path(get_hermes_home())
-                profile = os.environ.get("HERMES_PROFILE")
-                if profile and profile != "default":
-                    base = base / "profiles" / profile
-                fb_dir = base / "sessions"
-                fb_dir.mkdir(parents=True, exist_ok=True)
-                fb_path = fb_dir / f"{sid}.pending.jsonl"
-                unflushed = messages[self._last_flushed_db_idx:]
-                now_ts = time.time()
-                with open(fb_path, "a") as f:
-                    for msg in unflushed:
-                        # Save message with timestamp for later recovery
-                        # Use msg.get("timestamp") if available, otherwise current time
-                        msg_ts = msg.get("_flush_timestamp", now_ts)
-                        wrapped = {
-                            "_fallback_timestamp": msg_ts,
-                            "message": msg,
-                        }
-                        f.write(json.dumps(wrapped, ensure_ascii=False) + "\n")
-            except Exception:
-                pass  # Last-resort fallback — if even this fails, nothing more we can do
+        # When SessionDB is entirely absent (e.g. SQLite init failed),
+        # _flush_messages_to_session_db returns early. Write ALL messages
+        # to the pending file so they can be recovered on next startup.
+        if not self._session_db and messages:
+            self._write_pending_fallback(messages, 0)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1582,6 +1558,37 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
+    def _write_pending_fallback(self, messages: List[Dict], start_idx: int) -> None:
+        """Write messages[start_idx:] to a per-session pending JSONL file.
+
+        Called immediately when a DB append fails, so unflushed messages are
+        preserved without relying on a sticky flag.
+        """
+        if start_idx >= len(messages):
+            return
+        try:
+            from hermes_constants import get_hermes_home
+            sid = getattr(self, 'session_id', 'unknown')
+            base = Path(get_hermes_home())
+            profile = os.environ.get("HERMES_PROFILE")
+            if profile and profile != "default":
+                base = base / "profiles" / profile
+            fb_dir = base / "sessions"
+            fb_dir.mkdir(parents=True, exist_ok=True)
+            fb_path = fb_dir / f"{sid}.pending.jsonl"
+            unflushed = messages[start_idx:]
+            now_ts = time.time()
+            with open(fb_path, "a") as f:
+                for msg in unflushed:
+                    msg_ts = msg.get("_flush_timestamp", now_ts)
+                    wrapped = {
+                        "_fallback_timestamp": msg_ts,
+                        "message": msg,
+                    }
+                    f.write(json.dumps(wrapped, ensure_ascii=False) + "\n")
+        except Exception:
+            pass  # Last-resort — if even the fallback fails, nothing more we can do
+
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
@@ -1624,7 +1631,6 @@ class AIAgent:
             }
 
             last_successful_idx = self._last_flushed_db_idx
-            flush_ok = True
             for idx, msg in enumerate(messages):
                 if not isinstance(msg, dict):
                     continue
@@ -1679,15 +1685,12 @@ class AIAgent:
                     flushed_ids.add(msg_id)
                     last_successful_idx = idx + 1
                 except Exception:
-                    self._session_db_failed = True
-                    flush_ok = False
+                    self._write_pending_fallback(messages, last_successful_idx)
                     break
             self._last_flushed_db_idx = last_successful_idx
-            if flush_ok:
-                self._session_db_failed = False
         except Exception as e:
-            self._session_db_failed = True
             logger.error("Session DB flush failed: %s", e)
+            self._write_pending_fallback(messages, 0)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

@@ -128,6 +128,11 @@ def finalize_turn(
         and not failed
     )
 
+    # Remove private retry scaffolding before any durable write. Otherwise
+    # trajectory/session logs can replay assistant("(empty)") or synthetic
+    # progress nudges as if they were meaningful model responses.
+    agent._drop_trailing_empty_response_scaffolding(messages)
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
     agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed)
@@ -135,11 +140,8 @@ def finalize_turn(
     # Clean up VM and browser for this task after conversation completes
     agent._cleanup_task_resources(effective_task_id)
 
-    # Persist session to both JSON log and SQLite only after private retry
-    # scaffolding has been removed. Otherwise a later user "continue" turn
-    # can replay assistant("(empty)") / recovery nudges and fall into the
-    # same empty-response loop again.
-    agent._drop_trailing_empty_response_scaffolding(messages)
+    # Persist session to both JSON log and SQLite after private retry
+    # scaffolding has been removed.
     agent._persist_session(messages, conversation_history)
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────

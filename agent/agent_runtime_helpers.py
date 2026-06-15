@@ -2166,7 +2166,6 @@ def looks_like_post_tool_progress_only(
     agent,
     assistant_content: str,
     messages: List[Dict[str, Any]],
-    current_turn_user_idx: int | None = None,
 ) -> bool:
     """Detect status/progress text that should not close a post-tool turn.
 
@@ -2177,11 +2176,7 @@ def looks_like_post_tool_progress_only(
     applies when recent tool results exist and the visible text is short,
     status-shaped, and lacks final-answer markers.
     """
-    if current_turn_user_idx is not None and current_turn_user_idx >= 0:
-        turn_messages = messages[current_turn_user_idx + 1:]
-    else:
-        turn_messages = messages[-8:]
-    if not any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in turn_messages):
+    if not any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages[-8:]):
         return False
 
     visible = agent._strip_think_blocks(assistant_content or "").strip()
@@ -2191,7 +2186,6 @@ def looks_like_post_tool_progress_only(
         return False
 
     lowered = re.sub(r"\s+", " ", visible.lower()).strip()
-    compact = re.sub(r"\s+", "", visible.lower())
 
     final_markers = (
         "작업한 일",
@@ -2216,39 +2210,21 @@ def looks_like_post_tool_progress_only(
     if any(marker in lowered for marker in final_markers):
         return False
 
-    # Avoid substring matches: a real final answer may legitimately contain
-    # phrases such as "자료 수집 중 발견한 핵심" or "확인 중 오류를 발견".
-    # Treat the response as progress-only only when every visible clause is a
-    # bare status/update phrase and contains no result payload.
-    payload_markers = (
-        "발견",
-        "확인했습니다",
-        "확인했",
-        "확인됨",
-        "원인",
-        "오류",
-        "문제",
-        "핵심",
-        "결과:",
-        "중간 결과",
-        "수정",
-        "적용",
-        "found ",
-        "discovered",
-        "because",
-        "root cause",
-    )
-    if any(marker in lowered for marker in payload_markers):
-        return False
-
-    status_clause_patterns = (
-        r"(?:정보|자료|데이터|소스)?\s*(?:수집|검색)\s*중(?:입니다|이에요|입니다요|요)?",
-        r"찾은\s*내용\s*분석\s*중(?:입니다|이에요|요)?",
-        r"(?:조사|분석|정리|검토|확인|처리|진행)\s*중(?:입니다|이에요|요)?",
-        r"작업\s*(?:진행\s*)?중(?:입니다|이에요|요)?",
+    progress_clause_patterns = (
+        r"정보\s*수집\s*중(?:입니다)?",
+        r"자료\s*수집\s*중(?:입니다)?",
+        r"찾은\s*내용\s*분석\s*중(?:입니다)?",
+        r"분석\s*중(?:입니다)?",
+        r"조사\s*중(?:입니다)?",
+        r"정리\s*중(?:입니다)?",
+        r"검토\s*중(?:입니다)?",
+        r"확인\s*중(?:입니다)?",
+        r"처리\s*중(?:입니다)?",
+        r"작업\s*(?:진행\s*)?중(?:입니다)?",
+        r"진행\s*중(?:입니다)?",
         r"잠시만(?:요)?",
-        r"곧\s*(?:정리|보고)(?:하겠습니다|할게요|합니다)?",
-        r"마저\s*(?:확인|분석|정리)(?:하겠습니다|할게요|합니다)?",
+        r"곧\s*(?:정리|보고)(?:하겠습니다)?",
+        r"마저\s*(?:확인|분석|정리)(?:하겠습니다)?",
         r"working on it",
         r"still (?:checking|analyzing|analysing|researching|working)",
         r"i(?:'|’)m (?:checking|analyzing|analysing|researching|working)",
@@ -2260,25 +2236,21 @@ def looks_like_post_tool_progress_only(
         r"i will (?:check|analy[sz]e|review|summari[sz]e|report back)",
     )
     clauses = [
-        clause.strip(" \t\r\n.!?。．…·-–—:：")
-        for clause in re.split(r"[\n.!?。．…]+", visible)
+        clause.strip(" \t\r\n.,!?;:…~。！？")
+        for clause in re.split(r"[.!?;:…。！？\n]+", visible)
     ]
     clauses = [clause for clause in clauses if clause]
     if clauses and all(
-        any(re.fullmatch(pattern, clause, re.IGNORECASE) for pattern in status_clause_patterns)
+        any(re.fullmatch(pattern, clause, re.IGNORECASE) for pattern in progress_clause_patterns)
         for clause in clauses
     ):
         return True
 
     # Catch compact Korean status strings without spaces/punctuation, e.g.
-    # "정보수집중찾은내용분석중", but still require the entire response to be
-    # made only of status units.
-    compact_units = (
+    # "정보수집중찾은내용분석중".
+    compact_markers = (
         "정보수집중",
         "자료수집중",
-        "데이터수집중",
-        "소스수집중",
-        "검색중",
         "찾은내용분석중",
         "분석중",
         "조사중",
@@ -2287,13 +2259,18 @@ def looks_like_post_tool_progress_only(
         "확인중",
         "처리중",
         "작업중",
-        "작업진행중",
         "진행중",
-        "잠시만",
-        "잠시만요",
     )
-    compact_status_re = "(?:" + "|".join(re.escape(unit) for unit in compact_units) + ")+"
-    return bool(re.fullmatch(compact_status_re, compact))
+    compact_status = re.sub(r"[\s\W_]+", "", visible.lower())
+    compact_status = re.sub(r"(?:입니다|이에요|예요)$", "", compact_status)
+    while compact_status:
+        for marker in compact_markers:
+            if compact_status.startswith(marker):
+                compact_status = compact_status[len(marker):]
+                break
+        else:
+            return False
+    return True
 
 
 

@@ -1392,13 +1392,10 @@ class AIAgent:
         self,
         assistant_content: str,
         messages: List[Dict[str, Any]],
-        current_turn_user_idx: int | None = None,
     ) -> bool:
         """Forwarder — see ``agent.agent_runtime_helpers.looks_like_post_tool_progress_only``."""
         from agent.agent_runtime_helpers import looks_like_post_tool_progress_only
-        return looks_like_post_tool_progress_only(
-            self, assistant_content, messages, current_turn_user_idx=current_turn_user_idx
-        )
+        return looks_like_post_tool_progress_only(self, assistant_content, messages)
 
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
@@ -1517,6 +1514,7 @@ class AIAgent:
             and (
                 messages[-1].get("_empty_recovery_synthetic")
                 or messages[-1].get("_empty_terminal_sentinel")
+                or messages[-1].get("_post_tool_progress_synthetic")
             )
         ):
             messages.pop()
@@ -1529,6 +1527,16 @@ class AIAgent:
         # result. Only runs when scaffolding was actually present — normal
         # conversation tails (real tool loops mid-progress) are untouched.
         if not dropped_scaffolding:
+            # Progress nudges can be non-trailing when the nudge causes
+            # another tool call before the final answer. They are private
+            # retry scaffolding, not durable conversation context.
+            messages[:] = [
+                msg for msg in messages
+                if not (
+                    isinstance(msg, dict)
+                    and msg.get("_post_tool_progress_synthetic")
+                )
+            ]
             return
 
         # Drop any trailing tool-result messages
@@ -1551,6 +1559,18 @@ class AIAgent:
             and messages[-1].get("tool_calls")
         ):
             messages.pop()
+
+        # Post-tool progress nudges can become non-trailing when the nudge
+        # causes another tool call before the final answer. They are private
+        # retry scaffolding, not durable conversation context, so remove them
+        # wherever they sit in the just-finished turn before persistence.
+        messages[:] = [
+            msg for msg in messages
+            if not (
+                isinstance(msg, dict)
+                and msg.get("_post_tool_progress_synthetic")
+            )
+        ]
 
     def _repair_message_sequence(self, messages: List[Dict]) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""

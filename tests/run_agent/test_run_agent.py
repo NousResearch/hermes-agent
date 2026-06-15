@@ -3480,37 +3480,45 @@ class TestRunConversation:
             m.get("_post_tool_progress_synthetic")
             for m in result["messages"]
         )
-        assert [m.get("role") for m in result["messages"]][-3:] == [
-            "assistant",
-            "tool",
-            "assistant",
-        ]
 
-    @pytest.mark.parametrize(
-        "content",
-        [
-            "자료 수집 중 발견한 핵심은 A입니다.",
-            "확인 중 오류를 발견했습니다.",
-            "분석 중간 결과: 원인은 캐시입니다.",
-        ],
-    )
-    def test_post_tool_progress_phrases_inside_final_answers_are_not_retried(self, agent, content):
+    def test_post_tool_progress_nudge_then_more_tools_does_not_persist_scaffold(self, agent):
         self._setup_agent(agent)
-        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
-        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
-        final = _mock_response(content=content, finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [resp1, final]
+        tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        tc2 = _mock_tool_call(name="web_extract", arguments="{}", call_id="c2")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc1])
+        progress = _mock_response(content="정보수집중입니다.", finish_reason="stop")
+        resp2 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc2])
+        final = _mock_response(
+            content="작업한 일 : 검색과 추출을 완료했습니다.\n검증 근거 : results",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [resp1, progress, resp2, final]
+        saved_trajectory_messages = []
+
+        def _capture_trajectory(messages, *_args, **_kwargs):
+            saved_trajectory_messages[:] = [
+                dict(m) for m in messages if isinstance(m, dict)
+            ]
 
         with (
-            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("run_agent.handle_function_call", side_effect=["search result", "extract result"]),
             patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_save_trajectory", side_effect=_capture_trajectory),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            result = agent.run_conversation("search something and report final")
+            result = agent.run_conversation("search, extract, and report final")
 
-        assert result["final_response"] == content
-        assert result["api_calls"] == 2
+        assert result["final_response"].startswith("작업한 일")
+        assert result["api_calls"] == 4
+        assert not any(
+            m.get("_post_tool_progress_synthetic")
+            for m in result["messages"]
+        )
+        assert saved_trajectory_messages
+        assert not any(
+            m.get("_post_tool_progress_synthetic")
+            for m in saved_trajectory_messages
+        )
 
     def test_post_tool_final_markers_are_not_treated_as_progress_only(self, agent):
         self._setup_agent(agent)
@@ -3533,43 +3541,47 @@ class TestRunConversation:
         assert result["final_response"].startswith("작업한 일")
         assert result["api_calls"] == 2
 
-    def test_prior_turn_tool_history_does_not_trigger_post_tool_progress_retry(self, agent):
+    def test_post_tool_progress_phrase_inside_final_answer_is_not_progress_only(self, agent):
         self._setup_agent(agent)
-        response = _mock_response(content="확인중", finish_reason="stop")
-        agent.client.chat.completions.create.return_value = response
-        prior_history = [
-            {"role": "user", "content": "search previous topic"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "old-call",
-                        "type": "function",
-                        "function": {"name": "web_search", "arguments": "{}"},
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": "old-call", "content": "old search result"},
-            {"role": "assistant", "content": "작업한 일 : 이전 검색 완료"},
-        ]
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        final = _mock_response(
+            content="정보 수집 중 발견한 항목은 3개입니다.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [resp1, final]
 
         with (
+            patch("run_agent.handle_function_call", return_value="search result"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            result = agent.run_conversation(
-                "no tool this turn; just acknowledge",
-                conversation_history=prior_history,
-            )
+            result = agent.run_conversation("search something and report final")
 
-        assert result["final_response"] == "확인중"
-        assert result["api_calls"] == 1
-        assert not any(
-            m.get("_post_tool_progress_synthetic")
-            for m in result["messages"]
+        assert result["final_response"] == "정보 수집 중 발견한 항목은 3개입니다."
+        assert result["api_calls"] == 2
+
+    def test_post_tool_still_working_inside_final_answer_is_not_progress_only(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        final = _mock_response(
+            content="The service is still working after restart.",
+            finish_reason="stop",
         )
+        agent.client.chat.completions.create.side_effect = [resp1, final]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something and report final")
+
+        assert result["final_response"] == "The service is still working after restart."
+        assert result["api_calls"] == 2
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)

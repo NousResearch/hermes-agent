@@ -16,7 +16,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -185,6 +185,48 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert pids == [12345]
 
+    def test_exclude_pids_filters_specified_pids(self):
+        """exclude_pids removes specific PIDs from the result — used by
+        the Desktop Electron app to protect its own backend child.  (#37532)
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(11111, "hermes dashboard --port 9119"),
+                    _ps_line(22222, "hermes dashboard --port 9120"),
+                    _ps_line(33333, "hermes dashboard --port 9121"),
+                ]) + "\n",
+                stderr="",
+            )
+            # Exclude the desktop-managed backend PID
+            pids = _find_stale_dashboard_pids(exclude_pids={22222})
+        assert 11111 in pids
+        assert 22222 not in pids
+        assert 33333 in pids
+
+    def test_exclude_pids_none_is_noop(self):
+        """Passing exclude_pids=None (the default) changes nothing."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids(exclude_pids=None)
+        assert pids == [12345]
+
+    def test_exclude_all_pids_returns_empty(self):
+        """If all matched PIDs are excluded, the result is empty."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids(exclude_pids={12345})
+        assert pids == []
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:
@@ -237,7 +279,7 @@ class TestKillStaleDashboardPosix:
             sent.append((pid, sig))
             # Simulate stubborn process: probe (sig 0) always succeeds,
             # SIGTERM does nothing, SIGKILL is where it "dies".
-            if sig in (_signal.SIGTERM, 0, _signal.SIGKILL):
+            if sig in {_signal.SIGTERM, 0, _signal.SIGKILL}:
                 return
             # Any other signal — also fine.
 

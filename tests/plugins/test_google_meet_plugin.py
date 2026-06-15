@@ -764,7 +764,6 @@ def test_cmd_install_refuses_windows(capsys):
 def test_cmd_install_runs_pip_and_playwright(capsys):
     """End-to-end wiring: pip + playwright install invoked, returncodes handled."""
     from plugins.google_meet.cli import _cmd_install
-    import subprocess as _sp
 
     calls = []
     class _FakeRes:

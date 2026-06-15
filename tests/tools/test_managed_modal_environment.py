@@ -1,4 +1,3 @@
-import json
 import sys
 import tempfile
 import threading
@@ -33,7 +32,7 @@ def _restore_tool_and_agent_modules():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name in ("tools", "agent", "hermes_cli")
+        if name in {"tools", "agent", "hermes_cli"}
         or name.startswith("tools.")
         or name.startswith("agent.")
         or name.startswith("hermes_cli.")

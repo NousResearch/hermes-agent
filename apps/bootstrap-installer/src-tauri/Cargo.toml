@@ -1,0 +1,75 @@
+[package]
+name = "hermes-bootstrap"
+version = "0.0.1"
+description = "Hermes Setup — signed installer that drives scripts/install.ps1"
+authors = ["Nous Research <info@nousresearch.com>"]
+edition = "2021"
+rust-version = "1.77"
+
+# Rename the output binary so the distributed artifact is literally
+# `Hermes-Setup.exe` on disk — not `hermes-bootstrap.exe`. Grandma sees
+# what we hand her, period. Tauri honors [[bin]] over [package].name
+# for the produced executable name.
+[[bin]]
+name = "Hermes-Setup"
+path = "src/main.rs"
+
+# The library target name MUST match the `withGlobalTauri` binding name that
+# tauri.conf.json's `app.windows[].label` references. We don't ship a separate
+# lib for now; everything is in src/.
+[lib]
+name = "hermes_bootstrap_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri runtime + plugins
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-process = "2"
+tauri-plugin-shell = "2"
+
+# Async + IO
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP — rustls so we don't need OpenSSL on the build box
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# Logging — emitted to a file under HERMES_HOME/logs/ and (optionally) the
+# webview console via Tauri's event channel.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# Paths + utils
+dirs = "5"
+which = "6"
+anyhow = "1"
+thiserror = "1"
+once_cell = "1"
+uuid = { version = "1", features = ["v4"] }
+
+# Process control on Windows (CREATE_NO_WINDOW etc.)
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+# A 5-10MB signed installer is the goal. LTO + size-opt + single codegen unit.
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

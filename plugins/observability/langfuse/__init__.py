@@ -47,6 +47,7 @@ class TraceState:
     root_span: Any
     generations: Dict[str, Any] = field(default_factory=dict)
     tools: Dict[str, Any] = field(default_factory=dict)
+    pending_tools_by_name: Dict[str, list] = field(default_factory=dict)
     turn_tool_calls: list[dict[str, Any]] = field(default_factory=list)
     last_updated_at: float = field(default_factory=time.time)
 
@@ -57,6 +58,17 @@ _LANGFUSE_CLIENT = None
 _READ_FILE_LINE_RE = re.compile(r"^\s*(\d+)\|(.*)$")
 _READ_FILE_HEAD_LINES = 25
 _READ_FILE_TAIL_LINES = 15
+
+# Langfuse-issued keys always carry these prefixes (cloud or self-hosted —
+# the prefix is baked into the server-side issuance flow, not a UI hint).
+# Anything else (`placeholder`, `test-key`, `your-langfuse-key`, etc.) is a
+# leftover template value and would cause the SDK to silently accept the
+# credentials at construction time but drop every trace at flush time.
+# See #23823 — the silent-failure bug this guard fixes.
+_LANGFUSE_KEY_PREFIXES: Dict[str, str] = {
+    "HERMES_LANGFUSE_PUBLIC_KEY": "pk-lf-",
+    "HERMES_LANGFUSE_SECRET_KEY": "sk-lf-",
+}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -82,8 +94,47 @@ def _debug(message: str) -> None:
 
 # Sentinel: "_get_langfuse() has tried and failed". Lets us short-circuit
 # every subsequent hook call without re-checking env vars or re-attempting
-# SDK init. Cleared by reset_cache_for_tests().
+# SDK init. Tests clear this by reloading the module via
+# ``sys.modules.pop(...) + importlib.import_module(...)`` rather than via a
+# dedicated reset function. Runtime callers cannot reset the cache; if an
+# operator fixes a misconfigured credential they must restart the process.
 _INIT_FAILED = object()
+
+
+def _redact_key_preview(value: str) -> str:
+    """Return a brief, log-safe preview of a credential value.
+
+    Keeps enough characters to disambiguate common placeholders
+    (``placeholder``, ``test-key``, ``your-key``) without echoing a
+    real secret in full if an operator pasted one into the wrong env
+    var.  Used only for the once-per-process placeholder-detection
+    warning in :func:`_get_langfuse`.
+    """
+    if not value:
+        return "<empty>"
+    if len(value) <= 12:
+        return repr(value)
+    return repr(value[:6] + "...")
+
+
+def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
+    """Return an error message if ``value`` is not a real Langfuse key.
+
+    Returns ``None`` when the value matches the documented Langfuse
+    prefix for ``env_name``, or when no prefix is registered for the
+    name (in which case we trust the operator).  When validation
+    fails the returned string is suitable for direct inclusion in a
+    single log line — it names the env var and shows a safe preview.
+    """
+    expected = _LANGFUSE_KEY_PREFIXES.get(env_name, "")
+    if not expected:
+        return None
+    if value.startswith(expected):
+        return None
+    return (
+        f"{env_name}={_redact_key_preview(value)} "
+        f"(expected {expected!r} prefix)"
+    )
 
 
 def _get_langfuse() -> Optional[Langfuse]:
@@ -108,6 +159,33 @@ def _get_langfuse() -> Optional[Langfuse]:
     public_key = _env("HERMES_LANGFUSE_PUBLIC_KEY") or _env("LANGFUSE_PUBLIC_KEY")
     secret_key = _env("HERMES_LANGFUSE_SECRET_KEY") or _env("LANGFUSE_SECRET_KEY")
     if not (public_key and secret_key):
+        _LANGFUSE_CLIENT = _INIT_FAILED
+        return None
+
+    # Reject placeholder credentials with a one-shot warning so the
+    # operator sees the misconfiguration instead of silently shipping a
+    # broken observability stack (#23823).  The SDK does not validate
+    # keys at construction time — it queues traces in memory and only
+    # discovers the auth failure when the background flush thread tries
+    # to post them, by which point the warning is buried under whatever
+    # else the process is logging.  Catch it here, surface it once, and
+    # short-circuit via the same _INIT_FAILED path as the empty case.
+    placeholder_issues = [
+        msg
+        for msg in (
+            _validate_langfuse_key("HERMES_LANGFUSE_PUBLIC_KEY", public_key),
+            _validate_langfuse_key("HERMES_LANGFUSE_SECRET_KEY", secret_key),
+        )
+        if msg
+    ]
+    if placeholder_issues:
+        logger.warning(
+            "Langfuse plugin: credentials look like placeholders, traces will "
+            "NOT be emitted (%s). Set real Langfuse keys (pk-lf-... / sk-lf-...) "
+            "or unset HERMES_LANGFUSE_PUBLIC_KEY / HERMES_LANGFUSE_SECRET_KEY to "
+            "silence this warning.",
+            "; ".join(placeholder_issues),
+        )
         _LANGFUSE_CLIENT = _INIT_FAILED
         return None
 
@@ -149,7 +227,30 @@ def _trace_key(task_id: str, session_id: str) -> str:
     return f"thread:{threading.get_ident()}"
 
 
-def _truncate_text(value: str, max_chars: int) -> str:
+def _is_base64_data_uri(value: str) -> bool:
+    prefix = value[:200].lower()
+    return prefix.startswith("data:") and ";base64," in prefix
+
+
+def _redact_data_uri(value: str) -> dict[str, Any]:
+    header = value.split(",", 1)[0] if "," in value else "data:"
+    media_type = header[5:].split(";", 1)[0] if header.startswith("data:") else ""
+    return {
+        "type": "data_uri",
+        "media_type": media_type or None,
+        "omitted": True,
+        "length": len(value),
+    }
+
+
+def _truncate_text(value: str, max_chars: int) -> Any:
+    # Langfuse SDK treats data:*;base64 strings as media and attempts to
+    # decode them. Truncating those strings produces invalid base64 and noisy
+    # "Error parsing base64 data URI" logs. Observability only needs metadata,
+    # not raw image/audio payloads, so redact the whole data URI before it
+    # reaches the SDK.
+    if _is_base64_data_uri(value):
+        return _redact_data_uri(value)
     if len(value) <= max_chars:
         return value
     return value[:max_chars] + f"... [truncated {len(value) - max_chars} chars]"
@@ -328,6 +429,21 @@ def _extract_last_user_message(messages: Any) -> Any:
     return None
 
 
+def _coerce_request_messages(
+    *,
+    request_messages: Any = None,
+    messages: Any = None,
+    conversation_history: Any = None,
+    user_message: Any = None,
+) -> list[dict[str, Any]]:
+    for candidate in (request_messages, messages, conversation_history):
+        if isinstance(candidate, list):
+            return candidate
+    if user_message is None:
+        return []
+    return [{"role": "user", "content": user_message}]
+
+
 def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
     if not isinstance(messages, list):
         return []
@@ -343,8 +459,11 @@ def _serialize_messages(messages: Any) -> list[dict[str, Any]]:
                 parse_json_strings=(role == "tool"),
             ),
         }
-        if role == "tool" and message.get("tool_call_id"):
-            item["tool_call_id"] = message.get("tool_call_id")
+        if role == "tool":
+            if message.get("tool_call_id"):
+                item["tool_call_id"] = message.get("tool_call_id")
+            if message.get("name"):
+                item["name"] = _safe_value(message.get("name"))
         if message.get("tool_calls"):
             item["tool_calls"] = _safe_value(message.get("tool_calls"), parse_json_strings=True)
         serialized.append(item)
@@ -359,15 +478,16 @@ def _serialize_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
         fn = getattr(tool_call, "function", None)
         name = getattr(fn, "name", None) if fn else None
         arguments = getattr(fn, "arguments", None) if fn else None
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except Exception:
-                pass
+        safe_arguments = _safe_value(arguments, parse_json_strings=False)
         serialized.append({
             "id": getattr(tool_call, "id", None),
+            "type": getattr(tool_call, "type", None) or "function",
             "name": name,
-            "arguments": _safe_value(arguments, parse_json_strings=True),
+            "arguments": safe_arguments,
+            "function": {
+                "name": name,
+                "arguments": safe_arguments,
+            },
         })
     return serialized
 
@@ -564,6 +684,9 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
             _end_observation(observation)
         for observation in state.tools.values():
             _end_observation(observation)
+        for queue in state.pending_tools_by_name.values():
+            for observation in queue:
+                _end_observation(observation)
         final_output = _merge_trace_output(output, state)
         if final_output is not None:
             state.root_span.set_trace_io(output=final_output)
@@ -636,6 +759,7 @@ def on_pre_llm_request(
     base_url: str = "",
     api_mode: str = "",
     api_call_count: int = 0,
+    request_messages: Any = None,
     messages: Any = None,
     turn_type: str = "user",
     message_count: int = 0,
@@ -643,11 +767,20 @@ def on_pre_llm_request(
     approx_input_tokens: int = 0,
     request_char_count: int = 0,
     max_tokens: Any = None,
+    conversation_history: Any = None,
+    user_message: Any = None,
     **_: Any,
 ) -> None:
     client = _get_langfuse()
     if client is None:
         return
+
+    input_messages = _coerce_request_messages(
+        request_messages=request_messages,
+        messages=messages,
+        conversation_history=conversation_history,
+        user_message=user_message,
+    )
 
     task_key = _trace_key(task_id, session_id)
     req_key = _request_key(api_call_count)
@@ -663,7 +796,7 @@ def on_pre_llm_request(
                 provider=provider,
                 model=model,
                 api_mode=api_mode,
-                messages=messages,
+                messages=input_messages,
                 client=client,
             )
             _TRACE_STATE[task_key] = state
@@ -676,7 +809,7 @@ def on_pre_llm_request(
             client=client,
             name=f"LLM call {api_call_count}",
             as_type="generation",
-            input_value=_serialize_messages(messages),
+            input_value=_serialize_messages(input_messages),
             metadata={
                 "provider": provider,
                 "platform": platform,
@@ -727,8 +860,16 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
     if output.get("tool_calls"):
         state.turn_tool_calls.extend(output["tool_calls"])
 
-    # Extract usage: prefer response object, fall back to usage dict from post_api_request
-    if response is not None:
+    # Extract usage: prefer a real response object that carries usage, else
+    # fall back to the usage summary dict from post_api_request.
+    #
+    # post_api_request passes `response` as a SANITIZED dict (no ``.usage``
+    # attribute) alongside a separate `usage` summary dict. Gating on
+    # ``response is not None`` here took the response-object path on that dict,
+    # where ``getattr(response, "usage", None)`` is always None — so usage and
+    # cost were silently dropped for every gateway turn. Gate on a real
+    # ``.usage`` attribute instead so the usage-dict fallback below is reached.
+    if getattr(response, "usage", None) is not None:
         usage_details, cost_details = _usage_and_cost(
             response,
             provider=provider,
@@ -815,13 +956,12 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
         return
 
     task_key = _trace_key(task_id, session_id)
-    tool_key = tool_call_id or f"{tool_name}:{time.time_ns()}"
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
         if state is None:
             return
-        state.tools[tool_key] = _start_child_observation(
+        observation = _start_child_observation(
             state,
             client=client,
             name=f"Tool: {tool_name}",
@@ -829,22 +969,29 @@ def on_pre_tool_call(*, tool_name: str = "", args: Any = None, task_id: str = ""
             input_value=_safe_value(args),
             metadata={"tool_name": tool_name, "tool_call_id": tool_call_id},
         )
+        if tool_call_id:
+            state.tools[tool_call_id] = observation
+        else:
+            state.pending_tools_by_name.setdefault(tool_name, []).append(observation)
 
 
 def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = None,
                       task_id: str = "", session_id: str = "", tool_call_id: str = "", **_: Any) -> None:
     task_key = _trace_key(task_id, session_id)
-    tool_key = tool_call_id or ""
     observation = None
 
     with _STATE_LOCK:
         state = _TRACE_STATE.get(task_key)
         if state is None:
             return
-        if tool_key:
-            observation = state.tools.pop(tool_key, None)
-        elif state.tools:
-            _, observation = state.tools.popitem()
+        if tool_call_id:
+            observation = state.tools.pop(tool_call_id, None)
+        if observation is None:
+            queue = state.pending_tools_by_name.get(tool_name)
+            if queue:
+                observation = queue.pop(0)
+                if not queue:
+                    state.pending_tools_by_name.pop(tool_name, None)
 
     if observation is None:
         return
@@ -854,10 +1001,24 @@ def on_post_tool_call(*, tool_name: str = "", args: Any = None, result: Any = No
     else:
         result_value = result
     result_value = _normalize_payload(result_value, tool_name=tool_name, args=args)
+    safe_result_value = _safe_value(result_value, parse_json_strings=True)
+
+    # Backfill so the generation's tool_call record carries the result alongside arguments.
+    if tool_call_id:
+        with _STATE_LOCK:
+            state = _TRACE_STATE.get(task_key)
+            if state is not None:
+                for tool_call in reversed(state.turn_tool_calls):
+                    if tool_call.get("id") == tool_call_id:
+                        tool_call["output"] = safe_result_value
+                        function_payload = tool_call.get("function")
+                        if isinstance(function_payload, dict):
+                            function_payload["output"] = safe_result_value
+                        break
 
     _end_observation(
         observation,
-        output=_safe_value(result_value, parse_json_strings=True),
+        output=safe_result_value,
         metadata={"tool_name": tool_name, "args": _safe_value(args, parse_json_strings=True)},
     )
 

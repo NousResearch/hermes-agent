@@ -13,8 +13,6 @@ The three-layer defence:
 """
 
 import asyncio
-import threading
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -182,7 +180,7 @@ class TestClientCacheBoundedGrowth:
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", (), False)
+        key = ("test_replace", True, "", "", "", (), False, "")
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()

@@ -183,7 +183,7 @@ class RealtimeSession:
                     rid = (frame.get("response") or {}).get("id")
                     if rid:
                         self._last_response_id = rid
-                elif ftype in ("response.done", "response.completed", "response.cancelled"):
+                elif ftype in {"response.done", "response.completed", "response.cancelled"}:
                     break
                 elif ftype == "error":
                     err = frame.get("error") or frame

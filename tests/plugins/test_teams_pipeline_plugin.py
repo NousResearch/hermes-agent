@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 

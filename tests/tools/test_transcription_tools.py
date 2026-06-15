@@ -6,12 +6,24 @@ end-to-end dispatch.  All external dependencies are mocked.
 """
 
 import os
+import sys
 import struct
 import subprocess
+import types
 import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if "faster_whisper" not in sys.modules:
+    faster_whisper_stub = types.ModuleType("faster_whisper")
+    faster_whisper_stub.WhisperModel = MagicMock(name="WhisperModel")
+    # Set ``__spec__`` so ``importlib.util.find_spec("faster_whisper")``
+    # doesn't raise ``ValueError: faster_whisper.__spec__ is None`` during
+    # collection (used by skipif markers further down in this file).
+    from importlib.machinery import ModuleSpec
+    faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
+    sys.modules["faster_whisper"] = faster_whisper_stub
 
 
 # ============================================================================
@@ -42,6 +54,9 @@ def sample_ogg(tmp_path):
     return str(ogg_path)
 
 
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
+
+
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     """Ensure no real API keys leak into tests."""
@@ -49,6 +64,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -758,6 +774,23 @@ class TestValidateAudioFileEdgeCases:
         assert result is not None
         assert "not a file" in result["error"]
 
+    def test_symlink_with_supported_extension_is_rejected(self, tmp_path):
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlinks are not supported on this platform")
+
+        target = tmp_path / "target.txt"
+        target.write_bytes(b"not audio")
+        link = tmp_path / "linked.wav"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        from tools.transcription_tools import _validate_audio_file
+        result = _validate_audio_file(str(link))
+        assert result is not None
+        assert "symbolic link" in result["error"]
+
     def test_stat_oserror(self, tmp_path):
         f = tmp_path / "test.ogg"
         f.write_bytes(b"data")
@@ -1346,3 +1379,202 @@ class TestTranscribeAudioXAIDispatch:
             transcribe_audio(sample_ogg, model="custom-stt")
 
         assert mock_xai.call_args[0][1] == "custom-stt"
+
+
+# ============================================================================
+# _transcribe_elevenlabs
+# ============================================================================
+
+class TestTranscribeElevenLabs:
+    def test_no_key(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        from tools.transcription_tools import _transcribe_elevenlabs
+        result = _transcribe_elevenlabs("/tmp/test.ogg", "scribe_v2")
+        assert result["success"] is False
+        assert "ELEVENLABS_API_KEY" in result["error"]
+
+    def test_successful_transcription(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "hello from elevenlabs"}
+
+        config = {
+            "elevenlabs": {
+                "language_code": "eng",
+                "tag_audio_events": True,
+                "diarize": True,
+            }
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello from elevenlabs"
+        assert result["provider"] == "elevenlabs"
+        call_kwargs = mock_post.call_args.kwargs
+        assert call_kwargs["headers"]["xi-api-key"] == "eleven-test-key"
+        assert call_kwargs["data"]["model_id"] == "scribe_v2"
+        assert call_kwargs["data"]["language_code"] == "eng"
+        assert call_kwargs["data"]["tag_audio_events"] == "true"
+        assert call_kwargs["data"]["diarize"] == "true"
+
+    def test_api_error_returns_failure(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.json.return_value = {"detail": {"message": "Invalid API key"}}
+        mock_response.text = '{"detail": {"message": "Invalid API key"}}'
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert "HTTP 401" in result["error"]
+        assert "Invalid API key" in result["error"]
+
+    def test_empty_transcript_returns_failure(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "   "}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert "empty transcript" in result["error"]
+
+
+# ============================================================================
+# _get_provider — ElevenLabs
+# ============================================================================
+
+class TestGetProviderElevenLabs:
+    """ElevenLabs-specific provider selection tests."""
+
+    def test_elevenlabs_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "elevenlabs"}) == "elevenlabs"
+
+    def test_elevenlabs_explicit_no_key_returns_none(self, monkeypatch):
+        """Explicit elevenlabs with no key returns none — no cross-provider fallback."""
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "elevenlabs"}) == "none"
+
+    def test_auto_detect_elevenlabs_after_xai(self, monkeypatch):
+        """Auto-detect: elevenlabs is tried after xai when all above are unavailable."""
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "elevenlabs"
+
+    def test_auto_detect_xai_preferred_over_elevenlabs(self, monkeypatch):
+        """Auto-detect: xai is preferred over elevenlabs."""
+        monkeypatch.setenv("XAI_API_KEY", "xai-test")
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "xai"
+
+
+# ============================================================================
+# transcribe_audio — ElevenLabs dispatch
+# ============================================================================
+
+class TestTranscribeAudioElevenLabsDispatch:
+    def test_dispatches_to_elevenlabs(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "elevenlabs"}), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch("tools.transcription_tools._transcribe_elevenlabs",
+                   return_value={"success": True, "transcript": "hi", "provider": "elevenlabs"}) as mock_elevenlabs:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["provider"] == "elevenlabs"
+        mock_elevenlabs.assert_called_once()
+
+    def test_config_elevenlabs_model_used(self, sample_ogg):
+        config = {"provider": "elevenlabs", "elevenlabs": {"model_id": "scribe_v1"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch("tools.transcription_tools._transcribe_elevenlabs",
+                   return_value={"success": True, "transcript": "hi"}) as mock_elevenlabs:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_elevenlabs.call_args[0][1] == "scribe_v1"
+
+    def test_model_override_passed_to_elevenlabs(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch("tools.transcription_tools._transcribe_elevenlabs",
+                   return_value={"success": True, "transcript": "hi"}) as mock_elevenlabs:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model="scribe_v2")
+
+        assert mock_elevenlabs.call_args[0][1] == "scribe_v2"
+
+
+# Shell safety — shlex.split on auto-detected templates
+# ============================================================================
+class TestShellSafety:
+    def test_auto_detected_template_is_shlex_safe(self, monkeypatch):
+        """Auto-detected whisper command should be safely splittable."""
+        import shlex
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_whisper_binary",
+            lambda: "/usr/bin/whisper",
+        )
+        from tools.transcription_tools import _get_local_command_template
+        template = _get_local_command_template()
+        assert template is not None
+        cmd = template.format(
+            input_path=shlex.quote("/tmp/test.wav"),
+            output_dir=shlex.quote("/tmp/out"),
+            language=shlex.quote("en"),
+            model=shlex.quote("base"),
+        )
+        parts = shlex.split(cmd)
+        assert parts[0] == "/usr/bin/whisper"
+        assert "/tmp/test.wav" in parts
+
+    def test_env_var_template_uses_shell_path(self, monkeypatch):
+        """When HERMES_LOCAL_STT_COMMAND is set, use_shell should be True."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.setenv(LOCAL_STT_COMMAND_ENV, "whisper {input_path} | tee log.txt")
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is True
+
+    def test_no_env_var_uses_list_mode(self, monkeypatch):
+        """When no env var is set, use_shell should be False."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is False

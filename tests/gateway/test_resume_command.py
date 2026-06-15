@@ -88,6 +88,9 @@ class TestHandleResumeCommand:
         assert "Research" in result
         assert "Coding" in result
         assert "Named Sessions" in result
+        assert "1." in result
+        assert "2." in result
+        assert "/resume 1" in result
         db.close()
 
     @pytest.mark.asyncio
@@ -102,6 +105,47 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
         assert "No named sessions" in result
         assert "/title" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_index(self, tmp_path):
+        """Numeric argument resumes the indexed titled session from the list."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume 2")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_001"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_index_out_of_range(self, tmp_path):
+        """Out-of-range numeric arguments show a helpful error."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume 9")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "out of range" in result.lower()
+        assert "/resume" in result
+        runner.session_store.switch_session.assert_not_called()
         db.close()
 
     @pytest.mark.asyncio
@@ -256,4 +300,61 @@ class TestHandleResumeCommand:
         await runner._handle_resume_command(event)
 
         assert real_key not in runner._agent_cache
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_strips_outer_brackets(self, tmp_path):
+        """Users may copy `<session_id>` from the usage hint literally.
+
+        The gateway should strip outer ``<>``, ``[]``, ``""``, and ``''``
+        before lookup so ``/resume <abc123>`` works the same as
+        ``/resume abc123``.
+        """
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("abc123", "telegram")
+        db.set_session_title("abc123", "Bracketed")
+        db.create_session("current_session_001", "telegram")
+
+        for raw in ("<abc123>", "[abc123]", '"abc123"', "'abc123'"):
+            event = _make_event(text=f"/resume {raw}")
+            runner = _make_runner(
+                session_db=db,
+                current_session_id="current_session_001",
+                event=event,
+            )
+            result = await runner._handle_resume_command(event)
+            # Either the session was resumed (and we get a "Resumed" / "Already on" reply)
+            # or it was found-then-redirected. Failure mode = "No session found matching '<abc123>'".
+            assert "abc123" not in str(result) or "not found" not in str(result).lower(), (
+                f"bracket stripping failed for {raw!r}: gateway returned {result!r}"
+            )
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_resolves_by_session_id(self, tmp_path):
+        """The gateway should accept a bare session ID, not just a title.
+
+        Before this fix, /resume in the gateway only called
+        ``resolve_session_by_title``, so ``/resume <session_id>`` always
+        returned "Session not found" even for valid IDs.
+        """
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("unnamed_session_xyz", "telegram")
+        # Deliberately no title set — this session can ONLY be resolved by ID.
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume unnamed_session_xyz")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        result = await runner._handle_resume_command(event)
+
+        # Should NOT be the not-found error.
+        assert "not found" not in str(result).lower(), (
+            f"session-id lookup failed: {result!r}"
+        )
         db.close()

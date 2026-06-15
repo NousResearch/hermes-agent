@@ -1,3 +1,8 @@
+---
+title: Computer Use
+sidebar_position: 16
+---
+
 # Computer Use (macOS)
 
 Hermes Agent can drive your Mac's desktop — clicking, typing, scrolling,
@@ -56,6 +61,23 @@ After installing, regardless of which path you took:
    hermes -t computer_use chat
    ```
    or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
+
+## Keeping cua-driver up to date
+
+The cua-driver project ships fixes regularly (e.g. v0.1.6 fixed a Safari
+window-focus bug for UTM workflows). Hermes refreshes the binary in two
+places so you don't get stuck on a stale release:
+
+- **`hermes update`** — when you update Hermes itself, if `cua-driver` is
+  on PATH the upstream installer re-runs at the end of the update.
+  No-op for non-macOS users and for users without cua-driver installed.
+- **`hermes computer-use install --upgrade`** — manual force-refresh.
+  Re-runs the upstream installer regardless of whether cua-driver is
+  already installed. Use this when you want the latest fix without
+  waiting for the next agent update.
+
+`hermes computer-use status` shows the installed version next to the
+binary path.
 
 ## Quick example
 

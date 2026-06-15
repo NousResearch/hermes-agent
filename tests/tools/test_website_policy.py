@@ -4,6 +4,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.tools.conftest import register_all_web_providers
+
 from tools.website_policy import WebsitePolicyError, check_website_access, load_website_blocklist
 
 
@@ -324,7 +326,6 @@ def test_browser_navigate_returns_policy_block(monkeypatch):
 
 def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path):
     """Missing shared blocklist files are warned and skipped, not fatal."""
-    from tools import browser_tool
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -347,33 +348,106 @@ def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path)
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_web_extract_short_circuits_blocked_url(monkeypatch):
-    from tools import web_tools
+class TestWebToolPolicy:
+    """Tests that exercise web_extract_tool with website-policy gates.
 
-    # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-    monkeypatch.setattr(
-        web_tools,
-        "check_website_access",
-        lambda url: {
-            "host": "blocked.test",
-            "rule": "blocked.test",
-            "source": "config",
-            "message": "Blocked by website policy",
-        },
-    )
-    monkeypatch.setattr(
-        web_tools,
-        "_get_firecrawl_client",
-        lambda: pytest.fail("firecrawl should not run for blocked URL"),
-    )
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    These tests need the bundled web providers to be registered in the
+    agent.web_search_registry so the tool dispatchers can find an active
+    provider.  Without registration, the tools return an error dict that
+    lacks a ``results`` key, causing ``KeyError``.
+    """
 
-    result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
+    _register_providers = staticmethod(register_all_web_providers)
 
-    assert result["results"][0]["url"] == "https://blocked.test"
-    assert "Blocked by website policy" in result["results"][0]["error"]
+    @pytest.fixture(autouse=True)
+    def _populate_web_registry(self):
+        self._register_providers()
+        yield
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+
+    @pytest.mark.asyncio
+    async def test_web_extract_short_circuits_blocked_url(self, monkeypatch):
+        from tools import web_tools
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        # Allow test URLs past SSRF check so website policy is what gets tested
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+        # The per-URL website-policy gate moved into the firecrawl plugin's
+        # extract() during the web-provider migration. Patch it at the new
+        # location.
+        monkeypatch.setattr(
+            firecrawl_provider,
+            "check_website_access",
+            lambda url: {
+                "host": "blocked.test",
+                "rule": "blocked.test",
+                "source": "config",
+                "message": "Blocked by website policy",
+            },
+        )
+        monkeypatch.setattr(
+            firecrawl_provider,
+            "_get_firecrawl_client",
+            lambda: pytest.fail("firecrawl should not run for blocked URL"),
+        )
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        # Force the firecrawl plugin to be the active extract provider.
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
+
+        assert result["results"][0]["url"] == "https://blocked.test"
+        assert "Blocked by website policy" in result["results"][0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_web_extract_blocks_redirected_final_url(self, monkeypatch):
+        from tools import web_tools
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        # Allow test URLs past SSRF check so website policy is what gets tested
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
+
+        def fake_check(url):
+            if url == "https://allowed.test":
+                return None
+            if url == "https://blocked.test/final":
+                return {
+                    "host": "blocked.test",
+                    "rule": "blocked.test",
+                    "source": "config",
+                    "message": "Blocked by website policy",
+                }
+            pytest.fail(f"unexpected URL checked: {url}")
+
+        class FakeFirecrawlClient:
+            def scrape(self, url, formats):
+                return {
+                    "markdown": "secret content",
+                    "metadata": {
+                        "title": "Redirected",
+                        "sourceURL": "https://blocked.test/final",
+                    },
+                }
+
+        # After the web-provider migration, the per-URL gate + firecrawl client
+        # live in the plugin. Patch both at the plugin location.
+        monkeypatch.setattr(firecrawl_provider, "check_website_access", fake_check)
+        monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+
+        assert result["results"][0]["url"] == "https://blocked.test/final"
+        assert result["results"][0]["content"] == ""
+        assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
 
 
 def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypatch):
@@ -393,120 +467,3 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
     # With default path, errors are caught and fail open
     result = check_website_access("https://example.com")
     assert result is None  # allowed, not crashed
-
-
-@pytest.mark.asyncio
-async def test_web_extract_blocks_redirected_final_url(monkeypatch):
-    from tools import web_tools
-
-    # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-
-    def fake_check(url):
-        if url == "https://allowed.test":
-            return None
-        if url == "https://blocked.test/final":
-            return {
-                "host": "blocked.test",
-                "rule": "blocked.test",
-                "source": "config",
-                "message": "Blocked by website policy",
-            }
-        pytest.fail(f"unexpected URL checked: {url}")
-
-    class FakeFirecrawlClient:
-        def scrape(self, url, formats):
-            return {
-                "markdown": "secret content",
-                "metadata": {
-                    "title": "Redirected",
-                    "sourceURL": "https://blocked.test/final",
-                },
-            }
-
-    monkeypatch.setattr(web_tools, "check_website_access", fake_check)
-    monkeypatch.setattr(web_tools, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-
-    result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
-
-    assert result["results"][0]["url"] == "https://blocked.test/final"
-    assert result["results"][0]["content"] == ""
-    assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
-
-
-@pytest.mark.asyncio
-async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
-    from tools import web_tools
-
-    # web_crawl_tool checks for Firecrawl env before website policy
-    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
-    # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-    monkeypatch.setattr(
-        web_tools,
-        "check_website_access",
-        lambda url: {
-            "host": "blocked.test",
-            "rule": "blocked.test",
-            "source": "config",
-            "message": "Blocked by website policy",
-        },
-    )
-    monkeypatch.setattr(
-        web_tools,
-        "_get_firecrawl_client",
-        lambda: pytest.fail("firecrawl should not run for blocked crawl URL"),
-    )
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-
-    result = json.loads(await web_tools.web_crawl_tool("https://blocked.test", use_llm_processing=False))
-
-    assert result["results"][0]["url"] == "https://blocked.test"
-    assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"
-
-
-@pytest.mark.asyncio
-async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
-    from tools import web_tools
-
-    # web_crawl_tool checks for Firecrawl env before website policy
-    monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
-    # Allow test URLs past SSRF check so website policy is what gets tested
-    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-
-    def fake_check(url):
-        if url == "https://allowed.test":
-            return None
-        if url == "https://blocked.test/final":
-            return {
-                "host": "blocked.test",
-                "rule": "blocked.test",
-                "source": "config",
-                "message": "Blocked by website policy",
-            }
-        pytest.fail(f"unexpected URL checked: {url}")
-
-    class FakeCrawlClient:
-        def crawl(self, url, **kwargs):
-            return {
-                "data": [
-                    {
-                        "markdown": "secret crawl content",
-                        "metadata": {
-                            "title": "Redirected crawl page",
-                            "sourceURL": "https://blocked.test/final",
-                        },
-                    }
-                ]
-            }
-
-    monkeypatch.setattr(web_tools, "check_website_access", fake_check)
-    monkeypatch.setattr(web_tools, "_get_firecrawl_client", lambda: FakeCrawlClient())
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-
-    result = json.loads(await web_tools.web_crawl_tool("https://allowed.test", use_llm_processing=False))
-
-    assert result["results"][0]["content"] == ""
-    assert result["results"][0]["error"] == "Blocked by website policy"
-    assert result["results"][0]["blocked_by_policy"]["rule"] == "blocked.test"

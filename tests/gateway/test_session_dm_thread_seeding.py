@@ -15,20 +15,24 @@ Covers:
 """
 
 import pytest
-from unittest.mock import patch
 
 from gateway.config import Platform, GatewayConfig
-from gateway.session import SessionSource, SessionStore, build_session_key
+from gateway.session import SessionSource, SessionStore
 
 
 @pytest.fixture()
-def store(tmp_path):
-    """SessionStore with no SQLite, for fast unit tests."""
+def store(tmp_path, monkeypatch):
+    """SessionStore with SQLite — load_transcript reads from DB only.
+
+    Pin DEFAULT_DB_PATH to tmp_path so SessionDB() can't write to the real
+    ~/.hermes/state.db. (DEFAULT_DB_PATH is a module-level constant computed
+    at hermes_state import time, before pytest's HERMES_HOME monkeypatch
+    fires — the autouse fixture's HERMES_HOME override doesn't help here.)
+    """
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
     config = GatewayConfig()
-    with patch("gateway.session.SessionStore._ensure_loaded"):
-        s = SessionStore(sessions_dir=tmp_path, config=config)
-    s._db = None
-    s._loaded = True
+    s = SessionStore(sessions_dir=tmp_path, config=config)
     return s
 
 

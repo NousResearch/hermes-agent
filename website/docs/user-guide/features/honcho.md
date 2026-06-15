@@ -106,6 +106,10 @@ The auto-injected dialectic scales `dialecticReasoningLevel` by query length: +1
 
 Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
 
+### Self-Hosted Honcho with Authentication
+
+When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and `hermes memory setup`) ask for a **local JWT / bearer token** after the base URL. Paste a JWT signed with the server's `AUTH_JWT_SECRET` (the Honcho compose env var) to enable authenticated access; leave it blank for servers running with `AUTH_USE_AUTH=false`. The local token is stored under the host block (`hosts.<host>.apiKey` in `honcho.json`), separate from any cloud `apiKey`, so you can flip the `Cloud or local?` prompt back to `cloud` later without losing either credential.
+
 ### Full Config Reference
 
 | Key | Default | Description |
@@ -199,11 +203,12 @@ When Honcho is active as the memory provider, five tools become available:
 
 ## CLI Commands
 
-The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). Run `hermes memory setup` and pick Honcho first; the subcommand appears on the next invocation.
+The `hermes honcho` subcommand is **only registered when Honcho is the active memory provider** (`memory.provider: honcho` in `config.yaml`). On a fresh install, configure Honcho directly with `hermes memory setup honcho` (or run `hermes memory setup` and pick it from the list); the `hermes honcho` subcommand then appears on the next invocation.
 
 ```bash
+hermes memory setup honcho    # Configure Honcho directly (works before activation)
 hermes honcho status          # Connection status, config, and key settings
-hermes honcho setup           # Redirects to `hermes memory setup`
+hermes honcho setup           # Redirects to `hermes memory setup` (post-activation alias)
 hermes honcho strategy        # Show or set session strategy (per-session/per-directory/per-repo/global)
 hermes honcho peer            # Show or update peer names + dialectic reasoning level
 hermes honcho mode            # Show or set recall mode (hybrid/context/tools)

@@ -222,7 +222,7 @@ def _fmt_summary(summary: Dict[str, Any]) -> str:
 
 def _handle_slash(raw_args: str) -> Optional[str]:
     argv = raw_args.strip().split()
-    if not argv or argv[0] in ("help", "-h", "--help"):
+    if not argv or argv[0] in {"help", "-h", "--help"}:
         return _HELP_TEXT
 
     sub = argv[0]

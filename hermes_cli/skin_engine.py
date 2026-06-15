@@ -572,7 +572,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_border": "#C75B1D",
             "banner_title": "#FFD39A",
             "banner_accent": "#F29C38",
-            "banner_dim": "#7A3511",
+            "banner_dim": "#C58A45",
             "banner_text": "#FFF0D4",
             "ui_accent": "#F29C38",
             "ui_label": "#FFD39A",
@@ -592,6 +592,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#EF5350",
             "session_label": "#FFD39A",
             "session_border": "#6C4724",
+            "selection_bg": "#5A260D",
+            "completion_menu_bg": "#0B0503",
+            "completion_menu_current_bg": "#4A1B07",
+            "completion_menu_meta_bg": "#120806",
+            "completion_menu_meta_current_bg": "#5A260D",
         },
         "spinner": {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
@@ -666,25 +671,46 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _mapping_or_empty(value: Any, *, section: str, skin_name: str) -> Dict[str, Any]:
+    """Return a mapping value or an empty dict when the section type is invalid."""
+    if isinstance(value, dict):
+        return value
+    if value is None:
+        return {}
+    logger.warning(
+        "Skin '%s' has invalid '%s' section type (%s); ignoring section",
+        skin_name,
+        section,
+        type(value).__name__,
+    )
+    return {}
+
+
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
     # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
+    skin_name = str(data.get("name", "unknown"))
+    color_overrides = _mapping_or_empty(data.get("colors"), section="colors", skin_name=skin_name)
+    spinner_overrides = _mapping_or_empty(data.get("spinner"), section="spinner", skin_name=skin_name)
+    branding_overrides = _mapping_or_empty(data.get("branding"), section="branding", skin_name=skin_name)
+    emoji_overrides = _mapping_or_empty(data.get("tool_emojis"), section="tool_emojis", skin_name=skin_name)
+
     colors = dict(default.get("colors", {}))
-    colors.update(data.get("colors", {}))
+    colors.update(color_overrides)
     spinner = dict(default.get("spinner", {}))
-    spinner.update(data.get("spinner", {}))
+    spinner.update(spinner_overrides)
     branding = dict(default.get("branding", {}))
-    branding.update(data.get("branding", {}))
+    branding.update(branding_overrides)
 
     return SkinConfig(
-        name=data.get("name", "unknown"),
+        name=skin_name,
         description=data.get("description", ""),
         colors=colors,
         spinner=spinner,
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
-        tool_emojis=data.get("tool_emojis", {}),
+        tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
     )
@@ -828,10 +854,14 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     except Exception:
         return {}
 
-    prompt = skin.get_color("prompt", "#FFF8DC")
+    # Input/prompt: leave unset by default so the typed text inherits
+    # the terminal's foreground color (readable in both light and dark
+    # color schemes).  Skins can opt into a colored prompt by setting
+    # `prompt` explicitly in their YAML.
+    prompt = skin.get_color("prompt", "")
     input_rule = skin.get_color("input_rule", "#CD7F32")
     title = skin.get_color("banner_title", "#FFD700")
-    text = skin.get_color("banner_text", prompt)
+    text = skin.get_color("banner_text", "#FFF8DC")
     dim = skin.get_color("banner_dim", "#555555")
     label = skin.get_color("ui_label", title)
     warn = skin.get_color("ui_warn", "#FF8C00")
@@ -851,7 +881,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
     return {
-        "input-area": prompt,
+        # Typed input always uses terminal default fg/bg so it's
+        # readable in both light and dark Terminal.app modes.  The
+        # skin's `prompt` color (if any) only styles the prompt symbol,
+        # NOT the user's typed text.
+        "input-area": "",
         "placeholder": f"{dim} italic",
         "prompt": prompt,
         "prompt-working": f"{dim} italic",

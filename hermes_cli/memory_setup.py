@@ -7,12 +7,13 @@ the provider's config schema. Writes config to config.yaml + .env.
 
 from __future__ import annotations
 
-import getpass
 import os
 import sys
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -38,12 +39,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     """Prompt for a value with optional default and secret masking."""
     suffix = f" [{default}]" if default else ""
     if secret:
-        sys.stdout.write(f"  {label}{suffix}: ")
-        sys.stdout.flush()
-        if sys.stdin.isatty():
-            val = getpass.getpass(prompt="")
-        else:
-            val = sys.stdin.readline().strip()
+        val = masked_secret_prompt(f"  {label}{suffix}: ")
     else:
         sys.stdout.write(f"  {label}{suffix}: ")
         sys.stdout.flush()
@@ -101,16 +97,25 @@ def _install_dependencies(provider_name: str) -> None:
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
     import shutil
+
     uv_path = shutil.which("uv")
-    if not uv_path:
-        print(f"  ⚠ uv not found — cannot install dependencies")
-        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-        print(f"  Then re-run: hermes memory setup")
-        return
+    if uv_path:
+        install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing
+        manual_cmd = f"uv pip install --python {sys.executable} {' '.join(missing)}"
+    else:
+        pip_cmd = shutil.which("pip3") or shutil.which("pip")
+        if not pip_cmd:
+            print(f"  ⚠ uv not found — cannot install dependencies")
+            print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+            print(f"  Then re-run: hermes memory setup")
+            return
+        print(f"  ⚠ uv not found. Falling back to standard pip...")
+        install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
+        manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
 
     try:
         subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+            install_cmd,
             check=True, timeout=120,
             capture_output=True,
         )
@@ -120,10 +125,10 @@ def _install_dependencies(provider_name: str) -> None:
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: {manual_cmd}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: {manual_cmd}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -134,7 +139,7 @@ def _install_dependencies(provider_name: str) -> None:
         if check_cmd:
             try:
                 subprocess.run(
-                    check_cmd, shell=True, capture_output=True, timeout=5
+                    shlex.split(check_cmd), check=True, capture_output=True, timeout=5
                 )
             except Exception:
                 if install_cmd:
@@ -378,6 +383,12 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
             new_lines.append(f"{key}={val}")
 
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    # Restrict permissions — .env holds API keys and tokens.
+    try:
+        import stat
+        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    except OSError:
+        pass  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +461,11 @@ def memory_command(args) -> None:
     """Route memory subcommands."""
     sub = getattr(args, "memory_command", None)
     if sub == "setup":
-        cmd_setup(args)
+        provider = getattr(args, "provider", None)
+        if provider:
+            cmd_setup_provider(provider)
+        else:
+            cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
     else:

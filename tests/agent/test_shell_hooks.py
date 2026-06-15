@@ -9,10 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
-import os
-import stat
 from pathlib import Path
-from typing import Any, Dict
 
 import pytest
 
@@ -99,6 +96,30 @@ class TestParseResponse:
             "pre_llm_call", '{"decision": "block", "reason": "no"}',
         )
         assert r is None
+
+    def test_block_action_without_message_uses_default(self):
+        """Block is honored even when message/reason is absent."""
+        r = shell_hooks._parse_response("pre_tool_call", '{"action": "block"}')
+        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
+
+    def test_block_decision_without_reason_uses_default(self):
+        """Block is honored even when reason/message is absent."""
+        r = shell_hooks._parse_response("pre_tool_call", '{"decision": "block"}')
+        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
+
+    def test_block_action_empty_message_uses_default(self):
+        """Empty string message falls back to default, not empty string."""
+        r = shell_hooks._parse_response(
+            "pre_tool_call", '{"action": "block", "message": ""}',
+        )
+        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
+
+    def test_block_action_non_string_message_uses_default(self):
+        """Non-string message (e.g. integer) falls back to default."""
+        r = shell_hooks._parse_response(
+            "pre_tool_call", '{"action": "block", "message": 42}',
+        )
+        assert r == {"action": "block", "message": shell_hooks._DEFAULT_BLOCK_MESSAGE}
 
 
 # ── _serialize_payload ────────────────────────────────────────────────────

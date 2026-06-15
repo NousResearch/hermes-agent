@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from typing import Awaitable, cast
 
 from agent.redact import redact_sensitive_text
 
@@ -103,6 +105,99 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     ):
         return float(2 ** attempt)
     return None
+
+
+def _coerce_bool(value) -> bool:
+    """Coerce common config/env boolean shapes."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _telegram_rich_fallback_error(exc: Exception) -> bool:
+    """Return True when standalone sendRichMessage can safely downgrade.
+
+    Capability/parser failures mean Telegram definitely rejected the rich
+    payload before delivery, so the legacy MarkdownV2 path is safe. Transient
+    network errors are *not* safe to resend because the rich request may have
+    reached Telegram and a fallback send would duplicate the message.
+    """
+    name = exc.__class__.__name__.lower()
+    if name in {"endpointnotfound", "badrequest", "invalidtoken"}:
+        return True
+    if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
+        return True
+    if getattr(exc, "error_code", None) == 404:
+        return True
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "bad request",
+            "can't parse",
+            "cannot parse",
+            "parse entities",
+            "markdown",
+            "html",
+            "no such method",
+            "method not found",
+            "endpoint not found",
+            "unsupported",
+            "not implemented",
+        )
+    )
+
+
+def _telegram_message_id(message_or_response) -> str | None:
+    """Extract a Telegram message id from PTB objects or raw Bot API dicts."""
+    if isinstance(message_or_response, dict):
+        message_id = message_or_response.get("message_id")
+        if message_id is None and isinstance(message_or_response.get("result"), dict):
+            message_id = message_or_response["result"].get("message_id")
+    else:
+        message_id = getattr(message_or_response, "message_id", None)
+    return str(message_id) if message_id is not None else None
+
+
+async def _try_send_telegram_rich_message(
+    bot,
+    *,
+    chat_id: int,
+    message: str,
+    thread_kwargs: dict,
+    disable_link_previews: bool = False,
+):
+    """Best-effort standalone Bot API 10.1 sendRichMessage.
+
+    Returns the raw Telegram response/message-like object on success, ``None``
+    on permanent rich capability/parser rejection, and raises on transient
+    failures where retrying via legacy send could duplicate the message.
+    """
+    do_api_request = getattr(bot, "do_api_request", None)
+    if not callable(do_api_request):
+        return None
+    payload = {
+        "chat_id": chat_id,
+        "rich_message": {"markdown": message},
+    }
+    payload.update(thread_kwargs)
+    if disable_link_previews:
+        payload["link_preview_options"] = {"is_disabled": True}
+    try:
+        result = do_api_request("sendRichMessage", api_kwargs=payload)
+        if inspect.isawaitable(result):
+            result = await cast(Awaitable[object], result)
+        return result
+    except Exception as exc:
+        if _telegram_rich_fallback_error(exc):
+            logger.warning(
+                "Standalone Telegram sendRichMessage rejected, falling back to MarkdownV2: %s",
+                _sanitize_error_text(exc),
+            )
+            return None
+        raise
 
 
 async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs):
@@ -760,7 +855,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
-        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+        platform_extra = getattr(pconfig, "extra", {}) or {}
+        disable_link_previews = bool(platform_extra and platform_extra.get("disable_link_previews"))
+        rich_messages = _coerce_bool(platform_extra.get("rich_messages"))
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _send_telegram(
@@ -771,6 +868,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                rich_messages=rich_messages,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -943,13 +1041,22 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    force_document=False,
+    rich_messages=False,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
-    Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
-    so that bold, links, and headers render correctly.  If the message
-    already contains HTML tags, it is sent with ``parse_mode='HTML'``
-    instead, bypassing MarkdownV2 conversion.
+    When ``rich_messages`` is enabled, text is sent through Bot API 10.1
+    ``sendRichMessage`` with the raw Markdown so tables, task lists, headings,
+    and formulas can render natively. If rich delivery is unavailable or the
+    rich parser rejects the payload, falls back to the legacy MarkdownV2 path.
     """
     try:
         from telegram import Bot
@@ -1032,7 +1139,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg = None
         warnings = []
 
-        if formatted.strip():
+        if message.strip() and rich_messages and not _has_html:
+            last_msg = await _try_send_telegram_rich_message(
+                bot,
+                chat_id=int_chat_id,
+                message=message,
+                thread_kwargs=thread_kwargs,
+                disable_link_previews=disable_link_previews,
+            )
+
+        if last_msg is None and formatted.strip():
             try:
                 last_msg = await _send_telegram_message_with_retry(
                     bot,
@@ -1152,11 +1268,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 return {"error": error, "warnings": warnings}
             return {"error": error}
 
+        message_id = _telegram_message_id(last_msg)
+
         result = {
             "success": True,
             "platform": "telegram",
             "chat_id": chat_id,
-            "message_id": str(last_msg.message_id),
+            "message_id": message_id,
         }
         if warnings:
             result["warnings"] = warnings

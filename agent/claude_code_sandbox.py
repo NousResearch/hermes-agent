@@ -96,14 +96,6 @@ SANDBOX_PRESETS: Dict[str, SandboxComponents] = {
         include_mcp=True, include_toolbelt=True, include_platform=True,
         include_settings=True,
     ),
-    # Cron-no-workdir — keep SOUL (honors the ``load_soul_identity`` contract) +
-    # skills + .mcp.json (same reason as minimal) + toolbelt/platform/settings,
-    # skip memory (cron always skips).
-    "cron_no_workdir": SandboxComponents(
-        include_soul=True, include_memory=False, include_skills=True,
-        include_mcp=True, include_toolbelt=True, include_platform=True,
-        include_settings=True,
-    ),
 }
 
 
@@ -125,8 +117,9 @@ def _resolve_preset(agent: Any) -> str:
     if not skip_ctx and skip_mem:
         return "primary_minus_memory"
     if skip_ctx and load_soul and skip_mem:
-        # Covers both cron-no-workdir and any future subagent_with_soul (YAGNI)
-        return "cron_no_workdir"
+        # cron-no-workdir is functionally identical to primary_minus_memory
+        # (same SandboxComponents fields), so we route both to it.
+        return "primary_minus_memory"
     if skip_ctx and not load_soul and skip_mem:
         return "minimal"
     return "primary"  # fallback — unreachable in practice

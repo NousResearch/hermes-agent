@@ -1,0 +1,16 @@
+name: unsloth-studio
+version: 0.1.0
+description: Local Unsloth Studio launcher and status bridge.
+author: HermesAgent
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - unsloth_studio_status
+  - unsloth_studio_start
+  - unsloth_studio_stop
+  - unsloth_studio_install_info
+provides_cli:
+  - unsloth-studio

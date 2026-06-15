@@ -20,6 +20,11 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from gateway.final_sentinel import (
+    FINAL_MESSAGE_SENTINEL,
+    should_send_final_sentinel,
+    strip_trailing_final_sentinel,
+)
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -4192,6 +4197,8 @@ class BasePlatformAdapter(ABC):
             # string, and remember the TTL + platform capability so the
             # post-send block can schedule the deletion.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
+            if response:
+                response, _ = strip_trailing_final_sentinel(response)
 
             # Send response if any.  A None/empty response is normal when
             # streaming already delivered the text (already_sent=True) or
@@ -4478,6 +4485,40 @@ class BasePlatformAdapter(ABC):
                         "for %s (empty after extract, recovery yielded nothing).",
                         self.name, len(_response_pre_extract), event.source.chat_id,
                     )
+
+                _sentinel_delivery_ok = (
+                    delivery_succeeded
+                    or _tts_caption_delivered
+                    or bool(images or local_files or media_files)
+                )
+                _is_command = False
+                try:
+                    _is_command = bool(event.is_command())
+                except Exception:
+                    _is_command = False
+                if (
+                    _sentinel_delivery_ok
+                    and should_send_final_sentinel(
+                        self.platform,
+                        is_internal=bool(getattr(event, "internal", False)),
+                        is_command=_is_command,
+                    )
+                ):
+                    _sentinel_metadata = dict(_thread_metadata or {})
+                    _sentinel_metadata["notify"] = True
+                    _sentinel_result = await self._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=FINAL_MESSAGE_SENTINEL,
+                        reply_to=None,
+                        metadata=_sentinel_metadata,
+                    )
+                    if not getattr(_sentinel_result, "success", False):
+                        logger.debug(
+                            "[%s] final sentinel delivery failed for %s: %s",
+                            self.name,
+                            event.source.chat_id,
+                            getattr(_sentinel_result, "error", None),
+                        )
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)

@@ -56,6 +56,11 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.final_sentinel import (
+    FINAL_MESSAGE_SENTINEL,
+    should_send_final_sentinel,
+    strip_trailing_final_sentinel,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -8909,11 +8914,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Normalize empty responses: surface errors, partial failures, and
             # the case where agent did work but returned no text. Fix for #18765.
+            _response_had_model_sentinel = False
             if not _intentional_silence:
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+                response, _response_had_model_sentinel = strip_trailing_final_sentinel(response)
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -9251,6 +9258,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                if not _response_had_model_sentinel:
+                    _is_command = False
+                    try:
+                        _is_command = bool(event.is_command())
+                    except Exception:
+                        _is_command = False
+                    if should_send_final_sentinel(
+                        source.platform,
+                        is_internal=bool(getattr(event, "internal", False)),
+                        is_command=_is_command,
+                    ):
+                        try:
+                            _sentinel_adapter = self.adapters.get(source.platform)
+                            if _sentinel_adapter:
+                                _sentinel_metadata = self._thread_metadata_for_source(
+                                    source,
+                                    self._reply_anchor_for_event(event),
+                                ) or {}
+                                _sentinel_metadata = dict(_sentinel_metadata)
+                                _sentinel_metadata["notify"] = True
+                                await _sentinel_adapter.send(
+                                    source.chat_id,
+                                    FINAL_MESSAGE_SENTINEL,
+                                    metadata=_sentinel_metadata,
+                                )
+                        except Exception as _e:
+                            logger.debug("final sentinel send failed: %s", _e)
                 return None
 
             return response

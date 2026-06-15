@@ -8,9 +8,7 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
-from unittest.mock import patch
 
-import pytest
 
 
 class TestModuleSurface:

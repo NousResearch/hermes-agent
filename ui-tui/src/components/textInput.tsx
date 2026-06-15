@@ -13,6 +13,7 @@ import {
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
+import { isTermuxTuiMode } from '../lib/termux.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -33,7 +34,9 @@ const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+const FRAME_BATCH_MS = 16
 const MULTI_CLICK_MS = 500
+type MinimalEnv = Record<string, string | undefined>
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -88,6 +91,60 @@ function snapPos(s: string, p: number) {
   }
 
   return last
+}
+
+export interface TextInsertResult {
+  cursor: number
+  value: string
+}
+
+export function applyPrintableInsert(
+  value: string,
+  cursor: number,
+  text: string,
+  range?: { end: number; start: number } | null
+): null | TextInsertResult {
+  if (!PRINTABLE.test(text)) {
+    return null
+  }
+
+  if (range) {
+    return {
+      cursor: range.start + text.length,
+      value: value.slice(0, range.start) + text + value.slice(range.end)
+    }
+  }
+
+  return {
+    cursor: cursor + text.length,
+    value: value.slice(0, cursor) + text + value.slice(cursor)
+  }
+}
+
+export const shouldRouteMultiCharInputAsPaste = (text: string): boolean => text.includes('\n')
+
+export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boolean {
+  if (env.WT_SESSION) {
+    return true
+  }
+
+  if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY) {
+    return true
+  }
+
+  if (env.GHOSTTY_RESOURCES_DIR || env.GHOSTTY_BIN_DIR) {
+    return true
+  }
+
+  if ((env.TERM ?? '').toLowerCase() === 'xterm-ghostty') {
+    return true
+  }
+
+  if ((env.TERM_PROGRAM ?? '').toLowerCase() === 'ghostty') {
+    return true
+  }
+
+  return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
 }
 
 function prevPos(s: string, p: number) {
@@ -298,7 +355,24 @@ export function canFastBackspaceShape(current: string, cursor: number, columns?:
 export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
   // Terminal.app still shows paint/cursor artifacts under the fast-echo
   // bypass path. Fall back to the normal Ink render path there.
-  return (env.TERM_PROGRAM ?? '').trim() !== 'Apple_Terminal'
+  if ((env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal') {
+    return false
+  }
+
+  // Termux terminals are especially sensitive to bypass-path cursor drift and
+  // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
+  // off by default in Termux mode; allow explicit opt-in for local debugging.
+  if (isTermuxTuiMode(env)) {
+    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '').trim().toLowerCase()
+
+    if (override) {
+      return /^(?:1|true|yes|on)$/i.test(override)
+    }
+
+    return false
+  }
+
+  return true
 }
 
 function renderWithCursor(value: string, cursor: number) {
@@ -383,10 +457,7 @@ export function TextInput({
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
   const self = useRef(false)
-  const pasteBuf = useRef('')
-  const pasteEnd = useRef<null | number>(null)
-  const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pastePos = useRef(0)
+  const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
@@ -519,8 +590,8 @@ export function TextInput({
 
   useEffect(
     () => () => {
-      if (pasteTimer.current) {
-        clearTimeout(pasteTimer.current)
+      if (keyBurstTimer.current) {
+        clearTimeout(keyBurstTimer.current)
       }
 
       if (parentChangeTimer.current) {
@@ -556,7 +627,7 @@ export function TextInput({
       return
     }
 
-    parentChangeTimer.current = setTimeout(flushParentChange, 16)
+    parentChangeTimer.current = setTimeout(flushParentChange, FRAME_BATCH_MS)
   }
 
   const cancelLocalRender = () => {
@@ -574,7 +645,7 @@ export function TextInput({
     localRenderTimer.current = setTimeout(() => {
       localRenderTimer.current = null
       setCur(curRef.current)
-    }, 16)
+    }, FRAME_BATCH_MS)
   }
 
   const canFastEchoBase = () => supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
@@ -678,21 +749,26 @@ export function TextInput({
     return !!h
   }
 
-  const flushPaste = () => {
-    const text = pasteBuf.current
-    const at = pastePos.current
-    const end = pasteEnd.current ?? at
-    pasteBuf.current = ''
-    pasteEnd.current = null
-    pasteTimer.current = null
+  const flushKeyBurst = () => {
+    if (keyBurstTimer.current) {
+      clearTimeout(keyBurstTimer.current)
+      keyBurstTimer.current = null
+    }
 
-    if (!text) {
+    flushParentChange()
+  }
+
+  const scheduleKeyBurstCommit = (next: string, nextCur: number) => {
+    commit(next, nextCur, true, false, false)
+
+    if (keyBurstTimer.current) {
       return
     }
 
-    if (!emitPaste({ cursor: at, text, value: vRef.current }) && PRINTABLE.test(text)) {
-      commit(vRef.current.slice(0, at) + text + vRef.current.slice(end), at + text.length)
-    }
+    keyBurstTimer.current = setTimeout(() => {
+      keyBurstTimer.current = null
+      flushParentChange()
+    }, FRAME_BATCH_MS)
   }
 
   const clearSel = () => {
@@ -833,6 +909,8 @@ export function TextInput({
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        flushKeyBurst()
+
         return
       }
 
@@ -842,6 +920,8 @@ export function TextInput({
         eventRaw === '\x16' ||
         (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
       ) {
+        flushKeyBurst()
+
         if (cbPaste.current) {
           return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
         }
@@ -858,6 +938,8 @@ export function TextInput({
       }
 
       if (isMac && isActionMod(k) && inp.toLowerCase() === 'c') {
+        flushKeyBurst()
+
         const range = selRange()
 
         if (range) {
@@ -870,6 +952,8 @@ export function TextInput({
       }
 
       if (k.upArrow || k.downArrow) {
+        flushKeyBurst()
+
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
 
         if (next !== null) {
@@ -882,11 +966,14 @@ export function TextInput({
       }
 
       if (k.return) {
-        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
-          flushParentChange()
+        flushKeyBurst()
+
+        const sequence = (event.keypress as { sequence?: string }).sequence
+        const preserveBareLineFeed = shouldPreserveCtrlJNewline() && sequence === '\n'
+
+        if (k.shift || k.ctrl || preserveBareLineFeed || (isMac ? isActionMod(k) : k.meta)) {
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {
-          flushParentChange()
           cbSubmit.current?.(vRef.current)
         }
 
@@ -904,6 +991,11 @@ export function TextInput({
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
+      const isPrintableInput = (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+
+      if (!isPrintableInput) {
+        flushKeyBurst()
+      }
 
       if (mod && inp === 'z') {
         return swap(undo, redo)
@@ -1033,31 +1125,44 @@ export function TextInput({
         }
 
         if (text.length > 1 || text.includes('\n')) {
-          if (!pasteBuf.current) {
-            pastePos.current = range ? range.start : c
-            pasteEnd.current = range ? range.end : pastePos.current
+          if (shouldRouteMultiCharInputAsPaste(text)) {
+            flushKeyBurst()
+
+            if (!emitPaste({ cursor: c, text, value: v })) {
+              commit(ins(v, c, text), c + text.length)
+            }
+
+            return
           }
 
-          pasteBuf.current += text
+          const inserted = applyPrintableInsert(v, c, text, range)
 
-          if (pasteTimer.current) {
-            clearTimeout(pasteTimer.current)
+          if (!inserted) {
+            return
           }
 
-          pasteTimer.current = setTimeout(flushPaste, 50)
+          v = inserted.value
+          c = inserted.cursor
+          scheduleKeyBurstCommit(v, c)
 
           return
         }
 
-        if (PRINTABLE.test(text)) {
+        {
+          const inserted = applyPrintableInsert(v, c, text, range)
+
+          if (!inserted) {
+            return
+          }
+
           if (range) {
-            v = v.slice(0, range.start) + text + v.slice(range.end)
-            c = range.start + text.length
+            v = inserted.value
+            c = inserted.cursor
           } else {
             const simpleAppend = canFastAppend(v, c, text)
 
-            v = v.slice(0, c) + text + v.slice(c)
-            c += text.length
+            v = inserted.value
+            c = inserted.cursor
 
             if (simpleAppend) {
               stdout!.write(text)
@@ -1074,8 +1179,6 @@ export function TextInput({
               return
             }
           }
-        } else {
-          return
         }
       } else {
         return
@@ -1108,11 +1211,13 @@ export function TextInput({
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
           const decision = decideRightClickAction(vRef.current, selRange())
+
           if (decision.action === 'copy') {
             void writeClipboardText(decision.text)
 
             return
           }
+
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1205,10 +1310,12 @@ export function decideRightClickAction(
 ): RightClickDecision {
   if (range && range.end > range.start) {
     const text = value.slice(range.start, range.end)
+
     if (text) {
       return { action: 'copy', text }
     }
   }
+
   return { action: 'paste' }
 }
 

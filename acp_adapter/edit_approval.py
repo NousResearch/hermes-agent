@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -154,16 +155,19 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
     policy = str(policy or AUTO_APPROVE_ASK).strip()
     if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
         return False
-    raw_path = Path(proposal.path).expanduser()
-    # resolve() follows symlinks — on macOS /tmp → /private/tmp, so the
-    # resolved form never starts with "/tmp/". Use raw_path for the /tmp
-    # check and the resolved form only for the cwd relative_to() test.
-    path = raw_path.resolve(strict=False)
+    path = Path(proposal.path).expanduser().resolve(strict=False)
     if policy == AUTO_APPROVE_SESSION:
         return True
     if policy == AUTO_APPROVE_WORKSPACE:
-        if str(raw_path).startswith("/tmp/"):
+        # `/tmp` is the POSIX path but tempfile.gettempdir() is the real one on
+        # every platform: `/private/tmp` on macOS (because `/tmp` is a symlink
+        # and Path.resolve() follows it) and the per-user Temp dir on Windows.
+        tmp_root = Path(tempfile.gettempdir()).resolve(strict=False)
+        try:
+            path.relative_to(tmp_root)
             return True
+        except ValueError:
+            pass
         if cwd:
             root = Path(cwd).expanduser().resolve(strict=False)
             try:

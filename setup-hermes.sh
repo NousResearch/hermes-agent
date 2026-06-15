@@ -214,7 +214,7 @@ else
     # if mistral can't resolve.
     _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
     _ALL_EXTRAS=(
-        modal daytona vercel messaging matrix cron cli dev tts-premium slack
+        modal daytona messaging matrix cron cli dev tts-premium slack
         pty honcho mcp homeassistant sms acp voice dingtalk feishu google
         bedrock web youtube
     )
@@ -329,9 +329,15 @@ fi
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then
         cp .env.example .env
+        # .env holds API keys — restrict to owner-only access (matches
+        # scripts/install.sh which already chmods 600 after creation).
+        chmod 600 .env 2>/dev/null || true
         echo -e "${GREEN}✓${NC} Created .env from template"
     fi
 else
+    # Tighten an existing .env's perms in case it was created elsewhere
+    # under a permissive umask.
+    chmod 600 .env 2>/dev/null || true
     echo -e "${GREEN}✓${NC} .env exists"
 fi
 

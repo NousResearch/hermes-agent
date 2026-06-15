@@ -373,8 +373,8 @@ def test_terminate_run_ok(client, monkeypatch):
     # Capture signal calls so we don't actually SIGTERM a random PID.
     sent = []
 
-    def _fake_terminate(pid, prev_lock, *, signal_fn=None):
-        sent.append((pid, prev_lock))
+    def _fake_terminate(pid, prev_lock, *, task_id=None, signal_fn=None):
+        sent.append((pid, prev_lock, task_id))
         return {"signal": "SIGTERM", "delivered": True}
 
     monkeypatch.setattr(kb, "_terminate_reclaimed_worker", _fake_terminate)
@@ -386,7 +386,7 @@ def test_terminate_run_ok(client, monkeypatch):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body == {"ok": True, "run_id": run_id, "task_id": task_id}
-    assert sent == [(33333, sent[0][1])]
+    assert sent == [(33333, sent[0][1], task_id)]
     assert sent[0][1] is not None  # claim_lock was non-null
 
     # Task is back to ready, claim cleared.

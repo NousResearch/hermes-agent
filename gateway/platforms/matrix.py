@@ -1523,12 +1523,44 @@ class MatrixAdapter(BasePlatformAdapter):
 
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
 
+            # Guard: if E2EE is requested but crypto failed to initialise,
+            # refuse to send cleartext into an encrypted room.
+            # When crypto IS set up, send_message_event() handles encryption
+            # automatically, so we only block when crypto is absent.
+            if self._encryption and not getattr(self._client, "crypto", None):
+                state_store = getattr(self._client, "state_store", None)
+                if state_store:
+                    try:
+                        room_encrypted = bool(
+                            await state_store.is_encrypted(RoomID(chat_id))
+                        )
+                    except Exception:
+                        room_encrypted = False
+                    if room_encrypted:
+                        return SendResult(
+                            success=False,
+                            error=(
+                                "Room is end-to-end encrypted. "
+                                "Text encryption via the crypto layer is not "
+                                "functional. Use file attachments or disable "
+                                "E2EE for this room."
+                            ),
+                        )
+
             try:
+                # asyncio.wait_for requires a Task context (Python 3.11+).
+                # When called from send_message_tool via _run_async's worker
+                # thread, run_until_complete wraps the top-level coroutine
+                # in a Task, but deeply-nested coroutine chains can lose the
+                # Task reference.  ensure_future guarantees a Task wrapper
+                # so wait_for always sees current_task().
                 event_id = await asyncio.wait_for(
-                    self._client.send_message_event(
-                        RoomID(chat_id),
-                        EventType.ROOM_MESSAGE,
-                        msg_content,
+                    asyncio.ensure_future(
+                        self._client.send_message_event(
+                            RoomID(chat_id),
+                            EventType.ROOM_MESSAGE,
+                            msg_content,
+                        )
                     ),
                     timeout=45,
                 )
@@ -1540,10 +1572,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     try:
                         await self._client.crypto.share_keys()
                         event_id = await asyncio.wait_for(
-                            self._client.send_message_event(
-                                RoomID(chat_id),
-                                EventType.ROOM_MESSAGE,
-                                msg_content,
+                            asyncio.ensure_future(
+                                self._client.send_message_event(
+                                    RoomID(chat_id),
+                                    EventType.ROOM_MESSAGE,
+                                    msg_content,
+                                )
                             ),
                             timeout=45,
                         )

@@ -8373,6 +8373,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        # Matrix thread root injection: if this is a new Matrix thread session
+        # with no history, fetch the thread root event from the homeserver and
+        # inject it as the first assistant message. This is the fallback for
+        # cases where mirror_to_session did not run (CLI/cron, race conditions).
+        # Guard: platform=Matrix AND thread_id present AND history is empty.
+        if (
+            source.platform == Platform.MATRIX
+            and source.thread_id
+            and not history
+        ):
+            await self._inject_matrix_thread_root(source, session_entry)
+            history = self.session_store.load_transcript(session_entry.session_id)
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -11344,6 +11356,60 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Return the platform-specific reply anchor for GatewayRunner sends."""
         return _reply_anchor_for_event(event)
 
+    async def _inject_matrix_thread_root(self, source, session_entry) -> None:
+        """Fetch the Matrix thread root event and inject it as the first assistant message.
+
+        Fallback for sessions where mirror_to_session did not run (CLI/cron callers,
+        race conditions). Only called when history is empty. Silent on any failure.
+        """
+        try:
+            adapter = self.adapters.get(source.platform)
+            if adapter is None:
+                return
+            client = getattr(adapter, "_client", None)
+            if client is None:
+                return
+            api = getattr(client, "api", None)
+            if api is None:
+                return
+            room_id = source.chat_id
+            root_event_id = source.thread_id
+            url = f"/_matrix/client/v3/rooms/{room_id}/event/{root_event_id}"
+            event_data = await asyncio.wait_for(
+                api.request("GET", url),
+                timeout=10,
+            )
+            if not isinstance(event_data, dict):
+                return
+            content = event_data.get("content") or {}
+            body = content.get("body", "") if isinstance(content, dict) else ""
+            if not body:
+                return
+            ts_ms = event_data.get("origin_server_ts")
+            if ts_ms:
+                from datetime import timezone
+                ts_iso = datetime.fromtimestamp(
+                    float(ts_ms) / 1000.0, tz=timezone.utc
+                ).isoformat()
+            else:
+                ts_iso = datetime.now().isoformat()
+            mirror_msg = {
+                "role": "assistant",
+                "content": body,
+                "timestamp": ts_iso,
+                "mirror": True,
+                "mirror_source": "matrix",
+            }
+            self.session_store.append_to_transcript(session_entry.session_id, mirror_msg)
+            logger.debug(
+                "Matrix: injected thread root %s into session %s",
+                root_event_id,
+                session_entry.session_id,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Matrix: failed to inject thread root context (non-fatal): %s", exc
+            )
 
     # ------------------------------------------------------------------
     # /approve & /deny — explicit dangerous-command approval

@@ -103,7 +103,12 @@ XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:acces
 XAI_OAUTH_REDIRECT_HOST = "127.0.0.1"
 XAI_OAUTH_REDIRECT_PORT = 56121
 XAI_OAUTH_REDIRECT_PATH = "/callback"
-XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# xAI/Grok OAuth access tokens are intentionally short-lived (about 6h in
+# current SuperGrok flows). A two-minute refresh window is too narrow for
+# gateway/cron workloads that may only touch the provider every 30 minutes,
+# leaving brief but noisy credential-expiry gaps. Refresh up to one hour
+# early so ordinary runtime calls keep the token warm without user reauth.
+XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120

@@ -6,12 +6,10 @@ CreditsState is constructed directly (not parsed from headers).
 
 from __future__ import annotations
 
-import pytest
 
 from agent.credits_tracker import (
     CREDITS_NOTICE_KIND,
     CREDITS_RESTORED_TTL_MS,
-    AgentNotice,
     CreditsState,
     evaluate_credits_notices,
 )

@@ -12,7 +12,6 @@ from __future__ import annotations
 import inspect
 from unittest.mock import patch
 
-import pytest
 
 from agent.credits_tracker import AgentNotice
 from run_agent import AIAgent

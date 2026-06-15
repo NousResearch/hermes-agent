@@ -169,9 +169,6 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from hermes_constants import get_hermes_home, display_hermes_home
 from hermes_cli.browser_connect import (
-    DEFAULT_BROWSER_CDP_URL,
-    is_browser_debug_ready,
-    manual_chrome_debug_command,
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv

@@ -110,7 +110,6 @@ def _stub_uvicorn_run(monkeypatch):
     returns immediately (rather than blocking on the event loop). Returns the dict
     that will capture the keyword args.
     """
-    import asyncio
     import contextlib
     import uvicorn
     captured: dict = {"kwargs": {}}

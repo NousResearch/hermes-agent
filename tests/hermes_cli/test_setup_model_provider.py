@@ -7,7 +7,7 @@ that the setup wizard correctly syncs config from disk after the call.
 
 from __future__ import annotations
 
-from hermes_cli.config import load_config, save_config, save_env_value
+from hermes_cli.config import load_config, save_config
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 from hermes_cli.setup import _print_setup_summary, setup_model_provider
 

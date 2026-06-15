@@ -4,12 +4,9 @@ These verify the fix for the tick-blocking issue where as_completed(timeout=600)
 prevented the ticker thread from firing, causing all other jobs to be fast-forwarded.
 """
 
-import concurrent.futures
 import threading
 import time
-from unittest.mock import patch
 
-import pytest
 
 
 class TestPersistentPool:

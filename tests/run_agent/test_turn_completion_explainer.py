@@ -18,7 +18,6 @@ pass identically in CI and locally.
 """
 
 import os
-import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

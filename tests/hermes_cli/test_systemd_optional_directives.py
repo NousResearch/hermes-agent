@@ -12,7 +12,6 @@ from both the installed and expected text before comparison.
 
 from __future__ import annotations
 
-import pytest
 
 
 # ---------------------------------------------------------------------------

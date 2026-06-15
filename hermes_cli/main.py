@@ -5110,6 +5110,62 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     return removed
 
 
+def _save_unpacked_backup(desktop_dir: Path) -> list[Path]:
+    """Rename existing *-unpacked dirs to *-unpacked.prior before a pack build.
+
+    Preserves the last known-good binary so that a failed build (or a
+    before-pack.cjs teardown that precedes the failure) never leaves the user
+    without a runnable app (issue #46883).  Returns the backup paths created.
+    """
+    release_dir = desktop_dir / "release"
+    saved: list[Path] = []
+    if not release_dir.is_dir():
+        return saved
+    for unpacked in release_dir.glob("*-unpacked"):
+        if not unpacked.is_dir():
+            continue
+        prior = unpacked.parent / (unpacked.name + ".prior")
+        try:
+            unpacked.rename(prior)
+            saved.append(prior)
+        except OSError:
+            pass
+    return saved
+
+
+def _restore_unpacked_backup(desktop_dir: Path) -> list[Path]:
+    """On total build failure, remove any partial *-unpacked dir and restore *.prior.
+
+    Returns the list of dirs restored.
+    """
+    release_dir = desktop_dir / "release"
+    restored: list[Path] = []
+    if not release_dir.is_dir():
+        return restored
+    for unpacked in release_dir.glob("*-unpacked"):
+        if unpacked.is_dir():
+            shutil.rmtree(unpacked, ignore_errors=True)
+    for prior in release_dir.glob("*-unpacked.prior"):
+        if not prior.is_dir():
+            continue
+        target = prior.parent / prior.name.removesuffix(".prior")
+        try:
+            prior.rename(target)
+            restored.append(target)
+        except OSError:
+            pass
+    return restored
+
+
+def _discard_unpacked_backup(desktop_dir: Path) -> None:
+    """After a successful pack, delete the *-unpacked.prior backup dirs."""
+    release_dir = desktop_dir / "release"
+    if not release_dir.is_dir():
+        return
+    for prior in release_dir.glob("*-unpacked.prior"):
+        shutil.rmtree(prior, ignore_errors=True)
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     """Terminate any running desktop app executing from this build's ``release``
     dir so a rebuild can replace its (otherwise locked) executable.
@@ -5348,6 +5404,12 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+                # Preserve the current working binary before before-pack.cjs can
+                # wipe it. Renaming to *.prior keeps the live app available if
+                # all build retries fail (issue #46883).
+                _unpacked_prior = _save_unpacked_backup(desktop_dir)
+            else:
+                _unpacked_prior = []
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
@@ -5390,6 +5452,14 @@ def cmd_gui(args: argparse.Namespace):
                 _stop_desktop_processes_locking_build(desktop_dir)
                 build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
+                # All retries exhausted — restore the saved backup so the user
+                # still has a runnable binary (issue #46883).
+                if _unpacked_prior:
+                    restored = _restore_unpacked_backup(desktop_dir)
+                    if restored:
+                        print("  ↩ Restored previous desktop build so the app remains runnable:")
+                        for r in restored:
+                            print(f"    - {r}")
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
@@ -5398,6 +5468,9 @@ def cmd_gui(args: argparse.Namespace):
                 print("  If the log shows Electron download retries, rebuild via a mirror:")
                 print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
+            # Build succeeded — drop the backup; the new binary is live.
+            if _unpacked_prior:
+                _discard_unpacked_backup(desktop_dir)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
                 # Locally-built apps are ad-hoc signed; make them relaunchable after

@@ -626,3 +626,119 @@ def test_stop_desktop_build_lock_no_release_dir(tmp_path, monkeypatch):
     with patch("psutil.process_iter") as it:
         assert cli_main._stop_desktop_processes_locking_build(desktop_dir) == []
     it.assert_not_called()
+
+
+# ── Atomic build backup / restore (issue #46883) ─────────────────────────────
+
+
+def test_save_unpacked_backup_renames_to_prior(tmp_path):
+    """save renames *-unpacked → *-unpacked.prior; build can proceed into fresh dir."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    unpacked = desktop_dir / "release" / "linux-unpacked"
+    unpacked.mkdir(parents=True)
+    (unpacked / "hermes").write_text("binary", encoding="utf-8")
+
+    saved = cli_main._save_unpacked_backup(desktop_dir)
+
+    prior = desktop_dir / "release" / "linux-unpacked.prior"
+    assert prior in saved
+    assert prior.is_dir()
+    assert not unpacked.exists()
+    assert (prior / "hermes").read_text(encoding="utf-8") == "binary"
+
+
+def test_restore_unpacked_backup_removes_partial_and_restores_prior(tmp_path):
+    """restore removes any partial *-unpacked left by the failed build, then
+    renames *.prior back so the user still has a working binary."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    release = desktop_dir / "release"
+
+    prior = release / "linux-unpacked.prior"
+    prior.mkdir(parents=True)
+    (prior / "hermes").write_text("good-binary", encoding="utf-8")
+
+    partial = release / "linux-unpacked"
+    partial.mkdir()
+    (partial / "junk").write_text("", encoding="utf-8")
+
+    restored = cli_main._restore_unpacked_backup(desktop_dir)
+
+    unpacked = release / "linux-unpacked"
+    assert unpacked in restored
+    assert unpacked.is_dir()
+    assert (unpacked / "hermes").read_text(encoding="utf-8") == "good-binary"
+    assert not prior.exists()
+    assert not (unpacked / "junk").exists()
+
+
+def test_discard_unpacked_backup_removes_prior_on_success(tmp_path):
+    """After a successful build the *.prior dirs are removed."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    prior = desktop_dir / "release" / "linux-unpacked.prior"
+    prior.mkdir(parents=True)
+    (prior / "old-hermes").write_text("", encoding="utf-8")
+
+    cli_main._discard_unpacked_backup(desktop_dir)
+
+    assert not prior.exists()
+
+
+def test_gui_restores_backup_when_all_retries_fail(tmp_path, monkeypatch, capsys):
+    """When every pack attempt fails the previous binary is restored so the app
+    stays runnable (issue #46883)."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+
+    # Seed a pre-existing working binary
+    desktop_dir = root / "apps" / "desktop"
+    existing_unpacked = desktop_dir / "release" / "linux-unpacked"
+    existing_unpacked.mkdir(parents=True)
+    (existing_unpacked / "hermes").write_text("good-binary", encoding="utf-8")
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main.subprocess.run", return_value=pack_fail), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code != 0
+    out = capsys.readouterr().out
+    assert "Restored previous desktop build" in out
+    # Binary must be back at its original location
+    assert existing_unpacked.is_dir()
+    assert (existing_unpacked / "hermes").read_text(encoding="utf-8") == "good-binary"
+
+
+def test_gui_discards_backup_after_successful_build(tmp_path, monkeypatch):
+    """After a successful pack the *.prior backup is deleted."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+
+    desktop_dir = root / "apps" / "desktop"
+    prior = desktop_dir / "release" / "linux-unpacked.prior"
+    prior.mkdir(parents=True)
+    (prior / "old-hermes").write_text("", encoding="utf-8")
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert not prior.exists()

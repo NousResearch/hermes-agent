@@ -5,6 +5,8 @@ import errno
 import json
 import logging
 import os
+import platform
+import re
 import threading
 from pathlib import Path
 
@@ -19,6 +21,27 @@ from tools import file_state
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+_IS_WINDOWS = platform.system() == "Windows"
+
+
+def _normalize_msys_path(filepath: str) -> str:
+    """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
+    native Windows form (``C:\\Users\\x``).
+
+    No-op on non-Windows hosts or paths that are not in MSYS drive-letter form.
+    Idempotent — already-native Windows paths pass through unchanged.
+    Mirrors ``tools.environments.local._msys_to_windows_path`` so file tools
+    apply the same translation as the terminal backend (fixes #46876).
+    """
+    if not _IS_WINDOWS or not filepath:
+        return filepath
+    m = re.match(r'^/([a-zA-Z])(/.*)?$', filepath)
+    if not m:
+        return filepath
+    drive = m.group(1).upper()
+    tail = (m.group(2) or "").replace('/', '\\')
+    return f"{drive}:{tail or chr(92)}"  # chr(92) == backslash
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -107,7 +130,7 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
     raw = str(raw or "").strip()
     if raw.lower() in _TERMINAL_CWD_SENTINELS:
         return None
-    expanded = os.path.expanduser(raw)
+    expanded = os.path.expanduser(_normalize_msys_path(raw))
     if not os.path.isabs(expanded):
         return None
     return expanded
@@ -239,7 +262,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(filepath).expanduser()
+    p = Path(_normalize_msys_path(filepath)).expanduser()
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()

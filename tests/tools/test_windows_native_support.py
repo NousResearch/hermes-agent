@@ -1007,3 +1007,88 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "CreateProcess and retry without the breakaway bit, matching "
             "gateway_windows._spawn_detached's fallback pattern."
         )
+
+
+# ---------------------------------------------------------------------------
+# file_tools MSYS path normalisation (issue #46876)
+# ---------------------------------------------------------------------------
+
+
+class TestFileToolsMsysPathNormalization:
+    """_normalize_msys_path in file_tools must translate /c/Users/... to
+    C:\\Users\\... on Windows, preventing writes to the ghost tree
+    C:\\c\\Users\\... that pathlib.Path.resolve() produces when given a
+    drive-less POSIX path on Windows (issue #46876)."""
+
+    def test_posix_host_noop(self):
+        """On non-Windows the function must be a no-op for MSYS-style paths."""
+        if sys.platform == "win32":
+            pytest.skip("POSIX no-op test only valid on non-Windows")
+        from tools.file_tools import _normalize_msys_path
+        assert _normalize_msys_path("/c/Users/foo") == "/c/Users/foo"
+        assert _normalize_msys_path("/home/user/project") == "/home/user/project"
+        assert _normalize_msys_path("relative/path") == "relative/path"
+
+    def test_empty_string(self):
+        from tools.file_tools import _normalize_msys_path
+        assert _normalize_msys_path("") == ""
+
+    def test_windows_drive_c(self, monkeypatch):
+        """Simulate Windows: /c/Users/foo → C:\\Users\\foo."""
+        import tools.file_tools as ft
+        monkeypatch.setattr(ft, "_IS_WINDOWS", True)
+        assert ft._normalize_msys_path("/c/Users/MarkChristian/project") == r"C:\Users\MarkChristian\project"
+        assert ft._normalize_msys_path("/C/Users/MarkChristian/project") == r"C:\Users\MarkChristian\project"
+
+    def test_windows_drive_d(self, monkeypatch):
+        import tools.file_tools as ft
+        monkeypatch.setattr(ft, "_IS_WINDOWS", True)
+        assert ft._normalize_msys_path("/d/workspace/repo") == r"D:\workspace\repo"
+
+    def test_windows_bare_drive_root(self, monkeypatch):
+        """Bare drive root /c → C:\\."""
+        import tools.file_tools as ft
+        monkeypatch.setattr(ft, "_IS_WINDOWS", True)
+        assert ft._normalize_msys_path("/c") == "C:\\"
+
+    def test_windows_native_path_unchanged(self, monkeypatch):
+        """Already-native Windows path must pass through unchanged."""
+        import tools.file_tools as ft
+        monkeypatch.setattr(ft, "_IS_WINDOWS", True)
+        assert ft._normalize_msys_path(r"C:\Users\foo") == r"C:\Users\foo"
+        assert ft._normalize_msys_path("C:/Users/foo") == "C:/Users/foo"
+
+    def test_windows_non_drive_absolute_unchanged(self, monkeypatch):
+        """/etc/hosts is not an MSYS drive path — must not be translated."""
+        import tools.file_tools as ft
+        monkeypatch.setattr(ft, "_IS_WINDOWS", True)
+        assert ft._normalize_msys_path("/etc/hosts") == "/etc/hosts"
+
+    def test_normalize_called_in_sentinel_free_abs_cwd(self):
+        """Source check: _sentinel_free_abs_cwd must call _normalize_msys_path
+        so TERMINAL_CWD from config.yaml is translated on Windows."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "file_tools.py").read_text(encoding="utf-8")
+        # The call must appear inside _sentinel_free_abs_cwd
+        fn_start = source.find("def _sentinel_free_abs_cwd(")
+        fn_end = source.find("\ndef ", fn_start + 1)
+        fn_body = source[fn_start:fn_end]
+        assert "_normalize_msys_path" in fn_body, (
+            "_sentinel_free_abs_cwd must call _normalize_msys_path so "
+            "TERMINAL_CWD=/c/Users/... from config.yaml is translated to "
+            "C:\\Users\\... on Windows before the isabs check (issue #46876)."
+        )
+
+    def test_normalize_called_in_resolve_path_for_task(self):
+        """Source check: _resolve_path_for_task must call _normalize_msys_path
+        so agent-supplied /c/Users/... paths don't become ghost C:\\c\\Users\\..."""
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "tools" / "file_tools.py").read_text(encoding="utf-8")
+        fn_start = source.find("def _resolve_path_for_task(")
+        fn_end = source.find("\ndef ", fn_start + 1)
+        fn_body = source[fn_start:fn_end]
+        assert "_normalize_msys_path" in fn_body, (
+            "_resolve_path_for_task must call _normalize_msys_path so "
+            "write_file/patch don't silently route to the C:\\c\\... ghost "
+            "tree when the agent uses Git Bash paths (issue #46876)."
+        )

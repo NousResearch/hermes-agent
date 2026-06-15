@@ -112,7 +112,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
   const connectLabel = connected ? (auth === 'apikey' ? 'Connect via OAuth' : 'Reconnect') : 'Connect'
 
   return (
-    <span className="inline-flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs">
+    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
       {phase === 'idle' && connected && (
         <span className="inline-flex items-center gap-1 text-muted-foreground">
           <Check className="size-3" />

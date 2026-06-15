@@ -67,7 +67,6 @@ export function ListRow({
   description,
   hint,
   action,
-  actionBelow,
   below,
   wide = false
 }: {
@@ -75,7 +74,6 @@ export function ListRow({
   description?: ReactNode
   hint?: ReactNode
   action?: ReactNode
-  actionBelow?: ReactNode
   below?: ReactNode
   wide?: boolean
 }) {
@@ -96,12 +94,7 @@ export function ListRow({
         {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
         {below}
       </div>
-      {action && (
-        <div className={cn('min-w-0', !wide && (actionBelow ? 'sm:justify-self-stretch' : 'sm:justify-self-end'))}>
-          {action}
-          {actionBelow && <div className="mt-1 flex justify-end">{actionBelow}</div>}
-        </div>
-      )}
+      {action && <div className={cn('min-w-0', !wide && 'sm:justify-self-end')}>{action}</div>}
     </div>
   )
 }

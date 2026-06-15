@@ -107,6 +107,36 @@ def test_memory_gate_on_then_apply(hermes_home):
     assert "approved entry" in store.user_entries[0]
 
 
+def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, capsys):
+    """#46783: ``/memory approve`` from a context with no live agent (e.g. the
+    Desktop GUI) passed ``memory_store=None`` into the shared handler, which
+    returned "memory store unavailable" and applied nothing. The CLI handler must
+    fall back to a freshly loaded on-disk store, like the gateway path does."""
+    import json
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools import write_approval as wa
+    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+    _set_approval("memory", True)
+    staging = MemoryStore(); staging.load_from_disk()
+    r = json.loads(memory_tool("add", "memory", "remember the launch date", store=staging))
+    assert r.get("pending_id"), r
+    assert wa.pending_count("memory") == 1
+
+    # Bare CLI handler with no live agent → store resolves to None pre-fix.
+    handler = CLICommandsMixin.__new__(CLICommandsMixin)
+    handler.agent = None
+    handler._handle_memory_command("/memory approve all")
+
+    out = capsys.readouterr().out
+    assert "memory store unavailable" not in out, out
+    assert "Approved 1" in out, out
+    assert wa.pending_count("memory") == 0
+    # The approved write landed in a freshly loaded on-disk store (MEMORY.md).
+    reloaded = MemoryStore(); reloaded.load_from_disk()
+    assert any("remember the launch date" in e for e in reloaded.memory_entries)
+
+
 # ---------------------------------------------------------------------------
 # Skill gate
 # ---------------------------------------------------------------------------

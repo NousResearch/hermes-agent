@@ -1,0 +1,5 @@
+name: yandex-gpt-provider
+kind: model-provider
+version: 1.0.0
+description: Yandex Cloud LLM API (YandexGPT)
+author: Nous Research

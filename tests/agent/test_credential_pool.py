@@ -2998,3 +2998,113 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+# --- _extract_retry_delay_seconds: absolute datetime parsing ---
+
+class TestExtractRetryDelayAbsoluteDatetime:
+    """Tests for absolute-datetime rate-limit messages (e.g. z.ai)."""
+
+    def test_z_ai_sgt_future_timestamp(self, monkeypatch):
+        """z.ai SGT timestamp in the future returns positive delay."""
+        from agent.credential_pool import _extract_retry_delay_seconds
+
+        frozen = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+        import agent.credential_pool as cp_mod
+        orig_datetime = cp_mod.datetime
+
+        class FrozenDatetime(orig_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz == timezone.utc:
+                    return frozen
+                return frozen.astimezone(tz)
+
+        monkeypatch.setattr(cp_mod, "datetime", FrozenDatetime)
+
+        msg = "z.ai: Your limit will reset at 2026-06-01 20:00:00"
+        delay = _extract_retry_delay_seconds(msg)
+        # 20:00 SGT = 12:00 UTC, now is 10:00 UTC → 2h = 7200s
+        assert delay is not None
+        assert abs(delay - 7200) < 1
+
+    def test_z_ai_sgt_past_timestamp_returns_none(self, monkeypatch):
+        """z.ai SGT timestamp already passed returns None."""
+        from agent.credential_pool import _extract_retry_delay_seconds
+
+        frozen = datetime(2026, 6, 1, 20, 0, 0, tzinfo=timezone.utc)
+        import agent.credential_pool as cp_mod
+        orig_datetime = cp_mod.datetime
+
+        class FrozenDatetime(orig_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz == timezone.utc:
+                    return frozen
+                return frozen.astimezone(tz)
+
+        monkeypatch.setattr(cp_mod, "datetime", FrozenDatetime)
+
+        # 08:00 SGT = 00:00 UTC, now is 20:00 UTC → already passed
+        msg = "z.ai: Your limit will reset at 2026-06-01 08:00:00"
+        delay = _extract_retry_delay_seconds(msg)
+        assert delay is None
+
+    def test_t_separator_format(self, monkeypatch):
+        """Accepts T separator between date and time."""
+        from agent.credential_pool import _extract_retry_delay_seconds
+
+        frozen = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+        import agent.credential_pool as cp_mod
+        orig_datetime = cp_mod.datetime
+
+        class FrozenDatetime(orig_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz == timezone.utc:
+                    return frozen
+                return frozen.astimezone(tz)
+
+        monkeypatch.setattr(cp_mod, "datetime", FrozenDatetime)
+
+        msg = "z.ai: Your limit will reset at 2026-06-01T20:00:00"
+        delay = _extract_retry_delay_seconds(msg)
+        assert delay is not None
+        assert abs(delay - 7200) < 1
+
+    def test_unknown_provider_uses_local_timezone(self, monkeypatch):
+        """Unknown provider falls back to local timezone."""
+        from agent.credential_pool import _extract_retry_delay_seconds
+        import agent.credential_pool as cp_mod
+
+        frozen = datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc)
+        orig_datetime = cp_mod.datetime
+
+        class FrozenDatetime(orig_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return frozen.astimezone()
+                if tz == timezone.utc:
+                    return frozen
+                return frozen.astimezone(tz)
+
+        monkeypatch.setattr(cp_mod, "datetime", FrozenDatetime)
+
+        msg = "rate limit exceeded. limit will reset at 2026-06-01 23:59:59"
+        delay = _extract_retry_delay_seconds(msg)
+        assert delay is not None
+        assert delay > 0
+
+    def test_existing_relative_patterns_unaffected(self):
+        """Existing relative-delay patterns still work."""
+        from agent.credential_pool import _extract_retry_delay_seconds
+
+        assert _extract_retry_delay_seconds("retry after 30 seconds") == 30.0
+        assert _extract_retry_delay_seconds("resets in 2hr 30min") == 9000
+        assert _extract_retry_delay_seconds("resets in 1hr") == 3600
+        assert _extract_retry_delay_seconds("resets in 5min") == 300
+        assert _extract_retry_delay_seconds('quotaResetDelay: 5000ms') == 5.0
+        assert _extract_retry_delay_seconds("no delay info here") is None
+        assert _extract_retry_delay_seconds("") is None
+        assert _extract_retry_delay_seconds(None) is None

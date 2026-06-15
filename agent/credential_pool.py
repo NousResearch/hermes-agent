@@ -10,7 +10,7 @@ import time
 import uuid
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
@@ -305,6 +305,39 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
     if min_only_match:
         return int(min_only_match.group(1)) * 60
+    # Absolute datetime: "Your limit will reset at 2026-06-01 20:46:51"
+    # Some providers (e.g. z.ai) send naive timestamps in their own timezone.
+    _PROVIDER_RESET_TZ: Dict[str, timedelta] = {
+        "z.ai": timedelta(hours=8),  # SGT / UTC+8
+    }
+    abs_dt_match = re.search(
+        r"reset\s+at\s+(\d{4}-\d{2}-\d{2})[\sT](\d{2}:\d{2}:\d{2})",
+        message,
+        re.IGNORECASE,
+    )
+    if abs_dt_match:
+        try:
+            naive = datetime.strptime(
+                f"{abs_dt_match.group(1)} {abs_dt_match.group(2)}",
+                "%Y-%m-%d %H:%M:%S",
+            )
+            msg_lower = message.lower()
+            tz_offset: Optional[timedelta] = None
+            for provider_key, offset in _PROVIDER_RESET_TZ.items():
+                if provider_key in msg_lower:
+                    tz_offset = offset
+                    break
+            if tz_offset is None:
+                # Fall back to this machine's local timezone
+                aware_local = datetime.now().astimezone()
+                reset_aware = naive.replace(tzinfo=aware_local.tzinfo)
+            else:
+                reset_aware = naive.replace(tzinfo=timezone(tz_offset))
+            delay = (reset_aware - datetime.now(timezone.utc)).total_seconds()
+            if delay > 0:
+                return delay
+        except (ValueError, OSError):
+            pass
     return None
 
 

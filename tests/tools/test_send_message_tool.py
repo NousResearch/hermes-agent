@@ -682,6 +682,35 @@ class TestSendTelegramMediaDelivery:
         bot.send_audio.assert_awaited_once()
         bot.send_voice.assert_not_awaited()
 
+    def test_large_media_sends_upload_notice_before_attachment(self, tmp_path, monkeypatch):
+        file_path = tmp_path / "large-report.pdf"
+        file_path.write_bytes(b"x" * (1024 * 1024 + 1))
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=2))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "token",
+                "12345",
+                "",
+                media_files=[(str(file_path), False)],
+            )
+        )
+
+        assert result["success"] is True
+        bot.send_message.assert_awaited_once()
+        assert bot.send_message.await_args.kwargs["text"].startswith(
+            "Uploading attachment: large-report.pdf"
+        )
+        bot.send_document.assert_awaited_once()
+
     def test_missing_media_returns_error_without_leaking_raw_tag(self, monkeypatch):
         bot = MagicMock()
         bot.send_message = AsyncMock()
@@ -1013,6 +1042,51 @@ class TestSendToPlatformChunking:
         assert calls == [
             ("connect",),
             ("send", "!room:example.com", "report attached", None),
+            ("send_document", "!room:example.com", str(file_path), None),
+            ("disconnect",),
+        ]
+
+    def test_send_matrix_via_adapter_announces_large_upload(self, tmp_path):
+        file_path = tmp_path / "large-report.pdf"
+        file_path.write_bytes(b"x" * (1024 * 1024 + 1))
+
+        calls = []
+
+        class FakeAdapter:
+            def __init__(self, _config):
+                pass
+
+            async def connect(self):
+                calls.append(("connect",))
+                return True
+
+            async def send(self, chat_id, message, metadata=None):
+                calls.append(("send", chat_id, message, metadata))
+                return SimpleNamespace(success=True, message_id="$text")
+
+            async def send_document(self, chat_id, file_path, metadata=None):
+                calls.append(("send_document", chat_id, file_path, metadata))
+                return SimpleNamespace(success=True, message_id="$file")
+
+            async def disconnect(self):
+                calls.append(("disconnect",))
+
+        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
+
+        with patch.dict(sys.modules, {"gateway.platforms.matrix": fake_module}):
+            result = asyncio.run(
+                _send_matrix_via_adapter(
+                    SimpleNamespace(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.com"}),
+                    "!room:example.com",
+                    "",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result["success"] is True
+        assert calls == [
+            ("connect",),
+            ("send", "!room:example.com", "Uploading attachment: large-report.pdf (1.0 MB)...", None),
             ("send_document", "!room:example.com", str(file_path), None),
             ("disconnect",),
         ]

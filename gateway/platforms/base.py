@@ -34,6 +34,8 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
 _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
+_UPLOAD_FEEDBACK_THRESHOLD_BYTES = 1 * 1024 * 1024
+_UPLOAD_FAILURE_NOTICE_MAX_CHARS = 300
 
 
 def _platform_name(platform) -> str:
@@ -3288,8 +3290,30 @@ class BasePlatformAdapter(ABC):
                     )
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    failed_path = (
+                        _unquote(image_url[7:])
+                        if image_url.startswith("file://")
+                        else image_url
+                    )
+                    await self._send_upload_failure_notice(
+                        chat_id=chat_id,
+                        file_path=failed_path,
+                        error=img_result.error,
+                        metadata=metadata,
+                    )
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                failed_path = (
+                    _unquote(image_url[7:])
+                    if image_url.startswith("file://")
+                    else image_url
+                )
+                await self._send_upload_failure_notice(
+                    chat_id=chat_id,
+                    file_path=failed_path,
+                    error=img_err,
+                    metadata=metadata,
+                )
 
     async def send_image(
         self,
@@ -4861,6 +4885,78 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    @staticmethod
+    def _format_upload_size(size_bytes: int) -> str:
+        """Return a compact human-readable upload size."""
+        units = ("B", "KB", "MB", "GB")
+        value = float(max(size_bytes, 0))
+        unit = units[0]
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                break
+            value /= 1024
+        if unit == "B":
+            return f"{int(value)} {unit}"
+        return f"{value:.1f} {unit}"
+
+    @classmethod
+    def _upload_notice_for_file(cls, file_path: str) -> Optional[str]:
+        """Build an upload-start notice for large local attachments."""
+        try:
+            size_bytes = os.path.getsize(file_path)
+        except OSError:
+            return None
+        if size_bytes < _UPLOAD_FEEDBACK_THRESHOLD_BYTES:
+            return None
+        name = Path(file_path).name or "attachment"
+        return f"Uploading attachment: {name} ({cls._format_upload_size(size_bytes)})..."
+
+    async def _send_upload_started_notice(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort visible feedback before a large attachment upload."""
+        notice = self._upload_notice_for_file(file_path)
+        if not notice:
+            return
+        try:
+            await self.send(
+                chat_id=chat_id,
+                content=notice,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.debug("[%s] Could not send upload-start notice: %s", self.name, e)
+
+    async def _send_upload_failure_notice(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        error: Any,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort visible error when an attachment upload fails."""
+        name = Path(file_path).name or "attachment"
+        detail = _LOG_UNSAFE_CHARS.sub("?", str(error or "unknown error"))
+        if len(detail) > _UPLOAD_FAILURE_NOTICE_MAX_CHARS:
+            detail = detail[:_UPLOAD_FAILURE_NOTICE_MAX_CHARS].rstrip() + "..."
+        try:
+            await self.send(
+                chat_id=chat_id,
+                content=f"Attachment upload failed: {name}: {detail}",
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.debug("[%s] Could not send upload-failure notice: %s", self.name, e)
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -5005,6 +5101,7 @@ class BasePlatformAdapter(ABC):
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
                 _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _reply_anchor = _reply_anchor_for_event(event)
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
@@ -5059,7 +5156,6 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = _reply_anchor_for_event(event)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
@@ -5131,6 +5227,13 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
+                        for image_path in _image_paths:
+                            await self._send_upload_started_notice(
+                                chat_id=event.source.chat_id,
+                                file_path=image_path,
+                                reply_to=_reply_anchor,
+                                metadata=_thread_metadata,
+                            )
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
@@ -5140,11 +5243,24 @@ class BasePlatformAdapter(ABC):
                         )
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        await self._send_upload_failure_notice(
+                            chat_id=event.source.chat_id,
+                            file_path=_image_paths[0],
+                            error=batch_err,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
 
                 for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        await self._send_upload_started_notice(
+                            chat_id=event.source.chat_id,
+                            file_path=media_path,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
@@ -5165,31 +5281,71 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
 
+                        _record_delivery(media_result)
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            await self._send_upload_failure_notice(
+                                chat_id=event.source.chat_id,
+                                file_path=media_path,
+                                error=media_result.error,
+                                reply_to=_reply_anchor,
+                                metadata=_thread_metadata,
+                            )
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
+                        _record_delivery(SendResult(success=False, error=str(media_err)))
+                        await self._send_upload_failure_notice(
+                            chat_id=event.source.chat_id,
+                            file_path=media_path,
+                            error=media_err,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        await self._send_upload_started_notice(
+                            chat_id=event.source.chat_id,
+                            file_path=file_path,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
                             )
+                        _record_delivery(file_result)
+                        if not file_result.success:
+                            logger.warning("[%s] Failed to send local file (%s): %s", self.name, ext, file_result.error)
+                            await self._send_upload_failure_notice(
+                                chat_id=event.source.chat_id,
+                                file_path=file_path,
+                                error=file_result.error,
+                                reply_to=_reply_anchor,
+                                metadata=_thread_metadata,
+                            )
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+                        _record_delivery(SendResult(success=False, error=str(file_err)))
+                        await self._send_upload_failure_notice(
+                            chat_id=event.source.chat_id,
+                            file_path=file_path,
+                            error=file_err,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.

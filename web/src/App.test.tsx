@@ -4,6 +4,10 @@ import App from "@/App";
 import { renderWithAppProviders } from "@/test/render";
 
 vi.mock("@/lib/api", () => ({
+  getManagementProfile: vi.fn(() => ""),
+  setManagementProfile: vi.fn(),
+  buildWsAuthParam: vi.fn().mockResolvedValue(["", ""]),
+  buildWsUrl: vi.fn().mockResolvedValue("ws://localhost/api/events"),
   api: {
     getMemory: vi.fn().mockResolvedValue({
       builtin_active: true,
@@ -21,8 +25,12 @@ vi.mock("@/lib/api", () => ({
     getAuthMe: vi.fn().mockRejectedValue(new Error("unauthorized")),
     logout: vi.fn(),
     getStatus: vi.fn().mockResolvedValue({}),
+    getProfiles: vi.fn().mockResolvedValue({ profiles: [] }),
+    getActiveProfile: vi.fn().mockResolvedValue({ current: "default" }),
     getSessions: vi.fn().mockResolvedValue({ sessions: [], total: 0, limit: 20, offset: 0 }),
     getSessionMessages: vi.fn(),
+    getEmptySessionsCount: vi.fn().mockResolvedValue({ count: 0 }),
+    deleteEmptySessions: vi.fn(),
     getSessionStats: vi.fn().mockResolvedValue({
       total_sessions: 0,
       total_messages: 0,
@@ -35,7 +43,7 @@ vi.mock("@/lib/api", () => ({
     getConfig: vi.fn().mockResolvedValue({ dashboard: {} }),
     getDefaults: vi.fn(),
     getSchema: vi.fn(),
-    getModelInfo: vi.fn(),
+    getModelInfo: vi.fn().mockResolvedValue({ model: "gpt-test", capabilities: {} }),
     saveConfig: vi.fn(),
     getConfigRaw: vi.fn(),
     saveConfigRaw: vi.fn(),
@@ -67,7 +75,7 @@ vi.mock("@/lib/api", () => ({
 
 describe("App", () => {
   it("shows Memory to the right of Sessions in the header nav", () => {
-    renderWithAppProviders(<App />);
+    renderWithAppProviders(<App />, { routerProps: { initialEntries: ["/memory"] } });
 
     const links = screen.getAllByRole("link");
     const labels = links.map((link) => link.textContent?.trim()).filter(Boolean);

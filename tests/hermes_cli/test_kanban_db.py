@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -3461,16 +3462,43 @@ def test_reclaim_termination_signals_worker_process_group(monkeypatch):
     monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setattr(kb, "_process_group_alive", lambda _pgid: False)
+    monkeypatch.setattr(kb, "_pid_command_matches_worker", lambda _pid, _tid: True)
 
     info = kb._terminate_reclaimed_worker(
         4242,
         f"{host}:claim",
+        task_id="t_worker",
         signal_fn=lambda target, sig: calls.append((target, sig)),
     )
 
     assert calls and calls[0][0] == -4242
     assert info["signaled_process_group"] is True
     assert info["process_group"] == 4242
+    assert info["terminated"] is True
+
+
+def test_reclaim_termination_avoids_reused_pid_group_leader(monkeypatch):
+    """Do not signal a PID-reused foreign group leader as a process group."""
+    host = kb._claimer_id().split(":", 1)[0]
+    calls = []
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 4242)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_pid_command_matches_worker", lambda _pid, _tid: False)
+
+    info = kb._terminate_reclaimed_worker(
+        4242,
+        f"{host}:claim",
+        task_id="t_worker",
+        signal_fn=lambda target, sig: calls.append((target, sig)),
+    )
+
+    assert calls and calls[0][0] == 4242
+    assert "signaled_process_group" not in info
+    assert info["process_group_skipped"] == 4242
+    assert info["process_group_skipped_reason"] == "pid_command_mismatch"
     assert info["terminated"] is True
 
 
@@ -3484,6 +3512,24 @@ def test_process_group_alive_short_circuits_on_windows(monkeypatch):
     monkeypatch.setattr(kb.os, "kill", _forbidden_kill)
 
     assert kb._process_group_alive(4242) is False
+
+
+def test_pid_command_match_rejects_task_id_prefix_collision(monkeypatch):
+    """Task-id matching must not let t_1 match a t_10 worker command."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="hermes -p default chat -q 'work kanban task t_10'",
+        ),
+    )
+
+    assert kb._pid_command_matches_worker(4242, "t_1") is False
+    assert kb._pid_command_matches_worker(4242, "t_10") is True
 
 
 def test_reclaim_termination_avoids_recycled_pid_foreign_group(monkeypatch):
@@ -3507,13 +3553,10 @@ def test_reclaim_termination_avoids_recycled_pid_foreign_group(monkeypatch):
     assert info["terminated"] is True
 
 
-def test_reclaim_termination_signals_orphaned_group_without_leader(monkeypatch):
-    """If the session leader was reaped, kill the still-live worker group."""
-    import signal
-
+def test_reclaim_termination_skips_orphaned_group_without_identity(monkeypatch):
+    """If the session leader is gone, do not signal an unverifiable group."""
     host = kb._claimer_id().split(":", 1)[0]
     calls = []
-    killed = {"value": False}
 
     monkeypatch.setattr(kb, "_IS_WINDOWS", False)
     monkeypatch.setattr(
@@ -3522,29 +3565,21 @@ def test_reclaim_termination_signals_orphaned_group_without_leader(monkeypatch):
     )
     monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
-    monkeypatch.setattr(
-        kb, "_process_group_alive",
-        lambda _pgid: not killed["value"],
-    )
+    monkeypatch.setattr(kb, "_process_group_alive", lambda _pgid: True)
     monkeypatch.setattr(kb.time, "sleep", lambda _seconds: None)
-
-    def _signal(target, sig):
-        calls.append((target, sig))
-        if sig == getattr(signal, "SIGKILL", signal.SIGTERM):
-            killed["value"] = True
 
     info = kb._terminate_reclaimed_worker(
         4242,
         f"{host}:claim",
-        signal_fn=_signal,
+        task_id="t_worker",
+        signal_fn=lambda target, sig: calls.append((target, sig)),
     )
 
-    assert calls[0][0] == -4242
-    assert any(
-        target == -4242 and sig == getattr(signal, "SIGKILL", signal.SIGTERM)
-        for target, sig in calls
-    )
-    assert info["process_group_without_leader"] is True
+    assert calls and calls[0][0] == 4242
+    assert not any(target == -4242 for target, _sig in calls)
+    assert "signaled_process_group" not in info
+    assert info["process_group_skipped"] == 4242
+    assert info["process_group_skipped_reason"] == "leader_missing_identity_unverifiable"
     assert info["terminated"] is True
 
 
@@ -3560,6 +3595,7 @@ def test_reclaim_termination_escalates_when_group_survives(monkeypatch):
     monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 4242)
     monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_pid_command_matches_worker", lambda _pid, _tid: True)
     monkeypatch.setattr(
         kb, "_process_group_alive",
         lambda _pgid: not killed["value"],
@@ -3574,6 +3610,7 @@ def test_reclaim_termination_escalates_when_group_survives(monkeypatch):
     info = kb._terminate_reclaimed_worker(
         4242,
         f"{host}:claim",
+        task_id="t_worker",
         signal_fn=_signal,
     )
 
@@ -3640,6 +3677,57 @@ def test_detect_stale_returns_running_task_with_no_heartbeat(kanban_home, monkey
         assert t in stale, "Task with no heartbeat for >4h should be reclaimed"
         task = kb.get_task(conn, t)
         assert task.status == "ready"
+
+
+def test_detect_stale_running_signals_worker_process_group(kanban_home, monkeypatch):
+    """Stale reclaim passes task_id so the safe process-group path can run."""
+    import signal
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="stale-group-kill", assignee="worker")
+        kb.claim_task(conn, t)
+        kb._set_worker_pid(conn, t, 4242)
+
+        five_hours_ago = int(time.time()) - (5 * 3600)
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET started_at = ? WHERE id = ?", (five_hours_ago, t)
+            )
+            conn.execute(
+                "UPDATE task_runs SET started_at = ? "
+                "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                (five_hours_ago, t),
+            )
+
+        calls = []
+        monkeypatch.setattr(_kb, "_IS_WINDOWS", False)
+        monkeypatch.setattr(_kb.os, "getpgid", lambda _pid: 4242)
+        monkeypatch.setattr(_kb.os, "getpgrp", lambda: 31337)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        monkeypatch.setattr(_kb, "_process_group_alive", lambda _pgid: False)
+        monkeypatch.setattr(
+            _kb,
+            "_pid_command_matches_worker",
+            lambda _pid, task_id: task_id == t,
+        )
+
+        stale = kb.detect_stale_running(
+            conn,
+            stale_timeout_seconds=14400,
+            signal_fn=lambda target, sig: calls.append((target, sig)),
+        )
+
+        assert t in stale
+        assert calls and calls[0] == (-4242, signal.SIGTERM)
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'stale'",
+            (t,),
+        ).fetchone()
+        assert event is not None
+        payload = json.loads(event["payload"])
+        assert payload["signaled_process_group"] is True
+        assert payload["process_group"] == 4242
 
 
 def test_detect_stale_returns_task_with_stale_heartbeat(kanban_home, monkeypatch):

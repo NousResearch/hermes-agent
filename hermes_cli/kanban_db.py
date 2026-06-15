@@ -3284,7 +3284,8 @@ def release_stale_claims(
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"],
+            task_id=row["id"], signal_fn=signal_fn,
         )
         with write_txn(conn):
             cur = conn.execute(
@@ -3356,7 +3357,7 @@ def reclaim_task(
         return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        row["worker_pid"], prev_lock, task_id=task_id, signal_fn=signal_fn,
     )
     with write_txn(conn):
         cur = conn.execute(
@@ -5085,7 +5086,7 @@ def _process_group_alive(pgid: Optional[int]) -> bool:
     if _IS_WINDOWS or not pgid or pgid <= 0 or not hasattr(os, "kill"):
         return False
     try:
-        os.kill(-int(pgid), 0)  # windows-footgun: ok — guarded by _IS_WINDOWS above; POSIX process-group probe
+        os.kill(-int(pgid), 0)  # windows-footgun: ok — POSIX group probe
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -5103,10 +5104,43 @@ def _process_group_alive(pgid: Optional[int]) -> bool:
     return True
 
 
+def _pid_command_matches_worker(pid: Optional[int], task_id: Optional[str]) -> bool:
+    """Return True when ``pid`` still looks like the worker for ``task_id``.
+
+    ``worker_pid`` is a stale integer once the OS reuses it. Before widening a
+    reclaim from a bare PID signal to a whole POSIX process group, verify the
+    live process command still contains the exact dispatcher prompt. If the
+    check is unavailable or ambiguous, stay on the safer bare-PID path.
+    """
+    if _IS_WINDOWS or not pid or pid <= 0 or not task_id:
+        return False
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(int(pid))],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+        return False
+    if proc.returncode != 0:
+        return False
+    command = proc.stdout or ""
+    task_pattern = re.compile(
+        r"\bwork\s+kanban\s+task\s+"
+        + re.escape(str(task_id))
+        + r"(?![A-Za-z0-9_])"
+    )
+    return "hermes" in command and bool(task_pattern.search(command))
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
+    task_id: Optional[str] = None,
     signal_fn=None,
 ) -> dict[str, Any]:
     """Best-effort host-local worker termination for reclaim paths."""
@@ -5136,29 +5170,33 @@ def _terminate_reclaimed_worker(
     target = int(pid)
     if not _IS_WINDOWS:
         current_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+        worker_cmd_matches = _pid_command_matches_worker(pid, task_id)
         try:
             pgid = os.getpgid(int(pid))
         except OSError:
             pgid = None
-        if pgid and pgid > 0 and pgid == int(pid) and pgid != current_pgrp:
+        if (
+            pgid and pgid > 0 and pgid == int(pid)
+            and pgid != current_pgrp and worker_cmd_matches
+        ):
             # Worker subprocesses are launched with start_new_session=True, so
             # the expected safe shape is pid == process-group id. Only signal
-            # the group in that shape; if the PID was recycled into some other
-            # group, fall back to the bare PID rather than risking a foreign
-            # process group.
+            # the group in that shape after the live command still matches the
+            # exact task. If the PID was recycled into a foreign process group,
+            # fall back to the bare PID rather than risking that whole group.
             target = -int(pgid)
             info["process_group"] = int(pgid)
             info["signaled_process_group"] = True
+        elif pgid and pgid > 0 and pgid == int(pid) and pgid != current_pgrp:
+            info["process_group_skipped"] = int(pgid)
+            info["process_group_skipped_reason"] = "pid_command_mismatch"
         elif pgid is None and int(pid) != current_pgrp and _process_group_alive(int(pid)):
-            # The worker/session leader may have exited and been reaped while
-            # helper children remain in its process group. In that POSIX shape
-            # os.getpgid(pid) fails, but kill(-pid, 0) still proves the worker's
-            # original group exists; signal it so reclaim does not strand MCP or
-            # shell helper processes.
-            target = -int(pid)
-            info["process_group"] = int(pid)
-            info["signaled_process_group"] = True
-            info["process_group_without_leader"] = True
+            # A still-live process group whose leader is already gone cannot be
+            # tied back to the original Hermes worker by command-line identity;
+            # the numeric PID/PGID may have been reused. Do not risk signaling
+            # an unrelated orphaned group.
+            info["process_group_skipped"] = int(pid)
+            info["process_group_skipped_reason"] = "leader_missing_identity_unverifiable"
 
     info["termination_attempted"] = True
     try:
@@ -5198,7 +5236,6 @@ def _terminate_reclaimed_worker(
         )
     )
     return info
-
 
 def heartbeat_worker(
     conn: sqlite3.Connection,
@@ -5296,7 +5333,7 @@ def enforce_max_runtime(
         pid = int(row["worker_pid"])
         tid = row["id"]
         termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn,
+            pid, row["claim_lock"], task_id=tid, signal_fn=signal_fn,
         )
         killed = bool(termination.get("sigkill"))
 
@@ -5414,7 +5451,7 @@ def detect_stale_running(
 
         # Terminate the worker if it's still host-local.
         termination = _terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn,
+            pid, lock, task_id=tid, signal_fn=signal_fn,
         )
 
         with write_txn(conn):

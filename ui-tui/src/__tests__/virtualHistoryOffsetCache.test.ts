@@ -245,6 +245,44 @@ describe('useVirtualHistory offset cache reuse', () => {
     }
   })
 
+  it('keeps a manual viewport anchored when rows above it resize', async () => {
+    const before = [
+      { height: 4, key: 'a' },
+      { height: 4, key: 'b' },
+      { height: 4, key: 'c' }
+    ]
+
+    const after = [
+      { height: 7, key: 'a' },
+      { height: 4, key: 'b' },
+      { height: 4, key: 'c' }
+    ]
+
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(React.createElement(Harness, { expose, height: 4, items: before }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    try {
+      await delay(20)
+      expose.current!.scroll!.scrollTo(4)
+      await delay(40)
+
+      instance.rerender(React.createElement(Harness, { expose, height: 4, items: after }))
+      await delay(80)
+
+      expect(expose.current!.scroll!.getScrollTop()).toBe(7)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
   it('ignores stale reused offset-array entries after the item count shrinks', async () => {
     const beforeShrink = Array.from({ length: 1400 }, (_, index) => ({ height: 1, key: `old${index}` }))
     const afterShrink = Array.from({ length: 800 }, (_, index) => ({ height: 7, key: `new${index}` }))

@@ -456,6 +456,16 @@ export function useVirtualHistory(
     let dirty = false
     let heightDirty = false
 
+    const viewport = s
+      ? {
+          sticky: s.isSticky(),
+          top: Math.max(0, s.getScrollTop() + s.getPendingDelta()),
+          vp: Math.max(0, s.getViewportHeight())
+        }
+      : null
+
+    let anchorDelta = 0
+
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Clamp MUST use the EFFECTIVE (deferred) range, not the immediate one.
     // During fast scroll, immediate [start,end] may already cover the new
@@ -492,13 +502,27 @@ export function useVirtualHistory(
         }
 
         const h = Math.ceil((nodes.current.get(k) as MeasuredNode | undefined)?.yogaNode?.getComputedHeight?.() ?? 0)
+        const prev = heights.current.get(k)
 
-        if (h > 0 && heights.current.get(k) !== h) {
+        if (h > 0 && prev !== h) {
+          const rowBottom = offsets[i + 1] ?? total
+
+          if (viewport && !viewport.sticky && prev !== undefined && rowBottom <= viewport.top) {
+            anchorDelta += h - prev
+          }
+
           heights.current.set(k, h)
           dirty = true
           heightDirty = true
         }
       }
+    }
+
+    if (s && anchorDelta !== 0 && viewport && !viewport.sticky) {
+      // Preserve the same visible content when rows above the viewport grow
+      // or shrink during live updates. Without this, keeping raw scrollTop
+      // unchanged makes the viewport drift into earlier/later messages.
+      s.scrollTo(Math.max(0, viewport.top + anchorDelta))
     }
 
     if (s) {

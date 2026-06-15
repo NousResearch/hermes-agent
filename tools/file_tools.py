@@ -113,6 +113,37 @@ def _configured_terminal_cwd() -> str | None:
     return expanded
 
 
+def _registered_task_cwd_override(task_id: str = "default") -> str | None:
+    """Return a registered cwd override for the raw task id, when available.
+
+    ``terminal_tool`` intentionally collapses CWD-only task overrides to the
+    shared ``"default"`` environment so TUI/dashboard/ACP sessions do not spin
+    up isolated sandboxes just because they have different workspaces. The cwd
+    value itself is still keyed by the raw session/task id, so file tools must
+    read that raw override before falling back to the collapsed container key.
+    """
+    try:
+        from tools.terminal_tool import _resolve_container_task_id, _task_env_overrides
+
+        raw_task_id = task_id or "default"
+        container_key = _resolve_container_task_id(raw_task_id)
+        overrides = (
+            _task_env_overrides.get(raw_task_id)
+            or _task_env_overrides.get(container_key)
+            or {}
+        )
+    except Exception:
+        return None
+
+    raw_cwd = str(overrides.get("cwd") or "").strip()
+    if raw_cwd.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = os.path.expanduser(raw_cwd)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
@@ -159,6 +190,9 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    registered = _registered_task_cwd_override(task_id)
+    if registered:
+        return registered
     return _configured_terminal_cwd()
 
 
@@ -625,7 +659,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     )
     import time
 
-    task_id = _resolve_container_task_id(task_id)
+    raw_task_id = task_id or "default"
+    task_id = _resolve_container_task_id(raw_task_id)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -662,7 +697,11 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
             config = _get_env_config()
             env_type = config["env_type"]
-            overrides = _task_env_overrides.get(task_id, {})
+            overrides = (
+                _task_env_overrides.get(raw_task_id)
+                or _task_env_overrides.get(task_id)
+                or {}
+            )
 
             if env_type == "docker":
                 image = overrides.get("docker_image") or config["docker_image"]

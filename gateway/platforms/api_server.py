@@ -2839,11 +2839,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put(("__tool_progress__", {
+                payload = {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
-                }))
+                }
+                # Include tool body for delegate_task so desktop clients can
+                # populate Subagents panel (api_server does not forward
+                # tool_progress_callback subagent.* events on this path).
+                if function_result and function_name == "delegate_task":
+                    payload["result"] = function_result
+                _stream_q.put(("__tool_progress__", payload))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.

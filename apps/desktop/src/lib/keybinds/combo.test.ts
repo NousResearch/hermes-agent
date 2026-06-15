@@ -32,6 +32,19 @@ describe('comboFromEvent — ctrl as a distinct modifier on macOS', () => {
     expect(comboFromEvent(keydown({ code: 'KeyK', ctrlKey: true }))).toBe('ctrl+k')
   })
 
+  it('uses layout-aware letters for Cmd shortcuts on non-QWERTY layouts', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    expect(comboFromEvent(keydown({ code: 'KeyI', key: 'c', metaKey: true }))).toBe('mod+c')
+    expect(comboFromEvent(keydown({ code: 'KeyI', key: 'C', metaKey: true, shiftKey: true }))).toBe('mod+shift+c')
+  })
+
+  it('keeps shifted punctuation anchored to the physical key token', async () => {
+    const { comboFromEvent } = await loadCombo('MacIntel')
+
+    expect(comboFromEvent(keydown({ code: 'Slash', key: '?', metaKey: true, shiftKey: true }))).toBe('mod+shift+/')
+  })
+
   it('treats Control as the "mod" accelerator off macOS', async () => {
     const { comboFromEvent } = await loadCombo('Win32')
 

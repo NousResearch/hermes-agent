@@ -2758,10 +2758,17 @@ def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
     with _client_cache_lock:
-        stale_keys = [
-            key for key in _client_cache
-            if _normalize_aux_provider(str(key[0])) == normalized
-        ]
+        stale_keys = []
+        for key in _client_cache:
+            k_prov = _normalize_aux_provider(str(key[0]))
+            if k_prov == normalized:
+                stale_keys.append(key)
+            elif k_prov == "auto":
+                # For "auto" keys, if the pool_hint starts with normalized + ":"
+                # (e.g. "openai-codex:entry_id"), it belongs to this provider.
+                pool_hint = key[7] if len(key) > 7 else ""
+                if pool_hint and pool_hint.startswith(normalized + ":"):
+                    stale_keys.append(key)
         for key in stale_keys:
             client = _client_cache.get(key, (None, None, None))[0]
             if client is not None:
@@ -3589,7 +3596,27 @@ def _resolve_auto(
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
             # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
+            #
+            # However, if the main provider has a credential pool and the pool has
+            # been rotated (meaning the pool's current active key is different from
+            # the runtime_api_key), we must NOT use the stale runtime_api_key.
+            _pool_key = None
+            _p_norm = _normalize_aux_provider(main_provider)
+            if _p_norm not in {"", "auto", "custom"}:
+                _pe = _peek_pool_entry(_p_norm)
+                if _pe is not None:
+                    _pool_key = _pool_runtime_api_key(_pe)
+
+            if _pool_key and _pool_key != runtime_api_key:
+                logger.info(
+                    "Auxiliary auto-detect: main runtime API key %s... is stale "
+                    "(pool rotated to %s...); using pool active key instead",
+                    runtime_api_key[:8] if runtime_api_key else "",
+                    _pool_key[:8] if _pool_key else "",
+                )
+                explicit_api_key = _pool_key
+            else:
+                explicit_api_key = runtime_api_key
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call

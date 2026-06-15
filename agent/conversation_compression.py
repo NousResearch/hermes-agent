@@ -460,6 +460,13 @@ def compress_context(
         except Exception:
             pass
 
+    if hasattr(agent, "context_compressor") and agent.context_compressor:
+        cc = agent.context_compressor
+        cc.api_key = getattr(agent, "api_key", "")
+        cc.base_url = getattr(agent, "base_url", "")
+        cc.provider = getattr(agent, "provider", "")
+        cc.api_mode = getattr(agent, "api_mode", "")
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:

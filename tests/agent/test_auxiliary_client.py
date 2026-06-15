@@ -4507,3 +4507,72 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+class TestStaleMainRuntimeKeyPoolRotation:
+    def test_resolve_auto_uses_rotated_pool_key_instead_of_stale_runtime_key(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        class _Entry:
+            id = "cred-b"
+            runtime_api_key = "tok-b"
+            runtime_base_url = "https://chatgpt.com/backend-api/codex"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def current(self):
+                return _Entry()
+
+            def peek(self):
+                return _Entry()
+
+            def select(self):
+                return _Entry()
+
+        # Let's set up the main runtime with a stale key "tok-a"
+        main_runtime = {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+            "api_key": "tok-a",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+        pool = _Pool()
+        client_mock = MagicMock()
+
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(client_mock, "gpt-5.4")) as mock_resolve,
+        ):
+            client, model = aux._resolve_auto(main_runtime=main_runtime)
+            assert client is client_mock
+            assert model == "gpt-5.4"
+            # resolve_provider_client should have been called with the rotated key "tok-b", NOT the stale "tok-a"
+            assert mock_resolve.call_args.kwargs["explicit_api_key"] == "tok-b"
+
+    def test_evict_cached_clients_auto_keys(self):
+        import agent.auxiliary_client as aux
+        aux.shutdown_cached_clients()
+
+        # Create a mock client
+        client = MagicMock()
+        cache_key = (
+            "auto",
+            False,  # async_mode
+            "",     # base_url
+            "",     # api_key
+            "",     # api_mode
+            ("openai-codex", "gpt-5.4", "", "tok-a", "", ""),  # runtime_key based on _MAIN_RUNTIME_FIELDS
+            False,  # is_vision
+            "openai-codex:cred-a",  # pool_hint
+        )
+        aux._client_cache[cache_key] = (client, "gpt-5.4", None)
+
+        try:
+            assert cache_key in aux._client_cache
+            # Evicting "openai-codex" should clear the "auto" cache key because its pool_hint starts with "openai-codex:"
+            aux._evict_cached_clients("openai-codex")
+            assert cache_key not in aux._client_cache
+        finally:
+            aux.shutdown_cached_clients()

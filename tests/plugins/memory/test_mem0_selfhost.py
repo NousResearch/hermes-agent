@@ -76,7 +76,7 @@ def test_selfhost_tools_use_direct_rest_with_api_key_and_response_mapping(monkey
     _install_exploding_memory_client(monkeypatch)
     calls = []
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, context=None):
         parsed = urlparse(request.full_url)
         call = {
             "method": request.get_method(),
@@ -128,7 +128,7 @@ def test_selfhost_delete_uses_rest_delete_after_read_before_destroy(monkeypatch,
     _install_exploding_memory_client(monkeypatch)
     calls = []
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, context=None):
         parsed = urlparse(request.full_url)
         call = {
             "method": request.get_method(),
@@ -234,7 +234,7 @@ def test_mem0_json_overrides_selfhost_env_config(monkeypatch, tmp_path):
         "agent_id": "file-agent",
     }))
 
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, context=None):
         parsed = urlparse(request.full_url)
         calls.append({
             "url": request.full_url,
@@ -258,7 +258,7 @@ def test_mem0_json_overrides_selfhost_env_config(monkeypatch, tmp_path):
 
 
 def test_selfhost_401_surfaces_error_and_records_failure_without_fabricated_memory(monkeypatch, tmp_path):
-    def fake_urlopen(request, timeout=0):
+    def fake_urlopen(request, timeout=0, context=None):
         raise urllib.error.HTTPError(
             request.full_url,
             401,
@@ -421,3 +421,59 @@ def test_direct_rest_client_fd_count_plateaus_under_soak(tmp_path):
         f"fd count grew by {growth} over {n} calls "
         f"(baseline={baseline}, peak={peak}) — client is leaking sockets/fds"
     )
+
+
+def test_ca_bundle_builds_ssl_context_for_https_private_ca(tmp_path):
+    """A private-CA HTTPS endpoint (e.g. mem0.ace, signed by the LAN root CA) must be
+    verifiable via an explicit CA bundle, since fleet hosts don't carry the private CA
+    in their system trust store. With a bundle + https host, the client builds an SSL
+    context; without one (or over http) it stays None (urllib system-trust default).
+    Regression for the CERTIFICATE_VERIFY_FAILED that the live cutover surfaced.
+    """
+    from importlib import import_module
+    mod = import_module("plugins.memory.mem0")
+
+    # a real (self-signed) PEM so ssl.create_default_context(cafile=...) accepts it
+    import ssl
+    import datetime
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import NameOID
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+    except ImportError:
+        pytest.skip("cryptography not available to mint a test CA PEM")
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Test Local Root CA")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name).issuer_name(name).public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow() - datetime.timedelta(days=1))
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    ca_pem = tmp_path / "test-ca.crt"
+    ca_pem.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+    # https + bundle -> context built
+    c1 = mod._DirectRestMem0Client(
+        host="https://mem0.ace", admin_api_key="k", agent_id="a", user_id="u",
+        ca_bundle=str(ca_pem),
+    )
+    assert isinstance(c1._ssl_context, ssl.SSLContext)
+
+    # https + NO bundle -> None (system trust store default)
+    c2 = mod._DirectRestMem0Client(
+        host="https://mem0.ace", admin_api_key="k", agent_id="a", user_id="u",
+    )
+    assert c2._ssl_context is None
+
+    # http + bundle -> None (no TLS to verify)
+    c3 = mod._DirectRestMem0Client(
+        host="http://mem0.ace", admin_api_key="k", agent_id="a", user_id="u",
+        ca_bundle=str(ca_pem),
+    )
+    assert c3._ssl_context is None

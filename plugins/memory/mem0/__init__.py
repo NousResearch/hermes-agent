@@ -77,6 +77,7 @@ def _load_config() -> dict:
         "api_key": os.environ.get("MEM0_API_KEY", ""),
         "host": os.environ.get("MEM0_HOST", ""),
         "admin_api_key": os.environ.get("MEM0_ADMIN_API_KEY", ""),
+        "ca_bundle": os.environ.get("MEM0_CA_BUNDLE", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
@@ -98,11 +99,23 @@ def _load_config() -> dict:
 class _DirectRestMem0Client:
     """Small stdlib client for the self-hosted OSS Mem0 server."""
 
-    def __init__(self, host: str, admin_api_key: str, agent_id: str, user_id: str = ""):
+    def __init__(self, host: str, admin_api_key: str, agent_id: str, user_id: str = "",
+                 ca_bundle: str = ""):
         self._host = (host or "").strip().rstrip("/")
         self._admin_api_key = (admin_api_key or "").strip()
         self._agent_id = (agent_id or "").strip()
         self._user_id = (user_id or "").strip()
+        # Optional CA bundle for verifying a self-hosted HTTPS endpoint signed by a
+        # private CA (e.g. the LAN "Ace Local Root CA" in front of mem0.ace). urllib
+        # uses the system trust store by default, which fleet hosts don't carry the
+        # private CA in — so without this, https://<name>.ace fails
+        # CERTIFICATE_VERIFY_FAILED. Building a context from the bundle keeps TLS ON
+        # (no plaintext fallback) and is per-host config, not a system-trust mutation.
+        self._ssl_context = None
+        bundle = (ca_bundle or "").strip()
+        if bundle and self._host.startswith("https://"):
+            import ssl
+            self._ssl_context = ssl.create_default_context(cafile=bundle)
 
     def _scope(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Inject the client's configured user_id AND agent_id as scope defaults.
@@ -138,7 +151,7 @@ class _DirectRestMem0Client:
             req.add_header("X-API-Key", self._admin_api_key)
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30, context=self._ssl_context) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
             detail = ""
@@ -323,6 +336,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._api_key = ""
         self._host = ""
         self._admin_api_key = ""
+        self._ca_bundle = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -371,6 +385,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "host", "description": "Self-hosted Mem0 OSS server URL (direct REST mode)", "default": "", "env_var": "MEM0_HOST"},
             {"key": "admin_api_key", "description": "Self-hosted Mem0 OSS server admin API key", "secret": True, "required": False, "env_var": "MEM0_ADMIN_API_KEY"},
+            {"key": "ca_bundle", "description": "Path to a CA bundle PEM for verifying a self-hosted HTTPS endpoint signed by a private CA (e.g. mem0.ace). Empty = system trust store.", "default": "", "env_var": "MEM0_CA_BUNDLE"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -385,7 +400,8 @@ class Mem0MemoryProvider(MemoryProvider):
                 return self._client
             if self._host:
                 self._client = _DirectRestMem0Client(
-                    self._host, self._admin_api_key, self._agent_id, self._user_id
+                    self._host, self._admin_api_key, self._agent_id, self._user_id,
+                    ca_bundle=self._ca_bundle,
                 )
                 return self._client
             try:
@@ -446,6 +462,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._api_key = self._config.get("api_key", "")
         self._host = str(self._config.get("host", "") or "").strip().rstrip("/")
         self._admin_api_key = str(self._config.get("admin_api_key", "") or "").strip()
+        self._ca_bundle = str(self._config.get("ca_bundle", "") or "").strip()
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")

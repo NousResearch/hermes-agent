@@ -3421,11 +3421,19 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
+        """Prepare a spoken script for TTS.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Auto-TTS should not feed raw chat Markdown or compact symbols to the
+        speech provider.  It should receive a transcript-like script: headings
+        and bullets flattened into sentence pauses, and units like ``°C``
+        expanded to words such as ``degrees Celsius``.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            return prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Keep auto-TTS best-effort if the normalizer ever fails.
+            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(
         self,
@@ -5021,6 +5029,7 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
+                _tts_speech_text = None
                 if (self._should_auto_tts_for_chat(event.source.chat_id)
                         and event.message_type == MessageType.VOICE
                         and text_content
@@ -5032,6 +5041,7 @@ class BasePlatformAdapter(ABC):
                             speech_text = self.prepare_tts_text(text_content)
                             if not speech_text:
                                 raise ValueError("Empty text after markdown cleanup")
+                            _tts_speech_text = speech_text
                             tts_result_str = await asyncio.to_thread(
                                 text_to_speech_tool, text=speech_text
                             )
@@ -5045,12 +5055,13 @@ class BasePlatformAdapter(ABC):
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         telegram_tts_caption = None
+                        caption_text = _tts_speech_text or self.prepare_tts_text(text_content)
                         if (
                             self.platform == Platform.TELEGRAM
-                            and text_content
-                            and text_content[:1024] == text_content
+                            and caption_text
+                            and caption_text[:1024] == caption_text
                         ):
-                            telegram_tts_caption = text_content
+                            telegram_tts_caption = caption_text
                         tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,

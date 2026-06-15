@@ -2305,6 +2305,14 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
+    try:
+        from tools.tts_text_normalize import prepare_spoken_text
+        text = prepare_spoken_text(text, max_chars=None)
+    except Exception:
+        text = text.strip()
+    if not text:
+        return tool_error("Text is empty after TTS cleanup", success=False)
+
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 

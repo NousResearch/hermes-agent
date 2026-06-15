@@ -71,10 +71,12 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
+  /** Management profile from the dashboard switcher — scopes session.create. */
+  profile?: string;
   className?: string;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -92,6 +94,10 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
   useEffect(() => {
     let cancelled = false;
+    setSessionId(null);
+    setInfo({});
+    setTools([]);
+    setError(null);
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
@@ -124,6 +130,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
         // slash_worker subprocess) when the WS drops, instead of leaking it.
         return gw.request<{ session_id: string }>("session.create", {
           close_on_disconnect: true,
+          ...(profile ? { profile } : {}),
         });
       })
       .then((created) => {
@@ -145,7 +152,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       offError();
       gw.close();
     };
-  }, [gw]);
+  }, [gw, profile]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +

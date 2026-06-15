@@ -502,6 +502,45 @@ class TestMarkJobRun:
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
 
+    def test_recurring_mark_preserves_preadvanced_future_slot(self, tmp_cron_dir, monkeypatch):
+        """mark_job_run must not re-anchor recurring jobs to completion time.
+
+        tick() advances next_run_at before execution for crash safety. If the
+        completion path overwrites that future slot with now+interval, small
+        gateway ticker jitter becomes a permanent interval+tick cadence.
+        """
+        now = datetime(2026, 6, 15, 10, 5, 0, 500000, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Heartbeat", schedule="every 5m")
+        preadvanced_slot = "2026-06-15T10:10:00+00:00"
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = preadvanced_slot
+        save_jobs(jobs)
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["next_run_at"] == preadvanced_slot
+        assert updated["last_run_at"] == now.isoformat()
+
+    def test_recurring_mark_advances_from_due_slot_without_preadvance(self, tmp_cron_dir, monkeypatch):
+        """Fallback path still uses the scheduled slot, not completion time."""
+        now = datetime(2026, 6, 15, 10, 5, 0, 500000, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Heartbeat", schedule="every 5m")
+        due_slot = "2026-06-15T10:05:00+00:00"
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = due_slot
+        save_jobs(jobs)
+
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["next_run_at"] == "2026-06-15T10:10:00+00:00"
+        assert updated["next_run_at"] != "2026-06-15T10:10:00.500000+00:00"
+
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
         """Regression test for issue #16265.
 
@@ -516,7 +555,10 @@ class TestMarkJobRun:
         assert job["schedule"]["kind"] == "cron"
 
         # Simulate the runtime env having lost croniter between job creation
-        # and this run.
+        # and a due run that was not successfully pre-advanced.
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = datetime.now().astimezone().isoformat()
+        save_jobs(jobs)
         monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
 
         mark_job_run(job["id"], success=True)
@@ -542,7 +584,12 @@ class TestMarkJobRun:
 
         # Force compute_next_run to return None for this call — simulates
         # any future regression where a recurring schedule loses its
-        # next-run computation (missing dep, corrupt schedule, etc.).
+        # next-run computation (missing dep, corrupt schedule, etc.). Use a
+        # due next_run_at so mark_job_run() must compute rather than preserve
+        # a pre-advanced future slot.
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = datetime.now().astimezone().isoformat()
+        save_jobs(jobs)
         monkeypatch.setattr("cron.jobs.compute_next_run", lambda *a, **kw: None)
 
         mark_job_run(job["id"], success=True)
@@ -604,6 +651,28 @@ class TestAdvanceNextRun:
         from cron.jobs import _ensure_aware, _hermes_now
         new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert new_next_dt > _hermes_now(), "next_run_at should be in the future after advance"
+
+    def test_advances_interval_from_scheduled_slot_not_wall_clock(self, tmp_cron_dir, monkeypatch):
+        """A slightly-future due slot must not become now+interval.
+
+        This is the core regression for interval jobs firing every
+        interval+60s under the gateway's 60s ticker.
+        """
+        now = datetime(2026, 6, 15, 10, 5, 0, 500000, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Heartbeat", schedule="every 5m")
+        scheduled_slot = "2026-06-15T10:05:00.800000+00:00"
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = scheduled_slot
+        save_jobs(jobs)
+
+        result = advance_next_run(job["id"])
+
+        assert result is True
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["next_run_at"] == "2026-06-15T10:10:00.800000+00:00"
+        assert updated["next_run_at"] != "2026-06-15T10:10:00.500000+00:00"
 
     def test_advances_cron_job(self, tmp_cron_dir):
         """Cron-expression jobs should have next_run_at bumped to the next occurrence."""
@@ -670,6 +739,34 @@ class TestAdvanceNextRun:
 
 
 class TestGetDueJobs:
+    def test_slightly_future_due_within_early_grace_returned(self, tmp_cron_dir, monkeypatch):
+        """Ticker calls that arrive milliseconds early should still fire.
+
+        Without this, a next_run_at that is just after the current 60s ticker
+        pass waits for the next ticker and effectively adds 60s to every
+        interval run.
+        """
+        now = datetime(2026, 6, 15, 10, 5, 0, 500000, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Due almost now", schedule="every 5m")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = "2026-06-15T10:05:01+00:00"
+        save_jobs(jobs)
+
+        due = get_due_jobs()
+
+        assert [j["id"] for j in due] == [job["id"]]
+
+    def test_future_beyond_early_grace_not_returned(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 6, 15, 10, 5, 0, 500000, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        create_job(prompt="Not quite due", schedule="every 5m")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = "2026-06-15T10:05:03+00:00"
+        save_jobs(jobs)
+
+        assert get_due_jobs() == []
+
     def test_past_due_within_window_returned(self, tmp_cron_dir):
         """Jobs within the dynamic grace window are still considered due (not stale).
 

@@ -1916,6 +1916,7 @@ AUTHOR_MAP = {
     "marvin@photon.codes": "underthestars-zhy",  # PR #46907 co-author (Photon Spectrum project ids)
     "omar@kostudios.io": "OmarB97",  # PR #43977 (desktop session model metadata)
     "omarbaradei21@gmail.com": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "p.fabiszewski@gmail.com": "szafranski",  # PR #36020 (Telegram voice/audio duration)
     "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
     "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
     "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)

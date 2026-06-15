@@ -1,6 +1,8 @@
 """Gateway STT config tests — honor stt.enabled: false from config.yaml."""
 
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -30,6 +32,24 @@ def test_load_gateway_config_bridges_stt_enabled_from_config_yaml(tmp_path, monk
     config = load_gateway_config()
 
     assert config.stt_enabled is False
+
+
+def test_default_config_disables_stt_transcript_echo():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["stt"]["echo_transcripts"] is False
+
+
+def test_should_echo_stt_transcripts_reads_config_toggle():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+
+    with patch("hermes_cli.config.load_config", return_value={"stt": {"echo_transcripts": True}}):
+        assert runner._should_echo_stt_transcripts() is True
+
+    with patch("hermes_cli.config.load_config", return_value={"stt": {"echo_transcripts": False}}):
+        assert runner._should_echo_stt_transcripts() is False
 
 
 @pytest.mark.asyncio
@@ -137,8 +157,84 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     # The redundant placeholder is stripped, leaving only the transcript prefix.
     assert "hello from a captionless voice note" in result
     assert "(The user sent a message with no text content)" not in result
-    # Crucially, the transcripts are still surfaced so callers can echo them.
+    # Crucially, the transcripts are still surfaced so callers can optionally echo them.
     assert transcripts == ["hello from a captionless voice note"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_voice_does_not_echo_transcript_by_default():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner_any = cast(Any, runner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner_any._model = "test-model"
+    runner_any._base_url = ""
+    runner._has_setup_skill = lambda: False
+    runner._should_echo_stt_transcripts = lambda: False
+    runner_any._thread_metadata_for_source = lambda source, reply_to_message_id=None: {}
+    runner_any._reply_anchor_for_event = lambda event: None
+
+    adapter = cast(Any, SimpleNamespace(send=AsyncMock()))
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "do not echo me", "provider": "local_command"},
+    ):
+        result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result is not None
+    assert "do not echo me" in result
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_voice_echoes_transcript_when_enabled():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner_any = cast(Any, runner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner_any._model = "test-model"
+    runner_any._base_url = ""
+    runner._has_setup_skill = lambda: False
+    runner._should_echo_stt_transcripts = lambda: True
+    runner_any._thread_metadata_for_source = lambda source, reply_to_message_id=None: {}
+    runner_any._reply_anchor_for_event = lambda event: None
+
+    adapter = cast(Any, SimpleNamespace(send=AsyncMock()))
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "echo me", "provider": "local_command"},
+    ):
+        result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result is not None
+    assert "echo me" in result
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "123"
+    assert adapter.send.await_args.args[1] == '🎙️ "echo me"'
 
 
 @pytest.mark.asyncio

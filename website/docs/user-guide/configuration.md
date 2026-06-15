@@ -1425,6 +1425,7 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 ```yaml
 stt:
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  echo_transcripts: false       # Send a visible 🎙️ transcript confirmation for inbound voice messages
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:

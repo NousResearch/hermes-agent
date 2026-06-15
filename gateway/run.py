@@ -2484,6 +2484,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
 
+    def _should_echo_stt_transcripts(self) -> bool:
+        """Return whether inbound voice transcripts should be echoed to chat.
+
+        Voice messages are still transcribed and passed to the agent. This
+        only controls the extra user-visible `🎙️ "..."` confirmation message.
+        """
+        try:
+            from hermes_cli.config import load_config as _load_full_config
+
+            _full_cfg = _load_full_config()
+            _stt_cfg = (_full_cfg.get("stt") or {}) if isinstance(_full_cfg, dict) else {}
+            return bool(_stt_cfg.get("echo_transcripts", False))
+        except Exception:
+            return False
+
     def _voice_key(self, platform: Platform, chat_id: str) -> str:
         """Return a platform-namespaced key for voice mode state."""
         return f"{platform.value}:{chat_id}"
@@ -7983,7 +7998,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Echo each successful transcript back to the user immediately,
                 # before the agent loop runs. Lets the user verify STT quality
                 # in real-time and see the raw whisper output verbatim.
-                if _successful_transcripts:
+                if _successful_transcripts and self._should_echo_stt_transcripts():
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
@@ -12179,9 +12194,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
                 text, audio_paths,
             )
-            # Echo raw transcripts back to the user so voice interrupts
-            # feel identical to fresh voice messages.
-            if successful_transcripts:
+            # Optionally echo raw transcripts back to the user for debugging.
+            if successful_transcripts and self._should_echo_stt_transcripts():
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                 if echo_adapter:
@@ -15363,7 +15377,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             pending_text, _audio_paths,
                                         )
                                         pending_text = _enriched
-                                        if _transcripts:
+                                        if _transcripts and self._should_echo_stt_transcripts():
                                             _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                                             for _tx in _transcripts:
                                                 try:
@@ -15731,7 +15745,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _pending_text, _audio_paths,
                             )
                             pending = _enriched or None
-                            if _transcripts:
+                            if _transcripts and self._should_echo_stt_transcripts():
                                 _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                                 for _tx in _transcripts:
                                     try:

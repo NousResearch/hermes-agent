@@ -91,13 +91,14 @@ export default function ChannelsPage() {
   const [restarting, setRestarting] = useState(false);
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
+  const managedProfile = profile || currentProfile || "default";
 
   const load = useCallback(() => {
     return api
       .getMessagingPlatforms()
       .then((res) => setPlatforms(res.platforms))
       .catch((e) => showToast(`Error: ${e}`, "error"));
-  }, [profile, showToast]);
+  }, [managedProfile, showToast]);
 
   useEffect(() => {
     // The management profile can settle after the first mount when a deep
@@ -218,11 +219,10 @@ export default function ChannelsPage() {
   );
 
   const credentialsPath = useMemo(() => {
-    const managedProfile = profile || currentProfile || "default";
     return managedProfile === "default"
       ? "~/.hermes/.env"
       : `~/.hermes/profiles/${managedProfile}/.env`;
-  }, [profile, currentProfile]);
+  }, [managedProfile]);
 
   if (loading) {
     return (

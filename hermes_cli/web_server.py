@@ -4295,7 +4295,12 @@ def _messaging_platform_payload(
             enabled = bool(plat_cfg.get("enabled"))
             if not enabled:
                 env_toggle_key = f"{platform_id.upper()}_ENABLED"
-                if env_toggle_key in entry["env_vars"]:
+                supported_env_keys = {
+                    env_info["key"]
+                    for env_info in env_vars
+                    if isinstance(env_info, dict) and env_info.get("key")
+                }
+                if env_toggle_key in supported_env_keys:
                     enabled = _env_flag_truthy(env_on_disk.get(env_toggle_key))
             hc = plat_cfg.get("home_channel")
             home_channel = hc if isinstance(hc, dict) else None

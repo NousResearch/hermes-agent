@@ -22,11 +22,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import signal
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
+    as_completed,
 )
 from typing import Any, Dict, List, Optional
 
@@ -2039,6 +2043,270 @@ def _run_single_child(
             logger.debug("Failed to close child agent after delegation")
 
 
+
+_PROFILE_DELEGATE_TIMEOUT_SECONDS = 600
+_PROFILE_DELEGATE_MAX_STDERR_CHARS = 4000
+
+
+def _resolve_profile_delegate_env(profile: str) -> tuple[str, str]:
+    """Return ``(canonical_profile, HERMES_HOME)`` for a profile delegate."""
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+    canon = normalize_profile_name(profile)
+    return canon, resolve_profile_env(canon)
+
+
+def _resolve_profile_delegate_argv() -> list[str]:
+    """Resolve the Hermes CLI invocation for a profile delegate subprocess."""
+    import shutil
+
+    env_bin = (os.environ.get("HERMES_BIN") or "").strip()
+    if env_bin:
+        return [env_bin]
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin]
+    return [sys.executable, "-m", "hermes_cli.main"]
+
+
+def _profile_delegate_prompt(goal: str, context: Optional[str]) -> str:
+    parts = [
+        "You are running as a Hermes profile delegated by another Hermes agent.",
+        "Use your own profile configuration, tools, skills, memory, and context.",
+        "Return only the final answer the parent agent should receive; the parent will not see intermediate output.",
+        "",
+        "TASK:",
+        goal.strip(),
+    ]
+    if context and str(context).strip():
+        parts.extend(["", "CONTEXT:", str(context).strip()])
+    return "\n".join(parts)
+
+
+def _profile_delegate_timeout_seconds(cfg: dict) -> int:
+    try:
+        return max(
+            1,
+            int(cfg.get("profile_timeout_seconds", _PROFILE_DELEGATE_TIMEOUT_SECONDS)),
+        )
+    except (TypeError, ValueError):
+        return _PROFILE_DELEGATE_TIMEOUT_SECONDS
+
+
+def _terminate_profile_delegate_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            proc.terminate()
+        else:
+            os.killpg(proc.pid, signal.SIGTERM)  # windows-footgun: ok -- guarded by os.name
+    except Exception:
+        try:
+            if os.name == "nt":
+                proc.kill()
+            else:
+                os.killpg(  # windows-footgun: ok -- guarded by os.name
+                    proc.pid,
+                    getattr(signal, "SIGKILL", signal.SIGTERM),
+                )
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def _run_profile_delegate(
+    *,
+    task_index: int,
+    goal: str,
+    context: Optional[str],
+    profile: str,
+    timeout_seconds: int,
+    proc_holder: Optional[Dict[str, subprocess.Popen]] = None,
+    resolved_profile: Optional[tuple[str, str]] = None,
+) -> Dict[str, Any]:
+    """Run one delegated task in a fresh ``hermes -p <profile> -z`` process."""
+    start = time.monotonic()
+    if resolved_profile is None:
+        try:
+            canon, hermes_home = _resolve_profile_delegate_env(profile)
+        except Exception as exc:
+            return {
+                "task_index": task_index,
+                "status": "error",
+                "summary": None,
+                "error": str(exc),
+                "profile": str(profile),
+                "api_calls": 0,
+                "duration_seconds": round(time.monotonic() - start, 2),
+            }
+    else:
+        canon, hermes_home = resolved_profile
+
+    env = dict(os.environ)
+    env["HERMES_HOME"] = hermes_home
+    env["HERMES_PROFILE"] = canon
+
+    cwd = os.environ.get("TERMINAL_CWD") or os.getcwd()
+    if not os.path.isdir(cwd):
+        cwd = os.getcwd()
+
+    cmd = [
+        *_resolve_profile_delegate_argv(),
+        "-p",
+        canon,
+        "--accept-hooks",
+        "-z",
+        _profile_delegate_prompt(goal, context),
+    ]
+
+    proc: Optional[subprocess.Popen] = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            start_new_session=(os.name != "nt"),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+        )
+        if proc_holder is not None:
+            proc_holder["proc"] = proc
+        stdout, stderr = proc.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        if proc is not None:
+            _terminate_profile_delegate_process(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except Exception:
+                stdout, stderr = "", ""
+        else:
+            stdout, stderr = "", ""
+        return {
+            "task_index": task_index,
+            "status": "timed_out",
+            "summary": (stdout or "").strip() or None,
+            "error": f"Profile delegate '{canon}' timed out after {timeout_seconds}s.",
+            "profile": canon,
+            "exit_code": None,
+            "api_calls": 0,
+            "duration_seconds": round(time.monotonic() - start, 2),
+        }
+    except Exception as exc:
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "profile": canon,
+            "api_calls": 0,
+            "duration_seconds": round(time.monotonic() - start, 2),
+        }
+    except BaseException:
+        if proc is not None:
+            _terminate_profile_delegate_process(proc)
+        raise
+    finally:
+        if proc_holder is not None:
+            proc_holder.pop("proc", None)
+
+    summary = (stdout or "").strip()
+    stderr_text = (stderr or "").strip()
+    result: Dict[str, Any] = {
+        "task_index": task_index,
+        "status": "completed" if proc.returncode == 0 else "error",
+        "summary": summary or None,
+        "profile": canon,
+        "exit_code": proc.returncode,
+        "api_calls": 0,
+        "duration_seconds": round(time.monotonic() - start, 2),
+    }
+    if proc.returncode != 0:
+        result["error"] = stderr_text[:_PROFILE_DELEGATE_MAX_STDERR_CHARS] or f"Profile delegate exited with code {proc.returncode}."
+    elif stderr_text:
+        result["stderr"] = stderr_text[:_PROFILE_DELEGATE_MAX_STDERR_CHARS]
+    return result
+
+
+def _run_profile_delegates(
+    *,
+    task_list: List[Dict[str, Any]],
+    top_profile: Optional[str],
+    max_children: int,
+    timeout_seconds: int,
+) -> List[Dict[str, Any]]:
+    specs: list[tuple[int, Dict[str, Any], str]] = []
+    for i, task in enumerate(task_list):
+        profile = (task.get("profile") or top_profile or "").strip()
+        if not profile:
+            raise ValueError(
+                "profile-backed batch cannot mix profile and in-process tasks; "
+                "set a top-level profile or a profile on every task."
+            )
+        specs.append((i, task, profile))
+
+    if len(specs) == 1:
+        i, task, profile = specs[0]
+        return [
+            _run_profile_delegate(
+                task_index=i,
+                goal=task["goal"],
+                context=task.get("context"),
+                profile=profile,
+                timeout_seconds=timeout_seconds,
+            )
+        ]
+
+    results: list[Dict[str, Any]] = []
+    proc_holders: dict[int, Dict[str, subprocess.Popen]] = {i: {} for i, _, _ in specs}
+    executor = ThreadPoolExecutor(max_workers=max_children)
+    try:
+        futures = {
+            executor.submit(
+                _run_profile_delegate,
+                task_index=i,
+                goal=task["goal"],
+                context=task.get("context"),
+                profile=profile,
+                timeout_seconds=timeout_seconds,
+                proc_holder=proc_holders[i],
+            ): i
+            for i, task, profile in specs
+        }
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                results.append(
+                    {
+                        "task_index": futures[future],
+                        "status": "error",
+                        "summary": None,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "api_calls": 0,
+                        "duration_seconds": 0,
+                    }
+                )
+    except BaseException:
+        for holder in proc_holders.values():
+            proc = holder.get("proc")
+            if proc is not None:
+                _terminate_profile_delegate_process(proc)
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    results.sort(key=lambda r: r["task_index"])
+    return results
+
+
 def _recover_tasks_from_json_string(
     tasks: Any,
 ) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -2072,6 +2340,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2143,16 +2412,6 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2172,9 +2431,10 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
-        ]
+        task = {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+        if profile:
+            task["profile"] = profile
+        task_list = [task]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2193,7 +2453,99 @@ def delegate_task(
     overall_start = time.monotonic()
     results = []
 
+    profile_requested = bool(profile) or any(t.get("profile") for t in task_list)
+    if profile_requested:
+        if acp_command or acp_args or any(t.get("acp_command") or t.get("acp_args") for t in task_list):
+            return tool_error(
+                "profile-backed delegation runs Hermes profiles via `hermes -p <profile>`; "
+                "ACP command overrides are only supported by in-process subagents."
+            )
+        timeout_seconds = _profile_delegate_timeout_seconds(cfg)
+        if background:
+            if len(task_list) != 1:
+                return tool_error("background=true with profile is single-task only.")
+            from tools.async_delegation import dispatch_async_delegation
+            from tools.approval import get_current_session_key
+
+            task = task_list[0]
+            task_profile = (task.get("profile") or profile or "").strip()
+            if not task_profile:
+                return tool_error("profile-backed delegation requires a profile.")
+            try:
+                canon_profile, hermes_home = _resolve_profile_delegate_env(task_profile)
+            except Exception as exc:
+                return tool_error(str(exc))
+            proc_holder: Dict[str, subprocess.Popen] = {}
+
+            def _async_runner() -> Dict[str, Any]:
+                return _run_profile_delegate(
+                    task_index=0,
+                    goal=task["goal"],
+                    context=task.get("context"),
+                    profile=canon_profile,
+                    timeout_seconds=timeout_seconds,
+                    proc_holder=proc_holder,
+                    resolved_profile=(canon_profile, hermes_home),
+                )
+
+            def _async_interrupt() -> None:
+                proc = proc_holder.get("proc")
+                if proc is not None:
+                    _terminate_profile_delegate_process(proc)
+
+            dispatch = dispatch_async_delegation(
+                goal=task["goal"],
+                context=task.get("context"),
+                toolsets=task.get("toolsets") or toolsets,
+                role=_normalize_role(task.get("role") or top_role),
+                model=f"profile:{canon_profile}",
+                session_key=get_current_session_key(default=""),
+                runner=_async_runner,
+                interrupt_fn=_async_interrupt,
+                max_async_children=_get_max_async_children(),
+            )
+            if dispatch.get("status") == "dispatched":
+                return json.dumps(
+                    {
+                        "status": "dispatched",
+                        "delegation_id": dispatch["delegation_id"],
+                        "goal": task["goal"],
+                        "profile": canon_profile,
+                        "mode": "background",
+                        "note": (
+                            "Profile delegate is running in the background. "
+                            "The result will re-enter the conversation as a new message when it finishes. "
+                            "Do not wait or poll — just continue."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            return tool_error(dispatch.get("error", "Async profile delegation could not be scheduled."))
+        try:
+            profile_results = _run_profile_delegates(
+                task_list=task_list,
+                top_profile=profile,
+                max_children=max_children,
+                timeout_seconds=timeout_seconds,
+            )
+        except ValueError as exc:
+            return tool_error(str(exc))
+        return json.dumps(
+            {
+                "results": profile_results,
+                "total_duration_seconds": round(time.monotonic() - overall_start, 2),
+            },
+            ensure_ascii=False,
+        )
+
     n_tasks = len(task_list)
+    # Resolve delegation credentials (provider:model pair). Profile-backed
+    # delegates returned above; only in-process children need this bundle.
+    try:
+        creds = _resolve_delegation_credentials(cfg, parent_agent)
+    except ValueError as exc:
+        return tool_error(str(exc))
+
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
@@ -3056,6 +3408,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Hermes profile to run this task in. Profile-backed tasks run in a fresh "
+                                "`hermes -p <profile> -z ...` subprocess and load that profile's config, "
+                                "skills, memory, and tools instead of using an in-process child agent."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3068,6 +3428,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Run the delegated task in a named Hermes profile. This uses a fresh "
+                    "`hermes -p <profile> -z ...` subprocess so the target profile loads its own "
+                    "HERMES_HOME, config, .env, skills, memory, and tool settings. Omit for the "
+                    "existing in-process subagent path."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3143,6 +3512,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

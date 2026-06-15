@@ -18,6 +18,22 @@ delegate_task(
 )
 ```
 
+## Profile-Backed Delegation
+
+Use `profile` when the delegated work should run as a real Hermes profile with its own `HERMES_HOME`, config, `.env`, skills, memory, and tool settings. This path launches a fresh `hermes -p <profile> -z ...` subprocess instead of mutating the parent process into another profile.
+
+```python
+delegate_task(
+    goal="Review this PR as the QA profile",
+    context="Base branch: main. Focus on regressions and missing tests.",
+    profile="qa"
+)
+```
+
+Profile-backed delegation is intentionally lighter than Kanban: the result returns to the current `delegate_task` call (or re-enters the chat when `background=True`) and no durable task-board state is created. Use Kanban when the work needs durable assignment, retries, dependencies, or human-visible task state.
+
+For batch calls, profile-backed delegation is all-or-nothing: provide a top-level `profile` for the whole batch, or set `profile` on every task. You cannot mix real-profile subprocess tasks with ordinary in-process subagents in one `tasks` array.
+
 ## Parallel Batch
 
 Up to 3 concurrent subagents by default (configurable, no hard ceiling):

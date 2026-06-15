@@ -174,8 +174,10 @@ def dispatch_async_delegation(
         worker thread won't carry the contextvar. Used to route the
         completion back to the originating session.
     runner
-        Zero-arg callable that builds + runs the child and returns the same
-        result dict ``_run_single_child`` produces. Runs on the worker thread.
+        Zero-arg callable that runs the delegated work and returns a result
+        dict for the completion block. In-process children return the
+        ``_run_single_child`` shape; custom runners may add fields such as
+        profile subprocess metadata. Runs on the worker thread.
     interrupt_fn
         Optional callable to signal the child to stop (used on shutdown /
         explicit cancel).

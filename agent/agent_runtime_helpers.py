@@ -1217,12 +1217,24 @@ def dump_api_request_debug(
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"
-        atomic_json_write(dump_file, dump_payload, default=str)
+
+        # Redact secrets before persisting/printing. This dump captures the
+        # full request body (system prompt, tool defs, context-embedded
+        # values), and this path fires unconditionally on API errors — so it
+        # otherwise lands any context-embedded secret in cleartext on disk.
+        # Run the serialized dump through the same scrubber used for logs/tool
+        # output. Atomicity preserved via temp-file + Path.replace.
+        from agent.redact import redact_sensitive_text
+        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
+        _redacted = redact_sensitive_text(_serialized, force=True)
+        _tmp = dump_file.with_name(dump_file.name + ".tmp")
+        _tmp.write_text(_redacted, encoding="utf-8")
+        _tmp.replace(dump_file)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
+            print(_redacted)
 
         return dump_file
     except Exception as dump_error:

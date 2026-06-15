@@ -14,6 +14,7 @@ contains that signature.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -78,6 +79,30 @@ def _run_bash_registry_helper(registry: str) -> str:
         return result.stdout.strip()
 
 
+def _run_bash_registry_hint(npm_output: str) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        helpers_path = tmp_path / "install-sh-registry-helpers.sh"
+        helpers_path.write_text(_extract_install_sh_helpers(), encoding="utf-8")
+        env = os.environ.copy()
+        env["HELPERS"] = str(helpers_path)
+        script = f"""
+        set -euo pipefail
+        RED= GREEN= YELLOW= BLUE= MAGENTA= CYAN= NC= BOLD=
+        source "$HELPERS"
+        show_npm_registry_hint {shlex.quote(npm_output)}
+        """
+        return subprocess.run(
+            ["bash", "-c", script],
+            cwd=REPO_ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+
 def test_install_ps1_overrides_known_dead_npm_registry_for_bootstrap_invocations() -> None:
     text = INSTALL_PS1.read_text(encoding="utf-8")
 
@@ -127,3 +152,19 @@ def test_install_sh_registry_override_is_exact_host_only() -> None:
 
     for registry in PRIVATE_OR_NORMAL_REGISTRIES:
         assert _run_bash_registry_helper(registry) == ""
+
+
+def test_dead_registry_hint_matches_real_npm_404_urls() -> None:
+    npm_output = (
+        "npm ERR! 404 Not Found - GET "
+        "https://replicate.npmjs.com/globals/-/globals-15.15.0.tgz"
+    )
+
+    bash_result = _run_bash_registry_hint(npm_output)
+    assert bash_result.returncode == 0
+    assert "deprecated registry mirror" in bash_result.stdout
+
+    ps1_text = INSTALL_PS1.read_text(encoding="utf-8")
+    pattern_match = re.search(r'^\$NpmDeadRegistryPattern = "([^"]+)"', ps1_text, re.MULTILINE)
+    assert pattern_match is not None
+    assert re.search(pattern_match.group(1), npm_output)

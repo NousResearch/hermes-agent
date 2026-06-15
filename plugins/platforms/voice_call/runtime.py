@@ -222,6 +222,7 @@ class VoiceCallRuntime:
                 message=payload.get("message"),
                 mode=payload.get("mode"),
                 instructions=payload.get("instructions"),
+                might_continue=bool(payload.get("might_continue")),
             )
             return {"success": True, "call_id": record.call_id}
         if command == "speak":

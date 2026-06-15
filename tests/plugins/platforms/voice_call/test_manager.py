@@ -57,6 +57,35 @@ async def test_outbound_notify_speaks_and_hangs_up(vc_config, provider, store):
 
 
 @pytest.mark.asyncio
+async def test_might_continue_holds_line_longer_than_plain_notify(
+    vc_config, provider, store
+):
+    """--might-continue uses the longer notify_continue_window_s so a
+    follow-up continue_call has time to arrive; plain notify uses the short
+    delay and drops fast."""
+    vc_config.outbound.notify_hangup_delay_s = 0.2
+    vc_config.outbound.notify_continue_window_s = 1.0
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+
+    plain = await manager.initiate_call("+15555550001", message="hi", mode="notify")
+    holds = await manager.initiate_call(
+        "+15555550002", message="hi", mode="notify", might_continue=True
+    )
+    for r in (plain, holds):
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not r.answered_at and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+
+    await asyncio.sleep(0.45)  # past the plain window, inside the hold window
+    assert manager.get_call(plain.call_id) is None      # plain hung up
+    assert manager.get_call(holds.call_id) is not None  # might_continue still up
+    await asyncio.sleep(0.8)
+    assert manager.get_call(holds.call_id) is None       # then it too hangs up
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_continue_call_upgrades_notify_to_conversation(
     vc_config, provider, store
 ):

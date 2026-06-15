@@ -79,6 +79,16 @@ VOICE_CALL_SCHEMA: Dict[str, Any] = {
                     "the answers."
                 ),
             },
+            "might_continue": {
+                "type": "boolean",
+                "description": (
+                    "initiate_call + notify mode only. Set true when you "
+                    "intend to follow the message with continue_call: the "
+                    "line is held open longer so your continue_call can turn "
+                    "it into a conversation. Omit/false for a plain "
+                    "deliver-the-message-and-hang-up notify call."
+                ),
+            },
             "digits": {
                 "type": "string",
                 "description": "DTMF digits for send_dtmf (0-9, *, #, w=0.5s pause).",
@@ -141,6 +151,7 @@ async def _dispatch(action: str, args: Dict[str, Any]) -> str:
                 message=args.get("message"),
                 mode=args.get("mode"),
                 instructions=args.get("instructions"),
+                might_continue=bool(args.get("might_continue")),
             )
             return _ok(call=_call_summary(record))
         if action == "continue_call":
@@ -190,7 +201,8 @@ async def _dispatch(action: str, args: Dict[str, Any]) -> str:
 # Tool action → gateway admin command, with the payload fields each takes.
 _ADMIN_COMMAND_MAP = {
     "initiate_call": ("call", {"to_number": "to", "message": "message",
-                               "mode": "mode", "instructions": "instructions"}),
+                               "mode": "mode", "instructions": "instructions",
+                               "might_continue": "might_continue"}),
     "continue_call": ("continue", {"call_id": "call_id", "message": "message"}),
     "speak_to_user": ("speak", {"call_id": "call_id", "message": "message"}),
     "send_dtmf": ("dtmf", {"call_id": "call_id", "digits": "digits"}),

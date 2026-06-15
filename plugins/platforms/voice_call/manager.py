@@ -199,6 +199,14 @@ class CallManager:
         self._persist(record)
         return True
 
+    def _notify_window(self, record: CallRecord) -> int:
+        """Seconds to hold a notify call open after a message before
+        auto-hangup. might_continue calls get the longer window so a
+        follow-up continue_call has time to arrive."""
+        if record.metadata.get("might_continue"):
+            return max(0, self.config.outbound.notify_continue_window_s)
+        return max(0, self.config.outbound.notify_hangup_delay_s)
+
     def _realtime_owns_audio(self, record: CallRecord) -> bool:
         """True when a realtime bridge handles this call's audio — carrier
         TTS/transcription would talk over the model."""
@@ -554,8 +562,10 @@ class CallManager:
             if initial:
                 await self.speak(record.call_id, str(initial))
             if record.mode == "notify":
-                delay = max(0, self.config.outbound.notify_hangup_delay_s)
-                self._arm_timer(record.call_id, "notify", delay, self._on_notify_hangup)
+                self._arm_timer(
+                    record.call_id, "notify", self._notify_window(record),
+                    self._on_notify_hangup,
+                )
             else:
                 await self._start_listening(record)
         else:
@@ -628,6 +638,7 @@ class CallManager:
         mode: Optional[str] = None,
         from_number: Optional[str] = None,
         instructions: Optional[str] = None,
+        might_continue: bool = False,
     ) -> CallRecord:
         to_number = normalize_e164(to_number or self.config.to_number or "")
         if not to_number:
@@ -662,6 +673,10 @@ class CallManager:
             # questions) — merged into the session instructions by the
             # bridge so the model conducts the whole call itself.
             record.metadata["realtime_instructions"] = str(instructions)
+        if might_continue:
+            # Hold a notify call open longer after the message so a
+            # follow-up continue_call can turn it into a conversation.
+            record.metadata["might_continue"] = True
         self._register(record)
         if self.prepare_call is not None:
             try:
@@ -722,8 +737,7 @@ class CallManager:
             self._arm_silence_timer(record)
         elif is_notify and record.answered_at:
             self._arm_timer(
-                call_id, "notify",
-                max(0, self.config.outbound.notify_hangup_delay_s),
+                call_id, "notify", self._notify_window(record),
                 self._on_notify_hangup,
             )
 

@@ -34,6 +34,13 @@ def test_cli_call_mode_override():
     assert args.mode == "notify"
 
 
+def test_cli_call_might_continue_flag():
+    args = _parse(["call", "--to", "+15555550001", "--mode", "notify"])
+    assert args.might_continue is False
+    args = _parse(["call", "-t", "+1", "--mode", "notify", "--might-continue"])
+    assert args.might_continue is True
+
+
 def test_cli_speak_and_continue_accept_short_message_flag():
     args = _parse(["speak", "--call-id", "vc-1", "-m", "hello"])
     assert args.message == "hello"

@@ -87,7 +87,14 @@ class TunnelConfig:
 @dataclass
 class OutboundConfig:
     default_mode: str = "notify"
+    # Plain notify: how long to wait after the message before hanging up
+    # (just deliver-and-drop).
     notify_hangup_delay_s: int = 3
+    # might_continue notify: how long to hold the line open after the
+    # message so the agent has time to issue a continue_call and turn it
+    # into a conversation. Longer than the plain delay because the agent's
+    # follow-up is a separate, latency-bearing tool call.
+    notify_continue_window_s: int = 15
 
 
 @dataclass
@@ -209,6 +216,9 @@ class VoiceCallConfig:
             outbound=OutboundConfig(
                 default_mode=str(outbound_raw.get("default_mode", "notify")).strip().lower(),
                 notify_hangup_delay_s=_as_int(outbound_raw.get("notify_hangup_delay_s"), 3),
+                notify_continue_window_s=_as_int(
+                    outbound_raw.get("notify_continue_window_s"), 15
+                ),
             ),
             timeouts=TimeoutsConfig(
                 max_call_s=_as_int(timeouts_raw.get("max_call_s"), 600),

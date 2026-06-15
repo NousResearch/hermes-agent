@@ -40,6 +40,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         "--instructions",
         help="per-call brief for the realtime voice (script/persona/questions)",
     )
+    call_p.add_argument(
+        "--might-continue", action="store_true", dest="might_continue",
+        help="notify mode: hold the line open after the message so a "
+             "follow-up 'continue' can turn it into a conversation",
+    )
 
     speak_p = subs.add_parser("speak", help="Say something on a live call")
     speak_p.add_argument("--call-id", required=True)
@@ -197,7 +202,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _cmd_call(args: argparse.Namespace) -> int:
     result = _admin_request(
         {"command": "call", "to": args.to, "message": args.message,
-         "mode": args.mode, "instructions": getattr(args, "instructions", None)}
+         "mode": args.mode, "instructions": getattr(args, "instructions", None),
+         "might_continue": getattr(args, "might_continue", False)}
     )
     if result.get("success"):
         print(

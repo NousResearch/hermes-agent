@@ -3856,6 +3856,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True
 
+        # Pending dangerous-command approval (#46866): when the agent is
+        # blocked inside tools/approval.py waiting for user input, intercept
+        # approval/deny responses before they are steered/queued as ordinary
+        # mid-turn messages.  Without this, /approve (and /deny) are swallowed
+        # by the steer/queue path and the approval always times out → auto-deny.
+        # Bare-text keywords ("approve"/"deny") are also matched because some
+        # gateway users (Signal, WhatsApp) don't use slash syntax, but we keep
+        # the conservative set established by the existing approval design
+        # (TestBareTextNoLongerApproves) — only explicit approval/deny words,
+        # never conversational "yes"/"ok"/"no".
+        try:
+            from tools.approval import has_blocking_approval
+            _approval_live = has_blocking_approval(session_key)
+        except Exception:
+            _approval_live = False
+        if _approval_live:
+            _approval_raw = (event.text or "").strip().lower()
+            _approval_cmd = event.get_command()
+            _is_approve = (
+                _approval_cmd in {"approve", "yes"}
+                or _approval_raw == "approve"
+            )
+            _is_deny = (
+                _approval_cmd in {"deny", "no"}
+                or _approval_raw == "deny"
+            )
+            if _is_approve or _is_deny:
+                _approval_adapter = self.adapters.get(event.source.platform)
+                if _is_approve:
+                    _approval_result = await self._handle_approve_command(event)
+                else:
+                    _approval_result = await self._handle_deny_command(event)
+                if _approval_result and _approval_adapter:
+                    await _approval_adapter._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=_approval_result,
+                        reply_to=event.message_id,
+                    )
+                return True  # handled — do not steer/queue
+
         # Normal busy case (agent actively running a task)
         adapter = self.adapters.get(event.source.platform)
         if not adapter:

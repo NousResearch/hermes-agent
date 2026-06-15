@@ -309,7 +309,53 @@ class TestRunEvents:
 
 
     @pytest.mark.asyncio
+    async def test_events_emits_keepalive_during_quiet_gap(self, adapter):
+        """Run events SSE emits : keepalive during quiet gaps before completion.
+
+        When the agent is running but not yet producing events, the SSE handler
+        polls the queue with a short timeout. If no event arrives and the
+        keepalive threshold has elapsed, it writes a keepalive comment to
+        keep the undici connection alive.
+        """
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                # Start run (agent blocks in thread)
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                # Wait for agent to enter run_conversation
+                agent_ready.wait(timeout=3.0)
+                await asyncio.sleep(0.2)
+
+                # Subscribe to events — while the agent blocks, q.get() times out
+                # repeatedly. Patch keepalive threshold low so we see one.
+                events_task = asyncio.ensure_future(
+                    cli.get(f"/v1/runs/{run_id}/events")
+                )
+
+                with patch("gateway.platforms.api_server.RUN_EVENTS_SSE_KEEPALIVE_SECONDS", 0.01):
+                    # Wait long enough for at least one keepalive to fire
+                    await asyncio.sleep(1.0)
+
+                    # Stop the run — this unblocks the agent and closes the stream
+                    stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                    assert stop_resp.status == 200
+
+                events_resp = await asyncio.wait_for(events_task, timeout=5.0)
+                assert events_resp.status == 200
+                body = await events_resp.text()
+                assert ": keepalive" in body
+
+
+    @pytest.mark.asyncio
     async def test_approval_response_without_pending_returns_409(self, adapter):
+        """Without a pending approval, POST /approval should return 409."""
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:

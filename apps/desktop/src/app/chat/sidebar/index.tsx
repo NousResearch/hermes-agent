@@ -123,6 +123,8 @@ import { SelectionActionBar } from './selection-action-bar'
 import { resolveSidebarSessionReleaseDrop, type SidebarSessionReleaseSection } from './session-release-drop'
 import { SidebarSessionRow } from './session-row'
 import {
+  type FrozenSectionBand,
+  frozenSectionKeyFromPoint,
   placeSessionIdAtAnchor,
   previewItemsForSessionDrop,
   sessionDropAnchor,
@@ -328,31 +330,26 @@ function dndEventClientPoint(event: DragMoveEvent | DragEndEvent): ClientPoint |
   }
 }
 
-function sidebarSectionElementFromPoint(clientX: number, clientY: number, movingSessionId: string) {
-  const elements = document.elementsFromPoint(clientX, clientY)
-  let movingRowSection: HTMLElement | null = null
+// Snapshot every session section's vertical band from the live DOM. Captured
+// once at pointer-drag start (before any drop preview reflows the layout) so
+// section hit-testing stays stable while the preview moves rows around — see
+// frozenSectionKeyFromPoint for why live hit-testing oscillates.
+function captureSidebarSectionRects(): FrozenSectionBand[] {
+  const sections = document.querySelectorAll<HTMLElement>('[data-sidebar-session-section]')
+  const bands: FrozenSectionBand[] = []
 
-  for (const element of elements) {
-    if (!(element instanceof HTMLElement)) {
+  for (const section of sections) {
+    const key = section.dataset.sidebarSessionSection
+
+    if (!key) {
       continue
     }
 
-    const row = element.closest('[data-session-id]') as HTMLElement | null
-
-    if (row?.dataset.sessionId === movingSessionId) {
-      movingRowSection ??= row.closest('[data-sidebar-session-section]') as HTMLElement | null
-
-      continue
-    }
-
-    const section = element.closest('[data-sidebar-session-section]') as HTMLElement | null
-
-    if (section) {
-      return section
-    }
+    const rect = section.getBoundingClientRect()
+    bands.push({ bottom: rect.bottom, key, top: rect.top })
   }
 
-  return movingRowSection
+  return bands.sort((a, b) => a.top - b.top)
 }
 
 function activeSessionPreviewElementFromPoint(clientX: number, clientY: number, movingSessionId: string) {
@@ -521,6 +518,9 @@ export function ChatSidebar({
   const renderedSessionDndTargetRef = useRef<null | SidebarSessionDndTarget>(null)
   const sessionDndPointerRef = useRef<ClientPoint | null>(null)
   const sessionDndReleasedRef = useRef(false)
+  // Section bands frozen at pointer-drag start; section hit-testing reads these
+  // instead of the live (preview-reflowed) DOM to stop the drag-jitter loop.
+  const sessionSectionBandsRef = useRef<FrozenSectionBand[]>([])
   const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
 
@@ -638,6 +638,7 @@ export function ChatSidebar({
     renderedSessionDndTargetRef.current = null
     sessionDndPointerRef.current = null
     sessionDndReleasedRef.current = false
+    sessionSectionBandsRef.current = []
     setSessionDndTarget(null)
   }, [])
 
@@ -1035,10 +1036,19 @@ export function ChatSidebar({
 
   const targetFromSessionDndPoint = useCallback(
     (payload: SessionDragPayload, clientX: number, clientY: number): null | SidebarSessionDndTarget => {
-      const sectionElement = sidebarSectionElementFromPoint(clientX, clientY, payload.id)
-      const sectionKey = sectionElement?.dataset.sidebarSessionSection
+      // Resolve the section from bands frozen at drag start, not the live DOM:
+      // the drop preview reflows section heights, and reading that reflowed
+      // layout makes the resolved target oscillate (the jitter). The element is
+      // still looked up live afterwards — only for measuring its current rows.
+      const sectionKey = frozenSectionKeyFromPoint(sessionSectionBandsRef.current, clientY)
 
-      if (!sectionElement || !sectionKey) {
+      if (!sectionKey) {
+        return null
+      }
+
+      const sectionElement = document.querySelector<HTMLElement>(`[data-sidebar-session-section="${sectionKey}"]`)
+
+      if (!sectionElement) {
         return null
       }
 
@@ -1150,6 +1160,9 @@ export function ChatSidebar({
 
     activeSessionDndPayloadRef.current = payload
     sessionDndCommittedRef.current = false
+    // Freeze section geometry now, before any state update reflows the layout,
+    // so cross-section hit-testing stays anchored to the pre-drag positions.
+    sessionSectionBandsRef.current = captureSidebarSectionRects()
     setDraggingSession(payload)
     setDraggingSessionMode('pointer')
     setDraggingSessionSourceSection((event.active.data.current?.sourceSectionKey as string | undefined) ?? null)

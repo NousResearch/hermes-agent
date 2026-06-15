@@ -125,6 +125,64 @@ export function sessionDropMarkerIndex(ids: readonly string[], anchor: null | Se
   return anchor.before ? index : index + 1
 }
 
+/** A session section's vertical extent, captured at pointer-drag start. */
+export interface FrozenSectionBand {
+  key: string
+  top: number
+  bottom: number
+}
+
+/**
+ * Resolve which session section a pointer is over, using vertical bands frozen
+ * at drag start rather than the live DOM.
+ *
+ * The cross-section drop preview moves the dragged row between sections, which
+ * reflows their heights (most violently when a `shrink-0` section swaps its
+ * tall empty state for a single row). If section hit-testing reads the live,
+ * reflowed layout, that height swing slides a section boundary across the
+ * stationary pointer — the resolved target flips, the preview reflows back, and
+ * the two oscillate every frame (the drag "jitter"). Hit-testing against frozen
+ * bands breaks the feedback loop: the preview can no longer move its own input,
+ * so the target only changes when the pointer actually crosses a stable
+ * boundary.
+ *
+ * `bands` must be sorted top-to-bottom. Returns null when the pointer is outside
+ * the whole session-sections span, preserving the caller's "not over a section"
+ * branch; a pointer in a gap between adjacent bands snaps to the nearer band.
+ */
+export function frozenSectionKeyFromPoint(bands: readonly FrozenSectionBand[], clientY: number): null | string {
+  if (bands.length === 0) {
+    return null
+  }
+
+  const first = bands[0]
+  const last = bands[bands.length - 1]
+
+  if (clientY < first.top || clientY > last.bottom) {
+    return null
+  }
+
+  for (const band of bands) {
+    if (clientY >= band.top && clientY <= band.bottom) {
+      return band.key
+    }
+  }
+
+  let best: FrozenSectionBand | null = null
+  let bestDistance = Infinity
+
+  for (const band of bands) {
+    const distance = clientY < band.top ? band.top - clientY : clientY - band.bottom
+
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = band
+    }
+  }
+
+  return best?.key ?? null
+}
+
 function rowAnchorFromRect(
   sessionId: string,
   rect: DOMRect,

@@ -12,6 +12,8 @@ import {
 } from '@/app/chat/composer/inline-refs'
 
 import {
+  type FrozenSectionBand,
+  frozenSectionKeyFromPoint,
   placeSessionIdAtAnchor,
   previewItemsAtAnchor,
   previewItemsForSessionDrop,
@@ -543,5 +545,44 @@ describe('sessionDropMarkerIndex', () => {
     expect(sessionDropMarkerIndex(['a', 'b'], null)).toBe(2)
     expect(sessionDropMarkerIndex(['a', 'b'], { before: true, sessionId: 'missing' })).toBe(2)
     expect(sessionDropMarkerIndex([], null)).toBe(0)
+  })
+})
+
+describe('frozenSectionKeyFromPoint', () => {
+  // Pinned 100–200, a 10px gap, Sessions 210–300 (mirrors the stacked sidebar
+  // sections; the gap is the small padding between section roots).
+  const bands: FrozenSectionBand[] = [
+    { bottom: 200, key: 'pinned', top: 100 },
+    { bottom: 300, key: 'sessions', top: 210 }
+  ]
+
+  it('returns the band that contains the pointer', () => {
+    expect(frozenSectionKeyFromPoint(bands, 150)).toBe('pinned')
+    expect(frozenSectionKeyFromPoint(bands, 250)).toBe('sessions')
+    expect(frozenSectionKeyFromPoint(bands, 100)).toBe('pinned')
+    expect(frozenSectionKeyFromPoint(bands, 300)).toBe('sessions')
+  })
+
+  it('snaps a pointer in the gap between bands to the nearer band', () => {
+    expect(frozenSectionKeyFromPoint(bands, 203)).toBe('pinned')
+    expect(frozenSectionKeyFromPoint(bands, 207)).toBe('sessions')
+  })
+
+  it('returns null outside the whole sections span', () => {
+    expect(frozenSectionKeyFromPoint(bands, 50)).toBeNull()
+    expect(frozenSectionKeyFromPoint(bands, 400)).toBeNull()
+    expect(frozenSectionKeyFromPoint([], 150)).toBeNull()
+  })
+
+  it('keeps a stationary pointer on one section regardless of later reflow', () => {
+    // The drag-jitter regression: while the pointer holds still inside the
+    // frozen Sessions band, the resolved section must not change even though the
+    // live layout reflows underneath (which is why bands are frozen, not live).
+    const y = 250
+    const first = frozenSectionKeyFromPoint(bands, y)
+    // A reflow can never move the frozen bands, so re-resolving the same point
+    // yields the same section every frame — no oscillation.
+    expect(frozenSectionKeyFromPoint(bands, y)).toBe(first)
+    expect(first).toBe('sessions')
   })
 })

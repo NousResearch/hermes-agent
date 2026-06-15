@@ -53,6 +53,21 @@ export function MemoryConnect({ provider }: { provider: string }) {
     }
   }, [provider, stop])
 
+  // An error message isn't sticky — it clears back to the steady state
+  // (Connect link, plus the connected badge if a credential is stored).
+  useEffect(() => {
+    if (phase !== 'error') {
+      return
+    }
+
+    const t = setTimeout(() => {
+      setPhase('idle')
+      setDetail('')
+    }, 6000)
+
+    return () => clearTimeout(t)
+  }, [phase])
+
   const connect = useCallback(async () => {
     setPhase('pending')
 

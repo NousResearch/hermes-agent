@@ -2138,6 +2138,107 @@ class GatewaySlashCommandsMixin:
 
         return await _finish_switch()
 
+    async def _handle_apikey_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /apikey — hot-swap the API key for the current provider.
+
+        Usage:
+            /apikey              — show current provider/model and masked key
+            /apikey <key>        — hotswap key for the current provider
+            /apikey --save <key> — hotswap and persist to ~/.hermes/.env
+            /apikey --reload     — reload .env and rebuild the client
+        """
+        from hermes_cli.apikey_switch import (
+            apply_api_key_switch,
+            format_apikey_status,
+            parse_apikey_args,
+            resolve_current_key,
+            resolve_provider_key_env,
+        )
+
+        raw_args = event.get_command_args().strip() if event else ""
+        args, errors = parse_apikey_args(raw_args)
+        if errors:
+            return "\n".join(f"✗ {err}" for err in errors)
+
+        source = event.source
+        source = self._normalize_source_for_session_key(source)
+        session_key = self._session_key_for_source(source)
+
+        # Read current provider/model from session override or config.
+        override = self._session_model_overrides.get(session_key, {})
+        provider = override.get("provider", "")
+        model = override.get("model", "")
+
+        if not provider or not model:
+            try:
+                from gateway.run import _load_gateway_config
+
+                cfg = _load_gateway_config()
+                if cfg:
+                    model_cfg = cfg.get("model", {})
+                    if isinstance(model_cfg, dict):
+                        model = model_cfg.get("default", model)
+                        provider = model_cfg.get("provider", provider)
+            except Exception:
+                pass
+
+        provider = provider or "openrouter"
+        model = model or ""
+
+        if args.reload:
+            from hermes_cli.config import reload_env
+
+            reload_env()
+            new_key = resolve_current_key(provider)
+            if not new_key:
+                return f"✗ No key found in {resolve_provider_key_env(provider)}"
+        else:
+            new_key = args.key
+
+        if not new_key:
+            current_key = override.get("api_key") or resolve_current_key(provider)
+            return format_apikey_status(provider, model, current_key)
+
+        # Try to apply to a live agent if one exists for this session.
+        agent = None
+        try:
+            running = self._running_agents.get(session_key)
+            if running is not None:
+                agent = running
+        except Exception:
+            pass
+
+        result = apply_api_key_switch(
+            agent=agent,
+            provider=provider,
+            model=model,
+            api_key=new_key,
+            save_to_env=args.save,
+        )
+
+        if not result.success:
+            return f"✗ {result.message}"
+
+        # Update session override so subsequent turns keep the new key.
+        self._session_model_overrides[session_key] = {
+            **override,
+            "provider": provider,
+            "model": model,
+            "api_key": new_key,
+            "base_url": override.get("base_url", ""),
+            "api_mode": override.get("api_mode", ""),
+        }
+
+        # Evict cached agent so the next turn rebuilds with the new credential.
+        self._evict_cached_agent(session_key)
+
+        lines = [f"✓ API key hotswapped for {result.provider}"]
+        if result.saved_to_env:
+            lines.append(f"Saved to {result.key_env}")
+        if result.model:
+            lines.append(f"Model: {result.model}")
+        return "\n".join(lines)
+
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime command in the gateway.
 

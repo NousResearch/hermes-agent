@@ -813,6 +813,11 @@ class AIAgent:
         from agent.agent_runtime_helpers import switch_model
         return switch_model(self, new_model, new_provider, api_key, base_url, api_mode)
 
+    def switch_api_key(self, api_key: str, provider: str = ""):
+        """Forwarder — see ``agent.agent_runtime_helpers.switch_api_key``."""
+        from agent.agent_runtime_helpers import switch_api_key
+        return switch_api_key(self, api_key, provider)
+
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 

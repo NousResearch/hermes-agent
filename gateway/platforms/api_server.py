@@ -1011,6 +1011,40 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=500,
                 )
 
+        # run_conversation can return a structured terminal failure
+        # without raising. Do not expose that as a successful empty HTTP 200.
+        if result.get("failed"):
+            failure_reason = str(
+                result.get("failure_reason") or "agent_failed"
+            )
+            failure_message = (
+                result.get("final_response")
+                or result.get("error")
+                or (
+                    "The upstream provider rate limit was reached. "
+                    "Please retry after the provider cooldown."
+                    if failure_reason == "rate_limit"
+                    else "The agent could not complete the request."
+                )
+            )
+
+            status = 429 if failure_reason == "rate_limit" else 502
+            error_type = (
+                "rate_limit_error"
+                if failure_reason == "rate_limit"
+                else "server_error"
+            )
+
+            return web.json_response(
+                _openai_error(
+                    str(failure_message),
+                    err_type=error_type,
+                    code=failure_reason,
+                ),
+                status=status,
+                headers={"X-Hermes-Session-Id": session_id},
+            )
+
         final_response = result.get("final_response", "")
         if not final_response:
             final_response = result.get("error", "(No response generated)")
@@ -1069,6 +1103,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             last_activity = time.monotonic()
+            content_emitted = False
 
             # Role chunk
             role_chunk = {
@@ -1089,12 +1124,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 frontends can display them without storing the markers in
                 conversation history.  See #6972.
                 """
+                nonlocal content_emitted
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    content_emitted = True
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -1130,13 +1167,41 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 last_activity = await _emit(delta)
 
-            # Get usage from completed agent
+            # Get usage and terminal result from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
-            except Exception:
-                pass
+
+                # HTTP headers are already committed for streaming requests.
+                # Therefore structured terminal failures must be emitted as
+                # visible assistant content instead of becoming an empty SSE
+                # response.
+                if result.get("failed") and not content_emitted:
+                    failure_reason = str(
+                        result.get("failure_reason") or "agent_failed"
+                    )
+                    failure_message = (
+                        result.get("final_response")
+                        or result.get("error")
+                        or (
+                            "The upstream provider rate limit was reached. "
+                            "Please retry after the provider cooldown."
+                            if failure_reason == "rate_limit"
+                            else "The agent could not complete the request."
+                        )
+                    )
+                    last_activity = await _emit(str(failure_message))
+            except Exception as exc:
+                logger.error(
+                    "Streaming chat completion agent failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+                if not content_emitted:
+                    last_activity = await _emit(
+                        f"The agent request failed: {exc}"
+                    )
 
             # Finish chunk
             finish_chunk = {

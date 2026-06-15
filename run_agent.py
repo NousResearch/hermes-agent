@@ -11423,6 +11423,14 @@ class AIAgent:
                                 "execute_code with Python's open() for large "
                                 "files, or to write in smaller sections."
                             )
+                        _error_status = (
+                            getattr(api_error, "status_code", None)
+                            or getattr(
+                                getattr(api_error, "response", None),
+                                "status_code",
+                                None,
+                            )
+                        )
                         return {
                             "final_response": _final_response,
                             "messages": messages,
@@ -11430,6 +11438,12 @@ class AIAgent:
                             "completed": False,
                             "failed": True,
                             "error": _final_summary,
+                            "failure_reason": (
+                                "rate_limit" if is_rate_limited else "api_error"
+                            ),
+                            "error_status": (
+                                429 if is_rate_limited else _error_status
+                            ),
                         }
 
                     # For rate limits, respect the Retry-After header if present

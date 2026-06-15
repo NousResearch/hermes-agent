@@ -174,8 +174,10 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
 
     Prefers the live terminal cwd (the directory the agent is actually working
     in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a sentinel-free absolute ``$TERMINAL_CWD``. This is what lets
-    a worktree session warn about (and resolve into) the worktree from the very
+    falls back to a registered task/session cwd override (TUI/Desktop/ACP
+    sessions register a raw-keyed cwd before any tool runs), then to a
+    sentinel-free absolute ``$TERMINAL_CWD``. This is what lets a worktree or
+    Desktop session warn about (and resolve into) its workspace from the very
     first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
@@ -196,10 +198,12 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     Resolution order:
       1. The task's live terminal cwd (the directory the agent is actually
          working in — e.g. a git worktree). Authoritative when known.
-      2. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed workspace cwd before any terminal command runs).
+      3. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
          terminal command has populated the live cwd registry.
-      3. The process cwd.
+      4. The process cwd.
 
     The returned base is ALWAYS absolute. This is the core invariant that
     prevents the worktree-cwd divergence bug: a relative or sentinel
@@ -246,9 +250,10 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     target. ``None`` when the path is absolute, the base is unknown, or the
     resolved path is correctly under the workspace root.
 
-    The workspace root is the live terminal cwd when known, else a sentinel-free
-    absolute ``$TERMINAL_CWD`` — so a worktree session whose terminal registry
-    is still empty (no ``cd`` run yet) is warned on the very first write.
+    The workspace root is the live terminal cwd when known, else a registered
+    task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
+    — so a worktree or Desktop session whose terminal registry is still empty
+    (no ``cd`` run yet) is warned on the very first write.
     """
     try:
         if Path(filepath).expanduser().is_absolute():

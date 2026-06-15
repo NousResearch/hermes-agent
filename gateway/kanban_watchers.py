@@ -23,6 +23,66 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+def _kanban_dispatcher_stalled(
+    ready_pending: bool,
+    any_spawned: bool,
+    any_capped: bool,
+    cap_full: bool,
+) -> bool:
+    return ready_pending and not any_spawned and not any_capped and not cap_full
+
+
+def _kanban_dispatcher_cap_full(
+    _kb: Any,
+    *,
+    max_spawn: Any,
+    max_in_progress: Any,
+) -> bool:
+    caps: list[int] = []
+    for raw in (max_spawn, max_in_progress):
+        try:
+            if raw is not None:
+                caps.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not caps:
+        return False
+
+    try:
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return False
+
+    seen_db_paths: set[str] = set()
+    total = 0
+    for board_meta in boards:
+        slug = board_meta.get("slug") or getattr(_kb, "DEFAULT_BOARD", "default")
+        try:
+            db_path = board_meta.get("db_path") or _kb.kanban_db_path(slug)
+            resolved_db_path = str(Path(db_path).expanduser().resolve())
+        except Exception:
+            resolved_db_path = f"slug:{slug}"
+        if resolved_db_path in seen_db_paths:
+            continue
+        seen_db_paths.add(resolved_db_path)
+        conn = None
+        try:
+            conn = _kb.connect(board=slug)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()
+            total += int(row[0])
+        except Exception:
+            return False
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    return total >= min(caps)
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -1017,6 +1077,7 @@ class GatewayKanbanWatchersMixin:
                     await asyncio.to_thread(_auto_decompose_tick)
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
+                any_capped = False
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
                         any_spawned = True
@@ -1033,9 +1094,23 @@ class GatewayKanbanWatchersMixin:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
+                    if res is not None and getattr(
+                        res, "skipped_per_profile_capped", None
+                    ):
+                        any_capped = True
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                cap_full = False
+                if ready_pending and not any_spawned and not any_capped:
+                    cap_full = await asyncio.to_thread(
+                        _kanban_dispatcher_cap_full,
+                        _kb,
+                        max_spawn=max_spawn,
+                        max_in_progress=max_in_progress,
+                    )
+                if _kanban_dispatcher_stalled(
+                    ready_pending, any_spawned, any_capped, cap_full
+                ):
                     bad_ticks += 1
                 else:
                     bad_ticks = 0

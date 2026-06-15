@@ -507,3 +507,66 @@ class TestRichAwareOverflow:
         assert consumer._message_id == "final1"
         assert consumer._preview_message_ids == set()
         assert consumer.final_response_sent is True
+
+
+class TestFinalizeDoesNotSetExpectEdits:
+    """When the final message in a draft-based stream is sent via
+    ``adapter.send()``, the metadata must NOT carry ``expect_edits: True``.
+    That flag disables Telegram's ``sendRichMessage`` path in
+    ``_should_attempt_rich()`` and forces a plain MarkdownV2 fallback,
+    losing the rich formatting the user saw during the draft preview.
+    """
+
+    @pytest.mark.asyncio
+    async def test_finalize_send_omits_expect_edits(self):
+        """Final send after draft streaming must not set expect_edits."""
+        adapter = _make_draft_capable_adapter()
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Hello world!")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The final send must have been called.
+        adapter.send.assert_awaited()
+        final_meta = adapter.send.call_args.kwargs.get("metadata", {})
+        assert "expect_edits" not in final_meta, (
+            "finalize send must not set expect_edits — it disables "
+            "Telegram's sendRichMessage path"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_finalize_first_send_sets_expect_edits(self):
+        """Mid-stream first send (non-draft, edit-based) must still set
+        expect_edits: True so adapters know to keep the message editable.
+        """
+        from gateway.platforms.base import SendResult
+
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        cfg = StreamConsumerConfig(
+            transport="edit", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="▉",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("Hello")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        # Don't finish yet — this is a mid-stream send.
+        consumer.on_delta(" world!")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        # The first send call (non-finalize) should have expect_edits.
+        assert adapter.send.await_count >= 1
+        first_meta = adapter.send.call_args_list[0].kwargs.get("metadata", {})
+        assert first_meta.get("expect_edits") is True, (
+            "mid-stream first send must set expect_edits: True"
+        )

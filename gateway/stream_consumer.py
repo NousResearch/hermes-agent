@@ -1532,7 +1532,15 @@ class GatewayStreamConsumer:
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,
-                    metadata={**(self.metadata or {}), "expect_edits": True},
+                    # Skip expect_edits on finalize — this is the last
+                    # message; no more edits will follow.  Keeping it would
+                    # disable Telegram's sendRichMessage path (which checks
+                    # expect_edits) and force a plain MarkdownV2 fallback,
+                    # losing the rich formatting the user saw in the draft.
+                    metadata={
+                        **(self.metadata or {}),
+                        **({} if finalize else {"expect_edits": True}),
+                    },
                 )
                 if result.success:
                     if result.message_id:

@@ -2337,6 +2337,41 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url, api_mode=api_mode)
             if live:
                 return live
+    # Azure Foundry: deployments are per-resource so the static catalog is
+    # intentionally empty (``_PROVIDER_MODELS["azure-foundry"] == []``). Probe
+    # GET <base>/models to populate the picker with the deployment IDs the
+    # configured credential can see — the same probe the setup wizard uses
+    # (#27989). Route through the runtime credential resolver so the picker
+    # honours BOTH API-key and keyless Microsoft Entra ID auth and always
+    # targets the same resource inference will hit. For ``auth_mode:
+    # entra_id`` the resolver returns a callable token provider (not a
+    # string), which the probe accepts via ``token_provider=``. Any failure
+    # (missing credentials, azure-identity not installed, network error,
+    # empty list) falls through silently to the static ``[]`` — no behaviour
+    # change when Azure Foundry is not configured.
+    if normalized == "azure-foundry":
+        try:
+            from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+            from hermes_cli.azure_detect import _probe_openai_models
+            from agent.azure_identity_adapter import is_token_provider
+
+            runtime = _resolve_azure_foundry_runtime(
+                requested_provider="azure-foundry",
+                model_cfg=_get_model_config_dict(),
+            )
+            base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+            credential = runtime.get("api_key")
+            if base_url and credential:
+                if is_token_provider(credential):
+                    ok, ids = _probe_openai_models(
+                        base_url, "", token_provider=credential
+                    )
+                else:
+                    ok, ids = _probe_openai_models(base_url, str(credential))
+                if ok and ids:
+                    return ids
+        except Exception:
+            pass
     # Bedrock uses live discovery keyed by the resolved AWS region so that
     # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
     # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge

@@ -165,16 +165,21 @@ COMPOSITION_CHARS_PER_TOKEN = _composition_chars_per_token()
 # content (history/tool-results/tool-args) which packs DENSER than 4 chars/token
 # (see the under-count note above: /4 under-counts at 170k-280k history-heavy
 # turns). The FIXED prefix -- system prompt + tool schemas + skills index -- is
-# different content and was MEASURED to pack LOOSER: o200k (gpt-5.x) real ratio
-# 4.09 chars/tok, claude-opus real 4.35 (n=60 each, live turns.db), so /3.5
-# over-counts the fixed prefix by ~17-24%. 4.0 measured on o200k(4.09)+
-# claude-opus(4.35); applied to ALL families by fiat (the fixed bytes are
-# identical across models, only tokenizer density varies, and it clustered
-# tightly 4.09-4.35); override via HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED if a
-# family proves materially different. Same 2.0-8.0 clamp; display-only, never
-# billing. Two divisors on purpose: accurate on the stable fixed prefix,
-# conservative (slightly high) on the volatile non-fixed tail so the
-# context-pressure warning fires early rather than late.
+# different content and was MEASURED to pack LOOSER. Pooled live measurement
+# (n=60 claude-opus full-tool near-zero-history turns across two turns.db's) put
+# the REAL fixed ratio at ~4.38 chars/tok (median 4.45); o200k/gpt-5.x measured
+# ~4.09. So /3.5 over-counts the fixed prefix by ~20-25%. 4.2 is the chosen
+# divisor: it lands the post-deploy acceptance gate measured/est at mean ~0.96
+# (estimate ~4% high = early-warning safe side) across both families, where 4.0
+# over-counts too hard (mean ~0.92, only 40% of turns in the [0.90,1.05] band)
+# and 4.35 would tip half the turns into under-estimate. Applied to ALL families
+# by fiat (the fixed bytes are identical across models, only tokenizer density
+# varies, and it clustered 4.09-4.45); override via
+# HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED if a family proves materially
+# different. Same 2.0-8.0 clamp; display-only, never billing. Two divisors on
+# purpose: accurate-but-slightly-conservative on the stable fixed prefix, more
+# conservative on the volatile non-fixed tail so the context-pressure warning
+# fires early rather than late.
 def _composition_chars_per_token_fixed() -> float:
     raw = os.environ.get("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", "").strip()
     if raw:
@@ -184,7 +189,7 @@ def _composition_chars_per_token_fixed() -> float:
                 return val
         except (TypeError, ValueError):
             pass
-    return 4.0
+    return 4.2
 
 
 COMPOSITION_CHARS_PER_TOKEN_FIXED = _composition_chars_per_token_fixed()

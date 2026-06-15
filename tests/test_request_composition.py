@@ -245,42 +245,47 @@ def test_chars_per_token_divisor_out_of_range_falls_back_to_default(monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
-# two-tier divisor: FIXED buckets /4.0, NON-FIXED buckets /3.5
+# two-tier divisor: FIXED buckets /FIXED (~4.2), NON-FIXED buckets /3.5
 # --------------------------------------------------------------------------- #
-def test_fixed_buckets_use_divisor_4_nonfixed_use_3_5():
-    # System prompt of exactly 4000 chars -> 4000/4.0 = 1000 (NOT 4000/3.5=1143).
-    # sys_tokens is from a RAW string (no message wrapping) so it's exact.
-    # tool_result goes through _estimate_message_chars (adds small role/structure
-    # overhead), so assert it tracks /3.5 (not /4.0) within a tight tolerance.
+def test_fixed_buckets_use_fixed_divisor_nonfixed_use_3_5():
+    # sys_tokens is from a RAW string (no message wrapping) so it's exact:
+    # ceil(chars / FIXED). tool_result goes through _estimate_message_chars
+    # (small role/structure overhead), so assert it tracks /3.5, not /FIXED.
     import math
+    import agent.model_metadata as mm
+    F = mm.COMPOSITION_CHARS_PER_TOKEN_FIXED
     comp = compose_request_breakdown(
         [{"role": "tool", "content": "r" * 3500, "tool_call_id": "1"}],
         system_prompt="s" * 4000,
     )
-    assert comp["sys_tokens"] == 1000, "fixed sys bucket must divide by 4.0"
-    # /3.5 ~= 1000+overhead; /4.0 would be ~875. Must be the 3.5 regime.
+    assert comp["sys_tokens"] == math.ceil(4000 / F), "fixed sys bucket must use FIXED divisor"
+    # tool_result must be the /3.5 regime, strictly more than /FIXED would give.
     assert math.ceil(3500 / 3.5) <= comp["tool_result_tokens"] <= math.ceil(3600 / 3.5)
-    assert comp["tool_result_tokens"] > math.ceil(3600 / 4.0), "must NOT be /4.0"
+    assert comp["tool_result_tokens"] > math.ceil(3600 / F), "must NOT use FIXED divisor"
     assert comp["total_tokens"] == comp["fixed_tokens"] + comp["nonfixed_tokens"]
 
 
-def test_tool_schema_bucket_uses_fixed_divisor_4():
+def test_tool_schema_bucket_uses_fixed_divisor():
     # tool_schema_chars = len(str(tools)); pick tools whose repr is a known length.
+    import math
+    import agent.model_metadata as mm
+    F = mm.COMPOSITION_CHARS_PER_TOKEN_FIXED
     tools = [{"x": "a" * 3996}]  # str(tools) length is deterministic & > 4000
     comp = compose_request_breakdown([], tools=tools)
     chars = len(str(tools))
-    import math
-    assert comp["tool_schema_tokens"] == math.ceil(chars / 4.0)
+    assert comp["tool_schema_tokens"] == math.ceil(chars / F)
     # And strictly fewer than the old /3.5 would have given.
     assert comp["tool_schema_tokens"] < math.ceil(chars / 3.5)
 
 
 def test_all_three_nonfixed_buckets_stay_on_3_5():
-    # Prove the negative: the most likely bug is moving a non-fixed bucket to /4.
-    # fixed+nonfixed==total does NOT catch mis-bucketing, so assert each /3.5.
-    # Message buckets carry a small role/structure overhead from
-    # _estimate_message_chars, so bound around /3.5 and prove != /4.0.
+    # Prove the negative: the most likely bug is moving a non-fixed bucket to the
+    # FIXED divisor. fixed+nonfixed==total does NOT catch mis-bucketing, so assert
+    # each /3.5. Message buckets carry small role/structure overhead, so bound
+    # around /3.5 and prove they did NOT collapse toward the FIXED divisor.
     import math
+    import agent.model_metadata as mm
+    F = mm.COMPOSITION_CHARS_PER_TOKEN_FIXED
     msgs = [
         {"role": "assistant", "content": "h" * 7000,
          "tool_calls": [{"id": "1", "function": {"name": "t", "arguments": "a" * 7000}}]},
@@ -288,21 +293,23 @@ def test_all_three_nonfixed_buckets_stay_on_3_5():
     ]
     comp = compose_request_breakdown(msgs)
     lo, hi = math.ceil(7000 / 3.5), math.ceil(7100 / 3.5)   # 2000 .. ~2029
-    four = math.ceil(7100 / 4.0)                            # ~1775
+    fixed_val = math.ceil(7100 / F)                          # ~1690 at 4.2
     for key in ("history_tokens", "tool_arg_tokens", "tool_result_tokens"):
         assert lo <= comp[key] <= hi, f"{key}={comp[key]} not in /3.5 band [{lo},{hi}]"
-        assert comp[key] > four, f"{key} collapsed toward /4.0"
+        assert comp[key] > fixed_val, f"{key} collapsed toward FIXED divisor"
 
 
 def test_fixed_and_nonfixed_differ_for_identical_chars():
     # Collapse guard: identical char count must yield DIFFERENT token counts
     # across the two tiers (catches "both divisors accidentally equal").
     import math
+    import agent.model_metadata as mm
+    F = mm.COMPOSITION_CHARS_PER_TOKEN_FIXED
     comp = compose_request_breakdown(
         [{"role": "tool", "content": "r" * 7000, "tool_call_id": "1"}],
         system_prompt="s" * 7000,
     )
-    assert comp["sys_tokens"] == math.ceil(7000 / 4.0)           # 1750 exact (raw)
+    assert comp["sys_tokens"] == math.ceil(7000 / F)            # exact (raw string)
     assert comp["tool_result_tokens"] >= math.ceil(7000 / 3.5)  # >= 2000 (3.5 regime)
     assert comp["tool_result_tokens"] > comp["sys_tokens"], "tiers must differ"
 
@@ -335,14 +342,19 @@ def test_fixed_divisor_env_override(monkeypatch):
         importlib.reload(mm)
 
 
-def test_fixed_divisor_out_of_range_falls_back_to_4():
+def test_fixed_divisor_default_and_out_of_range_fallback():
     import importlib
     import agent.model_metadata as mm
     import os
+    # Default (no env) is 4.2.
+    os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
+    importlib.reload(mm)
+    assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.2, "default fixed divisor must be 4.2"
+    # Absurd / malformed values (typo guard) fall back to the 4.2 default.
     for bad in ("0", "999", "-3", "notanumber", ""):
         os.environ["HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED"] = bad
         importlib.reload(mm)
-        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.0, f"{bad!r} should fall back to 4.0"
+        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.2, f"{bad!r} should fall back to 4.2"
     os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
     importlib.reload(mm)
 

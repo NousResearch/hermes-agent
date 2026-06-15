@@ -755,7 +755,7 @@ def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
         if token:
             config.api_key = token
     except Exception:
-        logger.debug("Honcho OAuth pre-build refresh skipped", exc_info=True)
+        logger.warning("Honcho OAuth pre-build refresh failed", exc_info=True)
 
 
 def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -> None:
@@ -772,7 +772,7 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
         if refreshed and token and not oauth.apply_token_to_client(client, token):
             _honcho_client_slot.reset()
     except Exception:
-        logger.debug("Honcho OAuth cached refresh skipped", exc_info=True)
+        logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:

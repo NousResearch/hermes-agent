@@ -138,6 +138,37 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
 
+    def test_write_file_strips_line_number_prefixes(self):
+        """Regression (#46465): sandbox write_file must strip the N| prefixes
+        that read_file injects so round-tripping read→write is lossless."""
+        src = generate_hermes_tools_module(["read_file", "write_file"])
+        # write_file should strip line numbers
+        self.assertIn("re.sub", src.split("def write_file")[1])
+        # read_file should NOT strip line numbers
+        read_block = src.split("def read_file(")[1].split("def ")[0]
+        self.assertNotIn("re.sub", read_block)
+
+    def test_write_file_strips_line_numbers_correctly(self):
+        """Verify the generated regex strips N| prefixes but leaves
+        regular content untouched."""
+        import re
+        pattern = r"(?m)^\d+\|"
+        # Line-prefixed content (from read_file)
+        self.assertEqual(
+            re.sub(pattern, "", "1|hello\n2|world\n3|foo"),
+            "hello\nworld\nfoo",
+        )
+        # Regular content is not affected
+        self.assertEqual(
+            re.sub(pattern, "", "hello\nworld"),
+            "hello\nworld",
+        )
+        # Content with pipes but no leading digits is not affected
+        self.assertEqual(
+            re.sub(pattern, "", "ls -la | grep foo"),
+            "ls -la | grep foo",
+        )
+
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
     def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):

@@ -276,11 +276,23 @@ def generate_hermes_tools_module(enabled_tools: List[str],
         if tool_name not in _TOOL_STUBS:
             continue
         func_name, sig, doc, args_expr = _TOOL_STUBS[tool_name]
-        stub_functions.append(
-            f"def {func_name}({sig}):\n"
-            f"    {doc}\n"
-            f"    return _call({func_name!r}, {args_expr})\n"
-        )
+        if func_name == "write_file":
+            # Strip line-number prefixes (``N|content``) that read_file
+            # injects so that round-tripping read→write inside the sandbox
+            # does not embed the formatting into the output file.  See #46465.
+            stub_functions.append(
+                f"def {func_name}({sig}):\n"
+                f"    {doc}\n"
+                f"    import re as _re\n"
+                f"    content = _re.sub(r'(?m)^\\d+\\|', '', content)\n"
+                f"    return _call({func_name!r}, {args_expr})\n"
+            )
+        else:
+            stub_functions.append(
+                f"def {func_name}({sig}):\n"
+                f"    {doc}\n"
+                f"    return _call({func_name!r}, {args_expr})\n"
+            )
         export_names.append(func_name)
 
     if transport == "file":

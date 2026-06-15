@@ -1668,6 +1668,46 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+_EXECUTE_CODE_SECRET_SOURCE_RE = re.compile(
+    r"(?is)"
+    r"(~[/\\]\.hermes[/\\]\.env|"
+    r"\.hermes[/\\]\.env|"
+    r"\.env\b|"
+    r"\.npmrc\b|"
+    r"\.pypirc\b|"
+    r"\.netrc\b|"
+    r"\.pgpass\b|"
+    r"\.ssh[/\\]|"
+    r"id_rsa\b|"
+    r"id_ed25519\b|"
+    r"load_dotenv\s*\(|"
+    r"os\.environ(?:\.|\[|\.get)|"
+    r"\bgetenv\s*\()"
+)
+
+_EXECUTE_CODE_DIRECT_EGRESS_RE = re.compile(
+    r"(?is)"
+    r"(requests\.(?:post|put|patch|delete|request)\s*\(|"
+    r"httpx\.(?:post|put|patch|delete|request)\s*\(|"
+    r"urllib\.request\.urlopen\s*\(|"
+    r"aiohttp\.ClientSession\s*\(|"
+    r"socket\.(?:socket|create_connection)\s*\(|"
+    r"smtplib\.SMTP\s*\(|"
+    r"\b(?:curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr)\b)"
+)
+
+
+def _execute_code_out_of_band_exfil_reasons(code: str) -> list[str]:
+    """Return reasons when a script combines secret reads with direct egress."""
+    source = code or ""
+    reasons = []
+    if _EXECUTE_CODE_SECRET_SOURCE_RE.search(source):
+        reasons.append("local secret or environment access")
+    if _EXECUTE_CODE_DIRECT_EGRESS_RE.search(source):
+        reasons.append("direct network egress")
+    return reasons if len(reasons) == 2 else []
+
+
 def check_execute_code_guard(code: str, env_type: str) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
@@ -1725,6 +1765,35 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
                 "user_consent": False,
             }
         return {"approved": True, "message": None}
+
+    oob_exfil_reasons = _execute_code_out_of_band_exfil_reasons(code)
+    if oob_exfil_reasons and not (is_gateway or is_ask):
+        description = (
+            "execute_code script combines local secret/environment reads with "
+            "direct network egress before Hermes can mediate either action."
+        )
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: execute_code script combines local "
+                "secret/environment reads with direct network egress. The "
+                "script could exfiltrate credentials outside Hermes tool "
+                "approval boundaries before any per-call guard runs. Remove "
+                "one side of the operation, use audited Hermes tools, or run "
+                "the job in an isolated backend."
+            ),
+            "pattern_key": "execute_code_oob_exfil",
+            "description": description,
+            "outcome": "blocked",
+            "user_consent": False,
+            "reasons": oob_exfil_reasons,
+        }
+    if oob_exfil_reasons:
+        pattern_key = "execute_code_oob_exfil"
+        description = (
+            "execute_code script combines local secret/environment reads with "
+            "direct network egress; approval is required for this run."
+        )
 
     # Only gateway/ask contexts get the one-shot whole-script approval.
     #   * CLI interactive: the script's terminal() calls are guarded per-call

@@ -40,7 +40,11 @@
     "@assistant-ui/store": "0.2.13",
     "vite": "^8.0.16",
     "esbuild": "^0.28.1",
-    "joi": "^18.2.1"
+    "joi": "^18.2.1",
+    "form-data": "4.0.6",
+    "tar": "7.5.16",
+    "js-yaml": "4.2.0",
+    "@babel/core": "7.29.6"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -28,6 +28,26 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
+_SENSITIVE_CDP_METHODS = frozenset({
+    "Browser.grantPermissions",
+    "Browser.resetPermissions",
+    "Browser.setPermission",
+    "Network.clearBrowserCache",
+    "Network.clearBrowserCookies",
+    "Network.deleteCookies",
+    "Network.getAllCookies",
+    "Network.getCookies",
+    "Network.setCookie",
+    "Network.setCookies",
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Runtime.callFunctionOn",
+    "Runtime.evaluate",
+    "Storage.clearCookies",
+    "Storage.clearDataForOrigin",
+    "Storage.getCookies",
+    "Storage.setCookies",
+})
+
 # ``websockets`` is a direct hermes-agent dependency because the browser CDP
 # supervisor and browser_dialog tool import it during tool discovery. Keep the
 # fork's compatibility wrapper so stale or incomplete installs fail cleanly.
@@ -82,6 +102,44 @@ def _resolve_cdp_endpoint() -> str:
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp: failed to resolve CDP endpoint: %s", exc)
         return ""
+
+
+def _cdp_sensitive_methods_allowed() -> bool:
+    """Return whether raw CDP methods with credential or JS authority are allowed."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        raw = browser_cfg.get("allow_sensitive_cdp_methods", False)
+    except Exception as exc:  # pragma: no cover - config read should not crash tool calls
+        logger.debug("browser_cdp: failed to read sensitive-method policy: %s", exc)
+        raw = False
+
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on", "allow", "allowed"}
+
+
+def _is_sensitive_cdp_method(method: str) -> bool:
+    return method in _SENSITIVE_CDP_METHODS
+
+
+def _sensitive_cdp_error(method: str) -> str:
+    return tool_error(
+        (
+            f"CDP method {method!r} is blocked by default because it can read "
+            "browser credentials, mutate storage, or execute page JavaScript. "
+            "Dedicated browser tools should be used for ordinary page work. "
+            "If this raw CDP access is intentionally trusted, set "
+            "browser.allow_sensitive_cdp_methods: true in config.yaml."
+        ),
+        method=method,
+        cdp_docs=CDP_DOCS_URL,
+        sensitive_method=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +384,15 @@ def browser_cdp(
         JSON string ``{"success": True, "method": ..., "result": {...}}`` on
         success, or ``{"error": "..."}`` on failure.
     """
+    if not method or not isinstance(method, str):
+        return tool_error(
+            "'method' is required (e.g. 'Target.getTargets')",
+            cdp_docs=CDP_DOCS_URL,
+        )
+
+    if _is_sensitive_cdp_method(method) and not _cdp_sensitive_methods_allowed():
+        return _sensitive_cdp_error(method)
+
     # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
         return _browser_cdp_via_supervisor(
@@ -336,12 +403,6 @@ def browser_cdp(
             timeout=timeout,
         )
     del task_id  # stateless path below
-
-    if not method or not isinstance(method, str):
-        return tool_error(
-            "'method' is required (e.g. 'Target.getTargets')",
-            cdp_docs=CDP_DOCS_URL,
-        )
 
     if not _WS_AVAILABLE:
         return tool_error(
@@ -440,13 +501,15 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
         "- List tabs: method='Target.getTargets', params={}\n"
         "- Handle a native JS dialog: method='Page.handleJavaScriptDialog', "
         "params={'accept': true, 'promptText': ''}, target_id=<tabId>\n"
-        "- Get all cookies: method='Network.getAllCookies', params={}\n"
-        "- Eval in a specific tab: method='Runtime.evaluate', "
-        "params={'expression': '...', 'returnByValue': true}, "
-        "target_id=<tabId>\n"
         "- Set viewport for a tab: method='Emulation.setDeviceMetricsOverride', "
         "params={'width': 1280, 'height': 720, 'deviceScaleFactor': 1, "
         "'mobile': false}, target_id=<tabId>\n\n"
+        "**Sensitive methods:** cookie/storage access, permission mutation, "
+        "and raw JavaScript execution methods such as Network.getAllCookies, "
+        "Storage.getCookies, and Runtime.evaluate are blocked by default. "
+        "Use dedicated browser tools for ordinary page work, or set "
+        "browser.allow_sensitive_cdp_methods: true in config.yaml only for "
+        "trusted local sessions that intentionally need raw CDP authority.\n\n"
         "**Usage rules:**\n"
         "- Browser-level methods (Target.*, Browser.*, Storage.*): omit "
         "target_id and frame_id.\n"

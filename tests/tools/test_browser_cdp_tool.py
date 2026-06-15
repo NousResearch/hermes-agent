@@ -172,6 +172,31 @@ def test_non_dict_params_returns_error(monkeypatch):
     assert "object" in result["error"].lower() or "dict" in result["error"].lower()
 
 
+def test_sensitive_method_blocked_by_default(monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp_tool, "_cdp_sensitive_methods_allowed", lambda: False
+    )
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getAllCookies")
+    )
+    assert "error" in result
+    assert "blocked by default" in result["error"]
+    assert result["method"] == "Network.getAllCookies"
+    assert result["sensitive_method"] is True
+
+
+def test_sensitive_method_allowed_when_configured(cdp_server, monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp_tool, "_cdp_sensitive_methods_allowed", lambda: True
+    )
+    cdp_server.on("Network.getAllCookies", lambda params, sid: {"cookies": []})
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(method="Network.getAllCookies")
+    )
+    assert result["success"] is True
+    assert result["result"] == {"cookies": []}
+
+
 # ---------------------------------------------------------------------------
 # Endpoint resolution
 # ---------------------------------------------------------------------------
@@ -239,7 +264,10 @@ def test_empty_params_sends_empty_object(cdp_server):
 # ---------------------------------------------------------------------------
 
 
-def test_target_attach_then_call(cdp_server):
+def test_target_attach_then_call(cdp_server, monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp_tool, "_cdp_sensitive_methods_allowed", lambda: True
+    )
     cdp_server.on(
         "Target.attachToTarget",
         lambda params, sid: {"sessionId": f"sess-{params['targetId']}"},
@@ -285,7 +313,10 @@ def test_cdp_method_error_returns_tool_error(cdp_server):
     assert result.get("method") == "NonExistent.method"
 
 
-def test_attach_failure_returns_tool_error(cdp_server):
+def test_attach_failure_returns_tool_error(cdp_server, monkeypatch):
+    monkeypatch.setattr(
+        browser_cdp_tool, "_cdp_sensitive_methods_allowed", lambda: True
+    )
     # Target.attachToTarget has no handler -> server errors on attach
     result = json.loads(
         browser_cdp_tool.browser_cdp(

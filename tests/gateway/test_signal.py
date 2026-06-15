@@ -123,7 +123,7 @@ class TestSignalAdapterInit:
         await adapter._handle_envelope({
             "envelope": {
                 "sourceNumber": "+155****1111",
-                "sourceName": "Jan",
+                "sourceName": "Alice",
                 "timestamp": 1000000000,
                 "dataMessage": {"message": "Verstanden."},
             }

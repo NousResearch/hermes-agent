@@ -209,6 +209,7 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -218,7 +219,12 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    source_group_ids = {source.chat_id}
+                    source_chat_id_alt = getattr(source, "chat_id_alt", None)
+                    if source_chat_id_alt:
+                        source_group_ids.add(source_chat_id_alt)
+                        source_group_ids.add(f"group:{source_chat_id_alt}")
+                    if "*" in allowed_group_ids or (source_group_ids & allowed_group_ids):
                         return True
 
         if not user_id:
@@ -308,7 +314,22 @@ class GatewayAuthorizationMixin:
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
-        # Check pairing store (always checked, regardless of allowlists)
+        # In explicit Signal group-only mode, DMs must stay disabled even if an
+        # old pairing approval exists. Otherwise a separate Signal bot account
+        # can DM a group-only profile and make that profile answer from its own
+        # account (a split account setup with one DM bot and one group-only bot
+        # hits exactly this).
+        if (
+            source.platform == Platform.SIGNAL
+            and source.chat_type == "dm"
+            and "SIGNAL_ALLOWED_USERS" in os.environ
+            and os.getenv("SIGNAL_ALLOWED_USERS", "").strip() == ""
+            and os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "").strip()
+        ):
+            return False
+
+        # Check pairing store (always checked, regardless of allowlists, except
+        # for the explicit Signal group-only DM block above)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
@@ -467,6 +488,18 @@ class GatewayAuthorizationMixin:
         4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
+
+        # Absolute Signal safety rail for group-only profiles: never answer an
+        # unauthorized DM with a pairing code when DMs are explicitly disabled
+        # and a group allowlist is configured. This must win even over stale or
+        # mis-loaded config objects.
+        if (
+            platform == Platform.SIGNAL
+            and "SIGNAL_ALLOWED_USERS" in os.environ
+            and os.getenv("SIGNAL_ALLOWED_USERS", "").strip() == ""
+            and os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "").strip()
+        ):
+            return "ignore"
 
         # Check for an explicit per-platform override first.
         if config and hasattr(config, "get_unauthorized_dm_behavior") and platform:

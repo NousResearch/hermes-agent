@@ -1694,7 +1694,19 @@ class SignalAdapter(BasePlatformAdapter):
         if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
             return False
         if event is not None:
-            sender = getattr(getattr(event, "source", None), "user_id", None)
+            source = getattr(event, "source", None)
+            sender = getattr(source, "user_id", None)
+            chat_type = getattr(source, "chat_type", None)
+            if chat_type in {"group", "forum", "channel"}:
+                chat_id = getattr(source, "chat_id", None)
+                chat_id_alt = getattr(source, "chat_id_alt", None)
+                allowed_group_ids = set(self.group_allow_from)
+                source_group_ids = {gid for gid in (chat_id, chat_id_alt) if gid}
+                if chat_id_alt:
+                    source_group_ids.add(f"group:{chat_id_alt}")
+                if "*" in allowed_group_ids or (allowed_group_ids & source_group_ids):
+                    return True
+                return False
             if sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from:
                 return False
         return True

@@ -1187,6 +1187,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs = dict(client_kwargs)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
+    # Resolve any custom-provider ``ssl_verify`` override for THIS base_url so a
+    # self-signed / private-CA endpoint is honored on the primary chat client's
+    # keepalive httpx.Client, not just the auxiliary client (#28260).  Resolved
+    # per build (covers init, /model switch, and post-interrupt rebuild) and
+    # threaded into the keepalive transport below; ``client_kwargs`` is never
+    # mutated, preserving the read-only invariant documented above.
+    try:
+        from hermes_cli.config import get_custom_provider_ssl_verify
+        _ssl_verify = get_custom_provider_ssl_verify(
+            str(client_kwargs.get("base_url", "") or "")
+        )
+    except Exception:
+        _ssl_verify = None
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
         from agent.copilot_acp_client import CopilotACPClient
 
@@ -1224,7 +1237,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
             if "http_client" not in safe_kwargs:
-                keepalive_http = agent._build_keepalive_http_client(base_url)
+                keepalive_http = agent._build_keepalive_http_client(base_url, verify=_ssl_verify)
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
             client = GeminiNativeClient(**safe_kwargs)
@@ -1253,7 +1266,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
-        keepalive_http = agent._build_keepalive_http_client(client_kwargs.get("base_url", ""))
+        keepalive_http = agent._build_keepalive_http_client(
+            client_kwargs.get("base_url", ""), verify=_ssl_verify
+        )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http
     # Uses the module-level `OpenAI` name, resolved lazily on first

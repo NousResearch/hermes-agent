@@ -2385,7 +2385,7 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "") -> Any:
+    def _build_keepalive_http_client(base_url: str = "", verify: Any = None) -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -2402,8 +2402,17 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            # Custom providers that point at self-signed / private-CA HTTPS
+            # endpoints set ``ssl_verify`` (#28260).  httpx applies ``verify``
+            # on the transport that performs the TLS handshake and IGNORES a
+            # ``verify`` passed to ``Client`` whenever an explicit ``transport``
+            # is supplied — so the value has to land on the transport here.
+            # Left unset (``None``), httpx keeps its default full verification.
+            _transport_kwargs: dict = {"socket_options": _sock_opts}
+            if verify is not None:
+                _transport_kwargs["verify"] = verify
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                transport=_httpx.HTTPTransport(**_transport_kwargs),
                 proxy=_proxy,
             )
         except Exception:

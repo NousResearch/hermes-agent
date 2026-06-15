@@ -3238,10 +3238,61 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_custom_provider_ssl_verify(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Any]:
+    """Look up a provider-level ``ssl_verify`` override from custom providers.
+
+    Matches the custom-provider entry whose ``base_url`` equals ``base_url``
+    (trailing-slash insensitive) and returns its ``ssl_verify`` value — a
+    ``bool`` (``False`` disables TLS verification for a self-signed endpoint)
+    or a ``str`` path to a custom CA bundle.  Returns ``None`` when no entry
+    matches or the entry declares no ``ssl_verify``; callers then leave httpx's
+    default full verification in place.
+
+    This is the primary-chat-client counterpart to the auxiliary-client lookup
+    in ``agent.auxiliary_client``.  Both read the same normalized field so a
+    custom provider behaves identically on the primary and auxiliary paths
+    (#28260: previously only the auxiliary client honored ``ssl_verify``).
+    """
+    if not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        ssl_verify = entry.get("ssl_verify")
+        if isinstance(ssl_verify, bool):
+            return ssl_verify
+        if isinstance(ssl_verify, str) and ssl_verify.strip():
+            return ssl_verify.strip()
+        return None
+    return None
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
-    
+
     Returns (current_version, latest_version).
     """
     config = load_config()

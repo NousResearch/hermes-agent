@@ -23,6 +23,60 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+_KANBAN_INTERNAL_ARTIFACT_BASENAMES = {
+    "approvals.md",
+    "decisions.md",
+    "manifest.json",
+    "manifest.yaml",
+    "manifest.yml",
+    "plan-critique-checklist.json",
+    "plan-depth.json",
+    "planner-contract.json",
+    "planner-handoff-bundle.json",
+    "planner-handoff-bundle.stub.yaml",
+    "planner-handoff-bundle.yaml",
+    "project.yaml",
+    "risk-gate.json",
+    "state.json",
+    "status.json",
+    "traceability.stub.json",
+    "workers.example.yaml",
+}
+
+_KANBAN_INTERNAL_CONTROL_EXTS = {".json", ".yaml", ".yml"}
+
+
+def _looks_like_internal_kanban_artifact(path: str) -> bool:
+    """Return True for workflow/control-plane files that should not auto-upload.
+
+    Hermes workflows keep manifests, planner bundles, risk gates, and state
+    under ``~/.hermes/workflows``. Those files are useful evidence for agents
+    but noisy and privacy-sensitive as native chat attachments: Slack clients
+    may save them into ``~/Downloads`` with numbered duplicates. Final reports
+    or rendered dashboards can still be delivered when they use user-facing
+    extensions such as ``.html``/``.pdf``/``.zip``.
+    """
+    p = Path(path)
+    name = p.name.lower()
+    parts = [part.lower() for part in p.parts]
+    in_hermes_workflow = any(
+        parts[i] == ".hermes" and parts[i + 1] == "workflows"
+        for i in range(len(parts) - 1)
+    )
+    if not in_hermes_workflow:
+        return False
+    if name in _KANBAN_INTERNAL_ARTIFACT_BASENAMES:
+        return True
+    if name.startswith("planner-handoff-bundle"):
+        return p.suffix.lower() in _KANBAN_INTERNAL_CONTROL_EXTS
+    return False
+
+
+def _allow_kanban_artifact_delivery(path: str, _source: str) -> bool:
+    """Return True if the kanban notifier should upload ``path`` natively."""
+    return not _looks_like_internal_kanban_artifact(path)
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -474,10 +528,10 @@ class GatewayKanbanWatchersMixin:
         """
         from pathlib import Path as _Path
 
-        candidates: list[str] = []
+        candidates: list[tuple[str, str]] = []
         seen: set[str] = set()
 
-        def _add(path: str) -> None:
+        def _add(path: str, source: str) -> None:
             if not path:
                 return
             expanded = os.path.expanduser(path)
@@ -486,7 +540,7 @@ class GatewayKanbanWatchersMixin:
             if not os.path.isfile(expanded):
                 return
             seen.add(expanded)
-            candidates.append(expanded)
+            candidates.append((expanded, source))
 
         # 1. Explicit artifacts list in payload.
         if isinstance(event_payload, dict):
@@ -494,29 +548,45 @@ class GatewayKanbanWatchersMixin:
             if isinstance(raw, (list, tuple)):
                 for item in raw:
                     if isinstance(item, str):
-                        _add(item)
+                        _add(item, "explicit")
 
             # 2. Paths embedded in the payload summary.
             summary = event_payload.get("summary")
             if isinstance(summary, str) and summary:
                 paths, _ = adapter.extract_local_files(summary)
                 for p in paths:
-                    _add(p)
+                    _add(p, "summary")
 
         # 3. Legacy: paths embedded in task.result.
         if task is not None and getattr(task, "result", None):
             result_text = str(task.result)
             paths, _ = adapter.extract_local_files(result_text)
             for p in paths:
-                _add(p)
+                _add(p, "legacy_result")
 
         if not candidates:
             return
 
         from gateway.platforms.base import BasePlatformAdapter
-        candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
+        safe_candidates: list[tuple[str, str]] = []
+        safe_seen: set[str] = set()
+        for path, source in candidates:
+            if not _allow_kanban_artifact_delivery(path, source):
+                continue
+            safe_paths = BasePlatformAdapter.filter_local_delivery_paths([path])
+            if not safe_paths:
+                continue
+            safe_path = safe_paths[0]
+            if safe_path in safe_seen:
+                continue
+            safe_seen.add(safe_path)
+            if _allow_kanban_artifact_delivery(safe_path, source):
+                safe_candidates.append((safe_path, source))
+        candidates = safe_candidates
         if not candidates:
             return
+
+        delivery_paths = [path for path, _ in candidates]
 
         _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
@@ -525,8 +595,8 @@ class GatewayKanbanWatchersMixin:
 
         # Partition images so they ride a single send_multiple_images call
         # on platforms that support batch image uploads (Signal/Slack RPCs).
-        image_paths = [p for p in candidates if _Path(p).suffix.lower() in _IMAGE_EXTS]
-        other_paths = [p for p in candidates if _Path(p).suffix.lower() not in _IMAGE_EXTS]
+        image_paths = [p for p in delivery_paths if _Path(p).suffix.lower() in _IMAGE_EXTS]
+        other_paths = [p for p in delivery_paths if _Path(p).suffix.lower() not in _IMAGE_EXTS]
 
         if image_paths:
             try:

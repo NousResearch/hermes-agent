@@ -21,6 +21,7 @@ Env var fallbacks (used when the corresponding arg is not passed):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -127,6 +128,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    output_format: str = "text",
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +139,8 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        output_format: ``"text"`` for the historical plain final response, or
+            ``"json"`` for a single machine-readable JSON object.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -146,6 +150,10 @@ def run_oneshot(
     # the root logger's handler list, not affected by level), but no
     # bytes reach the terminal.
     logging.disable(logging.CRITICAL)
+
+    if output_format not in {"text", "json"}:
+        sys.stderr.write("hermes -z: --output-format must be one of: text, json\n")
+        return 2
 
     # --provider without --model is ambiguous: carrying the user's configured
     # model across to a different provider is usually wrong (that provider may
@@ -219,9 +227,13 @@ def run_oneshot(
         return 1
 
     assert response is not None  # narrowed by the empty-response guard above
-    real_stdout.write(response)
-    if not response.endswith("\n"):
+    if output_format == "json":
+        real_stdout.write(json.dumps({"response": response}, ensure_ascii=False))
         real_stdout.write("\n")
+    else:
+        real_stdout.write(response)
+        if not response.endswith("\n"):
+            real_stdout.write("\n")
     real_stdout.flush()
     return 0
 

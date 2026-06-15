@@ -131,14 +131,18 @@ hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 
 ### `hermes -z <prompt>` — scripted one-shot
 
-For programmatic callers (shell scripts, CI, cron, parent processes piping in a prompt), `hermes -z` is the purest one-shot entry point: **single prompt in, final response text out, nothing else on stdout or stderr.** No banner, no spinner, no tool previews, no `Session:` line — just the agent's final reply as plain text.
+For programmatic callers (shell scripts, CI, cron, parent processes piping in a prompt), `hermes -z` is the purest one-shot entry point: **single prompt in, final response out, nothing else on stdout or stderr.** No banner, no spinner, no tool previews, no `Session:` line — just the agent's final reply.
 
 ```bash
 hermes -z "What's the capital of France?"
 # → Paris.
 
-# Parent scripts can cleanly capture the response:
+# Parent scripts can cleanly capture the plain-text response:
 answer=$(hermes -z "summarize this" < /path/to/file.txt)
+
+# Or request a single JSON object for machine parsing:
+hermes -z "Return a haiku" --output-format json
+# → {"response":"..."}
 ```
 
 Per-run overrides (no mutation to `~/.hermes/config.yaml`):
@@ -154,7 +158,7 @@ hermes -z "…" --provider openrouter --model openai/gpt-5.5
 HERMES_INFERENCE_MODEL=anthropic/claude-sonnet-4.6 hermes -z "…"
 ```
 
-Same agent, same tools, same skills — just strips every interactive / cosmetic layer. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
+Same agent, same tools, same skills — just strips every interactive / cosmetic layer. `--output-format` currently applies only to `-z` / `--oneshot`. If you need tool output in the transcript too, use `hermes chat -q` instead; `-z` is explicitly for "I only want the final answer".
 
 ## `hermes model`
 

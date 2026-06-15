@@ -111,6 +111,16 @@ def build_top_level_parser():
             "auto-bypassed. Intended for scripts / pipes."
         ),
     )
+    parser.add_argument(
+        "--output-format",
+        choices=("text", "json"),
+        default="text",
+        help=(
+            "Output format for -z/--oneshot. 'text' prints only the final "
+            "response (default); 'json' prints a single JSON object with a "
+            "response field for script-safe parsing."
+        ),
+    )
     # --model / --provider are accepted at the top level so they can pair
     # with -z without needing the `chat` subcommand.  If neither -z nor a
     # subcommand consumes them, they fall through harmlessly as None.

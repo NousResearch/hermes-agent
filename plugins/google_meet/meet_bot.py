@@ -855,6 +855,15 @@ def _wait_for_ui(page, ms: int = 500) -> None:
         pass
 
 
+def _open_meet_hover_tray(page) -> None:
+    """Reveal Meet's bottom controls when the in-call toolbar is hidden."""
+    try:
+        page.keyboard.press("ArrowDown")
+        _wait_for_ui(page, 250)
+    except Exception:
+        pass
+
+
 def _enable_captions(page, *, allow_shortcut: bool = True) -> bool:
     """Best-effort caption toggle without clicking an already-on control."""
     if _captions_are_enabled(page):
@@ -879,6 +888,16 @@ def _enable_captions(page, *, allow_shortcut: bool = True) -> bool:
 
     if not allow_shortcut:
         return False
+
+    _open_meet_hover_tray(page)
+    for make_locator in locators:
+        try:
+            btn = _first_visible(make_locator())
+            if btn is not None:
+                btn.click(timeout=3_000)
+                return True
+        except Exception:
+            continue
 
     try:
         page.keyboard.press("c")

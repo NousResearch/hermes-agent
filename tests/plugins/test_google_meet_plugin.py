@@ -3011,6 +3011,58 @@ def test_enable_captions_clicks_visible_turn_on_captions_button_before_keyboard(
     assert pressed == []
 
 
+def test_enable_captions_reveals_hover_tray_before_keyboard_shortcut():
+    from plugins.google_meet.meet_bot import _enable_captions
+
+    events = []
+
+    class _Button:
+        def __init__(self, visible):
+            self._visible = visible
+
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return self._visible()
+
+        def click(self, **_kwargs):
+            events.append("click:captions")
+
+    class _Keyboard:
+        def __init__(self, page):
+            self.page = page
+
+        def press(self, key):
+            events.append(f"press:{key}")
+            if key == "ArrowDown":
+                self.page.tray_open = True
+
+    class _Page:
+        def __init__(self):
+            self.tray_open = False
+            self.keyboard = _Keyboard(self)
+
+        def wait_for_timeout(self, ms):
+            events.append(f"wait:{ms}")
+
+        def get_by_role(self, role, *, name, **_kwargs):
+            assert role == "button"
+            if name.search("Turn on captions"):
+                return _Button(lambda: self.tray_open)
+            return _Button(lambda: False)
+
+        def locator(self, _selector):
+            return _Button(lambda: False)
+
+    assert _enable_captions(_Page()) is True
+    assert events == ["press:ArrowDown", "wait:250", "click:captions"]
+
+
 def test_enable_captions_uses_playwright_keyboard_press():
     from plugins.google_meet.meet_bot import _enable_captions
 
@@ -3028,7 +3080,7 @@ def test_enable_captions_uses_playwright_keyboard_press():
             evaluated.append(script)
 
     assert _enable_captions(_Page()) is True
-    assert pressed == ["c"]
+    assert pressed == ["ArrowDown", "c"]
     assert evaluated == []
 
 
@@ -3105,7 +3157,8 @@ def test_retry_caption_enable_allows_shortcut_after_admission(tmp_path):
 
         def press(self, key):
             pressed.append(key)
-            self.page.enabled = True
+            if key == "c":
+                self.page.enabled = True
 
     class _Page:
         def __init__(self):
@@ -3140,7 +3193,7 @@ def test_retry_caption_enable_allows_shortcut_after_admission(tmp_path):
     state.set(in_call=True, joined_at=100.0)
 
     assert _retry_caption_enable(_Page(), state) is True
-    assert pressed == ["c"]
+    assert pressed == ["ArrowDown", "c"]
 
     status = json.loads((tmp_path / "meet" / "status.json").read_text())
     assert status["captioning"] is True
@@ -3184,7 +3237,7 @@ def test_retry_caption_enable_does_not_report_captioning_without_verification(tm
     state.set(in_call=True, joined_at=100.0)
 
     assert _retry_caption_enable(_Page(), state) is False
-    assert pressed == ["c"]
+    assert pressed == ["ArrowDown", "c"]
 
     status = json.loads((tmp_path / "meet" / "status.json").read_text())
     assert status["captioning"] is False
@@ -3268,7 +3321,7 @@ def test_retry_caption_enable_tries_js_shortcut_after_unverified_keyboard(tmp_pa
     state.set(in_call=True, joined_at=100.0)
 
     assert _retry_caption_enable(_Page(), state) is True
-    assert pressed == ["c"]
+    assert pressed == ["ArrowDown", "c"]
     assert evaluated
 
     status = json.loads((tmp_path / "meet" / "status.json").read_text())

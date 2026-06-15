@@ -178,75 +178,72 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-// When a model interleaves its `reasoning_content` and `content` token
-// streams, deltas land as text → reasoning → text inside a single
-// tool-bounded segment. Appending each delta as its own part shreds one
-// sentence into "Let me" / Thinking / "verify the file" — the
-// interleaved-thinking fragmentation users hit on Kimi/DeepSeek/GLM-style
-// routes. To keep narration and thinking each contiguous, a streaming delta
-// merges into the most recent same-type part *within the current segment*.
-//
-// A segment is bounded by any non-streaming part (a tool call, image, …): the
-// opposite streaming channel (text <-> reasoning) is transparent, so a
-// reasoning burst between two content deltas does NOT open a fresh text part,
-// but a real tool call does. This collapses interleave noise without
-// reordering narration across tool calls.
-function segmentMergeIndex(parts: ChatMessagePart[], type: 'text' | 'reasoning'): number {
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const partType = parts[i]?.type
+const STREAM_PART: Record<'reasoning' | 'text', (text: string) => ChatMessagePart> = {
+  reasoning: reasoningPart,
+  text: textPart
+}
 
-    if (partType === type) {
-      return i
+// Coalesce a streaming delta into the most recent same-type part within the
+// current segment, where a segment is bounded by any non-streaming part (a
+// tool call, image, …). The opposite streaming channel (text <-> reasoning) is
+// transparent, so a reasoning burst between two content deltas can't shred one
+// sentence into text / Thinking / text — the fragmentation models that
+// interleave reasoning_content + content otherwise produce. Tool calls still
+// open a fresh part, preserving narration order across steps.
+function appendStreamPart(
+  parts: ChatMessagePart[],
+  type: 'reasoning' | 'text',
+  delta: string
+): { index: number; parts: ChatMessagePart[] } {
+  const next = [...parts]
+
+  for (let i = next.length - 1; i >= 0; i--) {
+    const part = next[i]
+
+    if (part.type === type) {
+      next[i] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
+
+      return { index: i, parts: next }
     }
 
-    // text <-> reasoning is the interleave we're collapsing; skip past it.
-    // Anything else (tool-call, file, image, …) closes the segment.
-    if (partType !== 'text' && partType !== 'reasoning') {
-      return -1
+    if (part.type !== 'text' && part.type !== 'reasoning') {
+      break
     }
   }
 
-  return -1
-}
+  next.push(STREAM_PART[type](delta))
 
-function mergeTextInto(parts: ChatMessagePart[], index: number, delta: string): ChatMessagePart[] {
-  const next = [...parts]
-  const part = next[index]
-  next[index] = { ...part, text: `${(part as { text: string }).text}${delta}` } as ChatMessagePart
-
-  return next
+  return { index: next.length - 1, parts: next }
 }
 
 export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const idx = segmentMergeIndex(parts, 'text')
-
-  return idx >= 0 ? mergeTextInto(parts, idx, delta) : [...parts, textPart(delta)]
-}
-
-export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const idx = segmentMergeIndex(parts, 'text')
-  const targetIndex = idx >= 0 ? idx : parts.length
-  const next = idx >= 0 ? mergeTextInto(parts, idx, delta) : [...parts, textPart(delta)]
-  const target = next[targetIndex]
-
-  if (target?.type === 'text') {
-    const current = target.text
-
-    const deltaMayContainMedia =
-      delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
-
-    const needsMediaPass = deltaMayContainMedia || current.includes('MEDIA:')
-    const nextText = needsMediaPass ? renderMediaTags(current) : current
-    next[targetIndex] = nextText === current ? target : { ...target, text: nextText }
-  }
-
-  return next
+  return appendStreamPart(parts, 'text', delta).parts
 }
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const idx = segmentMergeIndex(parts, 'reasoning')
+  return appendStreamPart(parts, 'reasoning', delta).parts
+}
 
-  return idx >= 0 ? mergeTextInto(parts, idx, delta) : [...parts, reasoningPart(delta)]
+export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
+  const { index, parts: next } = appendStreamPart(parts, 'text', delta)
+  const part = next[index]
+
+  if (part?.type !== 'text') {
+    return next
+  }
+
+  const mayContainMedia =
+    delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
+
+  if (mayContainMedia || part.text.includes('MEDIA:')) {
+    const rendered = renderMediaTags(part.text)
+
+    if (rendered !== part.text) {
+      next[index] = { ...part, text: rendered }
+    }
+  }
+
+  return next
 }
 
 export function hasToolPart(message: ChatMessage): boolean {

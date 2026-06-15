@@ -400,6 +400,41 @@ class TestDeliverOnlySecurityInvariants:
         assert mock_target.send.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_failed_delivery_can_retry_with_same_delivery_id(self):
+        """A failed direct delivery should not poison the retry cache."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "telegram",
+                "deliver_only": True,
+                "deliver_extra": {"chat_id": "c-1"},
+                "prompt": "hi",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter)
+        mock_target.send = AsyncMock(
+            side_effect=[
+                SendResult(success=False, error="temporary outage"),
+                SendResult(success=True),
+            ]
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "retry-1"}
+
+            r1 = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert r1.status == 502
+
+            r2 = await cli.post("/webhooks/r", json={}, headers=headers)
+            assert r2.status == 200
+            data = await r2.json()
+            assert data["status"] == "delivered"
+
+        assert mock_target.send.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_rate_limit_still_applies(self):
         """Route-level rate limit caps deliver_only POSTs too."""
         routes = {

@@ -29,7 +29,7 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
@@ -889,6 +889,49 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+# Known Git for Windows install directories (64-bit and 32-bit).  These are
+# literal Windows paths — never os.path.join'd, because on non-Windows hosts
+# that would produce forward-slash variants and the unit tests would diverge
+# from the real Windows strings.
+_GIT_BASH_DIRS = (
+    r"C:\Program Files\Git\usr\bin",
+    r"C:\Program Files (x86)\Git\usr\bin",
+)
+
+
+def _resolve_bash() -> Optional[str]:
+    """Resolve the bash executable to use for .sh/.bash scripts.
+
+    On Windows, ``shutil.which("bash")`` typically returns WSL's
+    ``C:\\Windows\\System32\\bash.exe`` before Git for Windows' bash.
+    WSL bash cannot interpret Windows paths at all — even with forward
+    slashes — so cron .sh scripts fail with exit code 127.  We therefore
+    check the two standard Git for Windows install locations first, and
+    only fall back to ``shutil.which()`` when neither is present.
+
+    On non-Windows platforms ``shutil.which("bash")`` is sufficient.
+    """
+    if sys.platform == "win32":
+        for _dir in _GIT_BASH_DIRS:
+            _candidate = os.path.join(_dir, "bash.exe")
+            if os.path.isfile(_candidate):
+                return _candidate
+    return shutil.which("bash") or (
+        "/bin/bash" if os.path.isfile("/bin/bash") else None
+    )
+
+
+def _bash_script_path_arg(path: PurePath) -> str:
+    """Return the script path argument for bash.
+
+    Git Bash/MSYS2 treats backslashes in an argv path as escape characters,
+    so Windows paths must be passed in forward-slash form.  Keeping this as a
+    helper lets tests exercise the Windows-path formatting with
+    ``PureWindowsPath`` even when the suite runs on macOS/Linux.
+    """
+    return path.as_posix() if sys.platform == "win32" else str(path)
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -949,21 +992,18 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        _bash = _resolve_bash()
         if _bash is None:
             return False, (
                 f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # On Windows, Git Bash (MSYS2) interprets backslashes in paths as
+        # escape sequences — ``C:\\Users\\...`` becomes ``C:Users...`` and
+        # the script is never found (exit 127).  ``as_posix()`` yields the
+        # forward-slash form that MSYS2 bash understands natively.
+        argv = [_bash, _bash_script_path_arg(path)]
     else:
         argv = [sys.executable, str(path)]
 

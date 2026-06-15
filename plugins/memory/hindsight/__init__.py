@@ -18,6 +18,7 @@ Config via environment variables:
   HINDSIGHT_TIMEOUT                — API request timeout in seconds (default: 120)
   HINDSIGHT_IDLE_TIMEOUT           — embedded daemon idle timeout seconds; 0 disables shutdown (default: 300)
   HINDSIGHT_RETAIN_TAGS            — comma-separated tags attached to retained memories
+  HINDSIGHT_RETAIN_OBSERVATION_SCOPES — observation scoping for retained memories: per_tag/combined/all_combinations, or a JSON list of tag-lists for custom scopes
   HINDSIGHT_RETAIN_SOURCE          — metadata source value attached to retained memories
   HINDSIGHT_RETAIN_USER_PREFIX     — label used before user turns in retained transcripts
   HINDSIGHT_RETAIN_ASSISTANT_PREFIX — label used before assistant turns in retained transcripts
@@ -326,6 +327,7 @@ def _load_config() -> dict:
         "timeout": _parse_int_setting(os.environ.get("HINDSIGHT_TIMEOUT"), _DEFAULT_TIMEOUT),
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": os.environ.get("HINDSIGHT_RETAIN_TAGS", ""),
+        "observation_scopes": os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", ""),
         "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", ""),
         "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
         "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
@@ -374,6 +376,56 @@ def _normalize_retain_tags(value: Any) -> List[str]:
         seen.add(tag)
         normalized.append(tag)
     return normalized
+
+
+_OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations"}
+
+
+def _normalize_observation_scopes(value: Any) -> Any:
+    """Normalize an observation_scopes config value to a Hindsight-accepted form.
+
+    Returns one of:
+      * ``None`` — nothing configured; Hindsight applies its ``combined`` default.
+      * a keyword string — ``"per_tag"`` / ``"combined"`` / ``"all_combinations"``.
+      * ``list[list[str]]`` — custom scopes, one inner list per consolidation pass.
+
+    Accepts a keyword string, a JSON-encoded list, a flat list of tags (treated as
+    a single scope), or a list of tag-lists. Anything unrecognized yields ``None``
+    so we never send an invalid payload.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text in _OBSERVATION_SCOPE_KEYWORDS:
+            return text
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return None
+            return _normalize_observation_scopes(parsed)
+        return None
+
+    if isinstance(value, (list, tuple)):
+        # A flat list of tag strings is one scope; a list of lists is many.
+        if all(isinstance(entry, str) for entry in value):
+            inner = [entry.strip() for entry in value if entry.strip()]
+            return [inner] if inner else None
+        scopes: list[list[str]] = []
+        for entry in value:
+            if isinstance(entry, (list, tuple)):
+                inner = [str(tag).strip() for tag in entry if str(tag).strip()]
+                if inner:
+                    scopes.append(inner)
+            elif isinstance(entry, str) and entry.strip():
+                scopes.append([entry.strip()])
+        return scopes or None
+
+    return None
 
 
 def _utc_timestamp() -> str:
@@ -865,6 +917,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
+            {"key": "observation_scopes", "description": "How observations are scoped during consolidation: 'combined' (default — one pass over all tags), 'per_tag' (one isolated observation per tag), 'all_combinations' (every tag subset — expensive), or a JSON list of tag-lists for explicit custom scopes. Empty uses Hindsight's 'combined' default.", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
             {"key": "retain_assistant_prefix", "description": "Label used before assistant turns in retained transcripts", "default": "Assistant"},
@@ -1184,6 +1237,10 @@ class HindsightMemoryProvider(MemoryProvider):
             or os.environ.get("HINDSIGHT_RETAIN_TAGS", "")
         )
         self._tags = self._retain_tags or None
+        self._observation_scopes = _normalize_observation_scopes(
+            self._config.get("observation_scopes")
+            or os.environ.get("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", "")
+        )
         self._recall_tags = self._config.get("recall_tags") or None
         self._recall_tags_match = self._config.get("recall_tags_match", "any")
         self._retain_source = str(
@@ -1438,6 +1495,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 merged_tags.append(tag)
         if merged_tags:
             kwargs["tags"] = merged_tags
+        if self._observation_scopes:
+            kwargs["observation_scopes"] = self._observation_scopes
         return kwargs
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
@@ -1547,14 +1606,19 @@ class HindsightMemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
-                retain_kwargs = self._build_retain_kwargs(
+                item = self._build_retain_kwargs(
                     content,
                     context=context,
                     tags=args.get("tags"),
                 )
+                # aretain_batch takes bank_id/retain_async as call args, not item keys.
+                item.pop("bank_id", None)
+                item.pop("retain_async", None)
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
                              self._bank_id, len(content), context)
-                self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
+                self._run_hindsight_operation(
+                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                )
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:

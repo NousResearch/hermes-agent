@@ -247,6 +247,24 @@ class TestApprovalFlow:
             store.approve_code("telegram", code)
             assert store.is_approved("telegram", "user1") is True
 
+    def test_approve_request_id_from_pending_list(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            bot_code = store.generate_code("telegram", "user1", "Alice")
+            pending = store.list_pending("telegram")
+            request_id = pending[0]["request_id"]
+
+            assert request_id
+            assert request_id != bot_code
+
+            result = store.approve_request("telegram", request_id.upper())
+            remaining = store.list_pending("telegram")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+        assert remaining == []
+
 
     def test_whatsapp_legacy_raw_jid_approval_survives_alias_flip(self, tmp_path, monkeypatch):
         mapping_dir = tmp_path / "whatsapp" / "session"

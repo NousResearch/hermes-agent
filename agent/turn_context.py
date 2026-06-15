@@ -173,6 +173,12 @@ def build_turn_context(
         agent.platform or "unknown", len(conversation_history or []),
         _msg_preview,
     )
+    try:
+        agent._foreground_turn_generation = (
+            int(getattr(agent, "_foreground_turn_generation", 0) or 0) + 1
+        )
+    except Exception:
+        agent._foreground_turn_generation = 1
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []

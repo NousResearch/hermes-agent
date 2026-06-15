@@ -22,6 +22,7 @@ import socket
 from unittest.mock import patch
 
 import httpx
+import pytest
 
 from run_agent import AIAgent
 
@@ -75,11 +76,21 @@ class TestKeepaliveSharedKnobs:
     def test_keepintvl_set_to_10s(self):
         # Without this, macOS inherits KEEPINTVL=75 s and the dead-peer
         # detection window blows past the issue's "2-3 minute pause".
+        # The production helper sets this knob best-effort behind a
+        # ``hasattr`` gate, so skip on hosts that don't expose the
+        # constant — the exact value contract is pinned in the macOS
+        # facade test where the constant is deliberately present.
+        if not hasattr(socket, "TCP_KEEPINTVL"):
+            pytest.skip("host socket module lacks TCP_KEEPINTVL")
         opts = _socket_options()
         assert _opt_value(opts, socket.IPPROTO_TCP, "TCP_KEEPINTVL") == 10
 
     def test_keepcnt_set_to_3(self):
-        # Same story for KEEPCNT — kernel default is 8 on macOS.
+        # Same story for KEEPCNT — kernel default is 8 on macOS. Best-effort
+        # behind ``hasattr`` in the helper, so skip when the host lacks the
+        # constant; the value is pinned in the macOS facade test.
+        if not hasattr(socket, "TCP_KEEPCNT"):
+            pytest.skip("host socket module lacks TCP_KEEPCNT")
         opts = _socket_options()
         assert _opt_value(opts, socket.IPPROTO_TCP, "TCP_KEEPCNT") == 3
 

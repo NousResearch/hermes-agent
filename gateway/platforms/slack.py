@@ -925,9 +925,8 @@ class SlackAdapter(BasePlatformAdapter):
             # routes the command event through the socket regardless of the
             # manifest's request URL, but it will not deliver an event for
             # a slash command the manifest doesn't declare.
-            from hermes_cli.commands import slack_native_slashes
+            from hermes_cli.commands import resolve_slack_catch_all_slash, slack_native_slashes
             import re as _re
-            import os as _os
 
             _slash_names = [name for name, _d, _h in slack_native_slashes()]
             if _slash_names:
@@ -935,8 +934,7 @@ class SlackAdapter(BasePlatformAdapter):
                     r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
                 )
             else:  # pragma: no cover - registry always non-empty
-                # Fallback: use the configured slash name (defaults to "hermes")
-                _default_slash = _os.environ.get("HERMES_SLACK_SLASH_NAME", "hermes")
+                _default_slash = resolve_slack_catch_all_slash()
                 _slash_pattern = _re.compile(r"^/" + _re.escape(_default_slash) + r"$")
 
             @self._app.command(_slash_pattern)
@@ -3502,8 +3500,8 @@ class SlackAdapter(BasePlatformAdapter):
         backward compatibility with older workspace manifests and for users
         who want a single entry point for free-form questions.
         
-        The catch-all command name is configurable via ``HERMES_SLACK_SLASH_NAME``
-        env var (defaults to ``hermes``) to support multi-profile setups.
+        The catch-all command name comes from ``slack.catch_all_slash`` in
+        ``config.yaml`` (defaults to ``hermes``) to support multi-profile setups.
         """
         slash_name = (command.get("command") or "").lstrip("/").strip()
         text = command.get("text", "").strip()
@@ -3515,9 +3513,9 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        # Get the dynamic catch-all command name (configurable via env var)
-        import os as _os
-        default_slash_name = _os.environ.get("HERMES_SLACK_SLASH_NAME", "hermes")
+        from hermes_cli.commands import resolve_slack_catch_all_slash
+
+        default_slash_name = resolve_slack_catch_all_slash()
 
         if slash_name in {default_slash_name, ""}:
             # Legacy /<catch-all> <subcommand> [args] routing + free-form questions.

@@ -90,6 +90,8 @@ AUTHOR_MAP = {
     "138671361+Veritas-7@users.noreply.github.com": "Veritas-7",
     "keiron@onehanded.com": "kmccammon",
     "268233388+CiarasClaws@users.noreply.github.com": "CiarasClaws",
+    "amy@ravenwolf.de": "WolframRavenwolf",
+    "github.com@wolfram.ravenwolf.de": "WolframRavenwolf",
     "895252509@qq.com": "895252509",
     "35259607+zxcasongs@users.noreply.github.com": "zxcasongs",
     "alfred@my-cloud.me": "alfred-smith-0",

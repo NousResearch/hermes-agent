@@ -104,6 +104,33 @@ class TestBuildToolPreview:
         assert result is not None
         assert "find something" in result
 
+    def test_delegate_task_single_goal_preview(self):
+        result = build_tool_preview("delegate_task", {"goal": "Review gateway status"})
+        assert result == "Review gateway status"
+
+    def test_delegate_task_batch_goal_preview(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "Review PR A"}, {"goal": "Review PR B"}]},
+        )
+        assert result == "2 tasks: Review PR A | Review PR B"
+
+    def test_delegate_task_batch_preview_handles_missing_non_string_goals(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": None}, {"goal": 123}, "not-a-task"]},
+        )
+        assert result == "2 tasks: ? | 123"
+
+    def test_delegate_task_batch_preview_respects_max_len(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
+            max_len=30,
+        )
+        assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
+        assert len(result) == 30
+
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None
@@ -169,6 +196,14 @@ class TestCuteToolMessagePreviewLength:
         line = get_cute_tool_message("patch", {"path": "/tmp/a.py"}, 0.1, result=result)
 
         assert "[error]" not in line
+
+    def test_delegate_task_batch_message_includes_goals(self):
+        line = get_cute_tool_message(
+            "delegate_task",
+            {"tasks": [{"goal": "Review PR A"}, {"goal": "Review PR B"}]},
+            1.2,
+        )
+        assert "2x: Review PR A | Review PR B" in line
 
 
 class TestEditDiffPreview:

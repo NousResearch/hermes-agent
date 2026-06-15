@@ -117,11 +117,12 @@ class TestCommandTimeoutCache:
 
 class TestSessionInactivityTimeout:
 
-    def test_default_is_300(self, monkeypatch):
+    def test_default_matches_config_default(self, monkeypatch):
+        from hermes_cli.config import DEFAULT_CONFIG
         from tools.browser_tool import _get_session_inactivity_timeout
         monkeypatch.delenv("BROWSER_INACTIVITY_TIMEOUT", raising=False)
         with patch("hermes_cli.config.read_raw_config", return_value={}):
-            assert _get_session_inactivity_timeout() == 300
+            assert _get_session_inactivity_timeout() == DEFAULT_CONFIG["browser"]["inactivity_timeout"]
 
     def test_reads_from_config_over_env(self, monkeypatch):
         from tools.browser_tool import _get_session_inactivity_timeout
@@ -136,6 +137,13 @@ class TestSessionInactivityTimeout:
         cfg = {"browser": {"inactivity_timeout": 1}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _get_session_inactivity_timeout() == 30
+
+    def test_invalid_config_preserves_env_fallback(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "240")
+        cfg = {"browser": {"inactivity_timeout": "not-an-int"}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 240
 
 
 # ---------------------------------------------------------------------------

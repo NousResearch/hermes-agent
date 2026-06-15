@@ -4,7 +4,7 @@ import sqlite3
 import time
 import pytest
 
-from hermes_state import SCHEMA_SQL, SessionDB
+from hermes_state import SCHEMA_SQL, SCHEMA_VERSION, SessionDB
 
 
 class _NoFtsCursor(sqlite3.Cursor):
@@ -2296,6 +2296,65 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+    def test_v9_migration_skips_v10_trigram_backfill_before_v11_rebuild(self, tmp_path, monkeypatch):
+        """Direct v9→current migration should do only the v11 FTS rebuild.
+
+        v10 backfilled ``messages_fts_trigram`` with content-only rows. Current
+        v11+ migration immediately drops and rebuilds both FTS tables with
+        content + tool metadata, so running the v10 insert first is wasted work.
+        """
+        db_path = tmp_path / "v9_fts.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(SCHEMA_SQL)
+        conn.execute("DELETE FROM schema_version")
+        conn.execute("INSERT INTO schema_version (version) VALUES (9)")
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, tool_name, tool_calls, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("s1", "tool", "plain content", "browser_snapshot", '{"name":"browser_snapshot"}', 1001.0),
+        )
+        conn.commit()
+        conn.close()
+
+        trigram_content_only_inserts = []
+        real_connect = sqlite3.connect
+
+        def connect_with_trace(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+
+            def trace(sql):
+                text = " ".join(str(sql).split())
+                if (
+                    "INSERT INTO messages_fts_trigram" in text
+                    and "SELECT id, content FROM messages" in text
+                ):
+                    trigram_content_only_inserts.append(text)
+
+            conn.set_trace_callback(trace)
+            return conn
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_with_trace)
+        migrated_db = SessionDB(db_path=db_path)
+        try:
+            assert trigram_content_only_inserts == []
+            version = migrated_db._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+            assert version == SCHEMA_VERSION
+            normal_count = migrated_db._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            trigram_count = migrated_db._conn.execute("SELECT COUNT(*) FROM messages_fts_trigram").fetchone()[0]
+            assert normal_count == 1
+            assert trigram_count == 1
+            tool_hit = migrated_db._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts_trigram "
+                "WHERE messages_fts_trigram MATCH 'browser_snapshot'"
+            ).fetchone()[0]
+            assert tool_hit == 1
+        finally:
+            migrated_db.close()
 
     def test_reconciliation_adds_missing_columns(self, tmp_path):
         """Columns present in SCHEMA_SQL but missing from the live table

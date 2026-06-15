@@ -1562,13 +1562,36 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
-        # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
-        # DLLs by any running hermes process. Windows denies deletion of loaded
-        # DLLs, so kill any hermes.exe tree before removing the venv.
+        # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
+        # speedups.pyd) are loaded as DLLs by any running hermes process.
+        # Windows denies deletion of loaded DLLs, so every process running out
+        # of this venv must be stopped before removing it -- otherwise
+        # Remove-Item fails with "Access to the path '...' is denied" and the
+        # whole install/update aborts at this stage.
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
+            # The launcher CLI (hermes.exe) plus its child tree.
             & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+            # taskkill /IM hermes.exe is NOT enough: the gateway/agent that a
+            # scheduled task or watchdog autostarts runs as
+            # `pythonw.exe -m hermes_cli.main gateway run` straight out of
+            # venv\Scripts\, so its image name is python/pythonw, not hermes.exe.
+            # That process holds the venv's .pyd files open and re-triggers the
+            # access-denied failure. Kill anything whose executable lives under
+            # THIS venv, matched by path so the image name does not matter and a
+            # global/system python outside the venv is never touched.
+            $venvRoot = (Join-Path $InstallDir "venv")
+            try {
+                Get-CimInstance Win32_Process -ErrorAction Stop |
+                    Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath -like "$venvRoot\*" } |
+                    ForEach-Object {
+                        Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
+                        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                    }
+            } catch {
+                Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
+            }
             Start-Sleep -Milliseconds 800
         }
         Remove-Item -Recurse -Force "venv"

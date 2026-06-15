@@ -28,49 +28,256 @@
 #
 services:
   gateway:
-    build: .
-    image: hermes-agent
+    image: al3xar/hermes-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: hermes
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - 127.0.0.1:8080:8080
+    networks:
+      - hermes-net
+    extra_hosts:
+      - host.docker.internal:host-gateway
+      - vllm.athena.cibertrs.cloud:10.200.129.124
     volumes:
-      - ~/.hermes:/opt/data
+      - ./.hermes-config/config.yaml:/opt/data/config.yaml:ro
     environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-      # To expose the OpenAI-compatible API server beyond localhost,
-      # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
-      # - API_SERVER_HOST=0.0.0.0
-      # - API_SERVER_KEY=${API_SERVER_KEY}
-      # Microsoft Teams — uncomment and fill in to enable Teams gateway.
-      # Register your bot at https://dev.botframework.com/ to get these values.
-      # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
-      # - TEAMS_CLIENT_SECRET=${TEAMS_CLIENT_SECRET}
-      # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
-      # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
-      # - TEAMS_PORT=${TEAMS_PORT:-3978}
-      # Google Chat — uncomment and fill in to enable the Google Chat gateway.
-      # See website/docs/user-guide/messaging/google_chat.md for the full setup.
-      # The SA JSON path must point to a file mounted into the container —
-      # add a volume entry above (e.g. ``- ~/.hermes/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
-      # then set GOOGLE_CHAT_SERVICE_ACCOUNT_JSON to that mount path.
-      # - GOOGLE_CHAT_PROJECT_ID=${GOOGLE_CHAT_PROJECT_ID}
-      # - GOOGLE_CHAT_SUBSCRIPTION_NAME=${GOOGLE_CHAT_SUBSCRIPTION_NAME}
-      # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
-      # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
-    command: ["gateway", "run"]
+      - HERMES_HOME=/opt/data
+      - HERMES_UID=${HERMES_UID:-501}
+      - HERMES_GID=${HERMES_GID:-20}
+      - ATHENA_VLLM_KEY=${ATHENA_VLLM_KEY}
+      - HERMES_LANGFUSE_PUBLIC_KEY=${HERMES_LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
+      - HERMES_LANGFUSE_SECRET_KEY=${HERMES_LANGFUSE_SECRET_KEY:-sk-lf-dev}
+      - HERMES_LANGFUSE_BASE_URL=${HERMES_LANGFUSE_BASE_URL:-http://langfuse-web:3000}
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_PORT=8080
+      - API_SERVER_KEY=dev-key-change-me
+      - HERMES_GATEWAY_BOOTSTRAP_STATE=running
+      - GATEWAY_ALLOW_ALL_USERS=true
+    command: ["sleep", "infinity"]
 
   dashboard:
-    image: hermes-agent
+    image: al3xar/hermes-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: hermes-dashboard
     restart: unless-stopped
-    network_mode: host
+    networks:
+      - hermes-net
     depends_on:
       - gateway
+    extra_hosts:
+      - vllm.athena.cibertrs.cloud:10.200.129.124
     volumes:
-      - ~/.hermes:/opt/data
+      - ./.hermes-config/config.yaml:/opt/data/config.yaml:ro
+    ports:
+      - 9119:9119
     environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-    # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
+      - HERMES_UID=${HERMES_UID:-501}
+      - HERMES_GID=${HERMES_GID:-20}
+      - HERMES_HOME=/opt/data
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_INSECURE=1
+      - ATHENA_VLLM_KEY=${ATHENA_VLLM_KEY}
+      - HERMES_LANGFUSE_PUBLIC_KEY=${HERMES_LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
+      - HERMES_LANGFUSE_SECRET_KEY=${HERMES_LANGFUSE_SECRET_KEY:-sk-lf-dev}
+      - HERMES_LANGFUSE_BASE_URL=${HERMES_LANGFUSE_BASE_URL:-http://langfuse-web:3000}
+    command: ["sleep", "infinity"]
+
+  # Langfuse v3
+  # UI: http://localhost:3000 — login con LANGFUSE_INIT_USER_EMAIL /
+  # LANGFUSE_INIT_USER_PASSWORD.
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse
+    restart: unless-stopped
+    networks:
+      - hermes-net
+    depends_on:
+      - langfuse-db
+      - langfuse-clickhouse
+      - langfuse-redis
+      - langfuse-minio
+    extra_hosts:
+      - vllm.athena.cibertrs.cloud:10.200.129.124
+    ports:
+      - 127.0.0.1:3000:3000
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@langfuse-db:5432/postgres
+      - SALT=devsalt
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - NEXTAUTH_SECRET=secret
+      - NEXTAUTH_URL=http://langfuse-web:3000
+      - TELEMETRY_ENABLED=false
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
+      - CLICKHOUSE_USER=clickhouse
+      - CLICKHOUSE_PASSWORD=clickhouse
+      - CLICKHOUSE_CLUSTER_ENABLED=false
+      - REDIS_HOST=langfuse-redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=myredissecret
+      - LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID=minio
+      - LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY=miniosecret
+      - LANGFUSE_S3_MEDIA_UPLOAD_BUCKET=langfuse
+      - LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE=true
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=minio
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=miniosecret
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
+      - LANGFUSE_S3_EVENT_UPLOAD_REGION=us-east-1
+      - LANGFUSE_S3_MEDIA_UPLOAD_REGION=us-east-1
+      - LANGFUSE_INIT_ORG_ID=org-hermes
+      - LANGFUSE_INIT_ORG_NAME=Hermes
+      - LANGFUSE_INIT_PROJECT_ID=hermes-agent
+      - LANGFUSE_INIT_PROJECT_NAME=Hermes Agent
+      - LANGFUSE_INIT_PROJECT_PUBLIC_KEY=${HERMES_LANGFUSE_PUBLIC_KEY:-pk-lf-dev}
+      - LANGFUSE_INIT_PROJECT_SECRET_KEY=${HERMES_LANGFUSE_SECRET_KEY:-sk-lf-dev}
+      - LANGFUSE_INIT_USER_EMAIL=${LANGFUSE_INIT_USER_EMAIL:-admin@hermes.local}
+      - LANGFUSE_INIT_USER_NAME=${LANGFUSE_INIT_USER_NAME:-Hermes Admin}
+      - LANGFUSE_INIT_USER_PASSWORD=${LANGFUSE_INIT_USER_PASSWORD:-hermes-admin-change-me}
+      - LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST=vllm.athena.cibertrs.cloud
+      - LANGFUSE_LLM_CONNECTION_WHITELISTED_IPS=10.200.129.124
+      - LANGFUSE_LLM_CONNECTION_WHITELISTED_IP_SEGMENTS=10.200.0.0/16
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    networks:
+      - hermes-net
+    depends_on:
+      - langfuse-db
+      - langfuse-clickhouse
+      - langfuse-redis
+      - langfuse-minio
+    extra_hosts:
+      - vllm.athena.cibertrs.cloud:10.200.129.124
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@langfuse-db:5432/postgres
+      - SALT=devsalt
+      - ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
+      - CLICKHOUSE_USER=clickhouse
+      - CLICKHOUSE_PASSWORD=clickhouse
+      - CLICKHOUSE_CLUSTER_ENABLED=false
+      - REDIS_HOST=langfuse-redis
+      - REDIS_PORT=6379
+      - REDIS_AUTH=myredissecret
+      - TELEMETRY_ENABLED=false
+      - LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID=minio
+      - LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY=miniosecret
+      - LANGFUSE_S3_MEDIA_UPLOAD_BUCKET=langfuse
+      - LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE=true
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=minio
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=miniosecret
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
+      - LANGFUSE_S3_EVENT_UPLOAD_REGION=us-east-1
+      - LANGFUSE_S3_MEDIA_UPLOAD_REGION=us-east-1
+      - LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST=vllm.athena.cibertrs.cloud
+      - LANGFUSE_LLM_CONNECTION_WHITELISTED_IPS=10.200.129.124
+      - LANGFUSE_LLM_CONNECTION_WHITELISTED_IP_SEGMENTS=10.200.0.0/16
+
+  langfuse-db:
+    image: postgres:17
+    container_name: langfuse-db
+    restart: unless-stopped
+    networks:
+      - hermes-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=postgres
+      - TZ=UTC
+      - PGTZ=UTC
+    ports:
+      - 127.0.0.1:5432:5432
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: langfuse-clickhouse
+    restart: unless-stopped
+    networks:
+      - hermes-net
+    user: "101:101"
+    environment:
+      - CLICKHOUSE_DB=default
+      - CLICKHOUSE_USER=clickhouse
+      - CLICKHOUSE_PASSWORD=clickhouse
+    ports:
+      - 127.0.0.1:8123:8123
+      - 127.0.0.1:9000:9000
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+      - langfuse-clickhouse-logs:/var/log/clickhouse-server
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8123/ping",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse-minio:
+    image: cgr.dev/chainguard/minio
+    container_name: langfuse-minio
+    restart: unless-stopped
+    networks:
+      - hermes-net
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=miniosecret
+    ports:
+      - 9090:9000
+    volumes:
+      - langfuse-minio-data:/data
+
+  langfuse-redis:
+    image: redis:7
+    container_name: langfuse-redis
+    restart: unless-stopped
+    networks:
+      - hermes-net
+    command: >
+      --requirepass myredissecret
+      --maxmemory-policy noeviction
+    ports:
+      - 127.0.0.1:6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+networks:
+  hermes-net:
+    driver: bridge
+
+volumes:
+  langfuse-db-data:
+  langfuse-clickhouse-data:
+  langfuse-clickhouse-logs:
+  langfuse-minio-data:

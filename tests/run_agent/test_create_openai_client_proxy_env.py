@@ -21,8 +21,25 @@ transport is still installed on the no-proxy default path.
 from unittest.mock import patch
 
 import httpx
+import pytest
 
+import run_agent
 from run_agent import AIAgent, _get_proxy_from_env, _get_proxy_for_base_url
+
+
+@pytest.fixture(autouse=True)
+def _offline_tool_definitions(monkeypatch):
+    """Keep AIAgent construction offline.
+
+    ``init_agent`` calls ``get_tool_definitions()``, which resolves the active
+    model's context length via ``fetch_model_metadata`` — a blocking network
+    GET. The proxy tests below set ``HTTPS_PROXY`` to an unreachable address,
+    so that fetch blocks on connect and trips the per-test timeout in CI. Stub
+    it out so construction stays offline; these tests only exercise
+    ``_create_openai_client``'s proxy handling, not tool discovery.
+    """
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [])
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
 
 
 def _make_agent():

@@ -384,6 +384,7 @@ def _hermetic_environment(tmp_path, monkeypatch):
     #    singleton might still be cached from a previous test).
     try:
         import hermes_cli.plugins as _plugins_mod
+
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
@@ -571,6 +572,7 @@ def _live_system_guard(request, monkeypatch):
     # the live psutil walk below. Static set keeps the fast path cheap.
     try:
         import psutil as _psutil
+
         _initial_children = {
             c.pid for c in _psutil.Process(test_pid).children(recursive=True)
         }
@@ -652,9 +654,19 @@ def _live_system_guard(request, monkeypatch):
         "hermes gateway",
     )
     _MUTATING_VERBS = (
-        "restart", "start", "stop", "kill", "reload",
-        "reset-failed", "enable", "disable", "mask", "unmask",
-        "daemon-reload", "try-restart", "reload-or-restart",
+        "restart",
+        "start",
+        "stop",
+        "kill",
+        "reload",
+        "reset-failed",
+        "enable",
+        "disable",
+        "mask",
+        "unmask",
+        "daemon-reload",
+        "try-restart",
+        "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
 
@@ -771,6 +783,7 @@ def _live_system_guard(request, monkeypatch):
         def _guarded(cmd, *args, **kwargs):
             _check_subprocess_cmd(name, cmd)
             return real(cmd, *args, **kwargs)
+
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
         # the wrapped object is. ``subprocess.Popen[bytes]`` is used as
@@ -840,6 +853,7 @@ def _live_system_guard(request, monkeypatch):
     # pty.spawn — POSIX-only.
     try:
         import pty as _pty
+
         if hasattr(_pty, "spawn"):
             real_pty_spawn = _pty.spawn
 
@@ -854,13 +868,12 @@ def _live_system_guard(request, monkeypatch):
     # asyncio.create_subprocess_* — bypasses subprocess module entirely.
     try:
         import asyncio as _asyncio
+
         real_async_exec = _asyncio.create_subprocess_exec
         real_async_shell = _asyncio.create_subprocess_shell
 
         async def _guarded_async_exec(program, *args, **kwargs):
-            _check_subprocess_cmd(
-                "asyncio.create_subprocess_exec", [program, *args]
-            )
+            _check_subprocess_cmd("asyncio.create_subprocess_exec", [program, *args])
             return await real_async_exec(program, *args, **kwargs)
 
         async def _guarded_async_shell(cmd, *args, **kwargs):
@@ -868,10 +881,28 @@ def _live_system_guard(request, monkeypatch):
             return await real_async_shell(cmd, *args, **kwargs)
 
         monkeypatch.setattr(_asyncio, "create_subprocess_exec", _guarded_async_exec)
-        monkeypatch.setattr(
-            _asyncio, "create_subprocess_shell", _guarded_async_shell
-        )
+        monkeypatch.setattr(_asyncio, "create_subprocess_shell", _guarded_async_shell)
     except Exception:
         pass
 
     yield
+
+
+# ── DeepAgents runtime availability ──────────────────────────────────────────
+
+
+@pytest.fixture()
+def deepagents_available():
+    """Return True if DeepAgents SDK is installed, False otherwise.
+
+    Use this with pytest.mark.skipif when a test requires DeepAgents:
+
+        @pytest.mark.skipif(not deepagents_available, reason="DeepAgents not installed")
+        def test_deep_agents_feature(): ...
+    """
+    try:
+        from agent.deep_agents_runtime import DEEPAGENTS_AVAILABLE
+
+        return DEEPAGENTS_AVAILABLE
+    except ImportError:
+        return False

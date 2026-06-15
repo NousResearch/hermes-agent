@@ -78,7 +78,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
+    # Pin kept in lockstep with the `anthropic` extra in pyproject.toml. Floor
+    # is 0.109.1 (not 0.87.0) so it coexists with deepagents' langchain-anthropic
+    # (anthropic>=0.96.0,<1.0.0); still carries CVE-2026-34450 / CVE-2026-34452.
+    "provider.anthropic": ("anthropic==0.109.1",),  # CVE-2026-34450, CVE-2026-34452
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,

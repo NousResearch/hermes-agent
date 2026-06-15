@@ -109,8 +109,8 @@ Run `pixel_art()` first; if animation was requested, chain into
 | `arcade` | 80s arcade | adaptive 16 | 8px | Bold posters, hero art |
 | `snes` | 16-bit | adaptive 32 | 4px | Characters, detailed scenes |
 | `nes` | 8-bit | NES (54) | 8px | True NES look |
-| `gameboy` | DMG handheld | 4 green shades | 8px | Monochrome Game Boy |
-| `gameboy_pocket` | Pocket handheld | 4 grey shades | 8px | Mono GB Pocket |
+| `gameboy` | DMG handheld | 4 green shermes | 8px | Monochrome Game Boy |
+| `gameboy_pocket` | Pocket handheld | 4 grey shermes | 8px | Mono GB Pocket |
 | `pico8` | PICO-8 | 16 fixed | 6px | Fantasy-console look |
 | `c64` | Commodore 64 | 16 fixed | 8px | 8-bit home computer |
 | `apple2` | Apple II hi-res | 6 fixed | 10px | Extreme retro, 6 colors |
@@ -151,6 +151,7 @@ pixel_art("in.png", "out.png", preset="snes", palette="PICO_8", block=6)
 
 ```python
 import sys
+
 sys.path.insert(0, "/home/teknium/.hermes/skills/creative/pixel-art/scripts")
 from pixel_art import pixel_art
 from pixel_art_video import pixel_art_video

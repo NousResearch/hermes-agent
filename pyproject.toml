@@ -121,7 +121,13 @@ dependencies = [
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+# Floor raised from 0.87.0 to 0.109.1 so this extra can coexist with the
+# `deepagents` extra in a single environment (the Docker build installs both):
+# deepagents>=0.6.8 pulls langchain-anthropic>=1.4.3, which requires
+# anthropic>=0.96.0,<1.0.0. 0.109.1 is the latest in that range and still
+# carries the CVE-2026-34450 / CVE-2026-34452 fixes (landed in 0.87.0). Keep in
+# lockstep with tools/lazy_deps.py provider.anthropic.
+anthropic = ["anthropic==0.109.1"]  # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
@@ -196,6 +202,17 @@ acp = ["agent-client-protocol==0.9.0"]
 mistral = ["mistralai==2.4.8"]
 bedrock = ["boto3==1.42.89"]
 azure-identity = ["azure-identity==1.25.3"]
+# DeepAgents SDK — LangGraph-backed agent runtime that replaces
+# conversation_loop.py (see docs/superpowers/plans/ for the migration plan).
+# Not in [all]: opt-in backend, lazy-installed at first use via
+# tools/lazy_deps.py to avoid breaking fresh installs if a release is quarantined.
+# langfuse (SDK v3, matching the self-hosted langfuse/langfuse:3 server in
+# docker-compose.yml) feeds the LangChain CallbackHandler wired in
+# agent/deep_agents_runtime.py — the plugin hooks in conversation_loop.py
+# never fire under the DeepAgents runtime, so tracing needs this path. The v3
+# langchain integration needs the `langchain` umbrella package, pulled in
+# transitively by deepagents (>=1.3.4).
+deepagents = ["deepagents>=0.6.8,<1", "langchain-openai>=0.3,<1", "langchain-anthropic>=1.4,<2", "langchain-google-genai>=4.2,<5", "langfuse>=3,<4"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.6",
@@ -240,7 +257,9 @@ youtube = [
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
 web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1"]
 all = [
-  # Policy (2026-05-12): `[all]` includes only extras that genuinely
+   # DeepAgents runtime — LangGraph-based agent loop with streaming support
+   "hermes-agent[deepagents]",
+   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
   # session can use, things needed before the agent loop is alive
   # (terminal/CLI), and skill deps that packagers (Nix, AUR, Homebrew)
@@ -277,6 +296,13 @@ all = [
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+
+[tool.uv]
+# langfuse 2.x declara packaging<25.0, pero solo lo usa para parsear
+# versiones — funciona con 26.0. Core pinea packaging==26.0 a propósito
+# (ver comentario en dependencies); este override resuelve el conflicto
+# sin degradar packaging para todo el proyecto.
+override-dependencies = ["packaging==26.0"]
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]

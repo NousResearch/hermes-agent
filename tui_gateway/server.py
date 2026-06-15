@@ -131,7 +131,9 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
-_sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
+_sessions_lock = (
+    threading.RLock()
+)  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
@@ -172,19 +174,17 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # everything else stays on the main thread so ordering stays sane for the
 # fast path.  write_json is already _stdout_lock-guarded, so concurrent
 # response writes are safe.
-_LONG_HANDLERS = frozenset(
-    {
-        "browser.manage",
-        "cli.exec",
-        "plugins.manage",
-        "session.branch",
-        "session.compress",
-        "session.resume",
-        "shell.exec",
-        "skills.manage",
-        "slash.exec",
-    }
-)
+_LONG_HANDLERS = frozenset({
+    "browser.manage",
+    "cli.exec",
+    "plugins.manage",
+    "session.branch",
+    "session.compress",
+    "session.resume",
+    "shell.exec",
+    "skills.manage",
+    "slash.exec",
+})
 
 try:
     _rpc_pool_workers = max(
@@ -491,7 +491,6 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     return True
 
 
-
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
@@ -553,7 +552,9 @@ def _close_sessions_for_transport(
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
     with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+        owned = [
+            (sid, s) for sid, s in _sessions.items() if s.get("transport") is transport
+        ]
     reaped = 0
     detached = 0
     for sid, session in owned:
@@ -619,7 +620,9 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
 def _reap_idle_sessions() -> None:
     now = time.time()
     with _sessions_lock:
-        victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
+        victims = [
+            sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)
+        ]
     for sid in victims:
         _close_session_by_id(sid, end_reason="idle_timeout")
 
@@ -989,7 +992,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
             with _sessions_lock:
                 if sid in _sessions:
-                    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+                    _sessions[sid]["_notif_stop"] = _start_notification_poller(
+                        sid, _sessions[sid]
+                    )
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent, current)
@@ -1416,7 +1421,11 @@ def _resolve_model() -> str:
         return env
     m = _load_cfg().get("model", "")
     if isinstance(m, dict):
-        return str(m.get("default", "") or "").strip()
+        # Mirror gateway._resolve_gateway_model: configs may key the model
+        # under "default" OR "model" (e.g. a custom/vLLM provider block).
+        # Reading only "default" yields an empty model, which the deepagents
+        # runtime then falls back to "gpt-4o" — wrong endpoint/model (#gpt-4o-404).
+        return str(m.get("default") or m.get("model") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
     return "anthropic/claude-sonnet-4"
@@ -1965,7 +1974,9 @@ def _apply_model_switch(
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
+    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(
+        raw_input
+    )
     if not model_input:
         raise ValueError("model value required")
 
@@ -2374,7 +2385,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
                 session = candidate
                 break
     cwd = _session_cwd(session)
-    cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
+    cfg_personality = (_load_cfg().get("display") or {}).get("personality") or ""
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
@@ -2399,7 +2410,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
         )
 
         session_key = (session or {}).get("session_key")
-        session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
+        session_yolo = (
+            bool(is_session_yolo_enabled(session_key)) if session_key else False
+        )
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
     except Exception:
         yolo = False
@@ -2853,11 +2866,13 @@ def _agent_cbs(sid: str) -> dict:
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(
             sid, tc_id, name, args, result
         ),
-        "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
-            sid, event_type, name, preview, args, **kwargs
+        "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: (
+            _on_tool_progress(sid, event_type, name, preview, args, **kwargs)
         ),
-        "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
-        and _emit("tool.generating", sid, {"name": name}),
+        "tool_gen_callback": lambda name: (
+            _tool_progress_enabled(sid)
+            and _emit("tool.generating", sid, {"name": name})
+        ),
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
         "reasoning_callback": lambda text: _emit(
             "reasoning.delta",
@@ -2933,9 +2948,9 @@ def _render_personality_prompt(value) -> str:
     if isinstance(value, dict):
         parts = [value.get("system_prompt", "")]
         if value.get("tone"):
-            parts.append(f'Tone: {value["tone"]}')
+            parts.append(f"Tone: {value['tone']}")
         if value.get("style"):
-            parts.append(f'Style: {value["style"]}')
+            parts.append(f"Style: {value['style']}")
         return "\n".join(p for p in parts if p)
     return str(value)
 
@@ -3104,7 +3119,9 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
             agent, "provider_require_parameters", False
         ),
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
-        "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
+        "openrouter_min_coding_score": getattr(
+            agent, "openrouter_min_coding_score", None
+        ),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
@@ -3118,17 +3135,17 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
     kwargs = _background_agent_kwargs(agent, task_id)
-    kwargs.update(
-        {
-            "enabled_toolsets": ["terminal", "file"],
-            "session_db": None,
-            "skip_memory": True,
-        }
-    )
+    kwargs.update({
+        "enabled_toolsets": ["terminal", "file"],
+        "session_db": None,
+        "skip_memory": True,
+    })
     return kwargs
 
 
-def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_chars: int = 1200) -> list[dict]:
+def _preview_restart_history(
+    session: dict, max_messages: int = 24, max_tool_chars: int = 1200
+) -> list[dict]:
     """Distill the parent session's recent history into a context the
     ephemeral preview-restart agent can actually use.
 
@@ -3215,7 +3232,11 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
     def progress(message: str, level: str = "info") -> None:
         text = str(message or "").strip()
         if text:
-            _emit("preview.restart.progress", parent, {"task_id": task_id, "level": level, "text": text})
+            _emit(
+                "preview.restart.progress",
+                parent,
+                {"task_id": task_id, "level": level, "text": text},
+            )
 
     def tool_start(tool_call_id: str, name: str, args: dict) -> None:
         started_at[tool_call_id] = time.time()
@@ -3224,11 +3245,16 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
     def tool_complete(tool_call_id: str, name: str, _args: dict, result: str) -> None:
         duration_s = time.time() - started_at.get(tool_call_id, time.time())
-        summary = _tool_summary(name, result, duration_s) or f"Finished {name}{f' in {_fmt_tool_duration(duration_s)}' if duration_s else ''}"
+        summary = (
+            _tool_summary(name, result, duration_s)
+            or f"Finished {name}{f' in {_fmt_tool_duration(duration_s)}' if duration_s else ''}"
+        )
         output = _preview_tool_result_preview(name, result)
         progress(summary + (f"\n{output}" if output else ""))
 
-    def tool_progress(event_type: str, name: str | None = None, preview: str | None = None, **_kwargs) -> None:
+    def tool_progress(
+        event_type: str, name: str | None = None, preview: str | None = None, **_kwargs
+    ) -> None:
         if preview:
             progress(str(preview))
         elif name:
@@ -3239,7 +3265,9 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
         "tool_complete_callback": tool_complete,
         "tool_progress_callback": tool_progress,
         "tool_gen_callback": lambda name: progress(f"Preparing {name}"),
-        "status_callback": lambda kind, text=None: progress(text if text is not None else kind),
+        "status_callback": lambda kind, text=None: progress(
+            text if text is not None else kind
+        ),
     }
 
 
@@ -3378,6 +3406,21 @@ def _make_agent(
             requested=requested_provider,
             target_model=model or None,
         )
+    # Honor gateway.deepagents_mode (or top-level deepagents_mode) from
+    # config.yaml — same precedence as api_server._create_agent — so the
+    # TUI / dashboard runs the same runtime as the gateway platforms.
+    # Without this the TUI defaults to runtime="native", diverging from the
+    # gateway and skipping the DeepAgents/LangGraph runtime (and its Langfuse
+    # CallbackHandler tracing).
+    _gw_section = cfg.get("gateway")
+    _deepagents_raw = (
+        _gw_section.get("deepagents_mode") if isinstance(_gw_section, dict) else None
+    )
+    if _deepagents_raw is None:
+        _deepagents_raw = cfg.get("deepagents_mode")
+    _runtime_kwargs: dict = {}
+    if str(_deepagents_raw).strip().lower() in {"true", "1", "yes", "on"}:
+        _runtime_kwargs["runtime"] = "deepagents"
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
@@ -3425,6 +3468,7 @@ def _make_agent(
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
+        **_runtime_kwargs,
     )
 
 
@@ -3511,7 +3555,9 @@ def _init_session(
     _wire_callbacks(sid)
     with _sessions_lock:
         if sid in _sessions:
-            _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+            _sessions[sid]["_notif_stop"] = _start_notification_poller(
+                sid, _sessions[sid]
+            )
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
 
@@ -3717,9 +3763,11 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            messages.append({
+                "role": "tool",
+                "name": name,
+                "context": _tool_ctx(name, args),
+            })
             continue
         # An assistant turn may carry only reasoning/thinking content with no
         # visible text (extended-thinking turns, thinking-only recovery
@@ -3867,7 +3915,9 @@ def _(rid, params: dict) -> dict:
     # workspace" instead of whatever folder the desktop launched in.
     raw_cwd = str(params.get("cwd") or "").strip()
     try:
-        explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
+        explicit_cwd = bool(raw_cwd) and os.path.isdir(
+            os.path.abspath(os.path.expanduser(raw_cwd))
+        )
     except Exception:
         explicit_cwd = False
     resolved_cwd = _completion_cwd(params)
@@ -3892,7 +3942,9 @@ def _(rid, params: dict) -> dict:
             "agent_error": None,
             "agent_ready": ready,
             "attached_images": [],
-            "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
+            "close_on_disconnect": is_truthy_value(
+                params.get("close_on_disconnect", False)
+            ),
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
@@ -4212,7 +4264,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, limit_message)
     _enable_gateway_prompts()
     home_token = (
-        set_hermes_home_override(str(profile_home)) if profile_home is not None else None
+        set_hermes_home_override(str(profile_home))
+        if profile_home is not None
+        else None
     )
     try:
         db.reopen_session(target)
@@ -4340,11 +4394,15 @@ def _(rid, params: dict) -> dict:
     except ValueError as e:
         return _err(rid, 4017, str(e))
     agent = session.get("agent")
-    info = _session_info(agent, session) if agent is not None else {
-        "cwd": cwd,
-        "branch": _git_branch_for_cwd(cwd),
-        "lazy": True,
-    }
+    info = (
+        _session_info(agent, session)
+        if agent is not None
+        else {
+            "cwd": cwd,
+            "branch": _git_branch_for_cwd(cwd),
+            "lazy": True,
+        }
+    )
     _emit("session.info", params.get("session_id", ""), info)
     return _ok(rid, info)
 
@@ -4404,7 +4462,9 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     return {
         "current": sid == current_sid,
         "id": sid,
-        "last_active": float(session.get("last_active") or session.get("created_at") or now),
+        "last_active": float(
+            session.get("last_active") or session.get("created_at") or now
+        ),
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
@@ -4880,15 +4940,13 @@ def _(rid, params: dict) -> dict:
     title = (meta.get("title") or "").strip()
     if title:
         lines.append(f"Title: {title}")
-    lines.extend(
-        [
-            f"Model: {model} ({provider})",
-            f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
-            f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
-            f"Tokens: {int(usage.get('total') or 0):,}",
-            f"Agent Running: {'Yes' if session.get('running') else 'No'}",
-        ]
-    )
+    lines.extend([
+        f"Model: {model} ({provider})",
+        f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
+        f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
+        f"Tokens: {int(usage.get('total') or 0):,}",
+        f"Agent Running: {'Yes' if session.get('running') else 'No'}",
+    ])
     return _ok(rid, {"output": "\n".join(lines)})
 
 
@@ -5382,16 +5440,14 @@ def _(rid, params: dict) -> dict:
                 except Exception:
                     raw = {}
                 subagents = raw.get("subagents") or []
-                entries.append(
-                    {
-                        "path": str(p),
-                        "session_id": raw.get("session_id") or d.name,
-                        "finished_at": raw.get("finished_at") or stat.st_mtime,
-                        "started_at": raw.get("started_at"),
-                        "label": raw.get("label") or "",
-                        "count": len(subagents) if isinstance(subagents, list) else 0,
-                    }
-                )
+                entries.append({
+                    "path": str(p),
+                    "session_id": raw.get("session_id") or d.name,
+                    "finished_at": raw.get("finished_at") or stat.st_mtime,
+                    "started_at": raw.get("started_at"),
+                    "label": raw.get("label") or "",
+                    "count": len(subagents) if isinstance(subagents, list) else 0,
+                })
             except OSError:
                 continue
 
@@ -5486,11 +5542,15 @@ def _(rid, params: dict) -> dict:
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                return _err(
+                    rid, 4004, "truncate_before_user_ordinal must be an integer"
+                )
             history = session.get("history", [])
             user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
             if ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
+                return _err(
+                    rid, 4018, "target user message is no longer in session history"
+                )
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -5498,7 +5558,10 @@ def _(rid, params: dict) -> dict:
                 try:
                     db.replace_messages(session["session_key"], truncated)
                 except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+                    print(
+                        f"[tui_gateway] prompt.submit: replace_messages failed: {exc}",
+                        file=sys.stderr,
+                    )
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
@@ -5625,7 +5688,9 @@ def _notification_poller_loop(
             continue
 
         _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(
+            _evt_sid
+        ):
             continue
 
         text = format_process_notification(evt)
@@ -5673,7 +5738,9 @@ def _notification_poller_loop(
             deferred.append(evt)
             continue
         _evt_sid = evt.get("session_id", "")
-        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(
+            _evt_sid
+        ):
             continue
         text = format_process_notification(evt)
         if not text:
@@ -5904,14 +5971,19 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 # worker-backed commands (/title etc.) target the live session.
                 # Fix for #20001.
                 _sync_session_key_after_compress(
-                    sid, session, clear_pending_title=False, restart_slash_worker=True,
+                    sid,
+                    session,
+                    clear_pending_title=False,
+                    restart_slash_worker=True,
                 )
 
                 raw = result.get("final_response", "")
                 status = (
                     "interrupted"
                     if result.get("interrupted")
-                    else "error" if result.get("error") else "complete"
+                    else "error"
+                    if result.get("error")
+                    else "complete"
                 )
                 # When the backend produced no visible response AND reported a
                 # real error (e.g. invalid model slug → provider 4xx), surface
@@ -5921,8 +5993,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 # Leaves the None-with-no-error path untouched: an empty
                 # successful turn still renders as empty, and the existing
                 # "(empty)" sentinel handling stays in its own lane.
-                if (not raw) and result.get("error") and (
-                    result.get("failed") or result.get("partial")
+                if (
+                    (not raw)
+                    and result.get("error")
+                    and (result.get("failed") or result.get("partial"))
                 ):
                     raw = f"Error: {result.get('error')}"
                 lr = result.get("last_reasoning")
@@ -6005,7 +6079,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         session["pending_title"] = None
                         logger.info(
                             "Dropping pending title for session %s: %s",
-                            _session_key, exc,
+                            _session_key,
+                            exc,
                         )
                     except Exception:
                         # Transient DB failure — keep pending_title for retry.
@@ -6294,7 +6369,9 @@ def _allowed_image_extensions() -> frozenset[str]:
         return frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
 
 
-def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
+def _queue_attached_image(
+    session: dict, img_bytes: bytes, ext: str, *, prefix: str
+) -> Path:
     """Write image bytes into the gateway's images dir and queue them.
 
     Mirrors what ``image.attach`` does for a local path: appends to
@@ -6347,7 +6424,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4017, "image is empty")
     if len(img_bytes) > _ATTACH_BYTES_MAX_BYTES:
         mb = _ATTACH_BYTES_MAX_BYTES // (1024 * 1024)
-        return _err(rid, 4018, f"image too large ({len(img_bytes)} bytes; cap is {mb} MB)")
+        return _err(
+            rid, 4018, f"image too large ({len(img_bytes)} bytes; cap is {mb} MB)"
+        )
 
     filename = str(params.get("filename", "") or "")
     ext_hint = str(params.get("ext", "") or "").strip().lower()
@@ -6397,7 +6476,9 @@ def _(rid, params: dict) -> dict:
         return err
 
     if shutil.which("pdftoppm") is None:
-        return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
+        return _err(
+            rid, 5028, "pdftoppm not installed (poppler-utils package required)"
+        )
 
     raw_path = str(params.get("path", "") or "").strip()
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
@@ -6414,9 +6495,13 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4017, "decoded PDF is empty")
             if len(pdf_bytes) > _PDF_ATTACH_MAX_BYTES:
                 mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
-                return _err(rid, 4018, f"PDF too large ({len(pdf_bytes)} bytes; cap is {mb} MB)")
+                return _err(
+                    rid, 4018, f"PDF too large ({len(pdf_bytes)} bytes; cap is {mb} MB)"
+                )
             if pdf_bytes[:5] != b"%PDF-":
-                return _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
+                return _err(
+                    rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)"
+                )
             pdf_path = td_path / "input.pdf"
             pdf_path.write_bytes(pdf_bytes)
             display_name = str(params.get("filename", "") or "uploaded.pdf")
@@ -6451,16 +6536,33 @@ def _(rid, params: dict) -> dict:
         if last_page < first_page:
             return _err(rid, 4015, "last_page must be >= first_page")
         if last_page - first_page + 1 > _PDF_ATTACH_MAX_PAGES:
-            return _err(rid, 4019, f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call")
+            return _err(
+                rid,
+                4019,
+                f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call",
+            )
 
         out_prefix = td_path / "page"
         argv = [
-            "pdftoppm", "-png", "-r", "150",
-            "-f", str(first_page), "-l", str(last_page),
-            str(pdf_path), str(out_prefix),
+            "pdftoppm",
+            "-png",
+            "-r",
+            "150",
+            "-f",
+            str(first_page),
+            "-l",
+            str(last_page),
+            str(pdf_path),
+            str(out_prefix),
         ]
         try:
-            res = subprocess.run(argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+            res = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                stdin=subprocess.DEVNULL,
+            )
         except subprocess.TimeoutExpired:
             return _err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
@@ -6478,8 +6580,14 @@ def _(rid, params: dict) -> dict:
                 page_int = int(page_num)
             except ValueError:
                 page_int = first_page + len(attached_pages)
-            dst = _queue_attached_image(session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
-            attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
+            dst = _queue_attached_image(
+                session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}"
+            )
+            attached_pages.append({
+                "path": str(dst),
+                "page": page_int,
+                **_image_meta(dst),
+            })
 
         return _ok(
             rid,
@@ -6587,7 +6695,9 @@ def _decode_attachment_data_url(data_url: str) -> bytes:
     import re as _re
 
     cleaned = (data_url or "").strip()
-    m = _re.match(r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", cleaned, _re.DOTALL | _re.I)
+    m = _re.match(
+        r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", cleaned, _re.DOTALL | _re.I
+    )
     if m:
         cleaned = m.group(1)
     cleaned = _re.sub(r"\s+", "", cleaned)
@@ -6860,7 +6970,9 @@ def _(rid, params: dict) -> dict:
     def run():
         # Pin the validated preview cwd, else the parent workspace — never an
         # invalid client path, which would silently fall back to the launch dir.
-        session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
+        session_tokens = _set_session_context(
+            task_id, cwd=(preview_cwd or _session_cwd(session))
+        )
         try:
             from run_agent import AIAgent
             from tools.terminal_tool import register_task_env_overrides
@@ -6876,7 +6988,10 @@ def _(rid, params: dict) -> dict:
             _emit(
                 "preview.restart.progress",
                 parent,
-                {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
+                {
+                    "task_id": task_id,
+                    "text": f"Starting hidden restart agent{history_note}",
+                },
             )
             result = AIAgent(
                 **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
@@ -6891,7 +7006,9 @@ def _(rid, params: dict) -> dict:
                 if isinstance(result, dict)
                 else str(result)
             )
-            _emit("preview.restart.complete", parent, {"task_id": task_id, "text": text})
+            _emit(
+                "preview.restart.complete", parent, {"task_id": task_id, "text": text}
+            )
         except Exception as e:
             _emit(
                 "preview.restart.complete",
@@ -7405,7 +7522,12 @@ def _(rid, params: dict) -> dict:
         os.environ["TERMINAL_CWD"] = cwd
         return _ok(
             rid,
-            {"key": "terminal.cwd", "value": cwd, "cwd": cwd, "branch": _git_branch_for_cwd(cwd)},
+            {
+                "key": "terminal.cwd",
+                "value": cwd,
+                "cwd": cwd,
+                "branch": _git_branch_for_cwd(cwd),
+            },
         )
 
     if key in {"prompt", "personality", "skin"}:
@@ -7612,10 +7734,15 @@ def _(rid, params: dict) -> dict:
         provider_configured = bool(_has_any_provider_configured())
         provider = runtime.get("provider") or "provider"
         source = str(runtime.get("source") or "")
-        if not provider_configured and provider == "bedrock" and source in {
-            "iam-role",
-            "aws-sdk-default-chain",
-        }:
+        if (
+            not provider_configured
+            and provider == "bedrock"
+            and source
+            in {
+                "iam-role",
+                "aws-sdk-default-chain",
+            }
+        ):
             return _ok(
                 rid,
                 {
@@ -7837,15 +7964,13 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5015, str(e))
 
 
-_TUI_HIDDEN: frozenset[str] = frozenset(
-    {
-        "sethome",
-        "set-home",
-        "commands",
-        "approve",
-        "deny",
-    }
-)
+_TUI_HIDDEN: frozenset[str] = frozenset({
+    "sethome",
+    "set-home",
+    "commands",
+    "approve",
+    "deny",
+})
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
@@ -7861,17 +7986,15 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # Commands that queue messages onto _pending_input in the CLI.
 # In the TUI the slash worker subprocess has no reader for that queue,
 # so slash.exec rejects them → TUI falls through to command.dispatch.
-_PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
-    {
-        "retry",
-        "queue",
-        "q",
-        "steer",
-        "plan",
-        "goal",
-        "undo",
-    }
-)
+_PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
+    "retry",
+    "queue",
+    "q",
+    "steer",
+    "plan",
+    "goal",
+    "undo",
+})
 
 _WORKER_BLOCKED_COMMANDS: frozenset[str] = frozenset({"snapshot", "snap"})
 
@@ -8282,7 +8405,9 @@ def _(rid, params: dict) -> dict:
             try:
                 n = int(arg_str.split()[0])
             except (ValueError, IndexError):
-                return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
+                return _err(
+                    rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N"
+                )
         if n < 1:
             n = 1
         try:
@@ -8340,7 +8465,8 @@ def _(rid, params: dict) -> dict:
         target_text = target_msg.get("content") or ""
         if isinstance(target_text, list):
             parts = [
-                p.get("text", "") for p in target_text
+                p.get("text", "")
+                for p in target_text
                 if isinstance(p, dict) and p.get("type") == "text"
             ]
             target_text = "\n".join(t for t in parts if t)
@@ -8412,25 +8538,23 @@ def _(rid, params: dict) -> dict:
 
 _FUZZY_CACHE_TTL_S = 5.0
 _FUZZY_CACHE_MAX_FILES = 20000
-_FUZZY_FALLBACK_EXCLUDES = frozenset(
-    {
-        ".git",
-        ".hg",
-        ".svn",
-        ".next",
-        ".cache",
-        ".venv",
-        "venv",
-        "node_modules",
-        "__pycache__",
-        "dist",
-        "build",
-        "target",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".ruff_cache",
-    }
-)
+_FUZZY_FALLBACK_EXCLUDES = frozenset({
+    ".git",
+    ".hg",
+    ".svn",
+    ".next",
+    ".cache",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    "dist",
+    "build",
+    "target",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+})
 _fuzzy_cache_lock = threading.Lock()
 _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
@@ -8641,13 +8765,11 @@ def _(rid, params: dict) -> dict:
             ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
             tag = prefix_tag or "file"
             for _, rel, basename in ranked[:30]:
-                items.append(
-                    {
-                        "text": f"@{tag}:{rel}",
-                        "display": basename,
-                        "meta": os.path.dirname(rel),
-                    }
-                )
+                items.append({
+                    "text": f"@{tag}:{rel}",
+                    "display": basename,
+                    "meta": os.path.dirname(rel),
+                })
 
             return _ok(rid, {"items": items})
 
@@ -8697,13 +8819,11 @@ def _(rid, params: dict) -> dict:
             else:
                 text = rel + suffix
 
-            items.append(
-                {
-                    "text": text,
-                    "display": entry + suffix,
-                    "meta": "dir" if is_dir else "",
-                }
-            )
+            items.append({
+                "text": text,
+                "display": entry + suffix,
+                "meta": "dir" if is_dir else "",
+            })
             if len(items) >= 30:
                 break
     except Exception as e:
@@ -8769,7 +8889,9 @@ def _details_completions(text: str) -> list[dict] | None:
                 (
                     "section override"
                     if candidate in sections
-                    else "cycle global mode" if candidate == "cycle" else "global mode"
+                    else "cycle global mode"
+                    if candidate == "cycle"
+                    else "global mode"
                 ),
             )
             for candidate in candidates
@@ -8981,7 +9103,9 @@ def _(rid, params: dict) -> dict:
             current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
         payload = build_models_payload(
-            ctx, picker_hints=True, max_models=50,
+            ctx,
+            picker_hints=True,
+            max_models=50,
         )
         provider_data = next(
             (p for p in payload["providers"] if p["slug"] == slug), None
@@ -9667,7 +9791,10 @@ def _failure_messages(url: str, port: int, system: str) -> list[str]:
 
     command = manual_chrome_debug_command(port, system)
     hint = (
-        ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
+        [
+            "Start a Chromium-family browser with remote debugging, then retry /browser connect:",
+            command,
+        ]
         if command
         else [
             "No supported Chromium-family browser executable was found in this environment.",
@@ -9774,7 +9901,9 @@ def _browser_connect(rid, params: dict) -> dict:
                             break
 
                 if ok:
-                    announce(f"Chromium-family browser launched and listening on port {port}")
+                    announce(
+                        f"Chromium-family browser launched and listening on port {port}"
+                    )
                 else:
                     for line in _failure_messages(url, port, system)[1:]:
                         announce(line, level="error")
@@ -9899,15 +10028,13 @@ def _(rid, params: dict) -> dict:
             info = get_toolset_info(name)
             if not info:
                 continue
-            items.append(
-                {
-                    "name": name,
-                    "description": info["description"],
-                    "tool_count": info["tool_count"],
-                    "enabled": name in enabled if enabled else True,
-                    "tools": info["resolved_tools"],
-                }
-            )
+            items.append({
+                "name": name,
+                "description": info["description"],
+                "tool_count": info["tool_count"],
+                "enabled": name in enabled if enabled else True,
+                "tools": info["resolved_tools"],
+            })
         return _ok(rid, {"toolsets": items})
     except Exception as e:
         return _err(rid, 5031, str(e))
@@ -9932,12 +10059,10 @@ def _(rid, params: dict) -> dict:
             desc = str(tool["function"].get("description", "") or "").split("\n")[0]
             if ". " in desc:
                 desc = desc[: desc.index(". ") + 1]
-            sections.setdefault(get_toolset_for_tool(name) or "unknown", []).append(
-                {
-                    "name": name,
-                    "description": desc,
-                }
-            )
+            sections.setdefault(get_toolset_for_tool(name) or "unknown", []).append({
+                "name": name,
+                "description": desc,
+            })
 
         return _ok(
             rid,
@@ -10039,14 +10164,12 @@ def _(rid, params: dict) -> dict:
             info = get_toolset_info(name)
             if not info:
                 continue
-            items.append(
-                {
-                    "name": name,
-                    "description": info["description"],
-                    "tool_count": info["tool_count"],
-                    "enabled": name in enabled if enabled else True,
-                }
-            )
+            items.append({
+                "name": name,
+                "description": info["description"],
+                "tool_count": info["tool_count"],
+                "enabled": name in enabled if enabled else True,
+            })
         return _ok(rid, {"toolsets": items})
     except Exception as e:
         return _err(rid, 5032, str(e))
@@ -10217,15 +10340,13 @@ def _(rid, params: dict) -> dict:
             for name, version, desc, source, _dir, key in sorted(
                 _discover_all_plugins()
             ):
-                out.append(
-                    {
-                        "name": name,
-                        "version": str(version or ""),
-                        "description": desc or "",
-                        "source": source,
-                        "status": _plugin_status(name, enabled, disabled, key=key),
-                    }
-                )
+                out.append({
+                    "name": name,
+                    "version": str(version or ""),
+                    "description": desc or "",
+                    "source": source,
+                    "status": _plugin_status(name, enabled, disabled, key=key),
+                })
             return out
 
         if action == "list":
@@ -10277,7 +10398,9 @@ def _(rid, params: dict) -> dict:
         is_hardline, hardline_desc = detect_hardline_command(cmd)
         if is_hardline:
             return _err(
-                rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands."
+                rid,
+                4005,
+                f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.",
             )
         is_dangerous, _, desc = detect_dangerous_command(cmd)
         if is_dangerous:
@@ -10285,10 +10408,17 @@ def _(rid, params: dict) -> dict:
                 rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
             )
     except ImportError:
-        return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
+        return _err(
+            rid, 5001, "shell.exec unavailable: approval safety module not importable"
+        )
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
         )
         return _ok(

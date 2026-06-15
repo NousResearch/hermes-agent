@@ -97,7 +97,13 @@ def finalize_turn(
                     # one here) and does NOT advance the failure breaker. Only
                     # at the cap (next tier == None) do we fall through to the
                     # original block-for-human path.
-                    _next = _kb.next_budget_tier(agent.max_iterations)
+                    # Exclude goal_mode workers: they drive their OWN in-process
+                    # goal loop (a separate turn budget) and would keep running
+                    # after a re-queue here, racing the second worker the
+                    # dispatcher spawns for the re-queued card. Only plain
+                    # single-conversation workers escalate at this site.
+                    _goal_mode = os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1"
+                    _next = None if _goal_mode else _kb.next_budget_tier(agent.max_iterations)
                     _escalated = False
                     if _next is not None:
                         try:

@@ -3479,7 +3479,8 @@ def escalate_and_requeue(conn, task_id, new_max_iterations, *, reason=None):
     falls back to the normal failure/block path).
     """
     row = conn.execute(
-        "SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, max_iterations FROM tasks WHERE id = ?",
+        (task_id,),
     ).fetchone()
     if not row or row["status"] != "running":
         return False
@@ -3489,6 +3490,16 @@ def escalate_and_requeue(conn, task_id, new_max_iterations, *, reason=None):
     except (TypeError, ValueError):
         return False
     if new_budget < 1:
+        return False
+    # Strict-increase guard against the task's OWN stored budget. Makes
+    # escalation idempotent and structurally bounded (<= len(tiers) total)
+    # regardless of config/env precedence: if the effective agent budget is
+    # pinned by config (agent.max_turns can shadow the per-task
+    # HERMES_MAX_ITERATIONS injection), the caller may keep computing the same
+    # top tier — but once the task's stored max_iterations already equals it we
+    # decline and fall through to the block path instead of looping forever.
+    _stored = row["max_iterations"]
+    if new_budget <= (int(_stored) if _stored is not None else 0):
         return False
     with write_txn(conn):
         cur = conn.execute(

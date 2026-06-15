@@ -78,9 +78,26 @@ def test_escalate_does_not_trip_circuit_breaker(kanban_home):
 def test_escalate_non_running_returns_false(kanban_home):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="x", assignee="worker")  # ready, not running
+        tid = kb.create_task(conn, title="x", assignee="worker", max_iterations=90)
+        # never claimed -> not running
         assert kb.escalate_and_requeue(conn, tid, 120) is False
-        assert kb.get_task(conn, tid).status != "ready" or True  # unchanged
+        assert kb.get_task(conn, tid).max_iterations == 90  # untouched
+    finally:
+        conn.close()
+
+
+def test_escalate_declines_when_not_strict_increase(kanban_home):
+    # P0 guard: if the task's STORED budget already >= the requested tier
+    # (e.g. config pins the effective budget so the caller keeps computing the
+    # same top tier), decline -> block path, instead of looping forever.
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="t", assignee="worker", max_iterations=200)
+        kb.claim_task(conn, tid)
+        assert kb.escalate_and_requeue(conn, tid, 200) is False   # equal, not higher
+        assert kb.escalate_and_requeue(conn, tid, 150) is False   # lower
+        t = kb.get_task(conn, tid)
+        assert t.status == "running" and t.max_iterations == 200  # untouched
     finally:
         conn.close()
 

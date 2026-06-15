@@ -78,6 +78,8 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "im:history",
                     "im:read",
                     "im:write",
+                    "mpim:history",
+                    "mpim:read",
                     "users:read",
                 ],
             },

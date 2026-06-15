@@ -73,9 +73,12 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |
 | `groups:history` | Read messages in private channels the bot is invited to |
+| `groups:read` | List and get info about private channels |
 | `im:history` | Read direct message history |
 | `im:read` | View basic DM info |
 | `im:write` | Open and manage DMs |
+| `mpim:history` | Read multi-person DM history when the bot is present |
+| `mpim:read` | View basic multi-person DM info |
 | `users:read` | Look up user information |
 | `files:read` | Read and download attached files, including voice notes/audio |
 | `files:write` | Upload files (images, audio, documents) |
@@ -88,9 +91,10 @@ These are the most commonly missed scopes.
 
 **Optional scopes:**
 
-| Scope | Purpose |
-|-------|---------|
-| `groups:read` | List and get info about private channels |
+The generated manifest already includes the scopes above. If you maintain a
+manual Slack app, keep these history scopes installed for the `slack_history`
+tool. Hermes only reads channels/DMs where the bot is present and only when the
+user explicitly asks it to inspect Slack history.
 
 ---
 
@@ -224,6 +228,35 @@ After starting the gateway, you need to **invite the bot** to any channel where 
 ```
 
 The bot will **not** automatically join channels. You must invite it to each channel individually.
+
+---
+
+## Slack History Recall
+
+When `SLACK_BOT_TOKEN` is configured and the Slack toolset is enabled, Hermes exposes a scoped
+`slack_history` tool. It lets the agent answer questions like:
+
+- "What was the message before this one?"
+- "Search this channel for the last mention of pricing."
+- "Read this thread and summarize the decision."
+
+Safety boundaries:
+
+- History is opt-in per user request. It is not dumped into every prompt.
+- Default scope is the current Slack channel/thread; cross-channel reads require an explicit channel.
+- Hermes can only read conversations where the bot is already present and Slack allows the installed scopes.
+- Returned Slack messages are treated as **untrusted data/evidence**, never as instructions for the agent to follow.
+
+Examples the model can call internally:
+
+```json
+{"action":"recent","limit":20}
+{"action":"thread","thread_ts":"1710000000.000100","limit":50}
+{"action":"search","channel":"#wamelink","query":"done","limit":10,"hours":24}
+```
+
+If Slack returns `missing_scope`, regenerate the manifest with `hermes slack manifest --write`,
+paste it into the Slack app, save, and reinstall the app to the workspace.
 
 ---
 

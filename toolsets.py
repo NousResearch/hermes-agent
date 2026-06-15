@@ -61,6 +61,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # Scoped Slack history/search (gated on SLACK_BOT_TOKEN via check_fn)
+    "slack_history",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -189,8 +191,14 @@ TOOLSETS = {
     },
     
     "messaging": {
-        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc. Includes scoped Slack history when Slack is configured.",
+        "tools": ["send_message", "slack_history"],
+        "includes": []
+    },
+
+    "slack": {
+        "description": "Slack-specific history tools: read recent messages, thread replies, and bounded channel search. Requires Slack history scopes.",
+        "tools": ["slack_history"],
         "includes": []
     },
 

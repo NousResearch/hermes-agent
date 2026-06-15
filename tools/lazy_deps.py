@@ -152,6 +152,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # defusedxml only; aiohttp/httpx are core dependencies of every messaging
     # adapter and ship via `platform.discord` / `platform.slack` / etc.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
+    # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
+    # installed on demand like every other messaging platform; also exposed
+    # as the `teams` extra in pyproject for packagers / explicit installs.
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),

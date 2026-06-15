@@ -452,8 +452,19 @@ def _apply_profile_override() -> None:
         if Path(hermes_home_env).parent.name == "profiles":
             return
 
-    # 2. If no flag, check active_profile in the hermes root
-    if profile_name is None:
+    # 2. If no flag, check active_profile in the hermes root.
+    #
+    # EXCEPTION: a supervised s6 gateway child (exported by the container
+    # run-script as HERMES_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
+    # active_profile. Each supervised slot has a fixed profile identity: named
+    # slots pass ``-p <name>`` explicitly (handled in step 1 above), and the
+    # reserved ``gateway-default`` slot runs bare ``hermes gateway run`` to mean
+    # "the root HERMES_HOME profile". If the reserved default child read
+    # active_profile here, switching the active profile (e.g. via the dashboard)
+    # would silently redirect the default gateway into that profile — yielding a
+    # duplicate gateway for the active profile and no real default gateway. See
+    # the "Docker & Profiles & Dashboard" report.
+    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         try:
             from hermes_constants import get_default_hermes_root
 

@@ -1049,6 +1049,29 @@ class TestIdempotency:
             assert data["status"] == "duplicate"
             assert data["delivery_id"] == "msg_duplicate"
 
+    @pytest.mark.asyncio
+    async def test_failed_agent_delivery_allows_retry(self):
+        """A failed background webhook run should release the delivery ID."""
+        routes = {"idem": {"secret": _INSECURE_NO_AUTH, "prompt": "test"}}
+        adapter = _make_adapter(routes=routes)
+
+        async def _raise_once(*args, **kwargs):
+            raise RuntimeError("temporary agent failure")
+
+        adapter.handle_message = AsyncMock(side_effect=_raise_once)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "delivery-failure-1"}
+
+            resp1 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+            await asyncio.sleep(0.05)
+
+            adapter.handle_message = AsyncMock()
+            resp2 = await cli.post("/webhooks/idem", json={"a": 1}, headers=headers)
+            assert resp2.status == 202
+
 
 # ===================================================================
 # Rate limiting

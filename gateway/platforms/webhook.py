@@ -799,6 +799,25 @@ class WebhookAdapter(BasePlatformAdapter):
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        def _forget_failed_delivery(done_task: "asyncio.Task") -> None:
+            try:
+                if done_task.cancelled():
+                    return
+                exc = done_task.exception()
+            except Exception:
+                return
+            if exc is None:
+                return
+            self._seen_deliveries.pop(delivery_id, None)
+            self._delivery_info.pop(session_chat_id, None)
+            self._delivery_info_created.pop(session_chat_id, None)
+            try:
+                self._delivery_info_order = deque(
+                    item for item in self._delivery_info_order if item[1] != session_chat_id
+                )
+            except Exception:
+                pass
+        task.add_done_callback(_forget_failed_delivery)
 
         return web.json_response(
             {

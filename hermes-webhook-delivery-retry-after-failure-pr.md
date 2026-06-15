@@ -1,28 +1,29 @@
-# PR Draft: Allow webhook `deliver_only` retries after downstream delivery failure
+# PR Draft: Allow webhook retries after downstream delivery failure
 
 ## Title
 
-Allow webhook `deliver_only` retries after downstream delivery failure
+Allow webhook retries after downstream delivery failure
 
 ## Summary
 
-This changes the webhook adapter so `deliver_only` requests only enter the idempotency cache after the downstream delivery succeeds. Previously, a failed direct delivery still poisoned the cache entry, so a provider retry with the same delivery ID was treated as a duplicate and skipped.
+This changes the webhook adapter so failed deliveries do not poison the idempotency cache. `deliver_only` routes now cache only after a successful downstream delivery, and normal webhook runs release the delivery ID if the background agent task fails.
 
 ## Why
 
-`deliver_only` routes are used for push-style notifications where the webhook POST itself is the delivery. If the downstream target rejects the message or returns a transient failure, the provider should be able to retry the same delivery ID instead of getting a false duplicate response.
+`deliver_only` routes are used for push-style notifications where the webhook POST itself is the delivery. Normal webhook routes also need this behavior: if the agent task fails after accepting the event, the provider should be able to retry the same delivery ID instead of getting a false duplicate response.
 
 ## Changes
 
 - Delay idempotency caching for `deliver_only` until after a successful direct delivery.
+- Release idempotency and delivery-info state if a normal webhook task fails after acceptance.
 - Keep duplicate suppression for successful deliveries.
-- Add a regression test that fails the first direct delivery, retries with the same delivery ID, and confirms the second attempt is delivered.
+- Add regression tests for both failed direct delivery retries and failed agent-run retries.
 
 ## Tests
 
 ```text
 python -m pytest tests/gateway/test_webhook_adapter.py tests/gateway/test_webhook_deliver_only.py -q
-83 passed in 13.42s
+85 passed in ...
 ```
 
 ## Branch

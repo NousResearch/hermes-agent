@@ -136,6 +136,35 @@ _GATEWAY_SECRET_PATTERNS = (
 )
 
 
+def _proxy_text_history(history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Return safe compact text history for remote proxy mode.
+
+    Proxy mode sends a text-only transcript to a remote Hermes API server.
+    Assistant tool-call rows are not replayable in that compact shape and, on
+    some transports, their ``content`` can contain internal planning/reasoning
+    text. Replaying those rows as ordinary assistant messages contaminates
+    later turns with stale implementation state.
+
+    Keep user text and final assistant prose; drop assistant tool-call rows.
+    """
+    result: List[Dict[str, str]] = []
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if role == "user":
+            result.append({"role": "user", "content": content})
+            continue
+        if role == "assistant":
+            if msg.get("tool_calls") or msg.get("finish_reason") == "tool_calls":
+                continue
+            result.append({"role": "assistant", "content": content})
+    return result
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -13174,11 +13203,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if context_prompt:
             api_messages.append({"role": "system", "content": context_prompt})
 
-        for msg in history:
-            role = msg.get("role")
-            content = msg.get("content")
-            if role in {"user", "assistant"} and content:
-                api_messages.append({"role": role, "content": content})
+        api_messages.extend(_proxy_text_history(history))
 
         api_messages.append({"role": "user", "content": message})
 

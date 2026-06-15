@@ -242,10 +242,14 @@ class PairingStore:
             # Use a unique entry id as the key (not the code itself)
             entry_id = secrets.token_hex(8)
 
-            # Store pending request with hashed code
+            # Store pending request with hashed code.
+            # The plaintext code is also stored so that ``list_pending``
+            # can display an approvable value to the operator (the hash
+            # prefix alone is not accepted by ``approve_code``).
             pending[entry_id] = {
                 "hash": code_hash,
                 "salt": salt.hex(),
+                "code": code,
                 "user_id": normalized_user_id,
                 "user_name": user_name,
                 "created_at": time.time(),
@@ -328,11 +332,10 @@ class PairingStore:
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
 
-        Codes are stored hashed — the ``code`` field is replaced with the
-        first 8 hex characters of the hash so admins can distinguish entries
-        without revealing the original code. Legacy plaintext-key entries
-        (pre-hash format) are shown with a "legacy" placeholder so admins
-        can see them age out without crashing on a missing ``hash`` field.
+        The ``code`` field contains the original pairing code that was
+        sent to the user.  Entries written before the plaintext-code change
+        (no ``code`` key) fall back to the first 8 hex characters of the
+        stored hash as a visual placeholder.
         """
         results = []
         with self._lock:
@@ -347,8 +350,9 @@ class PairingStore:
                     if not isinstance(created_at, (int, float)):
                         continue
                     age_min = int((time.time() - created_at) / 60)
-                    hash_val = info.get("hash")
-                    code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
+                    code_display = info.get("code") or (
+                        info.get("hash", "")[:8] or "legacy"
+                    )
                     results.append({
                         "platform": p,
                         "code": code_display,

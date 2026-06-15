@@ -4236,6 +4236,10 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
     }
 
 
+def _env_flag_truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"true", "1", "yes"}
+
+
 def _gateway_platform_config(platform_id: str):
     from gateway.config import Platform, load_gateway_config
 
@@ -4289,6 +4293,10 @@ def _messaging_platform_payload(
             if not isinstance(plat_cfg, dict):
                 plat_cfg = {}
             enabled = bool(plat_cfg.get("enabled"))
+            if not enabled:
+                env_toggle_key = f"{platform_id.upper()}_ENABLED"
+                if env_toggle_key in entry["env_vars"]:
+                    enabled = _env_flag_truthy(env_on_disk.get(env_toggle_key))
             hc = plat_cfg.get("home_channel")
             home_channel = hc if isinstance(hc, dict) else None
         except Exception:

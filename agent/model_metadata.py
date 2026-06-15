@@ -352,6 +352,45 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+# OpenAI model families that DO NOT accept the Responses-API ``reasoning``
+# parameter.  On api.openai.com every model is routed through the Responses
+# API (api_mode='codex_responses'), but only the reasoning models (gpt-5.x,
+# o1/o3/o4) accept ``reasoning: {effort, summary}``.  The GPT-4 generation
+# (gpt-4o, gpt-4o-mini, gpt-4.1, gpt-4-turbo, gpt-4, gpt-3.5, chatgpt-4o)
+# rejects it with ``HTTP 400`` ("Unknown parameter: 'reasoning'").  Denylist
+# by prefix so unknown/future models still get the dial (conservative toward
+# keeping reasoning models working).  See issue #46516.
+_OPENAI_NON_REASONING_PREFIXES = (
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-4-turbo",
+    "gpt-4-",
+    "gpt-4.5",
+    "gpt-3.5",
+    "chatgpt-4o",
+)
+
+
+def openai_responses_rejects_reasoning_param(model: str) -> bool:
+    """Return True when an OpenAI model rejects the Responses-API ``reasoning`` param.
+
+    Used to suppress ``reasoning: {effort, summary}`` for GPT-4-generation
+    models that are forced onto the Responses API by direct-OpenAI routing.
+    Denylist by prefix (matches both bare ``gpt-4o-mini`` and vendor-prefixed
+    ``openai/gpt-4o-mini``).  Conservative by design: bare ``gpt-4`` matches
+    exactly while reasoning families (gpt-5.x, o1/o3/o4) and unknown models
+    return False so they keep sending the reasoning dial.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    if name == "gpt-4":
+        return True
+    return any(name.startswith(prefix) for prefix in _OPENAI_NON_REASONING_PREFIXES)
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

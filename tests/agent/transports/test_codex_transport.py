@@ -83,6 +83,25 @@ class TestCodexBuildKwargs:
         )
         assert "reasoning" not in kw or kw.get("include") == []
 
+    @pytest.mark.parametrize(
+        "model",
+        ["gpt-4o-mini", "gpt-4.1", "gpt-4o", "openai/gpt-4o", "gpt-4-turbo", "gpt-4"],
+    )
+    def test_non_reasoning_openai_models_omit_reasoning_param(self, transport, model):
+        """GH #46516: direct OpenAI routes every model through the Responses
+        API, but GPT-4-generation models reject ``reasoning`` with HTTP 400.
+        The transport must omit the param (not send a default ``medium``)."""
+        messages = [{"role": "user", "content": "hello"}]
+        kw = transport.build_kwargs(model=model, messages=messages, tools=[])
+        assert "reasoning" not in kw
+
+    @pytest.mark.parametrize("model", ["gpt-5.4", "gpt-5", "gpt-5-codex", "o1", "o3-mini"])
+    def test_reasoning_openai_models_keep_reasoning_param(self, transport, model):
+        """Reasoning-capable OpenAI models must still receive the dial."""
+        messages = [{"role": "user", "content": "hello"}]
+        kw = transport.build_kwargs(model=model, messages=messages, tools=[])
+        assert kw.get("reasoning", {}).get("effort") == "medium"
+
     def test_session_id_sets_cache_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

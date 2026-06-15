@@ -12,6 +12,7 @@ Coverage levels:
 
 import time
 
+import pytest
 import yaml
 from unittest.mock import patch, MagicMock
 
@@ -25,11 +26,40 @@ from agent.model_metadata import (
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
+    openai_responses_rejects_reasoning_param,
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
 )
+
+
+class TestOpenAIResponsesRejectsReasoningParam:
+    """GH #46516: GPT-4-generation OpenAI models reject the Responses-API
+    ``reasoning`` param; reasoning families (gpt-5.x, o-series) accept it."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gpt-4o", "gpt-4o-mini", "openai/gpt-4o-mini", "gpt-4.1",
+            "gpt-4.1-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo",
+            "chatgpt-4o-latest", "gpt-4.5-preview",
+        ],
+    )
+    def test_non_reasoning_models_rejected(self, model):
+        assert openai_responses_rejects_reasoning_param(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        ["gpt-5", "gpt-5.4", "gpt-5-mini", "gpt-5-codex", "openai/gpt-5.4",
+         "o1", "o1-mini", "o3", "o3-mini", "o4-mini"],
+    )
+    def test_reasoning_models_keep_param(self, model):
+        assert openai_responses_rejects_reasoning_param(model) is False
+
+    def test_empty_and_unknown_default_to_keep(self):
+        assert openai_responses_rejects_reasoning_param("") is False
+        assert openai_responses_rejects_reasoning_param("some-future-model") is False
 
 
 # =========================================================================

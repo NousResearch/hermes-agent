@@ -176,10 +176,23 @@ class ResponsesApiTransport(ProviderTransport):
             if grok_supports_reasoning_effort(model):
                 kwargs["reasoning"] = {"effort": reasoning_effort}
         elif reasoning_enabled:
+            from agent.model_metadata import openai_responses_rejects_reasoning_param
+
             if is_github_responses:
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
+            elif openai_responses_rejects_reasoning_param(model):
+                # Direct OpenAI routes EVERY model through the Responses API
+                # (api_mode='codex_responses'), but GPT-4-generation models
+                # (gpt-4o, gpt-4o-mini, gpt-4.1, ...) reject the `reasoning`
+                # param with HTTP 400 ("Unknown parameter: 'reasoning'").
+                # Send no `reasoning` key for those — they don't reason — so
+                # the call succeeds.  GPT-5.x / o-series keep the dial below.
+                # See issue #46516.
+                kwargs["include"] = (
+                    ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
+                )
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = (

@@ -1634,6 +1634,96 @@ class TestChatCompletionsEndpoint:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_user_is_forwarded_for_non_streaming_completion(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "user": "caller-123",
+                })
+        assert resp.status == 200
+        assert mock_run.call_args.kwargs["api_user"] == "caller-123"
+
+    @pytest.mark.asyncio
+    async def test_user_is_forwarded_for_streaming_completion(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                callback = kwargs.get("stream_delta_callback")
+                if callback:
+                    callback("ok")
+                return (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent) as mock_run:
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "user": "caller-456",
+                    "stream": True,
+                })
+                assert resp.status == 200
+                await resp.text()
+        assert mock_run.call_args.kwargs["api_user"] == "caller-456"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_distinguishes_user(self, adapter):
+        app = _create_app(adapter)
+        idempotency_key = f"user-fingerprint-{uuid.uuid4()}"
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.side_effect = [
+                    (
+                        {"final_response": "first", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                    ),
+                    (
+                        {"final_response": "second", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                    ),
+                ]
+                headers = {"Idempotency-Key": idempotency_key}
+                base_body = {
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                }
+                first = await cli.post(
+                    "/v1/chat/completions",
+                    json={**base_body, "user": "caller-a"},
+                    headers=headers,
+                )
+                second = await cli.post(
+                    "/v1/chat/completions",
+                    json={**base_body, "user": "caller-b"},
+                    headers=headers,
+                )
+        assert first.status == second.status == 200
+        assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_non_string_user_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post("/v1/chat/completions", json={
+                    "model": "test",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "user": {"id": "caller"},
+                })
+                data = await resp.json()
+        assert resp.status == 400
+        assert data["error"]["param"] == "user"
+        mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_successful_completion(self, adapter):
         """Test a successful chat completion with mocked agent."""
         mock_result = {

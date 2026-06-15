@@ -1227,6 +1227,10 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                # Inject OpenAI 'user' field if the API server provided one.
+                _api_user = getattr(agent, "_api_user", None)
+                if _api_user and "user" not in api_kwargs and agent.api_mode == "chat_completions":
+                    api_kwargs["user"] = _api_user
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":

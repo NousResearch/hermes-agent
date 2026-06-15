@@ -1419,6 +1419,7 @@ dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "urllib3" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -1676,7 +1677,7 @@ requires-dist = [
     { name = "rich", specifier = "==14.3.3" },
     { name = "ruamel-yaml", specifier = "==0.18.17" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
-    { name = "setuptools", marker = "extra == 'dev'", specifier = "==82.0.1" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = "==81.0.0" },
     { name = "simple-term-menu", marker = "extra == 'cli'", specifier = "==1.6.6" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.27.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.27.0" },
@@ -1693,6 +1694,7 @@ requires-dist = [
     { name = "urllib3", specifier = ">=2.7.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
+    { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
 provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "computer-use", "acp", "mistral", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
@@ -3571,11 +3573,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-version = "82.0.1"
+version = "81.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4f/db/cfac1baf10650ab4d1c111714410d2fbb77ac5a616db26775db562c8fab2/setuptools-82.0.1.tar.gz", hash = "sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9", size = 1152316, upload-time = "2026-03-09T12:47:17.221Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/1c/73e719955c59b8e424d015ab450f51c0af856ae46ea2da83eba51cc88de1/setuptools-81.0.0.tar.gz", hash = "sha256:487b53915f52501f0a79ccfd0c02c165ffe06631443a886740b91af4b7a5845a", size = 1198299, upload-time = "2026-02-06T21:10:39.601Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/76/f789f7a86709c6b087c5a2f52f911838cad707cc613162401badc665acfe/setuptools-82.0.1-py3-none-any.whl", hash = "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb", size = 1006223, upload-time = "2026-03-09T12:47:15.026Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/e3/c164c88b2e5ce7b24d667b9bd83589cf4f3520d97cad01534cd3c4f55fdb/setuptools-81.0.0-py3-none-any.whl", hash = "sha256:fdd925d5c5d9f62e4b74b30d6dd7828ce236fd6ed998a08d81de62ce5a6310d6", size = 1062021, upload-time = "2026-02-06T21:10:37.175Z" },
 ]
 
 [[package]]

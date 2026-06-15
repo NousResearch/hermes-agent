@@ -95,7 +95,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
             }
 
         # Patch AIAgent to use our mock
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
         from run_agent import IterationBudget
 
         parent.iteration_budget = IterationBudget(max_total=100)

@@ -8,7 +8,7 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.file_operations import ShellFileOperations, _parse_search_context_line
+from tools.core.file_operations import ShellFileOperations, _parse_search_context_line
 
 
 # =========================================================================

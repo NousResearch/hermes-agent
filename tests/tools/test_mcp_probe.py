@@ -26,13 +26,13 @@ class TestProbeMcpServerTools:
 
     def test_returns_empty_when_mcp_not_available(self):
         with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
         assert result == {}
 
     def test_returns_empty_when_no_config(self):
         with patch("tools.mcp_tool._load_mcp_config", return_value={}):
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
         assert result == {}
 
@@ -42,7 +42,7 @@ class TestProbeMcpServerTools:
             "slack": {"command": "npx", "enabled": "off"},
         }
         with patch("tools.mcp_tool._load_mcp_config", return_value=config):
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
         assert result == {}
 
@@ -79,7 +79,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result
@@ -121,7 +121,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result
@@ -156,7 +156,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert result["github"][0] == ("my_tool", "")
@@ -171,7 +171,7 @@ class TestProbeMcpServerTools:
              patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("boom")), \
              patch("tools.mcp_tool._stop_mcp_loop") as mock_stop:
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert result == {}
@@ -211,7 +211,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool import probe_mcp_server_tools
+            from tools.mcp.mcp_tool import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result

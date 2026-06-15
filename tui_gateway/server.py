@@ -1070,7 +1070,7 @@ def _register_session_cwd(session: dict | None) -> None:
     if not session:
         return
     try:
-        from tools.terminal_tool import register_task_env_overrides
+        from tools.core.terminal_tool import register_task_env_overrides
 
         register_task_env_overrides(
             session["session_key"], {"cwd": _terminal_task_cwd(session)}
@@ -1148,7 +1148,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
         except Exception:
             logger.debug("failed to persist session cwd", exc_info=True)
     try:
-        from tools.terminal_tool import cleanup_vm
+        from tools.core.terminal_tool import cleanup_vm
 
         cleanup_vm(session["session_key"])
     except Exception:
@@ -2076,7 +2076,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     except Exception:
         pass
     try:
-        from tools.mcp_tool import get_mcp_status
+        from tools.mcp.mcp_tool import get_mcp_status
 
         info["mcp_servers"] = get_mcp_status()
     except Exception:
@@ -2433,8 +2433,8 @@ def _agent_cbs(sid: str) -> dict:
 
 
 def _wire_callbacks(sid: str):
-    from tools.terminal_tool import set_sudo_password_callback
-    from tools.skills_tool import set_secret_capture_callback
+    from tools.core.terminal_tool import set_sudo_password_callback
+    from tools.skills.skills_tool import set_secret_capture_callback
 
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
 
@@ -4352,7 +4352,7 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.status")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import (
+    from tools.delegation.delegate_tool import (
         is_spawn_paused,
         list_active_subagents,
         _get_max_concurrent_children,
@@ -4372,7 +4372,7 @@ def _(rid, params: dict) -> dict:
 
 @method("delegation.pause")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import set_spawn_paused
+    from tools.delegation.delegate_tool import set_spawn_paused
 
     paused = bool(params.get("paused", True))
     return _ok(rid, {"paused": set_spawn_paused(paused)})
@@ -4380,7 +4380,7 @@ def _(rid, params: dict) -> dict:
 
 @method("subagent.interrupt")
 def _(rid, params: dict) -> dict:
-    from tools.delegate_tool import interrupt_subagent
+    from tools.delegation.delegate_tool import interrupt_subagent
 
     subagent_id = str(params.get("subagent_id") or "").strip()
     if not subagent_id:
@@ -6001,7 +6001,7 @@ def _(rid, params: dict) -> dict:
         session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         try:
             from run_agent import AIAgent
-            from tools.terminal_tool import register_task_env_overrides
+            from tools.core.terminal_tool import register_task_env_overrides
 
             if preview_cwd:
                 register_task_env_overrides(task_id, {"cwd": preview_cwd})
@@ -6038,7 +6038,7 @@ def _(rid, params: dict) -> dict:
             )
         finally:
             try:
-                from tools.terminal_tool import clear_task_env_overrides
+                from tools.core.terminal_tool import clear_task_env_overrides
 
                 clear_task_env_overrides(task_id)
             except Exception:
@@ -6823,7 +6823,7 @@ def _(rid, params: dict) -> dict:
                     },
                 )
 
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from tools.mcp.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
 
         shutdown_mcp_servers()
         discover_mcp_tools()
@@ -8757,7 +8757,7 @@ def _browser_connect(rid, params: dict) -> dict:
     import platform
 
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
-    from tools.browser_tool import cleanup_all_browsers
+    from tools.browser.browser_tool import cleanup_all_browsers
     from urllib.parse import urlparse
 
     raw_url = params.get("url")
@@ -8864,7 +8864,7 @@ def _browser_disconnect(rid) -> dict:
     # window covered by ``_browser_connect``.
     def reap() -> None:
         try:
-            from tools.browser_tool import cleanup_all_browsers
+            from tools.browser.browser_tool import cleanup_all_browsers
 
             cleanup_all_browsers()
         except Exception:
@@ -9167,7 +9167,7 @@ def _(rid, params: dict) -> dict:
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
-            from tools.skills_hub import (
+            from tools.skills.skills_hub import (
                 GitHubAuth,
                 create_source_router,
                 unified_search,

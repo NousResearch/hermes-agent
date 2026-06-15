@@ -49,12 +49,12 @@ class TestReapOrphanedBrowserSessions:
 
     def test_no_socket_dirs_is_noop(self, fake_tmpdir):
         """No socket dirs => nothing happens, no errors."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
         _reap_orphaned_browser_sessions()  # should not raise
 
     def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
         """Socket dir with no PID file is cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
         assert d.exists()
         _reap_orphaned_browser_sessions()
@@ -62,7 +62,7 @@ class TestReapOrphanedBrowserSessions:
 
     def test_stale_dir_with_dead_pid_is_removed(self, fake_tmpdir):
         """Socket dir whose daemon PID is dead gets cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_dead123456", pid=999999999)
         assert d.exists()
         _reap_orphaned_browser_sessions()
@@ -73,7 +73,7 @@ class TestReapOrphanedBrowserSessions:
 
         No owner_pid file => falls back to tracked_names check.
         """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_orphan12345", pid=12345)
 
@@ -94,7 +94,7 @@ class TestReapOrphanedBrowserSessions:
     def test_tracked_session_is_not_reaped(self, fake_tmpdir):
         """Sessions tracked in _active_sessions are left alone (legacy path)."""
         import tools.browser_tool as bt
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         session_name = "h_tracked1234"
         d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
@@ -126,7 +126,7 @@ class TestReapOrphanedBrowserSessions:
         dir regardless of whether termination succeeded (best-effort
         semantics).
         """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_perm1234567", pid=12345)
 
@@ -144,7 +144,7 @@ class TestReapOrphanedBrowserSessions:
 
     def test_cdp_sessions_are_also_reaped(self, fake_tmpdir):
         """CDP sessions (cdp_ prefix) are also scanned."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "cdp_abc1234567")
         assert d.exists()
@@ -154,7 +154,7 @@ class TestReapOrphanedBrowserSessions:
 
     def test_non_hermes_dirs_are_ignored(self, fake_tmpdir):
         """Socket dirs that don't match our naming pattern are left alone."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         # Create a dir that doesn't match h_* or cdp_* pattern
         d = fake_tmpdir / "agent-browser-other_session"
@@ -168,7 +168,7 @@ class TestReapOrphanedBrowserSessions:
 
     def test_corrupt_pid_file_is_cleaned(self, fake_tmpdir):
         """PID file with non-integer content is cleaned up."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
         (d / "h_corrupt1234.pid").write_text("not-a-number")
@@ -191,7 +191,7 @@ class TestOwnerPidCrossProcess:
         This is the core cross-process safety check: Process B scanning while
         Process A is using a browser must not kill A's daemon.
         """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         # Use our own PID as the "owner" — guaranteed alive
         d = _make_socket_dir(
@@ -213,7 +213,7 @@ class TestOwnerPidCrossProcess:
 
     def test_dead_owner_triggers_reap(self, fake_tmpdir):
         """Daemon whose owner_pid is dead gets reaped."""
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         # PID 999999999 almost certainly doesn't exist
         d = _make_socket_dir(
@@ -238,7 +238,7 @@ class TestOwnerPidCrossProcess:
     def test_corrupt_owner_pid_falls_back_to_legacy(self, fake_tmpdir):
         """Corrupt owner_pid file → fall back to tracked_names check."""
         import tools.browser_tool as bt
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         session_name = "h_corrupt_own"
         d = _make_socket_dir(fake_tmpdir, session_name, pid=12345)
@@ -269,7 +269,7 @@ class TestOwnerPidCrossProcess:
         Windows, or via the POSIX fallback's ``except PermissionError``
         branch). Exposed to callers as ``alive=True``.
         """
-        from tools.browser_tool import _reap_orphaned_browser_sessions
+        from tools.browser.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(
             fake_tmpdir, "h_perm_owner1", pid=12345, owner_pid=22222

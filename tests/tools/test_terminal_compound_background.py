@@ -13,7 +13,7 @@ the current shell. No subshell fork, no wait.
 """
 
 
-from tools.terminal_tool import _rewrite_compound_background as rewrite
+from tools.core.terminal_tool import _rewrite_compound_background as rewrite
 
 
 class TestRewrites:

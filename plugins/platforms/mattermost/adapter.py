@@ -425,7 +425,7 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
-        from tools.url_safety import is_safe_url
+        from tools.security.url_safety import is_safe_url
         if not is_safe_url(url):
             logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
@@ -563,7 +563,7 @@ class MattermostAdapter(BasePlatformAdapter):
                         ct = mimetypes.guess_type(fname)[0] or "image/png"
                         file_data = p.read_bytes()
                     else:
-                        from tools.url_safety import is_safe_url
+                        from tools.security.url_safety import is_safe_url
                         if not is_safe_url(image_url):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue

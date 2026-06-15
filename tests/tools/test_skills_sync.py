@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.skills_sync import (
+from tools.skills.skills_sync import (
     _get_bundled_dir,
     _read_manifest,
     _read_skill_name,
@@ -1016,7 +1016,7 @@ class TestOptOutToggleAndRemove:
         return bundled
 
     def test_marker_toggle(self, tmp_path):
-        from tools.skills_sync import (
+        from tools.skills.skills_sync import (
             set_bundled_skills_opt_out, is_bundled_skills_opt_out,
         )
         home = tmp_path / "home"
@@ -1035,7 +1035,7 @@ class TestOptOutToggleAndRemove:
             assert is_bundled_skills_opt_out() is False
 
     def test_remove_keeps_user_modified(self, tmp_path):
-        from tools.skills_sync import (
+        from tools.skills.skills_sync import (
             sync_skills, remove_pristine_bundled_skills,
         )
         bundled = self._setup_bundled(tmp_path)

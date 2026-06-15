@@ -37,7 +37,7 @@ class _FakeResponse:
 # ---------------------------------------------------------------------------
 
 def test_x_search_posts_responses_request(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
     from hermes_cli import __version__
 
     captured = {}
@@ -82,7 +82,7 @@ def test_x_search_posts_responses_request(monkeypatch):
 
 
 def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 
@@ -98,7 +98,7 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
 
 
 def test_x_search_extracts_inline_url_citations(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     def _fake_post(url, headers=None, json=None, timeout=None):
         return _FakeResponse(
@@ -144,7 +144,7 @@ def test_x_search_extracts_inline_url_citations(monkeypatch):
 
 
 def test_x_search_returns_structured_http_error(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     class _FailingResponse:
         status_code = 403
@@ -174,7 +174,7 @@ def test_x_search_returns_structured_http_error(monkeypatch):
 
 
 def test_x_search_retries_read_timeout_then_succeeds(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     calls = {"count": 0}
 
@@ -201,7 +201,7 @@ def test_x_search_retries_read_timeout_then_succeeds(monkeypatch):
 
 
 def test_x_search_retries_5xx_then_succeeds(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     calls = {"count": 0}
 
@@ -238,7 +238,7 @@ def _no_xai_env(monkeypatch):
 def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
     """OAuth-only user: credential_source should be ``xai-oauth``."""
     from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+    from tools.communication.x_search_tool import check_x_search_requirements, x_search_tool
 
     _no_xai_env(monkeypatch)
 
@@ -274,7 +274,7 @@ def test_x_search_uses_xai_oauth_when_only_oauth_available(monkeypatch):
 def test_x_search_uses_api_key_when_only_xai_api_key_set(monkeypatch):
     """API-key-only user: credential_source should be ``xai``."""
     from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+    from tools.communication.x_search_tool import check_x_search_requirements, x_search_tool
 
     _no_xai_env(monkeypatch)
 
@@ -318,7 +318,7 @@ def test_x_search_prefers_oauth_when_both_available(monkeypatch):
     bearer (the ``xai-oauth`` ``provider`` tag is the marker).
     """
     from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "raw-api-key")
 
@@ -353,7 +353,7 @@ def test_x_search_prefers_oauth_when_both_available(monkeypatch):
 def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
     """No credentials anywhere: tool returns a clear error, not a 401 from xAI."""
     from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+    from tools.communication.x_search_tool import check_x_search_requirements, x_search_tool
 
     _no_xai_env(monkeypatch)
 
@@ -381,7 +381,7 @@ def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
 def test_x_search_check_fn_false_when_resolver_raises(monkeypatch):
     """Resolver exceptions (e.g. expired token + failed refresh) gate the tool out."""
     from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements
+    from tools.communication.x_search_tool import check_x_search_requirements
 
     _no_xai_env(monkeypatch)
 
@@ -398,7 +398,7 @@ def test_x_search_check_fn_false_when_resolver_raises(monkeypatch):
 
 def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
     """``x_search.model`` and ``x_search.timeout_seconds`` override the defaults."""
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 
@@ -454,7 +454,7 @@ def _no_post_allowed(monkeypatch):
 
 
 def test_x_search_rejects_malformed_from_date(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     _no_post_allowed(monkeypatch)
@@ -465,7 +465,7 @@ def test_x_search_rejects_malformed_from_date(monkeypatch):
 
 
 def test_x_search_rejects_malformed_to_date(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     _no_post_allowed(monkeypatch)
@@ -476,7 +476,7 @@ def test_x_search_rejects_malformed_to_date(monkeypatch):
 
 
 def test_x_search_rejects_inverted_date_range(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     _no_post_allowed(monkeypatch)
@@ -496,7 +496,7 @@ def test_x_search_rejects_future_from_date(monkeypatch):
     """``from_date`` in the future can never match any post → reject."""
     import datetime as _dt
 
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     _no_post_allowed(monkeypatch)
@@ -517,7 +517,7 @@ def test_x_search_allows_future_to_date(monkeypatch):
     """``to_date`` in the future is fine — caller may want posts as they arrive."""
     import datetime as _dt
 
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 
@@ -551,7 +551,7 @@ def test_x_search_accepts_today_as_from_date(monkeypatch):
     """``from_date == today UTC`` is a valid edge case (today is past + present)."""
     import datetime as _dt
 
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
 
@@ -578,7 +578,7 @@ def test_x_search_accepts_today_as_from_date(monkeypatch):
 
 def test_x_search_marks_degraded_when_handle_filter_returns_no_citations(monkeypatch):
     """allowed_x_handles set + zero citations → degraded=True."""
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
@@ -598,7 +598,7 @@ def test_x_search_marks_degraded_when_handle_filter_returns_no_citations(monkeyp
 
 
 def test_x_search_marks_degraded_when_excluded_handles_and_no_citations(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
@@ -615,7 +615,7 @@ def test_x_search_marks_degraded_when_excluded_handles_and_no_citations(monkeypa
 
 
 def test_x_search_marks_degraded_when_date_range_and_no_citations(monkeypatch):
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
@@ -638,7 +638,7 @@ def test_x_search_marks_degraded_when_date_range_and_no_citations(monkeypatch):
 
 def test_x_search_not_degraded_when_filter_returns_inline_citations(monkeypatch):
     """A real citation from the inline annotations clears the degraded flag."""
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
@@ -681,7 +681,7 @@ def test_x_search_not_degraded_when_filter_returns_inline_citations(monkeypatch)
 
 def test_x_search_not_degraded_when_filter_returns_top_level_citations(monkeypatch):
     """A real citation from xAI's top-level ``citations`` array also clears the flag."""
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
@@ -709,7 +709,7 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     unsourced answer, not a "filter miss". The caller can already tell from
     ``inline_citations == []`` if they care.
     """
-    from tools.x_search_tool import x_search_tool
+    from tools.communication.x_search_tool import x_search_tool
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(

@@ -795,7 +795,7 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from tools.mcp_tool import register_mcp_servers
+            from tools.mcp.mcp_tool import register_mcp_servers
 
             config_map: dict[str, dict] = {}
             for server in mcp_servers:

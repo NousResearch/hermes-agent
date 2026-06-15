@@ -17,7 +17,7 @@ class TestBrowserConsole:
     """browser_console() returns console messages + JS errors in one call."""
 
     def test_returns_console_messages_and_errors(self):
-        from tools.browser_tool import browser_console
+        from tools.browser.browser_tool import browser_console
 
         console_response = {
             "success": True,
@@ -49,7 +49,7 @@ class TestBrowserConsole:
         assert result["js_errors"][0]["message"] == "Uncaught TypeError"
 
     def test_passes_clear_flag(self):
-        from tools.browser_tool import browser_console
+        from tools.browser.browser_tool import browser_console
 
         empty = {"success": True, "data": {"messages": [], "errors": []}}
         with patch("tools.browser_tool._run_browser_command", return_value=empty) as mock_cmd:
@@ -61,7 +61,7 @@ class TestBrowserConsole:
         assert calls[1][0] == ("test", "errors", ["--clear"])
 
     def test_no_clear_by_default(self):
-        from tools.browser_tool import browser_console
+        from tools.browser.browser_tool import browser_console
 
         empty = {"success": True, "data": {"messages": [], "errors": []}}
         with patch("tools.browser_tool._run_browser_command", return_value=empty) as mock_cmd:
@@ -72,7 +72,7 @@ class TestBrowserConsole:
         assert calls[1][0] == ("test", "errors", [])
 
     def test_empty_console_and_errors(self):
-        from tools.browser_tool import browser_console
+        from tools.browser.browser_tool import browser_console
 
         empty = {"success": True, "data": {"messages": [], "errors": []}}
         with patch("tools.browser_tool._run_browser_command", return_value=empty):
@@ -84,7 +84,7 @@ class TestBrowserConsole:
         assert result["js_errors"] == []
 
     def test_handles_failed_commands(self):
-        from tools.browser_tool import browser_console
+        from tools.browser.browser_tool import browser_console
 
         failed = {"success": False, "error": "No session"}
         with patch("tools.browser_tool._run_browser_command", return_value=failed):
@@ -103,13 +103,13 @@ class TestBrowserConsoleSchema:
     """browser_console is properly registered in the tool registry."""
 
     def test_schema_in_browser_schemas(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+        from tools.browser.browser_tool import BROWSER_TOOL_SCHEMAS
 
         names = [s["name"] for s in BROWSER_TOOL_SCHEMAS]
         assert "browser_console" in names
 
     def test_schema_has_clear_param(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+        from tools.browser.browser_tool import BROWSER_TOOL_SCHEMAS
 
         schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_console")
         props = schema["parameters"]["properties"]
@@ -145,7 +145,7 @@ class TestBrowserVisionAnnotate:
     """browser_vision supports annotate parameter."""
 
     def test_schema_has_annotate_param(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+        from tools.browser.browser_tool import BROWSER_TOOL_SCHEMAS
 
         schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_vision")
         props = schema["parameters"]["properties"]
@@ -154,7 +154,7 @@ class TestBrowserVisionAnnotate:
 
     def test_annotate_false_no_flag(self):
         """Without annotate, screenshot command has no --annotate flag."""
-        from tools.browser_tool import browser_vision
+        from tools.browser.browser_tool import browser_vision
 
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
@@ -175,7 +175,7 @@ class TestBrowserVisionAnnotate:
 
     def test_annotate_true_adds_flag(self):
         """With annotate=True, screenshot command includes --annotate."""
-        from tools.browser_tool import browser_vision
+        from tools.browser.browser_tool import browser_vision
 
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
@@ -203,7 +203,7 @@ class TestBrowserVisionConfig:
         return shots_dir, screenshot
 
     def test_browser_vision_uses_configured_temperature_and_timeout(self, tmp_path):
-        from tools.browser_tool import browser_vision
+        from tools.browser.browser_tool import browser_vision
 
         shots_dir, screenshot = self._setup_screenshot(tmp_path)
         mock_response = MagicMock()
@@ -227,7 +227,7 @@ class TestBrowserVisionConfig:
         assert mock_llm.call_args.kwargs["timeout"] == 45.0
 
     def test_browser_vision_defaults_temperature_when_config_omits_it(self, tmp_path):
-        from tools.browser_tool import browser_vision
+        from tools.browser.browser_tool import browser_vision
 
         shots_dir, screenshot = self._setup_screenshot(tmp_path)
         mock_response = MagicMock()
@@ -253,7 +253,7 @@ class TestBrowserVisionConfig:
     def test_browser_vision_native_fast_path_returns_multimodal(self, tmp_path):
         """supports_vision override → screenshot attached natively, no aux call."""
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main
-        from tools.browser_tool import browser_vision
+        from tools.browser.browser_tool import browser_vision
 
         shots_dir, screenshot = self._setup_screenshot(tmp_path)
         annotations = [{"id": 1, "label": "Search box"}]
@@ -292,7 +292,7 @@ class TestBrowserVisionConfig:
     def test_browser_vision_text_mode_blocks_native_fast_path(self, tmp_path):
         """Explicit text routing → aux LLM used even with supports_vision."""
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main
-        from tools.browser_tool import browser_vision
+        from tools.browser.browser_tool import browser_vision
 
         shots_dir, screenshot = self._setup_screenshot(tmp_path)
         mock_response = MagicMock()
@@ -343,7 +343,7 @@ class TestRecordSessionsConfig:
 
     def test_maybe_start_recording_disabled(self):
         """Recording doesn't start when config says record_sessions: false."""
-        from tools.browser_tool import _maybe_start_recording, _recording_sessions
+        from tools.browser.browser_tool import _maybe_start_recording, _recording_sessions
 
         with (
             patch("tools.browser_tool._run_browser_command") as mock_cmd,
@@ -356,7 +356,7 @@ class TestRecordSessionsConfig:
 
     def test_maybe_stop_recording_noop_when_not_recording(self):
         """Stopping when not recording is a no-op."""
-        from tools.browser_tool import _maybe_stop_recording, _recording_sessions
+        from tools.browser.browser_tool import _maybe_stop_recording, _recording_sessions
 
         _recording_sessions.discard("test-task")  # ensure not in set
         with patch("tools.browser_tool._run_browser_command") as mock_cmd:

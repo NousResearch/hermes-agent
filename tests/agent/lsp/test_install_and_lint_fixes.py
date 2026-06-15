@@ -213,7 +213,7 @@ def test_npx_tsc_missing_treated_as_skipped():
     semantic tier (gated on ``success or skipped``) is skipped — the user
     gets a useless tooling-error message instead of real diagnostics.
     """
-    from tools.file_operations import _looks_like_linter_unusable
+    from tools.core.file_operations import _looks_like_linter_unusable
 
     npx_failure_output = (
         "                                                                               \n"
@@ -229,7 +229,7 @@ def test_npx_tsc_missing_treated_as_skipped():
 
 def test_real_lint_error_not_classified_as_unusable():
     """A genuine TypeScript type error must NOT be misclassified."""
-    from tools.file_operations import _looks_like_linter_unusable
+    from tools.core.file_operations import _looks_like_linter_unusable
 
     real_error = (
         "bad.ts:5:1 - error TS2322: Type 'number' is not assignable to type 'string'.\n"
@@ -242,7 +242,7 @@ def test_real_lint_error_not_classified_as_unusable():
 
 def test_unknown_base_cmd_returns_false():
     """Unfamiliar linters fall through and use the normal error path."""
-    from tools.file_operations import _looks_like_linter_unusable
+    from tools.core.file_operations import _looks_like_linter_unusable
 
     assert _looks_like_linter_unusable("eslint", "any output") is False
     assert _looks_like_linter_unusable("", "anything") is False
@@ -252,7 +252,7 @@ def test_check_lint_returns_skipped_when_npx_tsc_unusable(tmp_path):
     """Integration: _check_lint sees npx exit non-zero with the npx banner
     and returns a ``skipped`` LintResult so LSP can still run."""
     from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     ts_file = tmp_path / "bad.ts"
     ts_file.write_text("const x: string = 42;\n")
@@ -286,7 +286,7 @@ def test_check_lint_returns_skipped_when_npx_tsc_unusable(tmp_path):
 def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     """Sanity: real TypeScript errors still go through the error path."""
     from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     ts_file = tmp_path / "bad.ts"
     ts_file.write_text("const x: string = 42;\n")

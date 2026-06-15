@@ -540,7 +540,7 @@ async def _ssrf_redirect_guard(response):
     """
     if response.is_redirect and response.next_request:
         redirect_url = str(response.next_request.url)
-        from tools.url_safety import is_safe_url
+        from tools.security.url_safety import is_safe_url
         if not is_safe_url(redirect_url):
             raise ValueError(
                 f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
@@ -629,7 +629,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
+    from tools.security.url_safety import is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
@@ -743,7 +743,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     Raises:
         ValueError: If the URL targets a private/internal network (SSRF protection).
     """
-    from tools.url_safety import is_safe_url
+    from tools.security.url_safety import is_safe_url
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
@@ -4182,7 +4182,7 @@ class BasePlatformAdapter(ABC):
                         and text_content
                         and not media_files):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        from tools.media.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
                             speech_text = self.prepare_tts_text(text_content)

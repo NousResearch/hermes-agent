@@ -1363,7 +1363,7 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             import httpx as _httpx
             from urllib.parse import unquote as _unquote
-            from tools.url_safety import is_safe_url as _is_safe_url
+            from tools.security.url_safety import is_safe_url as _is_safe_url
         except Exception:
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
@@ -1749,7 +1749,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
-        from tools.url_safety import is_safe_url
+        from tools.security.url_safety import is_safe_url
 
         if not is_safe_url(image_url):
             logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")

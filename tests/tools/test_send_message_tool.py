@@ -26,7 +26,7 @@ def _reset_signal_scheduler():
     _reset_scheduler()
 
 from gateway.config import Platform
-from tools.send_message_tool import (
+from tools.communication.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_matrix_via_adapter,
@@ -1660,7 +1660,7 @@ class TestSendMatrixUrlEncoding:
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
-            from tools.send_message_tool import _send_matrix
+            from tools.communication.send_message_tool import _send_matrix
             result = asyncio.get_event_loop().run_until_complete(
                 _send_matrix(
                     "test_token",
@@ -2482,7 +2482,7 @@ class TestSendViaAdapterStandaloneFallback:
 
     @pytest.mark.asyncio
     async def test_live_ntfy_adapter_receives_explicit_publish_topic(self, monkeypatch):
-        from tools.send_message_tool import _send_via_adapter
+        from tools.communication.send_message_tool import _send_via_adapter
 
         platform = Platform("ntfy")
         recorded = {}
@@ -2514,7 +2514,7 @@ class TestSendViaAdapterStandaloneFallback:
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):
         """Registry has hook, runner ref returns None: the hook is awaited."""
-        from tools.send_message_tool import _send_via_adapter
+        from tools.communication.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         recorded = {}
@@ -2548,7 +2548,7 @@ class TestSendViaAdapterStandaloneFallback:
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_kwargs_forwarded(self, monkeypatch):
         """thread_id, media_files, and force_document all reach the hook."""
-        from tools.send_message_tool import _send_via_adapter
+        from tools.communication.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         recorded = {}
@@ -2584,7 +2584,7 @@ class TestSendViaAdapterStandaloneFallback:
     async def test_standalone_sender_fn_absent_returns_helpful_error(self, monkeypatch):
         """Registry entry has no hook: the fall-through error explains both
         options (gateway-running and standalone hook)."""
-        from tools.send_message_tool import _send_via_adapter
+        from tools.communication.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         platform_registry.register(self._make_entry(None))
@@ -2607,7 +2607,7 @@ class TestSendViaAdapterStandaloneFallback:
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
         """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
-        from tools.send_message_tool import _send_via_adapter
+        from tools.communication.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         async def boom(pconfig, chat_id, message, **kwargs):
@@ -2631,7 +2631,7 @@ class TestSendViaAdapterStandaloneFallback:
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_return_shape_passed_through(self, monkeypatch):
         """Hook returns success dict: passed through unchanged."""
-        from tools.send_message_tool import _send_via_adapter
+        from tools.communication.send_message_tool import _send_via_adapter
         from gateway.platform_registry import platform_registry
 
         async def fake_send(pconfig, chat_id, message, **kwargs):
@@ -2676,7 +2676,7 @@ class TestCheckSendMessage:
     def test_kanban_task_env_grants_access(self, monkeypatch):
         """Workers spawned by the dispatcher (HERMES_KANBAN_TASK set) must be
         allowed regardless of session_platform / gateway-pid state."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
         monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
@@ -2689,7 +2689,7 @@ class TestCheckSendMessage:
         """Honoring HERMES_KANBAN_TASK must not depend on importing or calling
         gateway.status — the worker may run with a HERMES_HOME that has no
         gateway.pid, and we don't want that import path to be load-bearing."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc12345")
 
@@ -2704,7 +2704,7 @@ class TestCheckSendMessage:
     def test_messaging_platform_session_grants_access(self, monkeypatch):
         """Telegram/Discord/etc. sessions pass via the platform branch even
         without HERMES_KANBAN_TASK."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
@@ -2715,7 +2715,7 @@ class TestCheckSendMessage:
     def test_local_platform_falls_through_to_gateway_check(self, monkeypatch):
         """``HERMES_SESSION_PLATFORM=local`` means CLI-style — must defer to
         is_gateway_running() rather than auto-grant."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
@@ -2727,7 +2727,7 @@ class TestCheckSendMessage:
     def test_running_gateway_grants_access(self, monkeypatch):
         """Plain CLI session (no kanban task, empty platform) with a live
         gateway: tool is callable."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
@@ -2737,7 +2737,7 @@ class TestCheckSendMessage:
 
     def test_no_signals_means_unavailable(self, monkeypatch):
         """No kanban task, no platform, no gateway: tool is hidden."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
@@ -2748,7 +2748,7 @@ class TestCheckSendMessage:
     def test_gateway_status_import_error_is_swallowed(self, monkeypatch):
         """If gateway.status can't be imported (unusual deployment / partial
         install), the check returns False rather than raising."""
-        from tools.send_message_tool import _check_send_message
+        from tools.communication.send_message_tool import _check_send_message
 
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 

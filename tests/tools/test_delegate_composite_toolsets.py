@@ -2,7 +2,7 @@
 
 import unittest
 
-from tools.delegate_tool import _expand_parent_toolsets
+from tools.delegation.delegate_tool import _expand_parent_toolsets
 
 
 class TestExpandParentToolsets(unittest.TestCase):

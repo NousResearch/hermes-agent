@@ -2,7 +2,7 @@
 
 import json
 
-from tools.terminal_tool import _transform_sudo_command, terminal_tool
+from tools.core.terminal_tool import _transform_sudo_command, terminal_tool
 
 
 def test_transform_sudo_command_none_returns_cleanly():

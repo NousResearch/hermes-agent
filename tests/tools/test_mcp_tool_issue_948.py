@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
+from tools.mcp.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:

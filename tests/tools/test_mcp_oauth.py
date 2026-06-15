@@ -11,7 +11,7 @@ import pytest
 
 import asyncio
 
-from tools.mcp_oauth import (
+from tools.mcp.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
     build_oauth_auth,
@@ -535,7 +535,7 @@ class TestBuildOAuthAuthNonInteractive:
 def test_build_client_metadata_basic():
     """_build_client_metadata returns metadata with expected defaults."""
     pytest.importorskip("mcp")
-    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+    from tools.mcp.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_name": "Test Client"}
     _configure_callback_port(cfg)
@@ -549,7 +549,7 @@ def test_build_client_metadata_basic():
 def test_build_client_metadata_without_secret_is_public():
     """Without client_secret, token endpoint auth is 'none' (public client)."""
     pytest.importorskip("mcp")
-    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+    from tools.mcp.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {}
     _configure_callback_port(cfg)
@@ -560,7 +560,7 @@ def test_build_client_metadata_without_secret_is_public():
 def test_build_client_metadata_with_secret_is_confidential():
     """With client_secret, token endpoint auth is 'client_secret_post'."""
     pytest.importorskip("mcp")
-    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+    from tools.mcp.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_secret": "shh"}
     _configure_callback_port(cfg)
@@ -570,7 +570,7 @@ def test_build_client_metadata_with_secret_is_confidential():
 
 def test_configure_callback_port_picks_free_port():
     """_configure_callback_port(0) picks a free port in the ephemeral range."""
-    from tools.mcp_oauth import _configure_callback_port
+    from tools.mcp.mcp_oauth import _configure_callback_port
 
     cfg = {"redirect_port": 0}
     port = _configure_callback_port(cfg)
@@ -580,7 +580,7 @@ def test_configure_callback_port_picks_free_port():
 
 def test_configure_callback_port_uses_explicit_port():
     """An explicit redirect_port is preserved."""
-    from tools.mcp_oauth import _configure_callback_port
+    from tools.mcp.mcp_oauth import _configure_callback_port
 
     cfg = {"redirect_port": 54321}
     port = _configure_callback_port(cfg)
@@ -763,7 +763,7 @@ class TestPasteCallbackSkipToken:
 
     @pytest.mark.parametrize("token", ["skip", "SKIP", "Skip", "cancel", "s", "n", "no", "q", "quit"])
     def test_skip_tokens_set_sentinel(self, monkeypatch, token):
-        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        from tools.mcp.mcp_oauth import _USER_SKIPPED_SENTINEL
         result = self._empty_result()
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: token + "\n"))
         _paste_callback_reader(result)
@@ -788,7 +788,7 @@ class TestPasteCallbackSkipToken:
 
     def test_skip_token_not_parsed_as_url(self, monkeypatch, capsys):
         """`skip` must NOT fall through to URL parsing (which would silently no-op)."""
-        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        from tools.mcp.mcp_oauth import _USER_SKIPPED_SENTINEL
         result = self._empty_result()
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
         _paste_callback_reader(result)

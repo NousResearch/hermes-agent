@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from tools.skill_manager_tool import (
+from tools.skills.skill_manager_tool import (
     MAX_SKILL_CONTENT_CHARS,
     _validate_content_size,
     skill_manage,
@@ -197,7 +197,7 @@ class TestHandPlacedSkillsNoLimit:
 
     def test_oversized_handplaced_skill_loads(self, isolate_skills, tmp_path):
         """A hand-placed 200k skill can still be read via skill_view."""
-        from tools.skills_tool import skill_view
+        from tools.skills.skills_tool import skill_view
 
         skill_dir = tmp_path / "skills" / "manual-giant"
         skill_dir.mkdir(parents=True)

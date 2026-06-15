@@ -959,7 +959,7 @@ class TestSendEmailStandalone(unittest.TestCase):
         """_send_email should use verified STARTTLS when sending."""
         import asyncio
         import ssl
-        from tools.send_message_tool import _send_email
+        from tools.communication.send_message_tool import _send_email
 
         with patch("smtplib.SMTP") as mock_smtp:
             mock_server = MagicMock()
@@ -987,7 +987,7 @@ class TestSendEmailStandalone(unittest.TestCase):
     def test_send_email_tool_failure(self):
         """SMTP failure should return error dict."""
         import asyncio
-        from tools.send_message_tool import _send_email
+        from tools.communication.send_message_tool import _send_email
 
         with patch("smtplib.SMTP", side_effect=Exception("SMTP error")):
             result = asyncio.run(
@@ -1001,7 +1001,7 @@ class TestSendEmailStandalone(unittest.TestCase):
     def test_send_email_tool_not_configured(self):
         """Missing config should return error."""
         import asyncio
-        from tools.send_message_tool import _send_email
+        from tools.communication.send_message_tool import _send_email
 
         result = asyncio.run(
             _send_email({}, "user@test.com", "Hello")

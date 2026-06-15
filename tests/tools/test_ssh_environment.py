@@ -24,12 +24,12 @@ requires_ssh = pytest.mark.skipif(
 
 
 def _run(command, task_id="ssh_test", **kwargs):
-    from tools.terminal_tool import terminal_tool
+    from tools.core.terminal_tool import terminal_tool
     return json.loads(terminal_tool(command, task_id=task_id, **kwargs))
 
 
 def _cleanup(task_id="ssh_test"):
-    from tools.terminal_tool import cleanup_vm
+    from tools.core.terminal_tool import cleanup_vm
     cleanup_vm(task_id)
 
 
@@ -140,25 +140,25 @@ class TestTerminalToolConfig:
         """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
-        from tools.terminal_tool import _get_env_config
+        from tools.core.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_explicit_false(self, monkeypatch):
         """Per-backend env var overrides the global default."""
         monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "false")
-        from tools.terminal_tool import _get_env_config
+        from tools.core.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
     def test_ssh_persistent_explicit_true(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_SSH_PERSISTENT", "true")
-        from tools.terminal_tool import _get_env_config
+        from tools.core.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is True
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
         """TERMINAL_PERSISTENT_SHELL=false disables SSH persistent by default."""
         monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
         monkeypatch.setenv("TERMINAL_PERSISTENT_SHELL", "false")
-        from tools.terminal_tool import _get_env_config
+        from tools.core.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
 

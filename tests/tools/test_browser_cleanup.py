@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 class TestScreenshotPathRecovery:
     def test_extracts_standard_absolute_path(self):
-        from tools.browser_tool import _extract_screenshot_path_from_text
+        from tools.browser.browser_tool import _extract_screenshot_path_from_text
 
         assert (
             _extract_screenshot_path_from_text("Screenshot saved to /tmp/foo.png")
@@ -13,7 +13,7 @@ class TestScreenshotPathRecovery:
         )
 
     def test_extracts_quoted_absolute_path(self):
-        from tools.browser_tool import _extract_screenshot_path_from_text
+        from tools.browser.browser_tool import _extract_screenshot_path_from_text
 
         assert (
             _extract_screenshot_path_from_text(

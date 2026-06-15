@@ -3094,7 +3094,7 @@ class TestMcpParallelToolBatch:
     def test_mcp_tools_parallel_when_server_opted_in(self):
         """MCP tools from a parallel-safe server can run concurrently."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
+        from tools.mcp.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
             _mcp_tool_server_names["mcp_github_list_repos"] = "github"
@@ -3112,7 +3112,7 @@ class TestMcpParallelToolBatch:
     def test_mixed_mcp_and_builtin_parallel(self):
         """MCP parallel tools mixed with built-in parallel-safe tools."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
+        from tools.mcp.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
             _mcp_tool_server_names["mcp_docs_search"] = "docs"
@@ -3128,7 +3128,7 @@ class TestMcpParallelToolBatch:
     def test_mixed_parallel_and_serial_mcp_servers(self):
         """One parallel MCP server + one non-parallel MCP server = sequential."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
+        from tools.mcp.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
             # "github" is NOT in _parallel_safe_servers

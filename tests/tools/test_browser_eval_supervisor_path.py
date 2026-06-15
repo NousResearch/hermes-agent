@@ -230,7 +230,7 @@ def _make_supervisor_with_cdp(cdp_response):
     import asyncio
     import threading
 
-    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser.browser_supervisor import CDPSupervisor
 
     sup = object.__new__(CDPSupervisor)
     sup._state_lock = threading.Lock()
@@ -349,7 +349,7 @@ class TestEvaluateRuntimeResponseShaping:
     def test_inactive_supervisor_returns_error_without_dispatch(self):
         """Inactive supervisor short-circuits before even touching the loop."""
         import threading
-        from tools.browser_supervisor import CDPSupervisor
+        from tools.browser.browser_supervisor import CDPSupervisor
 
         sup = object.__new__(CDPSupervisor)
         sup._state_lock = threading.Lock()
@@ -366,7 +366,7 @@ class TestEvaluateRuntimeResponseShaping:
     def test_no_session_attached_returns_error(self):
         import asyncio
         import threading
-        from tools.browser_supervisor import CDPSupervisor
+        from tools.browser.browser_supervisor import CDPSupervisor
 
         sup = object.__new__(CDPSupervisor)
         sup._state_lock = threading.Lock()
@@ -396,7 +396,7 @@ def _make_supervisor_with_cdp_fn(cdp_fn):
     import asyncio
     import threading
 
-    from tools.browser_supervisor import CDPSupervisor
+    from tools.browser.browser_supervisor import CDPSupervisor
 
     sup = object.__new__(CDPSupervisor)
     sup._state_lock = threading.Lock()

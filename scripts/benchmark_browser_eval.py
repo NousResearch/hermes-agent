@@ -63,7 +63,7 @@ def main():
 
     proc, profile, cdp_url = _start_chrome(args.port)
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from tools.browser.browser_supervisor import SUPERVISOR_REGISTRY
 
         # Warm up: start the supervisor, navigate to a page.
         supervisor = SUPERVISOR_REGISTRY.get_or_start(
@@ -94,7 +94,7 @@ def main():
             print("agent-browser CLI not found — skipping subprocess bench.")
             sub_times = []
         else:
-            from tools.browser_tool import _run_browser_command, _last_session_key
+            from tools.browser.browser_tool import _run_browser_command, _last_session_key
             task_id = _last_session_key("bench-eval")
             sub_times = []
             for _ in range(args.iterations):

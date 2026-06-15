@@ -261,7 +261,7 @@ class TestCheckpointNotify:
 
 class TestTerminalSchema:
     def test_schema_has_notify_on_complete(self):
-        from tools.terminal_tool import TERMINAL_SCHEMA
+        from tools.core.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
         assert "notify_on_complete" in props
         assert props["notify_on_complete"]["type"] == "boolean"
@@ -269,7 +269,7 @@ class TestTerminalSchema:
 
     def test_handler_passes_notify(self):
         """_handle_terminal passes notify_on_complete to terminal_tool."""
-        from tools.terminal_tool import _handle_terminal
+        from tools.core.terminal_tool import _handle_terminal
         with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
             _handle_terminal(
                 {"command": "echo hi", "background": True, "notify_on_complete": True},
@@ -285,7 +285,7 @@ class TestTerminalSchema:
 
 class TestCodeExecutionBlocked:
     def test_notify_on_complete_blocked_in_sandbox(self):
-        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
+        from tools.core.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
         assert "notify_on_complete" in _TERMINAL_BLOCKED_PARAMS
 
 

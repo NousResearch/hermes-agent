@@ -58,7 +58,7 @@ def fake_hermes(tmp_path, monkeypatch):
 
 class TestWriteFileCrossProfileGuard:
     def test_in_profile_write_allowed(self, fake_hermes):
-        from tools.file_tools import write_file_tool
+        from tools.core.file_tools import write_file_tool
         target = fake_hermes["sec_home"] / "skills" / "new-skill" / "SKILL.md"
         target.parent.mkdir(parents=True)
         result_json = write_file_tool(str(target), "in-profile content")
@@ -70,7 +70,7 @@ class TestWriteFileCrossProfileGuard:
     def test_cross_profile_write_blocked_by_default(self, fake_hermes):
         """The May 2026 incident — security-profile session edits default
         profile's skill. Must be blocked."""
-        from tools.file_tools import write_file_tool
+        from tools.core.file_tools import write_file_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         original = target.read_text()
         result_json = write_file_tool(str(target), "OVERWRITTEN")
@@ -84,7 +84,7 @@ class TestWriteFileCrossProfileGuard:
 
     def test_cross_profile_True_bypass(self, fake_hermes):
         """Explicit override after user direction must succeed."""
-        from tools.file_tools import write_file_tool
+        from tools.core.file_tools import write_file_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         result_json = write_file_tool(
             str(target), "user-directed override", cross_profile=True
@@ -94,7 +94,7 @@ class TestWriteFileCrossProfileGuard:
         assert target.read_text() == "user-directed override"
 
     def test_non_hermes_path_unaffected(self, fake_hermes, tmp_path):
-        from tools.file_tools import write_file_tool
+        from tools.core.file_tools import write_file_tool
         target = tmp_path / "outside" / "main.py"
         target.parent.mkdir()
         result_json = write_file_tool(str(target), "print('hello')")
@@ -110,7 +110,7 @@ class TestWriteFileCrossProfileGuard:
 
 class TestPatchCrossProfileGuard:
     def test_cross_profile_patch_blocked(self, fake_hermes):
-        from tools.file_tools import patch_tool
+        from tools.core.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         original = target.read_text()
         result_json = patch_tool(
@@ -125,7 +125,7 @@ class TestPatchCrossProfileGuard:
         assert target.read_text() == original
 
     def test_cross_profile_patch_bypass(self, fake_hermes):
-        from tools.file_tools import patch_tool
+        from tools.core.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         result_json = patch_tool(
             mode="replace",
@@ -141,7 +141,7 @@ class TestPatchCrossProfileGuard:
     def test_v4a_patch_extracts_path_for_guard(self, fake_hermes):
         """V4A patches embed the target paths in the patch body, not in
         a ``path`` kwarg. The guard must still apply."""
-        from tools.file_tools import patch_tool
+        from tools.core.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         original = target.read_text()
         v4a = (
@@ -184,7 +184,7 @@ class TestSkillManageCrossProfileErrorUX:
         import importlib
         import tools.skill_manager_tool
         importlib.reload(tools.skill_manager_tool)
-        from tools.skill_manager_tool import _skill_not_found_error
+        from tools.skills.skill_manager_tool import _skill_not_found_error
 
         err = _skill_not_found_error("default-only-skill")
         assert "not found in active profile 'hermes-security'" in err
@@ -199,7 +199,7 @@ class TestSkillManageCrossProfileErrorUX:
         import importlib
         import tools.skill_manager_tool
         importlib.reload(tools.skill_manager_tool)
-        from tools.skill_manager_tool import _skill_not_found_error
+        from tools.skills.skill_manager_tool import _skill_not_found_error
 
         err = _skill_not_found_error("everywhere-skill")
         assert "default" in err
@@ -214,7 +214,7 @@ class TestSkillManageCrossProfileErrorUX:
         import importlib
         import tools.skill_manager_tool
         importlib.reload(tools.skill_manager_tool)
-        from tools.skill_manager_tool import _skill_not_found_error
+        from tools.skills.skill_manager_tool import _skill_not_found_error
 
         err = _skill_not_found_error("totally-imaginary-skill")
         assert "not found in active profile 'hermes-security'" in err

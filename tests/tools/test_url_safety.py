@@ -3,7 +3,7 @@
 import socket
 from unittest.mock import patch
 
-from tools.url_safety import (
+from tools.security.url_safety import (
     is_safe_url,
     async_is_safe_url,
     is_always_blocked_url,

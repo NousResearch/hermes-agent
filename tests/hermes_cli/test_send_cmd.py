@@ -52,7 +52,7 @@ def fake_tool(monkeypatch):
 
     mod = types.ModuleType("tools.send_message_tool")
     mod.send_message_tool = fake
-    # Register the stub so ``from tools.send_message_tool import ...`` inside
+    # Register the stub so ``from tools.communication.send_message_tool import ...`` inside
     # cmd_send resolves to our fake. Also patch the parent ``tools`` package
     # entry so attribute lookup works.
     monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 
 from tools.environments.local import LocalEnvironment
-from tools.file_operations import (
+from tools.core.file_operations import (
     PatchResult,
     ShellFileOperations,
     WriteResult,

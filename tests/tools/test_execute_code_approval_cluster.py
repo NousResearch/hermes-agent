@@ -281,7 +281,7 @@ def test_guard_session_yolo_bypasses(gw_session):
 # ---------------------------------------------------------------------------
 
 def test_env_scrub_hermes_allowlist_and_secret_blocks():
-    from tools.code_execution_tool import _scrub_child_env
+    from tools.core.code_execution_tool import _scrub_child_env
 
     env = {
         # operational allowlist → kept
@@ -311,7 +311,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
 def test_env_scrub_passthrough_overrides_secret_block():
     """A skill/config-declared passthrough var is an explicit user opt-in and
     passes even if it matches a secret substring (precedence is intentional)."""
-    from tools.code_execution_tool import _scrub_child_env
+    from tools.core.code_execution_tool import _scrub_child_env
 
     env = {"MY_SERVICE_DSN": "value"}
     out = _scrub_child_env(env, is_passthrough=lambda k: k == "MY_SERVICE_DSN",
@@ -359,7 +359,7 @@ def test_env_scrub_logs_dropped_hermes_vars(caplog):
     leave users guessing why a sandbox script sees an unset HERMES_* var."""
     import logging
 
-    from tools.code_execution_tool import _scrub_child_env
+    from tools.core.code_execution_tool import _scrub_child_env
 
     env = {
         "HERMES_HOME": "/h",          # allowlisted → kept, not logged
@@ -385,7 +385,7 @@ def test_env_scrub_no_log_when_nothing_dropped(caplog):
     """No diagnostic noise when there are no dropped HERMES_* vars."""
     import logging
 
-    from tools.code_execution_tool import _scrub_child_env
+    from tools.core.code_execution_tool import _scrub_child_env
 
     with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
         _scrub_child_env(

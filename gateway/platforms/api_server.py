@@ -1214,7 +1214,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         try:
-            from tools.skills_tool import _find_all_skills, _sort_skills
+            from tools.skills.skills_tool import _find_all_skills, _sort_skills
             skills = _sort_skills(_find_all_skills(skip_disabled=False))
         except Exception:
             logger.exception("GET /v1/skills failed")

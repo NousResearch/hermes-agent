@@ -121,6 +121,6 @@ class TestUnifiedDispatch:
 
     def test_operation_field_not_in_schema(self):
         """Make sure we removed the operation field from the schema."""
-        from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
+        from tools.media.video_generation_tool import VIDEO_GENERATE_SCHEMA
         assert "operation" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
         assert "video_url" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]

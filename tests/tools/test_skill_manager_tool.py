@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.skill_manager_tool import (
+from tools.skills.skill_manager_tool import (
     _validate_name,
     _validate_category,
     _validate_frontmatter,
@@ -565,7 +565,7 @@ class TestSkillManageDispatcher:
 
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
-        from tools.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
+        from tools.skills.skill_provenance import set_current_write_origin, BACKGROUND_REVIEW
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
             with _skill_dir(tmp_path):
@@ -575,7 +575,7 @@ class TestSkillManageDispatcher:
                 from tools.skill_usage import load_usage
                 usage = load_usage()
         finally:
-            from tools.skill_provenance import reset_current_write_origin
+            from tools.skills.skill_provenance import reset_current_write_origin
             reset_current_write_origin(token)
         result = json.loads(raw)
         assert result["success"] is True
@@ -606,7 +606,7 @@ class TestSecurityScanGate:
 
     def test_scan_noop_when_flag_off(self, tmp_path):
         """Default config (flag off) short-circuits before running scan_skill."""
-        from tools.skill_manager_tool import _security_scan_skill
+        from tools.skills.skill_manager_tool import _security_scan_skill
 
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
              patch("tools.skill_manager_tool.scan_skill") as mock_scan:
@@ -617,8 +617,8 @@ class TestSecurityScanGate:
 
     def test_scan_runs_when_flag_on(self, tmp_path):
         """When flag is on, scan_skill is invoked and its verdict is honored."""
-        from tools.skill_manager_tool import _security_scan_skill
-        from tools.skills_guard import ScanResult
+        from tools.skills.skill_manager_tool import _security_scan_skill
+        from tools.skills.skills_guard import ScanResult
 
         # Fake a safe scan result — caller should return None (allow)
         fake_result = ScanResult(
@@ -638,8 +638,8 @@ class TestSecurityScanGate:
 
     def test_scan_blocks_dangerous_when_flag_on(self, tmp_path):
         """Dangerous verdict + flag on → returns an error string for the agent."""
-        from tools.skill_manager_tool import _security_scan_skill
-        from tools.skills_guard import ScanResult, Finding
+        from tools.skills.skill_manager_tool import _security_scan_skill
+        from tools.skills.skills_guard import ScanResult, Finding
 
         finding = Finding(
             pattern_id="test", severity="critical", category="exfiltration",
@@ -662,14 +662,14 @@ class TestSecurityScanGate:
 
     def test_guard_flag_reads_config_default_false(self):
         """_guard_agent_created_enabled returns False when config doesn't set it."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from tools.skills.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", return_value={"skills": {}}):
             assert _guard_agent_created_enabled() is False
 
     def test_guard_flag_reads_config_when_set(self):
         """_guard_agent_created_enabled returns True when user explicitly enables."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from tools.skills.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config",
                    return_value={"skills": {"guard_agent_created": True}}):
@@ -677,14 +677,14 @@ class TestSecurityScanGate:
 
     def test_guard_flag_handles_config_error(self):
         """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from tools.skills.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert _guard_agent_created_enabled() is False
 
     def test_guard_flag_quoted_false_stays_disabled(self):
         """Quoted 'false' from YAML edits must not enable the guard."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from tools.skills.skill_manager_tool import _guard_agent_created_enabled
 
         for quoted in ("false", "False", "0", "no", "off"):
             with patch("hermes_cli.config.load_config",
@@ -694,7 +694,7 @@ class TestSecurityScanGate:
 
     def test_guard_flag_quoted_true_enables(self):
         """Quoted truthy strings must enable the guard."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from tools.skills.skill_manager_tool import _guard_agent_created_enabled
 
         for quoted in ("true", "True", "1", "yes", "on"):
             with patch("hermes_cli.config.load_config",

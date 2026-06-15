@@ -4,7 +4,7 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
-from tools.osv_check import (
+from tools.security.osv_check import (
     check_package_for_malware,
     _infer_ecosystem,
     _parse_package_from_args,

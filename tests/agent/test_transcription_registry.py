@@ -230,7 +230,7 @@ class TestBuiltinSync:
     """
 
     def test_registry_builtins_match_dispatcher_builtins(self):
-        from tools.transcription_tools import BUILTIN_STT_PROVIDERS
+        from tools.media.transcription_tools import BUILTIN_STT_PROVIDERS
 
         assert transcription_registry._BUILTIN_NAMES == BUILTIN_STT_PROVIDERS, (
             "agent.transcription_registry._BUILTIN_NAMES and "

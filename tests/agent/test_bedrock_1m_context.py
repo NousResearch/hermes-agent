@@ -41,7 +41,7 @@ class TestBedrockContext1MBeta:
         This is the load-bearing assertion for the reported bug:
         without this header Bedrock serves Opus 4.6/4.7 with a 200K cap.
         """
-        import agent.anthropic_adapter as adapter
+        import agent.provider.anthropic_adapter as adapter
 
         fake_sdk = MagicMock()
         fake_sdk.AnthropicBedrock = MagicMock()

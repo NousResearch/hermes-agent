@@ -234,7 +234,7 @@ class TestCodexOAuthContextLength:
     """
 
     def setup_method(self):
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         mm._codex_oauth_context_cache = {}
         mm._codex_oauth_context_cache_time = 0.0
 
@@ -460,7 +460,7 @@ class TestNousPortalContextResolution:
     """
 
     def setup_method(self):
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         mm._endpoint_model_metadata_cache.clear()
         mm._endpoint_model_metadata_cache_time.clear()
 
@@ -471,7 +471,7 @@ class TestNousPortalContextResolution:
     ):
         """The motivating case: OR catalog says 1M for qwen3.6-plus, but
         the Nous portal correctly enforces 262144.  Portal must win."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
@@ -499,7 +499,7 @@ class TestNousPortalContextResolution:
     ):
         """Portal-derived value should land in the persistent cache so
         cross-process callers (e.g. child agents) see the same value."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
@@ -531,7 +531,7 @@ class TestNousPortalContextResolution:
         keeps working — but we must NOT write the OR value to disk.  Once
         cached on disk, step-1 short-circuits forever and the user is stuck
         with the wrong number until they manually clear the cache."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
@@ -564,7 +564,7 @@ class TestNousPortalContextResolution:
         1000000`` (OR-derived) sitting in their cache file.  Step 1 must
         NOT short-circuit on that entry — step 5b reconciles against the
         portal and overwrites the persistent value with 262144."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
@@ -608,7 +608,7 @@ class TestNousPortalContextResolution:
         on-disk cache entry, the entry must survive untouched — we don't
         want a transient outage to delete the only value we have.  The
         request itself still gets served via OR fallback for this call."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
@@ -644,7 +644,7 @@ class TestNousPortalContextResolution:
         when the user is really on Nous Portal (e.g. cred-pool fallback).
         The Nous-URL bypass must trigger off the URL host, not the provider
         string, so the portal-first resolver still runs in that case."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         cache_file = tmp_path / "context_length_cache.yaml"
         monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
 
@@ -1026,7 +1026,7 @@ class TestStripProviderPrefix:
 
 class TestFetchModelMetadata:
     def _reset_cache(self):
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         mm._model_metadata_cache = {}
         mm._model_metadata_cache_time = 0
 
@@ -1058,7 +1058,7 @@ class TestFetchModelMetadata:
     @patch("agent.model_metadata.requests.get")
     def test_api_failure_returns_stale_cache(self, mock_get):
         """On API failure with existing cache, stale data is returned."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         mm._model_metadata_cache = {"old/model": {"context_length": 50000}}
         mm._model_metadata_cache_time = 0  # expired
 
@@ -1111,7 +1111,7 @@ class TestFetchModelMetadata:
     @patch("agent.model_metadata.requests.get")
     def test_ttl_expiry_triggers_refetch(self, mock_get):
         """Cache expires after _MODEL_CACHE_TTL seconds."""
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         self._reset_cache()
 
         mock_response = MagicMock()
@@ -1335,7 +1335,7 @@ class TestGrok43StaleCacheGuard:
     def test_stale_grok_4_3_dropped_and_reresolves_to_1m(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.x.ai/v1"
         mm.save_context_length("grok-4.3", base, 256_000)
@@ -1347,7 +1347,7 @@ class TestGrok43StaleCacheGuard:
     def test_correct_grok_4_3_cache_preserved(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.x.ai/v1"
         mm.save_context_length("grok-4.3", base, 1_000_000)
@@ -1359,7 +1359,7 @@ class TestGrok43StaleCacheGuard:
     def test_grok_4_not_clobbered(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.x.ai/v1"
         # 256,000 is the CORRECT value for plain grok-4 — guard must not touch it.

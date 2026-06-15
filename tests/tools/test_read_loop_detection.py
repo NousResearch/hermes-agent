@@ -19,7 +19,7 @@ import json
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.file_tools import (
+from tools.core.file_tools import (
     read_file_tool,
     search_tool,
     notify_other_tool_call,

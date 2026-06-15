@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.browser_camofox import (
+from tools.browser.browser_camofox import (
     _drop_session,
     _get_session,
     _managed_persistence_enabled,

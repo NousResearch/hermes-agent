@@ -16,7 +16,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import (
+from tools.delegation.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
@@ -80,7 +80,7 @@ class TestDelegateRequirements(unittest.TestCase):
         not the framework defaults. Without this, models that read 'default 3'
         will self-cap below the user's real limit.
         """
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _build_dynamic_schema_overrides,
             _get_max_concurrent_children,
             _get_max_spawn_depth,
@@ -117,7 +117,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertEqual(len(defs), 1)
         fn = defs[0]["function"]
         # Description should mention the user's actual limits, not "default 3".
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _get_max_concurrent_children,
             _get_max_spawn_depth,
         )
@@ -902,7 +902,7 @@ class TestBlockedTools(unittest.TestCase):
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _get_max_spawn_depth, _get_orchestrator_enabled,
             _MIN_SPAWN_DEPTH,
         )
@@ -1663,7 +1663,7 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         leased_entry = MagicMock()
         leased_entry.id = "cred-b"
@@ -1693,7 +1693,7 @@ class TestChildCredentialLeasing(unittest.TestCase):
         child._credential_pool.release_lease.assert_called_once_with("cred-b")
 
     def test_run_single_child_releases_lease_after_failure(self):
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         child = MagicMock()
         child._credential_pool = MagicMock()
@@ -1721,7 +1721,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
     def test_heartbeat_touches_parent_activity_during_child_run(self):
         """Parent's _touch_activity is called while child.run_conversation blocks."""
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         parent = _make_mock_parent()
         touch_calls = []
@@ -1761,7 +1761,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
     def test_heartbeat_stops_after_child_completes(self):
         """Heartbeat thread is cleaned up when the child finishes."""
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         parent = _make_mock_parent()
         touch_calls = []
@@ -1794,7 +1794,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
     def test_heartbeat_stops_after_child_error(self):
         """Heartbeat thread is cleaned up even when the child raises."""
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         parent = _make_mock_parent()
         touch_calls = []
@@ -1832,7 +1832,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
     def test_heartbeat_includes_child_activity_desc_when_no_tool(self):
         """When child has no current_tool, heartbeat uses last_activity_desc."""
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         parent = _make_mock_parent()
         touch_calls = []
@@ -1876,7 +1876,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
         session. The fix uses a much higher in-tool threshold and only
         applies the tight idle threshold when current_tool is None.
         """
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         parent = _make_mock_parent()
         touch_calls = []
@@ -2205,14 +2205,14 @@ class TestMaxSpawnDepth(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_max_spawn_depth_defaults_to_1(self, mock_cfg):
-        from tools.delegate_tool import _get_max_spawn_depth
+        from tools.delegation.delegate_tool import _get_max_spawn_depth
         self.assertEqual(_get_max_spawn_depth(), 1)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": 0})
     def test_max_spawn_depth_clamped_below_one(self, mock_cfg):
         import logging
-        from tools.delegate_tool import _get_max_spawn_depth
+        from tools.delegation.delegate_tool import _get_max_spawn_depth
         with self.assertLogs("tools.delegate_tool", level=logging.WARNING) as cm:
             result = _get_max_spawn_depth()
         self.assertEqual(result, 1)
@@ -2222,13 +2222,13 @@ class TestMaxSpawnDepth(unittest.TestCase):
            return_value={"max_spawn_depth": 99})
     def test_max_spawn_depth_no_upper_ceiling(self, mock_cfg):
         """No upper ceiling — high values pass through unchanged (cost is the limiter)."""
-        from tools.delegate_tool import _get_max_spawn_depth
+        from tools.delegation.delegate_tool import _get_max_spawn_depth
         self.assertEqual(_get_max_spawn_depth(), 99)
 
     @patch("tools.delegate_tool._load_config",
            return_value={"max_spawn_depth": "not-a-number"})
     def test_max_spawn_depth_invalid_falls_back_to_default(self, mock_cfg):
-        from tools.delegate_tool import _get_max_spawn_depth
+        from tools.delegation.delegate_tool import _get_max_spawn_depth
         self.assertEqual(_get_max_spawn_depth(), 1)
 
 
@@ -2292,7 +2292,7 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         self.assertTrue(any("coercing" in m.lower() for m in cm.output))
 
     def test_schema_has_role_top_level_and_per_task(self):
-        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        from tools.delegation.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
         self.assertIn("role", props)
         self.assertEqual(props["role"]["enum"], ["leaf", "orchestrator"])
@@ -2305,7 +2305,7 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         # assuming an ACP CLI (Claude, Copilot, etc.) is installed. They must
         # carry explicit "do not set unless told" guidance so the model doesn't
         # hallucinate ACP availability (#22013).
-        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        from tools.delegation.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
 
         top_acp_desc = props["acp_command"]["description"]
@@ -2320,7 +2320,7 @@ class TestOrchestratorRoleSchema(unittest.TestCase):
         # Descriptions must not list 'claude' as a canonical example value —
         # that directly primes the model to attempt Claude ACP even when it is
         # not installed (#22013).
-        from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+        from tools.delegation.delegate_tool import DELEGATE_TASK_SCHEMA
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
         top_acp_desc = props["acp_command"]["description"].lower()
         self.assertNotIn("e.g. 'claude'", top_acp_desc)
@@ -2661,14 +2661,14 @@ class TestSubagentApprovalCallback(unittest.TestCase):
     """
 
     def test_auto_deny_returns_deny(self):
-        from tools.delegate_tool import _subagent_auto_deny
+        from tools.delegation.delegate_tool import _subagent_auto_deny
         self.assertEqual(
             _subagent_auto_deny("rm -rf /tmp/x", "dangerous"),
             "deny",
         )
 
     def test_auto_approve_returns_once(self):
-        from tools.delegate_tool import _subagent_auto_approve
+        from tools.delegation.delegate_tool import _subagent_auto_approve
         self.assertEqual(
             _subagent_auto_approve("rm -rf /tmp/x", "dangerous"),
             "once",
@@ -2676,7 +2676,7 @@ class TestSubagentApprovalCallback(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_getter_defaults_to_deny(self, _mock_cfg):
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _get_subagent_approval_callback,
             _subagent_auto_deny,
         )
@@ -2687,7 +2687,7 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         return_value={"subagent_auto_approve": False},
     )
     def test_getter_explicit_false_is_deny(self, _mock_cfg):
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _get_subagent_approval_callback,
             _subagent_auto_deny,
         )
@@ -2698,7 +2698,7 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         return_value={"subagent_auto_approve": True},
     )
     def test_getter_true_is_approve(self, _mock_cfg):
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _get_subagent_approval_callback,
             _subagent_auto_approve,
         )
@@ -2710,7 +2710,7 @@ class TestSubagentApprovalCallback(unittest.TestCase):
     )
     def test_getter_truthy_string_is_approve(self, _mock_cfg):
         """is_truthy_value accepts 'yes'/'1'/'true' as truthy."""
-        from tools.delegate_tool import (
+        from tools.delegation.delegate_tool import (
             _get_subagent_approval_callback,
             _subagent_auto_approve,
         )
@@ -2721,11 +2721,11 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         not the parent's — verifies the fix actually scopes to workers.
         """
         from concurrent.futures import ThreadPoolExecutor
-        from tools.terminal_tool import (
+        from tools.core.terminal_tool import (
             set_approval_callback as _set_cb,
             _get_approval_callback,
         )
-        from tools.delegate_tool import _subagent_auto_deny
+        from tools.delegation.delegate_tool import _subagent_auto_deny
 
         # Parent thread has no callback.
         _set_cb(None)

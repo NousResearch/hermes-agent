@@ -7,7 +7,7 @@ import contextvars
 
 
 def test_set_and_get_origin():
-    from tools.skill_provenance import (
+    from tools.skills.skill_provenance import (
         set_current_write_origin,
         reset_current_write_origin,
         get_current_write_origin,
@@ -20,7 +20,7 @@ def test_set_and_get_origin():
 
 
 def test_reset_restores_prior_origin():
-    from tools.skill_provenance import (
+    from tools.skills.skill_provenance import (
         set_current_write_origin,
         reset_current_write_origin,
         get_current_write_origin,
@@ -38,7 +38,7 @@ def test_reset_restores_prior_origin():
 
 
 def test_is_background_review_truthy_only_for_review():
-    from tools.skill_provenance import (
+    from tools.skills.skill_provenance import (
         set_current_write_origin,
         reset_current_write_origin,
         is_background_review,
@@ -60,7 +60,7 @@ def test_is_background_review_truthy_only_for_review():
 
 
 def test_empty_origin_falls_back_to_foreground():
-    from tools.skill_provenance import (
+    from tools.skills.skill_provenance import (
         set_current_write_origin,
         reset_current_write_origin,
         get_current_write_origin,
@@ -75,7 +75,7 @@ def test_empty_origin_falls_back_to_foreground():
 
 def test_context_isolation_between_copies():
     """ContextVar scoping: modifications in one copy do not leak out."""
-    from tools.skill_provenance import (
+    from tools.skills.skill_provenance import (
         set_current_write_origin,
         get_current_write_origin,
         BACKGROUND_REVIEW,

@@ -105,7 +105,7 @@ def main() -> int:
             mock_client.close = MagicMock()
             MockOpenAI.return_value = mock_client
 
-            from tools.delegate_tool import _run_single_child
+            from tools.delegation.delegate_tool import _run_single_child
 
             # Signal that child is about to start
             original_init = AIAgent.__init__

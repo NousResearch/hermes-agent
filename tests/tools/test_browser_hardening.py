@@ -41,7 +41,7 @@ class TestDeadCodeRemoval:
         assert not hasattr(bt, "DEFAULT_SESSION_TIMEOUT")
 
     def test_browser_close_schema_removed(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
+        from tools.browser.browser_tool import BROWSER_TOOL_SCHEMAS
         names = [s["name"] for s in BROWSER_TOOL_SCHEMAS]
         assert "browser_close" not in names
 
@@ -96,18 +96,18 @@ class TestFindAgentBrowserCache:
 class TestCommandTimeoutCache:
 
     def test_default_is_30(self):
-        from tools.browser_tool import _get_command_timeout
+        from tools.browser.browser_tool import _get_command_timeout
         with patch("hermes_cli.config.read_raw_config", return_value={}):
             assert _get_command_timeout() == 30
 
     def test_reads_from_config(self):
-        from tools.browser_tool import _get_command_timeout
+        from tools.browser.browser_tool import _get_command_timeout
         cfg = {"browser": {"command_timeout": 60}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _get_command_timeout() == 60
 
     def test_cached_after_first_call(self):
-        from tools.browser_tool import _get_command_timeout
+        from tools.browser.browser_tool import _get_command_timeout
         mock_read = MagicMock(return_value={"browser": {"command_timeout": 45}})
         with patch("hermes_cli.config.read_raw_config", mock_read):
             _get_command_timeout()
@@ -122,7 +122,7 @@ class TestCommandTimeoutCache:
 class TestHomebrewNodeDirsCache:
 
     def test_lru_cached(self):
-        from tools.browser_tool import _discover_homebrew_node_dirs
+        from tools.browser.browser_tool import _discover_homebrew_node_dirs
         assert hasattr(_discover_homebrew_node_dirs, "cache_info"), \
             "_discover_homebrew_node_dirs should be decorated with lru_cache"
 
@@ -137,7 +137,7 @@ class TestUrlDecodedSecretCheck:
     def test_encoded_key_blocked_in_navigate(self):
         """browser_navigate should block URLs with percent-encoded API keys."""
         import urllib.parse
-        from tools.browser_tool import browser_navigate
+        from tools.browser.browser_tool import browser_navigate
         import json
 
         # URL-encode a fake secret prefix that matches _PREFIX_RE
@@ -187,12 +187,12 @@ class TestRecordingSessionsThreadSafety:
 class TestTruncateSnapshot:
 
     def test_short_snapshot_unchanged(self):
-        from tools.browser_tool import _truncate_snapshot
+        from tools.browser.browser_tool import _truncate_snapshot
         short = '- heading "Example" [ref=e1]\n- link "More" [ref=e2]'
         assert _truncate_snapshot(short) == short
 
     def test_long_snapshot_truncated_at_line_boundary(self):
-        from tools.browser_tool import _truncate_snapshot
+        from tools.browser.browser_tool import _truncate_snapshot
         # Create a snapshot that exceeds 8000 chars
         lines = [f'- item "Element {i}" [ref=e{i}]' for i in range(500)]
         snapshot = "\n".join(lines)
@@ -207,7 +207,7 @@ class TestTruncateSnapshot:
                 assert line.startswith("- item") or line == ""
 
     def test_truncation_reports_remaining_count(self):
-        from tools.browser_tool import _truncate_snapshot
+        from tools.browser.browser_tool import _truncate_snapshot
         lines = [f"- line {i}" for i in range(100)]
         snapshot = "\n".join(lines)
         result = _truncate_snapshot(snapshot, max_chars=200)

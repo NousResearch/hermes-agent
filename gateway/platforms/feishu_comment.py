@@ -1055,8 +1055,8 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     from run_agent import AIAgent
 
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
-    from tools.feishu_doc_tool import set_client as set_doc_client
-    from tools.feishu_drive_tool import set_client as set_drive_client
+    from tools.communication.feishu_doc_tool import set_client as set_doc_client
+    from tools.communication.feishu_drive_tool import set_client as set_drive_client
     set_doc_client(client)
     set_drive_client(client)
 

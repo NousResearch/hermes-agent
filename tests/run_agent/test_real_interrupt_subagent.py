@@ -78,7 +78,7 @@ class TestRealSubagentInterrupt(unittest.TestCase):
         parent._client_kwargs = {"api_key": "***", "base_url": "http://localhost:1"}
         parent._execution_thread_id = None
 
-        from tools.delegate_tool import _run_single_child
+        from tools.delegation.delegate_tool import _run_single_child
 
         child_started = threading.Event()
         result_holder = [None]

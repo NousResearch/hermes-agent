@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 import httpx
 import pytest
 
-from tools.skills_hub import (
+from tools.skills.skills_hub import (
     GitHubAuth,
     GitHubSource,
     LobeHubSource,
@@ -220,7 +220,7 @@ class TestTrustLevelFor:
     def test_trusted_repo(self):
         src = self._source()
         # TRUSTED_REPOS is imported from skills_guard, test with known trusted repo
-        from tools.skills_guard import TRUSTED_REPOS
+        from tools.skills.skills_guard import TRUSTED_REPOS
         if TRUSTED_REPOS:
             repo = next(iter(TRUSTED_REPOS))
             assert src.trust_level_for(f"{repo}/some-skill") == "trusted"
@@ -245,7 +245,7 @@ class TestTrustLevelFor:
         # appear as a default tap on GitHubSource. Without the tap, the
         # repo's skills don't show up in search results or the docs-site
         # Skills Hub page even though the trust level is correct.
-        from tools.skills_guard import TRUSTED_REPOS
+        from tools.skills.skills_guard import TRUSTED_REPOS
 
         assert "NVIDIA/skills" in TRUSTED_REPOS
         tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
@@ -259,7 +259,7 @@ class TestTrustLevelFor:
         # that publish under a single `skills/`-style path. openai/skills
         # is the deliberate exception — it has two taps (`.curated/` and
         # `.system/`) — so we just assert membership not path equality.
-        from tools.skills_guard import TRUSTED_REPOS
+        from tools.skills.skills_guard import TRUSTED_REPOS
 
         tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
         for repo in TRUSTED_REPOS:
@@ -1144,7 +1144,7 @@ class TestUrlSource:
 
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
-        from tools.skills_guard import content_hash
+        from tools.skills.skills_guard import content_hash
 
         bundle = SkillBundle(
             name="demo-skill",
@@ -1207,7 +1207,7 @@ class TestCheckForSkillUpdates:
 
     def test_bundle_content_hash_mixed_matches_on_disk(self, tmp_path):
         """In-memory bundle hash must equal on-disk content_hash for mixed bytes+str."""
-        from tools.skills_guard import content_hash
+        from tools.skills.skills_guard import content_hash
 
         bundle = SkillBundle(
             name="demo-skill",
@@ -2031,7 +2031,7 @@ class TestInstallPathSafety:
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""
-        from tools.skills_hub import uninstall_skill
+        from tools.skills.skills_hub import uninstall_skill
 
         lock_path = tmp_path / "lock.json"
         target = tmp_path / "victim"
@@ -2064,7 +2064,7 @@ class TestInstallPathSafety:
         assert (target / "file.txt").read_text() == "important"
 
     def test_uninstall_rejects_traversal(self, tmp_path, isolated_skills_dir, patch_lock_file):
-        from tools.skills_hub import uninstall_skill
+        from tools.skills.skills_hub import uninstall_skill
 
         lock_path = tmp_path / "lock.json"
         sibling = tmp_path / "sibling"
@@ -2092,7 +2092,7 @@ class TestInstallPathSafety:
 
     def test_uninstall_rejects_empty_install_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Empty install_path resolves to SKILLS_DIR itself — must be refused."""
-        from tools.skills_hub import uninstall_skill
+        from tools.skills.skills_hub import uninstall_skill
 
         # Put a sibling skill alongside to prove rmtree doesn't fire.
         (isolated_skills_dir / "bystander").mkdir()
@@ -2121,7 +2121,7 @@ class TestInstallPathSafety:
         self, tmp_path, isolated_skills_dir, patch_lock_file
     ):
         """A symlinked skill dir that points outside skills/ must not be followed."""
-        from tools.skills_hub import uninstall_skill
+        from tools.skills.skills_hub import uninstall_skill
 
         # Outside-tree victim
         victim = tmp_path / "victim"
@@ -2159,7 +2159,7 @@ class TestInstallPathSafety:
         """Skill install must not follow symlinks that leak file contents
         from outside the quarantine directory."""
         import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        from tools.skills.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         quarantine_root = skills_dir / ".hub" / "quarantine"

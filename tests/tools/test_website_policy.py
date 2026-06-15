@@ -6,7 +6,7 @@ import yaml
 
 from tests.tools.conftest import register_all_web_providers
 
-from tools.website_policy import WebsitePolicyError, check_website_access, load_website_blocklist
+from tools.security.website_policy import WebsitePolicyError, check_website_access, load_website_blocklist
 
 
 def test_load_website_blocklist_merges_config_and_shared_file(tmp_path):
@@ -264,7 +264,7 @@ def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
     # Invalidate the module-level cache so the new HERMES_HOME is picked up.
     # A prior test may have cached a default policy (enabled=False) under the
     # old HERMES_HOME set by the autouse _isolate_hermes_home fixture.
-    from tools.website_policy import invalidate_cache
+    from tools.security.website_policy import invalidate_cache
     invalidate_cache()
 
     blocked = check_website_access("https://dynamic.example/path")

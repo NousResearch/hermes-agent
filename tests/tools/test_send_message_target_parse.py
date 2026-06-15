@@ -4,7 +4,7 @@ These stay separate from ``test_send_message_tool.py`` because that module
 skips wholesale when optional Telegram dependencies are not installed.
 """
 
-from tools.send_message_tool import _parse_target_ref
+from tools.communication.send_message_tool import _parse_target_ref
 
 
 def test_photon_e164_target_is_explicit() -> None:

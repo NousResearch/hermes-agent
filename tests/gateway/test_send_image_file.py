@@ -368,7 +368,7 @@ class TestScreenshotCleanup:
     def test_cleanup_removes_old_screenshots(self, tmp_path):
         """_cleanup_old_screenshots should remove files older than max_age_hours."""
         import time
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
 
         _last_screenshot_cleanup_by_dir.clear()
 
@@ -389,7 +389,7 @@ class TestScreenshotCleanup:
 
     def test_cleanup_is_throttled_per_directory(self, tmp_path):
         import time
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
 
         _last_screenshot_cleanup_by_dir.clear()
 
@@ -410,7 +410,7 @@ class TestScreenshotCleanup:
     def test_cleanup_ignores_non_screenshot_files(self, tmp_path):
         """Only files matching browser_screenshot_*.png should be cleaned."""
         import time
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
 
         _last_screenshot_cleanup_by_dir.clear()
 
@@ -425,13 +425,13 @@ class TestScreenshotCleanup:
 
     def test_cleanup_handles_empty_dir(self, tmp_path):
         """Cleanup should not fail on empty directory."""
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
         _last_screenshot_cleanup_by_dir.clear()
         _cleanup_old_screenshots(tmp_path, max_age_hours=24)  # Should not raise
 
     def test_cleanup_handles_nonexistent_dir(self):
         """Cleanup should not fail if directory doesn't exist."""
         from pathlib import Path
-        from tools.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
+        from tools.browser.browser_tool import _cleanup_old_screenshots, _last_screenshot_cleanup_by_dir
         _last_screenshot_cleanup_by_dir.clear()
         _cleanup_old_screenshots(Path("/nonexistent/dir"), max_age_hours=24)  # Should not raise

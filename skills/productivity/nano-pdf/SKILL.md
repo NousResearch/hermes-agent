@@ -44,9 +44,32 @@ nano-pdf edit report.pdf 3 "Update the date from January to February 2026"
 nano-pdf edit contract.pdf 2 "Change the client name from 'Acme Corp' to 'Acme Industries'"
 ```
 
-## Notes
+**API key setup**: Set `NANOPDF_API_KEY` env var, or run `nano-pdf config set api_key <your-key>`. Get a key at https://pypi.org/project/nano-pdf/
 
-- Page numbers may be 0-based or 1-based depending on version — if the edit hits the wrong page, retry with ±1
-- Always verify the output PDF after editing (use `read_file` to check file size, or open it)
-- The tool uses an LLM under the hood — requires an API key (check `nano-pdf --help` for config)
-- Works well for text changes; complex layout modifications may need a different approach
+## 頁碼偵測
+
+nano-pdf 使用 1-based 頁碼（從 1 開始）。如果編輯到錯誤頁面，尝试 ±1 偏移。
+
+**自動偵測腳本：**
+```bash
+# 列出 PDF 前 3 頁的內容，確認頁碼對應
+python -c "import PyMuPDF; doc=PyMuPDF.open('file.pdf'); [print(f'Page {i+1}:', doc[i].get_text()[:100]) for i in range(min(3, len(doc)))]"
+```
+
+## 驗證
+
+編輯後執行差異檢查：
+```bash
+nano-pdf diff <file.pdf>
+```
+
+或直接開啟 PDF 確認特定頁面。
+
+## 錯誤處理
+
+| 錯誤 | 原因 | 解決方案 |
+|------|------|----------|
+| `API key not configured` | NANOPDF_API_KEY 未設定 | 執行 `nano-pdf config set api_key <your-key>` 或設定環境變數 |
+| `Edit failed` | 頁碼錯誤或內容不符 | 確認頁碼，參考上方自動偵測腳本 |
+| `File not found` | 檔案路徑錯誤 | 使用絕對路徑，確認檔案存在 |
+| `Permission denied` | 無法寫入輸出檔 | 檢查目錄權限或使用 `sudo` |

@@ -754,7 +754,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             return json.dumps({"error": "Both target and message are required"})
 
         try:
-            from tools.send_message_tool import send_message_tool
+            from tools.communication.send_message_tool import send_message_tool
             result_str = send_message_tool(
                 {"action": "send", "target": target, "message": message}
             )

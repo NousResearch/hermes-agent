@@ -17,7 +17,7 @@ class TestMCPLoopExceptionHandler:
     """_mcp_loop_exception_handler suppresses benign 'Event loop is closed'."""
 
     def test_suppresses_event_loop_closed(self):
-        from tools.mcp_tool import _mcp_loop_exception_handler
+        from tools.mcp.mcp_tool import _mcp_loop_exception_handler
         loop = MagicMock()
         context = {"exception": RuntimeError("Event loop is closed")}
         # Should NOT call default handler
@@ -25,21 +25,21 @@ class TestMCPLoopExceptionHandler:
         loop.default_exception_handler.assert_not_called()
 
     def test_forwards_other_runtime_errors(self):
-        from tools.mcp_tool import _mcp_loop_exception_handler
+        from tools.mcp.mcp_tool import _mcp_loop_exception_handler
         loop = MagicMock()
         context = {"exception": RuntimeError("some other error")}
         _mcp_loop_exception_handler(loop, context)
         loop.default_exception_handler.assert_called_once_with(context)
 
     def test_forwards_non_runtime_errors(self):
-        from tools.mcp_tool import _mcp_loop_exception_handler
+        from tools.mcp.mcp_tool import _mcp_loop_exception_handler
         loop = MagicMock()
         context = {"exception": ValueError("bad value")}
         _mcp_loop_exception_handler(loop, context)
         loop.default_exception_handler.assert_called_once_with(context)
 
     def test_forwards_contexts_without_exception(self):
-        from tools.mcp_tool import _mcp_loop_exception_handler
+        from tools.mcp.mcp_tool import _mcp_loop_exception_handler
         loop = MagicMock()
         context = {"message": "just a message"}
         _mcp_loop_exception_handler(loop, context)
@@ -66,7 +66,7 @@ class TestStdioPidTracking:
     """_snapshot_child_pids and _stdio_pids track subprocess PIDs."""
 
     def test_snapshot_returns_set(self):
-        from tools.mcp_tool import _snapshot_child_pids
+        from tools.mcp.mcp_tool import _snapshot_child_pids
         result = _snapshot_child_pids()
         assert isinstance(result, set)
         # All elements should be ints
@@ -74,14 +74,14 @@ class TestStdioPidTracking:
             assert isinstance(pid, int)
 
     def test_stdio_pids_starts_empty(self):
-        from tools.mcp_tool import _stdio_pids, _lock
+        from tools.mcp.mcp_tool import _stdio_pids, _lock
         with _lock:
             # Might have residual state from other tests, just check type
             assert isinstance(_stdio_pids, dict)
 
     def test_kill_orphaned_noop_when_empty(self):
         """_kill_orphaned_mcp_children does nothing when no PIDs tracked."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _stdio_pids,
@@ -97,7 +97,7 @@ class TestStdioPidTracking:
 
     def test_kill_orphaned_handles_dead_pids(self):
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _lock,
@@ -116,7 +116,7 @@ class TestStdioPidTracking:
 
     def test_kill_orphaned_uses_sigkill_when_available(self, monkeypatch):
         """SIGTERM-first then SIGKILL after 2s for orphan cleanup."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _lock,
@@ -149,7 +149,7 @@ class TestStdioPidTracking:
 
     def test_kill_orphaned_falls_back_without_sigkill(self, monkeypatch):
         """Without SIGKILL, SIGTERM is used for both phases."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _lock,
@@ -188,7 +188,7 @@ class TestStdioPgroupReaping:
     """_kill_orphaned_mcp_children reaps via killpg when a pgid is tracked."""
 
     def _reset_state(self):
-        from tools.mcp_tool import _stdio_pids, _orphan_stdio_pids, _stdio_pgids, _lock
+        from tools.mcp.mcp_tool import _stdio_pids, _orphan_stdio_pids, _stdio_pgids, _lock
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
@@ -196,7 +196,7 @@ class TestStdioPgroupReaping:
 
     def test_killpg_used_when_pgid_tracked(self, monkeypatch):
         """SIGTERM and SIGKILL route through killpg when pgid is known."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _stdio_pgids,
@@ -236,7 +236,7 @@ class TestStdioPgroupReaping:
 
     def test_killpg_failure_falls_back_to_kill(self, monkeypatch):
         """If killpg raises ProcessLookupError (pgroup gone), try os.kill."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _stdio_pgids,
@@ -273,7 +273,7 @@ class TestStdioPgroupReaping:
 
     def test_no_pgid_uses_per_pid_kill(self, monkeypatch):
         """When no pgid is recorded (e.g. Windows), fall back to os.kill."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _stdio_pgids,
@@ -358,7 +358,7 @@ class TestStdioPgroupReaping:
         assert os.getpgid(grandchild_pid) == parent_pgid
 
         # Drive the reaper: register the parent pid + pgid as an orphan.
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
             _stdio_pgids,
@@ -437,12 +437,12 @@ class TestMCPInitialConnectionRetry:
 
     def test_initial_connect_retries_constant_exists(self):
         """_MAX_INITIAL_CONNECT_RETRIES should be defined."""
-        from tools.mcp_tool import _MAX_INITIAL_CONNECT_RETRIES
+        from tools.mcp.mcp_tool import _MAX_INITIAL_CONNECT_RETRIES
         assert _MAX_INITIAL_CONNECT_RETRIES >= 1
 
     def test_initial_connect_retry_succeeds_on_second_attempt(self):
         """Server succeeds after one transient initial failure."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         call_count = 0
 
@@ -478,7 +478,7 @@ class TestMCPInitialConnectionRetry:
 
     def test_initial_connect_gives_up_after_max_retries(self):
         """Server gives up after _MAX_INITIAL_CONNECT_RETRIES failures."""
-        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+        from tools.mcp.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
         call_count = 0
 
@@ -507,7 +507,7 @@ class TestMCPInitialConnectionRetry:
 
     def test_initial_connect_retry_respects_shutdown(self):
         """Shutdown during initial retry backoff aborts cleanly."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         async def _run():
             server = MCPServerTask("test-shutdown")

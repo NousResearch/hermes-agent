@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools.skill_manager_tool import (
+from tools.skills.skill_manager_tool import (
     _create_skill,
     _patch_skill,
     _write_file,

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
-from tools.skills_tool import (
+from tools.skills.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
     _parse_tags,
@@ -164,7 +164,7 @@ class TestRequiredEnvironmentVariablesNormalization:
         monkeypatch.setenv("FILLED_KEY", "value")
         monkeypatch.setenv("EMPTY_HOST_KEY", "")
 
-        from tools.skills_tool import _is_env_var_persisted
+        from tools.skills.skills_tool import _is_env_var_persisted
 
         assert _is_env_var_persisted("EMPTY_FILE_KEY", {"EMPTY_FILE_KEY": ""}) is False
         assert (

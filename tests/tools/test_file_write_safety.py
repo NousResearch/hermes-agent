@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.file_operations import _is_write_denied
+from tools.core.file_operations import _is_write_denied
 
 
 class TestStaticDenyList:
@@ -83,27 +83,27 @@ class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
     def test_etc_hosts_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.core.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None
 
     def test_private_etc_hosts_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.core.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
     def test_private_etc_ssh_config_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.core.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
     def test_private_var_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.core.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
     def test_boot_still_blocked(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.core.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
 
     def test_safe_path_allowed(self):
-        from tools.file_tools import _check_sensitive_path
+        from tools.core.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
@@ -119,7 +119,7 @@ class TestAtomicWrite:
     @pytest.fixture
     def ops(self, tmp_path: Path):
         from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
+        from tools.core.file_operations import ShellFileOperations
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
@@ -197,12 +197,12 @@ class TestBomHandling:
     @pytest.fixture
     def ops(self, tmp_path: Path):
         from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
+        from tools.core.file_operations import ShellFileOperations
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
     def test_helpers(self):
-        from tools.file_operations import _strip_bom, _has_bom
+        from tools.core.file_operations import _strip_bom, _has_bom
         assert _strip_bom("\ufeffhello") == ("hello", True)
         assert _strip_bom("hello") == ("hello", False)
         assert _strip_bom("") == ("", False)

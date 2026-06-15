@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools import tts_tool
-from tools.tts_tool import (
+from tools.media.tts_tool import (
     BUILTIN_TTS_PROVIDERS,
     DEFAULT_PIPER_VOICE,
     PROVIDER_MAX_TEXT_LENGTH,

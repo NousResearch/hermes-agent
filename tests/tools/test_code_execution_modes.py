@@ -30,7 +30,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import (
+from tools.core.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
     EXECUTION_MODES,

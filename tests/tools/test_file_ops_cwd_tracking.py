@@ -19,7 +19,7 @@ from __future__ import annotations
 
 
 
-from tools.file_operations import ShellFileOperations
+from tools.core.file_operations import ShellFileOperations
 
 
 class _FakeEnv:

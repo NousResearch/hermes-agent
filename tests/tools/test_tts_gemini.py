@@ -50,7 +50,7 @@ def mock_gemini_response(fake_pcm_bytes):
 
 class TestWrapPcmAsWav:
     def test_riff_header_structure(self):
-        from tools.tts_tool import _wrap_pcm_as_wav
+        from tools.media.tts_tool import _wrap_pcm_as_wav
 
         pcm = b"\x01\x02\x03\x04" * 10
         wav = _wrap_pcm_as_wav(pcm, sample_rate=24000, channels=1, sample_width=2)
@@ -70,7 +70,7 @@ class TestWrapPcmAsWav:
         assert wav[44:] == pcm
 
     def test_header_size_is_44(self):
-        from tools.tts_tool import _wrap_pcm_as_wav
+        from tools.media.tts_tool import _wrap_pcm_as_wav
 
         pcm = b"\xff" * 100
         wav = _wrap_pcm_as_wav(pcm)
@@ -79,14 +79,14 @@ class TestWrapPcmAsWav:
 
 class TestGenerateGeminiTts:
     def test_missing_api_key_raises_value_error(self, tmp_path):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         output_path = str(tmp_path / "test.wav")
         with pytest.raises(ValueError, match="GEMINI_API_KEY"):
             _generate_gemini_tts("Hello", output_path, {})
 
     def test_google_api_key_fallback(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GOOGLE_API_KEY", "from-google-env")
         output_path = str(tmp_path / "test.wav")
@@ -99,7 +99,7 @@ class TestGenerateGeminiTts:
         assert kwargs["params"]["key"] == "from-google-env"
 
     def test_wav_output_fast_path(self, tmp_path, monkeypatch, mock_gemini_response, fake_pcm_bytes):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         output_path = str(tmp_path / "test.wav")
@@ -115,7 +115,7 @@ class TestGenerateGeminiTts:
         assert data[44:] == fake_pcm_bytes
 
     def test_default_voice_and_model(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import (
+        from tools.media.tts_tool import (
             DEFAULT_GEMINI_TTS_MODEL,
             DEFAULT_GEMINI_TTS_VOICE,
             _generate_gemini_tts,
@@ -136,7 +136,7 @@ class TestGenerateGeminiTts:
         assert voice == DEFAULT_GEMINI_TTS_VOICE
 
     def test_custom_voice(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         config = {"gemini": {"voice": "Puck"}}
@@ -152,7 +152,7 @@ class TestGenerateGeminiTts:
         assert voice == "Puck"
 
     def test_custom_model(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         config = {"gemini": {"model": "gemini-2.5-pro-preview-tts"}}
@@ -164,7 +164,7 @@ class TestGenerateGeminiTts:
         assert "gemini-2.5-pro-preview-tts" in endpoint
 
     def test_response_modality_is_audio(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
@@ -175,7 +175,7 @@ class TestGenerateGeminiTts:
         assert payload["generationConfig"]["responseModalities"] == ["AUDIO"]
 
     def test_http_error_raises_runtime_error(self, tmp_path, monkeypatch):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         err_resp = MagicMock()
@@ -187,7 +187,7 @@ class TestGenerateGeminiTts:
                 _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
 
     def test_empty_audio_raises(self, tmp_path, monkeypatch):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         resp = MagicMock()
@@ -203,7 +203,7 @@ class TestGenerateGeminiTts:
                 _generate_gemini_tts("Hi", str(tmp_path / "test.wav"), {})
 
     def test_malformed_response_raises(self, tmp_path, monkeypatch):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         resp = MagicMock()
@@ -216,7 +216,7 @@ class TestGenerateGeminiTts:
 
     def test_snake_case_inline_data_accepted(self, tmp_path, monkeypatch, fake_pcm_bytes):
         """Some Gemini SDK versions return inline_data instead of inlineData."""
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         resp = MagicMock()
@@ -245,7 +245,7 @@ class TestGenerateGeminiTts:
         assert data[:4] == b"RIFF"
 
     def test_custom_base_url_env(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.media.tts_tool import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         monkeypatch.setenv("GEMINI_BASE_URL", "https://custom-gemini.example.com/v1beta")
@@ -258,7 +258,7 @@ class TestGenerateGeminiTts:
 
 class TestGeminiInCheckRequirements:
     def test_gemini_api_key_satisfies_requirements(self, monkeypatch):
-        from tools.tts_tool import check_tts_requirements
+        from tools.media.tts_tool import check_tts_requirements
 
         # Strip everything else
         for key in (

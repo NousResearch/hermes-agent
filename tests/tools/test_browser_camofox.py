@@ -4,7 +4,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 
-from tools.browser_camofox import (
+from tools.browser.browser_camofox import (
     camofox_back,
     camofox_click,
     camofox_close,
@@ -414,7 +414,7 @@ class TestBrowserToolRouting:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         mock_post.return_value = _mock_response(json_data={"tabId": "tab_rt", "url": "https://example.com"})
 
-        from tools.browser_tool import browser_navigate
+        from tools.browser.browser_tool import browser_navigate
         # Bypass SSRF check for test URL
         with patch("tools.browser_tool._is_safe_url", return_value=True):
             result = json.loads(browser_navigate("https://example.com", task_id="t_route"))
@@ -422,7 +422,7 @@ class TestBrowserToolRouting:
 
     def test_check_requirements_passes_with_camofox(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        from tools.browser_tool import check_browser_requirements
+        from tools.browser.browser_tool import check_browser_requirements
         assert check_browser_requirements() is True
 
 

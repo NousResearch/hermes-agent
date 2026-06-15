@@ -14,7 +14,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_reconnect_event_attribute_exists():
     """MCPServerTask has a _reconnect_event alongside _shutdown_event."""
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp.mcp_tool import MCPServerTask
     task = MCPServerTask("test")
     assert hasattr(task, "_reconnect_event")
     assert isinstance(task._reconnect_event, asyncio.Event)
@@ -24,7 +24,7 @@ async def test_reconnect_event_attribute_exists():
 @pytest.mark.asyncio
 async def test_wait_for_lifecycle_event_returns_reconnect():
     """When _reconnect_event fires, helper returns 'reconnect' and clears it."""
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp.mcp_tool import MCPServerTask
     task = MCPServerTask("test")
 
     task._reconnect_event.set()
@@ -37,7 +37,7 @@ async def test_wait_for_lifecycle_event_returns_reconnect():
 @pytest.mark.asyncio
 async def test_wait_for_lifecycle_event_returns_shutdown():
     """When _shutdown_event fires, helper returns 'shutdown'."""
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp.mcp_tool import MCPServerTask
     task = MCPServerTask("test")
 
     task._shutdown_event.set()
@@ -48,7 +48,7 @@ async def test_wait_for_lifecycle_event_returns_shutdown():
 @pytest.mark.asyncio
 async def test_wait_for_lifecycle_event_shutdown_wins_when_both_set():
     """If both events are set simultaneously, shutdown takes precedence."""
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp.mcp_tool import MCPServerTask
     task = MCPServerTask("test")
 
     task._shutdown_event.set()

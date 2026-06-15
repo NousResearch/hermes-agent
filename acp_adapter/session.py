@@ -131,7 +131,7 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
     if not task_id:
         return
     try:
-        from tools.terminal_tool import register_task_env_overrides
+        from tools.core.terminal_tool import register_task_env_overrides
         register_task_env_overrides(task_id, {"cwd": _translate_acp_cwd(cwd)})
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
@@ -160,7 +160,7 @@ def _clear_task_cwd(task_id: str) -> None:
     if not task_id:
         return
     try:
-        from tools.terminal_tool import clear_task_env_overrides
+        from tools.core.terminal_tool import clear_task_env_overrides
         clear_task_env_overrides(task_id)
     except Exception:
         logger.debug("Failed to clear ACP task cwd override", exc_info=True)

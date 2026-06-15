@@ -86,7 +86,7 @@ class _StubChild:
 class TestDumpSubagentTimeoutDiagnostic:
 
     def test_writes_log_with_expected_sections(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from tools.delegation.delegate_tool import _dump_subagent_timeout_diagnostic
         child = _StubChild(subagent_id="sa-7-abc123")
 
         worker = threading.Thread(
@@ -146,7 +146,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         assert "acquire" in content or "wait" in content
 
     def test_truncates_very_long_goal(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from tools.delegation.delegate_tool import _dump_subagent_timeout_diagnostic
         child = _StubChild()
         huge_goal = "x" * 5000
 
@@ -167,7 +167,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         assert len(goal_block) < 1200
 
     def test_missing_worker_thread_is_handled(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from tools.delegation.delegate_tool import _dump_subagent_timeout_diagnostic
         child = _StubChild()
         path = _dump_subagent_timeout_diagnostic(
             child=child,
@@ -182,7 +182,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         assert "<no worker thread handle>" in content
 
     def test_exited_worker_thread_is_handled(self, hermes_home):
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from tools.delegation.delegate_tool import _dump_subagent_timeout_diagnostic
         child = _StubChild()
         # A thread that has already finished
         t = threading.Thread(target=lambda: None)
@@ -204,7 +204,7 @@ class TestDumpSubagentTimeoutDiagnostic:
     def test_returns_none_on_unwritable_logs_dir(self, tmp_path, monkeypatch):
         # Point HERMES_HOME at an unwritable path so logs/ can't be created
         # (simulates permission-denied). Helper must not raise.
-        from tools.delegate_tool import _dump_subagent_timeout_diagnostic
+        from tools.delegation.delegate_tool import _dump_subagent_timeout_diagnostic
         bogus = tmp_path / "does-not-exist" / ".hermes"
         monkeypatch.setenv("HERMES_HOME", str(bogus))
         child = _StubChild()

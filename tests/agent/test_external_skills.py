@@ -113,7 +113,7 @@ class TestExternalSkillsInFindAll:
             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
-            from tools.skills_tool import _find_all_skills
+            from tools.skills.skills_tool import _find_all_skills
             skills = _find_all_skills()
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
@@ -133,7 +133,7 @@ class TestExternalSkillsInFindAll:
             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
-            from tools.skills_tool import _find_all_skills
+            from tools.skills.skills_tool import _find_all_skills
             skills = _find_all_skills()
         matching = [s for s in skills if s["name"] == "my-external-skill"]
         assert len(matching) == 1
@@ -150,7 +150,7 @@ class TestExternalSkillView:
             patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
             patch("tools.skills_tool.SKILLS_DIR", local_skills),
         ):
-            from tools.skills_tool import skill_view
+            from tools.skills.skills_tool import skill_view
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]

@@ -29,7 +29,7 @@ class TestEdgeTtsSpeed:
         mock_edge.Communicate = MagicMock(return_value=mock_comm)
 
         with patch("tools.tts_tool._import_edge_tts", return_value=mock_edge):
-            from tools.tts_tool import _generate_edge_tts
+            from tools.media.tts_tool import _generate_edge_tts
             asyncio.run(_generate_edge_tts("Hello", str(tmp_path / "out.mp3"), tts_config))
         return mock_edge.Communicate
 
@@ -79,7 +79,7 @@ class TestOpenaiTtsSpeed:
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
              patch("tools.tts_tool._resolve_openai_audio_client_config",
                    return_value=("test-key", None)):
-            from tools.tts_tool import _generate_openai_tts
+            from tools.media.tts_tool import _generate_openai_tts
             _generate_openai_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
         return mock_client.audio.speech.create
 
@@ -140,7 +140,7 @@ class TestMinimaxTtsT2aV2:
         monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
         resp = response if response is not None else _hex_response()
         with patch("requests.post", return_value=resp) as mock_post:
-            from tools.tts_tool import _generate_minimax_tts
+            from tools.media.tts_tool import _generate_minimax_tts
             output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
         return mock_post, output
 
@@ -221,7 +221,7 @@ class TestMinimaxTtsLegacyTextToSpeech:
         mock_response.headers = {"Content-Type": "audio/mpeg"}
         mock_response.content = b"\x00\x01\x02\x03"
         with patch("requests.post", return_value=mock_response) as mock_post:
-            from tools.tts_tool import _generate_minimax_tts
+            from tools.media.tts_tool import _generate_minimax_tts
             output = _generate_minimax_tts("Hello", str(tmp_path / "out.mp3"), cfg)
         return mock_post, output
 

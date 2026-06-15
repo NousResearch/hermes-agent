@@ -311,7 +311,7 @@ class TestCheckpointPersistence:
 
 class TestTerminalToolSchema:
     def test_schema_includes_watch_patterns(self):
-        from tools.terminal_tool import TERMINAL_SCHEMA
+        from tools.core.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
         assert "watch_patterns" in props
         assert props["watch_patterns"]["type"] == "array"
@@ -319,7 +319,7 @@ class TestTerminalToolSchema:
 
     def test_handler_passes_watch_patterns(self):
         """_handle_terminal passes watch_patterns to terminal_tool."""
-        from tools.terminal_tool import _handle_terminal
+        from tools.core.terminal_tool import _handle_terminal
         with patch("tools.terminal_tool.terminal_tool") as mock_tt:
             mock_tt.return_value = json.dumps({"output": "ok", "exit_code": 0})
             _handle_terminal(
@@ -336,7 +336,7 @@ class TestTerminalToolSchema:
 
 class TestCodeExecutionBlocked:
     def test_watch_patterns_blocked(self):
-        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
+        from tools.core.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
         assert "watch_patterns" in _TERMINAL_BLOCKED_PARAMS
 
 
@@ -371,7 +371,7 @@ class TestSuppressAfterExit:
 class TestMutualExclusion:
     def test_resolver_drops_watch_when_notify_set(self):
         """Both flags set → watch_patterns dropped with a note."""
-        from tools.terminal_tool import _resolve_notification_flag_conflict
+        from tools.core.terminal_tool import _resolve_notification_flag_conflict
 
         resolved, note = _resolve_notification_flag_conflict(
             notify_on_complete=True,
@@ -384,7 +384,7 @@ class TestMutualExclusion:
 
     def test_resolver_keeps_watch_when_notify_off(self):
         """notify_on_complete=False → watch_patterns kept intact."""
-        from tools.terminal_tool import _resolve_notification_flag_conflict
+        from tools.core.terminal_tool import _resolve_notification_flag_conflict
 
         resolved, note = _resolve_notification_flag_conflict(
             notify_on_complete=False,
@@ -396,7 +396,7 @@ class TestMutualExclusion:
 
     def test_resolver_keeps_notify_when_no_watch(self):
         """Only notify_on_complete set → no conflict."""
-        from tools.terminal_tool import _resolve_notification_flag_conflict
+        from tools.core.terminal_tool import _resolve_notification_flag_conflict
 
         resolved, note = _resolve_notification_flag_conflict(
             notify_on_complete=True,
@@ -408,7 +408,7 @@ class TestMutualExclusion:
 
     def test_resolver_inert_when_not_background(self):
         """Without background=True, the whole thing is a no-op."""
-        from tools.terminal_tool import _resolve_notification_flag_conflict
+        from tools.core.terminal_tool import _resolve_notification_flag_conflict
 
         resolved, note = _resolve_notification_flag_conflict(
             notify_on_complete=True,

@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.file_tools import (
+from tools.core.file_tools import (
     read_file_tool,
     write_file_tool,
     reset_file_dedup,
@@ -88,7 +88,7 @@ class TestDevicePathBlocking(unittest.TestCase):
         # Using the lower-level _is_blocked_device_path here keeps the
         # assertion stable across environments where pytest workers happen to
         # have fd 3 dup'd to a blocked device.
-        from tools.file_tools import _is_blocked_device_path
+        from tools.core.file_tools import _is_blocked_device_path
 
         self.assertFalse(_is_blocked_device_path("/proc/self/fd/3"))
 

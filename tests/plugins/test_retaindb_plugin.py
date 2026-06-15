@@ -53,7 +53,7 @@ def _cap_retaindb_sleeps(monkeypatch):
     monkeypatch.setattr(_retaindb, "time", fake_time)
 
 
-# We need the repo root on sys.path so the plugin can import agent.memory_provider
+# We need the repo root on sys.path so the plugin can import agent.memory.memory_provider
 import sys
 _repo_root = str(Path(__file__).resolve().parents[2])
 if _repo_root not in sys.path:

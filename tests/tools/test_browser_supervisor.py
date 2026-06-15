@@ -181,7 +181,7 @@ def _fire_on_page(cdp_url: str, expression: str) -> None:
 @pytest.fixture
 def supervisor_registry():
     """Yield the global registry and tear down any supervisors after the test."""
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser.browser_supervisor import SUPERVISOR_REGISTRY
 
     yield SUPERVISOR_REGISTRY
     SUPERVISOR_REGISTRY.stop_all()
@@ -283,7 +283,7 @@ def test_respond_with_no_pending_dialog_errors_cleanly(chrome_cdp, supervisor_re
 
 def test_auto_dismiss_policy(chrome_cdp, supervisor_registry):
     """auto_dismiss policy clears dialogs without the agent responding."""
-    from tools.browser_supervisor import DIALOG_POLICY_AUTO_DISMISS
+    from tools.browser.browser_supervisor import DIALOG_POLICY_AUTO_DISMISS
 
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(
@@ -320,7 +320,7 @@ def test_registry_stop(chrome_cdp, supervisor_registry):
 
 def test_browser_dialog_tool_no_supervisor():
     """browser_dialog returns a clear error when no supervisor is attached."""
-    from tools.browser_dialog_tool import browser_dialog
+    from tools.browser.browser_dialog_tool import browser_dialog
 
     r = json.loads(browser_dialog(action="accept", task_id="nonexistent-task"))
     assert r["success"] is False
@@ -329,7 +329,7 @@ def test_browser_dialog_tool_no_supervisor():
 
 def test_browser_dialog_invalid_action(chrome_cdp, supervisor_registry):
     """browser_dialog rejects actions that aren't accept/dismiss."""
-    from tools.browser_dialog_tool import browser_dialog
+    from tools.browser.browser_dialog_tool import browser_dialog
 
     cdp_url, _port = chrome_cdp
     supervisor_registry.get_or_start(task_id="pytest-bad-action", cdp_url=cdp_url)
@@ -341,7 +341,7 @@ def test_browser_dialog_invalid_action(chrome_cdp, supervisor_registry):
 
 def test_recent_dialogs_ring_buffer(chrome_cdp, supervisor_registry):
     """Closed dialogs show up in recent_dialogs with a closed_by tag."""
-    from tools.browser_supervisor import DIALOG_POLICY_AUTO_DISMISS
+    from tools.browser.browser_supervisor import DIALOG_POLICY_AUTO_DISMISS
 
     cdp_url, _port = chrome_cdp
     sv = supervisor_registry.get_or_start(
@@ -370,7 +370,7 @@ def test_recent_dialogs_ring_buffer(chrome_cdp, supervisor_registry):
 
 def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     """Full agent-path check: fire an alert, call the tool handler directly."""
-    from tools.browser_dialog_tool import browser_dialog
+    from tools.browser.browser_dialog_tool import browser_dialog
 
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-tool", cdp_url=cdp_url)
@@ -413,7 +413,7 @@ def test_browser_cdp_frame_id_routes_via_supervisor(chrome_cdp, supervisor_regis
 
     # Route the tool through the supervisor. Should succeed and return
     # something that clearly came from CDP.
-    from tools.browser_cdp_tool import browser_cdp
+    from tools.browser.browser_cdp_tool import browser_cdp
     result = browser_cdp(
         method="Runtime.evaluate",
         params={"expression": "1 + 1", "returnByValue": True},
@@ -461,7 +461,7 @@ def test_browser_cdp_frame_id_real_oopif_smoke_documented():
 
 def test_browser_cdp_frame_id_missing_supervisor():
     """browser_cdp(frame_id=...) errors cleanly when no supervisor is attached."""
-    from tools.browser_cdp_tool import browser_cdp
+    from tools.browser.browser_cdp_tool import browser_cdp
     result = browser_cdp(
         method="Runtime.evaluate",
         params={"expression": "1"},
@@ -479,7 +479,7 @@ def test_browser_cdp_frame_id_not_in_frame_tree(chrome_cdp, supervisor_registry)
     sv = supervisor_registry.get_or_start(task_id="bad-frame-test", cdp_url=cdp_url)
     assert sv.snapshot().active
 
-    from tools.browser_cdp_tool import browser_cdp
+    from tools.browser.browser_cdp_tool import browser_cdp
     result = browser_cdp(
         method="Runtime.evaluate",
         params={"expression": "1"},

@@ -411,23 +411,32 @@ class PhotonAdapter(BasePlatformAdapter):
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
+            return
+        # Record msg_id as seen AFTER successful dispatch
+        if msg_id:
+            try:
+                self._mark_processed(msg_id)
+            except Exception:
+                logger.debug("[photon] failed to record msg_id %r as processed", msg_id)
 
     def _is_duplicate(self, msg_id: str) -> bool:
+        """Check if msg_id was already successfully processed (within dedup window)."""
         now = time.time()
         seen = self._seen_messages
         t = seen.get(msg_id)
         if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
             return True  # seen, unexpired
-        # New or expired: record and enforce a HARD size bound (evict oldest,
-        # insertion-order) so a burst of unique ids within the window can't grow
-        # the dict without limit — not just the expired-only prune.
+        return False
+
+    def _mark_processed(self, msg_id: str) -> None:
+        """Record msg_id as successfully processed (after dispatch succeeds)."""
+        seen = self._seen_messages
         if msg_id in seen:
             del seen[msg_id]  # refresh insertion order
-        seen[msg_id] = now
+        seen[msg_id] = time.time()
         if len(seen) > _DEDUP_MAX_SIZE:
             for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
                 del seen[old]
-        return False
 
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
         """Normalize a sidecar inbound event and dispatch it to the gateway.

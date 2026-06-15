@@ -1759,7 +1759,7 @@ class QQAdapter(BasePlatformAdapter):
         :param original_name: Preferred filename from attachment metadata.
             Falls back to the URL path basename if empty.
         """
-        from tools.url_safety import is_safe_url
+        from tools.security.url_safety import is_safe_url
 
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
@@ -1864,7 +1864,7 @@ class QQAdapter(BasePlatformAdapter):
             is_pre_wav = True
             logger.debug("[%s] STT: using voice_wav_url (pre-converted WAV)", self._log_tag)
 
-        from tools.url_safety import is_safe_url
+        from tools.security.url_safety import is_safe_url
         if not is_safe_url(download_url):
             logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
             return None

@@ -26,7 +26,7 @@ import shutil
 
 import pytest
 
-from tools.file_operations import (
+from tools.core.file_operations import (
     ShellFileOperations,
     _split_tool_diagnostics,
 )

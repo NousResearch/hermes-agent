@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.discord_tool import (
+from tools.communication.discord_tool import (
     DiscordAPIError,
     _ACTIONS,
     _ADMIN_ACTIONS,

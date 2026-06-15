@@ -47,8 +47,8 @@ async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
     from mcp.shared.auth import OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp.mcp_oauth import HermesTokenStorage
+    from tools.mcp.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
 
@@ -129,8 +129,8 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp.mcp_oauth import HermesTokenStorage
+    from tools.mcp.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
 

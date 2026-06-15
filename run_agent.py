@@ -101,6 +101,8 @@ from agent.process_bootstrap import (
     _get_proxy_for_base_url,
 )
 from agent.iteration_budget import IterationBudget
+from agent.status_buffer import StatusBuffer
+from agent.session_manager import SessionManager
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -126,9 +128,9 @@ from model_tools import (
     handle_function_call,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.handle_function_call")
     check_toolset_requirements,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.check_toolset_requirements")
 )
-from tools.terminal_tool import cleanup_vm
+from tools.core.terminal_tool import cleanup_vm
 from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_tool import cleanup_browser
+from tools.browser.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
@@ -484,49 +486,15 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+        self._session_manager = SessionManager(self)
 
     def _get_session_db_for_recall(self):
-        """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
-
-        Most frontends pass ``session_db`` into ``AIAgent`` explicitly, but recall
-        is important enough that a missing constructor argument should degrade by
-        opening the default state DB instead of making the advertised
-        ``session_search`` tool unusable.
-        """
-        if self._session_db is not None:
-            return self._session_db
-        try:
-            from hermes_state import SessionDB
-
-            self._session_db = SessionDB()
-            return self._session_db
-        except Exception as exc:
-            logger.debug("SessionDB unavailable for recall", exc_info=True)
-            return None
+        """Forwarder — see ``agent.session_manager.SessionManager.get_session_db_for_recall``."""
+        return self._session_manager.get_session_db_for_recall()
 
     def _ensure_db_session(self) -> None:
-        """Create session DB row on first use. Disables _session_db on failure."""
-        if self._session_db_created or not self._session_db:
-            return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
-        try:
-            self._session_db.create_session(
-                session_id=self.session_id,
-                source=source,
-                model=self.model,
-                model_config=self._session_init_model_config,
-                system_prompt=self._cached_system_prompt,
-                user_id=None,
-                parent_session_id=self._parent_session_id,
-                cwd=_launch_cwd_for_session(source),
-            )
-            self._session_db_created = True
-        except Exception as e:
-            # Transient failure (e.g. SQLite lock). Keep _session_db alive —
-            # _session_db_created stays False so next run_conversation() retries.
-            logger.warning(
-                "Session DB creation failed (will retry next turn): %s", e
-            )
+        """Forwarder — see ``agent.session_manager.SessionManager.ensure_db_session``."""
+        self._session_manager.ensure_db_session()
 
     def _transition_context_engine_session(
         self,
@@ -538,64 +506,15 @@ class AIAgent:
         reset_engine: bool = True,
         **extra_context,
     ) -> None:
-        """Notify the active context engine about a host session transition.
-
-        Generic host-side lifecycle helper. The built-in compressor keeps its
-        existing reset behavior; plugin engines that implement richer hooks
-        (``on_session_end``, ``on_session_reset``, ``on_session_start``,
-        ``carry_over_new_session_context``) can flush old-session state,
-        reset runtime counters, bind to the new session, and optionally
-        carry retained context forward.
-        """
-        engine = getattr(self, "context_compressor", None)
-        if not engine:
-            return
-
-        if old_session_id and previous_messages is not None and hasattr(engine, "on_session_end"):
-            try:
-                engine.on_session_end(old_session_id, previous_messages)
-            except Exception as exc:
-                logger.debug("context engine on_session_end during transition: %s", exc)
-
-        if reset_engine and hasattr(engine, "on_session_reset"):
-            try:
-                engine.on_session_reset()
-            except Exception as exc:
-                logger.debug("context engine on_session_reset during transition: %s", exc)
-
-        should_start = bool(
-            old_session_id
-            or previous_messages is not None
-            or carry_over_context
-            or extra_context
+        """Forwarder — see ``agent.session_manager.SessionManager._transition_context_engine_session``."""
+        self._session_manager._transition_context_engine_session(
+            old_session_id=old_session_id,
+            new_session_id=new_session_id,
+            previous_messages=previous_messages,
+            carry_over_context=carry_over_context,
+            reset_engine=reset_engine,
+            **extra_context,
         )
-        target_session_id = new_session_id or getattr(self, "session_id", "") or ""
-        if should_start and target_session_id and hasattr(engine, "on_session_start"):
-            start_context = {
-                "old_session_id": old_session_id,
-                "carry_over_context": carry_over_context,
-                "platform": getattr(self, "platform", None) or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                "model": getattr(self, "model", ""),
-                "context_length": getattr(engine, "context_length", None),
-                "conversation_id": getattr(self, "_gateway_session_key", None),
-            }
-            start_context.update(extra_context)
-            start_context = {k: v for k, v in start_context.items() if v not in (None, "")}
-            try:
-                engine.on_session_start(target_session_id, **start_context)
-            except Exception as exc:
-                logger.debug("context engine on_session_start during transition: %s", exc)
-
-        if (
-            carry_over_context
-            and old_session_id
-            and target_session_id
-            and hasattr(engine, "carry_over_new_session_context")
-        ):
-            try:
-                engine.carry_over_new_session_context(old_session_id, target_session_id)
-            except Exception as exc:
-                logger.debug("context engine carry_over_new_session_context during transition: %s", exc)
 
     def reset_session_state(
         self,
@@ -603,84 +522,17 @@ class AIAgent:
         old_session_id: Optional[str] = None,
         carry_over_context: bool = False,
     ):
-        """Reset all session-scoped token counters to 0 for a fresh session.
-        
-        This method encapsulates the reset logic for all session-level metrics
-        including:
-        - Token usage counters (input, output, total, prompt, completion)
-        - Cache read/write tokens
-        - API call count
-        - Reasoning tokens
-        - Estimated cost tracking
-        - Context compressor internal counters
-        
-        The method safely handles optional attributes (e.g., context compressor)
-        using ``hasattr`` checks.
-
-        When ``previous_messages`` / ``old_session_id`` / ``carry_over_context``
-        are provided, the active context engine is notified through the
-        full transition lifecycle (``_transition_context_engine_session``)
-        instead of a bare reset. Default callers pass nothing and keep the
-        existing reset-only behavior.
-        """
-        # Token usage counters
-        self.session_total_tokens = 0
-        self.session_input_tokens = 0
-        self.session_output_tokens = 0
-        self.session_prompt_tokens = 0
-        self.session_completion_tokens = 0
-        self.session_cache_read_tokens = 0
-        self.session_cache_write_tokens = 0
-        self.session_reasoning_tokens = 0
-        self.session_api_calls = 0
-        self.session_estimated_cost_usd = 0.0
-        self.session_cost_status = "unknown"
-        self.session_cost_source = "none"
-        
-        # Turn counter (added after reset_session_state was first written — #2635)
-        self._user_turn_count = 0
-
-        # Context engine reset/transition (works for built-in compressor and plugins)
-        self._transition_context_engine_session(
-            old_session_id=old_session_id,
-            new_session_id=getattr(self, "session_id", None),
+        """Forwarder — see ``agent.session_manager.SessionManager.reset_session_state``."""
+        self._session_manager.reset_session_state(
             previous_messages=previous_messages,
+            old_session_id=old_session_id,
             carry_over_context=carry_over_context,
-            reset_engine=True,
         )
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
-        """
-        Preload the LM Studio model with at least Hermes' minimum context.
-        """
-        if (self.provider or "").strip().lower() != "lmstudio":
-            return
-        try:
-            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-            from hermes_cli.models import ensure_lmstudio_model_loaded
-            if config_context_length is None:
-                config_context_length = getattr(self, "_config_context_length", None)
-            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
-            loaded_ctx = ensure_lmstudio_model_loaded(
-                self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
-            )
-            if loaded_ctx:
-                # Push into the live compressor so the status bar reflects the
-                # real loaded ctx the moment the load resolves, instead of
-                # holding the previous model's value (or "ctx --") through the
-                # next render tick.
-                cc = getattr(self, "context_compressor", None)
-                if cc is not None:
-                    cc.update_model(
-                        model=self.model,
-                        context_length=loaded_ctx,
-                        base_url=self.base_url,
-                        api_key=getattr(self, "api_key", ""),
-                        provider=self.provider,
-                        api_mode=self.api_mode,
-                    )
-        except Exception as err:
-            logger.debug("LM Studio preload skipped: %s", err)
+        """Forwarder — see ``agent.provider.lmstudio_runtime.ensure_lmstudio_runtime_loaded``."""
+        from agent.lmstudio_runtime import ensure_lmstudio_runtime_loaded
+        ensure_lmstudio_runtime_loaded(self, config_context_length=config_context_length)
 
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Forwarder — see ``agent.agent_runtime_helpers.switch_model``."""
@@ -835,103 +687,28 @@ class AIAgent:
     # writes to ``logger.warning`` / ``logger.info`` for diagnosis.
 
     def _buffer_status(self, message: str) -> None:
-        """Buffer a retry/fallback status message.
-
-        Stored as a (kind, text) tuple where ``kind`` is one of:
-        - ``"status"``  -> replays via ``_emit_status``
-        - ``"vprint"``  -> replays via ``_vprint(force=True)``
-        - ``"warn"``    -> replays via ``_emit_warning``
-        Used to defer noisy retry chatter until we know whether the
-        turn ultimately recovered or failed.
-        """
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if buf is None:
-                buf = []
-                self._retry_status_buffer = buf
-            buf.append(("status", message))
-        except Exception:
-            # Never break the retry loop on a buffer hiccup.
-            pass
+        """Buffer a retry/fallback status message."""
+        self._status_buffer.buffer_status(message)
 
     def _buffer_vprint(self, message: str) -> None:
         """Buffer a vprint(force=True) retry/fallback line."""
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if buf is None:
-                buf = []
-                self._retry_status_buffer = buf
-            buf.append(("vprint", message))
-        except Exception:
-            pass
+        self._status_buffer.buffer_vprint(message)
 
     def _clear_status_buffer(self) -> None:
         """Drop buffered retry messages — call on successful recovery."""
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if buf:
-                buf.clear()
-        except Exception:
-            pass
+        self._status_buffer.clear()
 
     def _flush_status_buffer(self) -> None:
-        """Emit buffered retry messages — call on terminal failure.
-
-        Surfaces the full retry/fallback trace so the user can see what
-        was tried before the turn gave up.
-        """
-        try:
-            buf = getattr(self, "_retry_status_buffer", None)
-            if not buf:
-                return
-            # Drain first so a callback exception doesn't double-emit.
-            messages = list(buf)
-            buf.clear()
-            for kind, msg in messages:
-                try:
-                    if kind == "status":
-                        self._emit_status(msg)
-                    elif kind == "warn":
-                        self._emit_warning(msg)
-                    else:
-                        self._vprint(f"{self.log_prefix}{msg}", force=True)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        """Emit buffered retry messages — call on terminal failure."""
+        self._status_buffer.flush()
 
     def _disable_codex_reasoning_replay(
         self,
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, int]:
-        """Disable Responses encrypted reasoning replay and strip cached state.
-
-        Called from the conversation_loop retry path when the provider
-        rejects a replayed ``codex_reasoning_items`` blob with HTTP 400
-        ``invalid_encrypted_content``.  Sets ``self._codex_reasoning_replay_enabled``
-        to ``False`` (consumed by ``codex_responses_adapter._chat_messages_to_responses_input``
-        and ``transports/codex.py`` to drop ``reasoning.encrypted_content``
-        from subsequent requests) and pops ``codex_reasoning_items`` from
-        every assistant message in ``messages`` so they cannot be replayed
-        again later in the session.
-
-        Returns a small stats dict ``{"messages": int, "items": int}``
-        counting what was stripped — purely for diagnostic logging.
-        """
-        stripped_messages = 0
-        stripped_items = 0
-        target_messages = messages if isinstance(messages, list) else []
-
-        for msg in target_messages:
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            items = msg.pop("codex_reasoning_items", None)
-            if isinstance(items, list) and items:
-                stripped_messages += 1
-                stripped_items += len(items)
-
-        self._codex_reasoning_replay_enabled = False
-        return {"messages": stripped_messages, "items": stripped_items}
+        """Forwarder — see ``agent.codex_responses_adapter.disable_codex_reasoning_replay``."""
+        from agent.codex_responses_adapter import disable_codex_reasoning_replay
+        return disable_codex_reasoning_replay(self, messages)
 
     # Stream-diagnostic class header preserved for backward compat —
     # actual list lives in ``agent.stream_diag.STREAM_DIAG_HEADERS``.
@@ -1445,87 +1222,13 @@ class AIAgent:
             tool_call_id=tool_call_id,
         )
 
-    def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
-        """Rewrite the current-turn user message before persistence/return.
-
-        Some call paths need an API-only user-message variant without letting
-        that synthetic text leak into persisted transcripts or resumed session
-        history. When an override is configured for the active turn, mutate the
-        in-memory messages list in place so both persistence and returned
-        history stay clean.
-        """
-        idx = getattr(self, "_persist_user_message_idx", None)
-        override = getattr(self, "_persist_user_message_override", None)
-        if override is None or idx is None:
-            return
-        if 0 <= idx < len(messages):
-            msg = messages[idx]
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                msg["content"] = override
-
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Save session state to both JSON log and SQLite on any exit path.
-
-        Ensures conversations are never lost, even on errors or early returns.
-        """
-        self._drop_trailing_empty_response_scaffolding(messages)
-        self._apply_persist_user_message_override(messages)
-        self._session_messages = messages
-        self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        """Forwarder — see ``agent.session_manager.SessionManager.persist_session``."""
+        self._session_manager.persist_session(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Remove private empty-response retry/failure scaffolding from transcript tails.
-
-        Also rewinds past any trailing tool-result / assistant(tool_calls) pair
-        that the failed iteration left hanging. Without this, the tail ends at
-        a raw ``tool`` message and the next user turn lands as
-        ``...tool, user, user`` — a protocol-invalid sequence that most
-        providers silently reject (returns empty content), causing the
-        empty-retry loop to fire forever. See #<TBD>.
-        """
-        # Pass 1: strip the flagged scaffolding messages themselves.
-        dropped_scaffolding = False
-        while (
-            messages
-            and isinstance(messages[-1], dict)
-            and (
-                messages[-1].get("_empty_recovery_synthetic")
-                or messages[-1].get("_empty_terminal_sentinel")
-            )
-        ):
-            messages.pop()
-            dropped_scaffolding = True
-
-        # Pass 2: if we stripped scaffolding, rewind through any trailing
-        # tool-result messages plus the assistant(tool_calls) message that
-        # produced them. This preserves role alternation so the next user
-        # message follows a user or assistant message, not an orphan tool
-        # result. Only runs when scaffolding was actually present — normal
-        # conversation tails (real tool loops mid-progress) are untouched.
-        if not dropped_scaffolding:
-            return
-
-        # Drop any trailing tool-result messages
-        while (
-            messages
-            and isinstance(messages[-1], dict)
-            and messages[-1].get("role") == "tool"
-        ):
-            messages.pop()
-
-        # Drop the assistant message that issued the tool calls, if the tail
-        # now ends in an assistant-with-tool_calls (the pair that owned the
-        # just-popped tool results). Without this, the tail is
-        # ``assistant(tool_calls=...)`` with no tool answers, which some
-        # providers also reject.
-        if (
-            messages
-            and isinstance(messages[-1], dict)
-            and messages[-1].get("role") == "assistant"
-            and messages[-1].get("tool_calls")
-        ):
-            messages.pop()
+        """Forwarder — see ``agent.session_manager.SessionManager._drop_trailing_empty_response_scaffolding``."""
+        self._session_manager._drop_trailing_empty_response_scaffolding(messages)
 
     def _repair_message_sequence(self, messages: List[Dict]) -> int:
         """Forwarder — see ``agent.agent_runtime_helpers.repair_message_sequence``."""
@@ -1533,63 +1236,8 @@ class AIAgent:
         return repair_message_sequence(self, messages)
 
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
-        """Persist any un-flushed messages to the SQLite session store.
-
-        Uses _last_flushed_db_idx to track which messages have already been
-        written, so repeated calls (from multiple exit paths) only write
-        truly new messages — preventing the duplicate-write bug (#860).
-        """
-        if not self._session_db:
-            return
-        self._apply_persist_user_message_override(messages)
-        try:
-            # Retry row creation if the earlier attempt failed transiently.
-            if not self._session_db_created:
-                self._ensure_db_session()
-            start_idx = len(conversation_history) if conversation_history else 0
-            flush_from = max(start_idx, self._last_flushed_db_idx)
-            for msg in messages[flush_from:]:
-                role = msg.get("role", "unknown")
-                content = msg.get("content")
-                # Persist multimodal tool results as their text summary only —
-                # base64 images would bloat the session DB and aren't useful
-                # for cross-session replay.
-                if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
-                elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
-                tool_calls_data = None
-                if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
-                    tool_calls_data = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in msg.tool_calls
-                    ]
-                elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
-                    session_id=self.session_id,
-                    role=role,
-                    content=content,
-                    tool_name=msg.get("tool_name"),
-                    tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                )
-            self._last_flushed_db_idx = len(messages)
-        except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+        """Forwarder — see ``agent.session_manager.SessionManager.flush_messages_to_session_db``."""
+        self._session_manager.flush_messages_to_session_db(messages, conversation_history)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """
@@ -2177,90 +1825,8 @@ class AIAgent:
         return content
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
-        """Optional per-session JSON snapshot writer.
-
-        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
-        is the canonical message store; this writer exists only for users
-        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
-        directly.  When the flag is off this is a fast no-op.
-
-        When enabled, rewrites the snapshot after every persistence point with
-        the full message list (assistant content normalized via
-        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
-        tags).  The truncation guard ("don't overwrite a larger log with
-        fewer messages") is preserved so resume + branch don't clobber a
-        fuller existing snapshot.
-        """
-        if not getattr(self, "_session_json_enabled", False):
-            return
-        messages = messages or self._session_messages
-        if not messages:
-            return
-
-        # Re-derive the target path each call so /branch and /compress
-        # session-id changes land in the right file without any re-point
-        # bookkeeping at the call sites.
-        try:
-            log_file = self.logs_dir / f"session_{self.session_id}.json"
-        except Exception:
-            return
-
-        try:
-            cleaned = []
-            for msg in messages:
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    msg = dict(msg)
-                    msg["content"] = self._clean_session_content(msg["content"])
-                # Defence-in-depth: redact credentials from every message
-                # content before persistence. Catches PATs / API keys / Bearer
-                # tokens that may have leaked into assistant responses, tool
-                # output, or user paste. Respects HERMES_REDACT_SECRETS via
-                # redact_sensitive_text — no-op when disabled. (#19798, #19845)
-                if "content" in msg:
-                    msg = dict(msg)
-                    msg["content"] = self._redact_message_content(msg.get("content"))
-                cleaned.append(msg)
-
-            # Guard: never overwrite a larger session log with fewer messages.
-            # Protects against data loss when a resumed agent starts with
-            # partial history and would otherwise clobber the full JSON log.
-            if log_file.exists():
-                try:
-                    existing = json.loads(log_file.read_text(encoding="utf-8"))
-                    existing_count = existing.get("message_count", len(existing.get("messages", [])))
-                    if existing_count > len(cleaned):
-                        logging.debug(
-                            "Skipping session log overwrite: existing has %d messages, current has %d",
-                            existing_count, len(cleaned),
-                        )
-                        return
-                except Exception:
-                    pass  # corrupted existing file — allow the overwrite
-
-            entry = {
-                "session_id": self.session_id,
-                "model": self.model,
-                "base_url": self.base_url,
-                "platform": self.platform,
-                "session_start": self.session_start.isoformat(),
-                "last_updated": datetime.now().isoformat(),
-                "system_prompt": redact_sensitive_text(self._cached_system_prompt or ""),
-                "tools": self.tools or [],
-                "message_count": len(cleaned),
-                "messages": cleaned,
-            }
-
-            atomic_json_write(
-                log_file,
-                entry,
-                indent=2,
-                default=str,
-            )
-
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to save session log: {e}")
-
+        """Forwarder — see ``agent.session_manager.SessionManager.save_session_log``."""
+        self._session_manager.save_session_log(messages)
 
     def interrupt(self, message: str = None) -> None:
         """
@@ -2881,56 +2447,12 @@ class AIAgent:
         }
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine — call at actual session boundaries.
-
-        This calls on_session_end() then shutdown_all() on the memory
-        manager, and on_session_end() on the context engine.
-        NOT called per-turn — only at CLI exit, /reset, gateway
-        session expiry, etc.
-        """
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
-            try:
-                self._memory_manager.shutdown_all()
-            except Exception:
-                pass
-        # Notify context engine of session end (flush DAG, close DBs, etc.)
-        if hasattr(self, "context_compressor") and self.context_compressor:
-            try:
-                self.context_compressor.on_session_end(
-                    self.session_id or "",
-                    messages or [],
-                )
-            except Exception:
-                pass
+        """Forwarder — see ``agent.session_manager.SessionManager.shutdown_memory_provider``."""
+        self._session_manager.shutdown_memory_provider(messages)
 
     def commit_memory_session(self, messages: list = None) -> None:
-        """Trigger end-of-session extraction without tearing providers down.
-        Called when session_id rotates (e.g. /new, context compression);
-        providers keep their state and continue running under the old
-        session_id — they just flush pending extraction now."""
-        if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception:
-                pass
-        # Notify context engine of session end too — same lifecycle moment as
-        # the memory manager's on_session_end. Without this, engines that
-        # accumulate per-session state (DAGs, summaries) leak that state from
-        # the rotated-out session into whatever comes next under the same
-        # compressor instance. Mirrors the call in shutdown_memory_provider().
-        # See issue #22394.
-        if hasattr(self, "context_compressor") and self.context_compressor:
-            try:
-                self.context_compressor.on_session_end(
-                    self.session_id or "",
-                    messages or [],
-                )
-            except Exception:
-                pass
+        """Forwarder — see ``agent.session_manager.SessionManager.commit_memory_session``."""
+        self._session_manager.commit_memory_session(messages)
 
     def _sync_external_memory_for_turn(
         self,
@@ -3095,10 +2617,7 @@ class AIAgent:
         # be reused.  Drops the reference proactively rather than waiting for
         # the agent object itself to be collected, which matters when a caller
         # still holds the closed agent (e.g. a draining background task).
-        try:
-            self._session_messages = []
-        except Exception:
-            pass
+        self._session_manager.clear_session_messages()
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
@@ -3260,7 +2779,7 @@ class AIAgent:
 
         Returns the original list if no truncation was needed.
         """
-        from tools.delegate_tool import _get_max_concurrent_children
+        from tools.delegation.delegate_tool import _get_max_concurrent_children
         max_children = _get_max_concurrent_children()
         delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
         if delegate_count <= max_children:
@@ -4703,50 +4222,19 @@ class AIAgent:
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
-        """Probe LM Studio's published reasoning ``allowed_options`` once per
-        (model, base_url). The list (e.g. ``["off","on"]`` or
-        ``["off","minimal","low"]``) is needed both for the supports-reasoning
-        gate and for clamping the emitted ``reasoning_effort`` so toggle-style
-        models don't 400 on ``high``. Cache is keyed on (model, base_url) so
-        ``/model`` swaps and base-URL changes don't reuse a stale list.
-        Non-empty results are cached permanently (model capabilities don't
-        change). Empty results (transient probe failure OR genuinely
-        non-reasoning model) are cached with a 60-second TTL to avoid an
-        HTTP round-trip on every turn while still retrying reasonably soon.
-        """
-        import time as _time
-
-        cache = getattr(self, "_lm_reasoning_opts_cache", None)
-        if cache is None:
-            cache = self._lm_reasoning_opts_cache = {}
-        key = (self.model, self.base_url)
-        cached = cache.get(key)
-        if cached is not None:
-            opts, ts = cached
-            # Non-empty → permanent. Empty → 60s TTL.
-            if opts or (_time.monotonic() - ts) < 60:
-                return opts
-        try:
-            from hermes_cli.models import lmstudio_model_reasoning_options
-            opts = lmstudio_model_reasoning_options(
-                self.model, self.base_url, getattr(self, "api_key", ""),
-            )
-        except Exception:
-            opts = []
-        cache[key] = (opts, _time.monotonic())
-        return opts
+        """Forwarder — see ``agent.provider.lmstudio_runtime.lmstudio_reasoning_options_cached``."""
+        from agent.lmstudio_runtime import lmstudio_reasoning_options_cached
+        return lmstudio_reasoning_options_cached(self)
 
     def _resolve_lmstudio_summary_reasoning_effort(self) -> Optional[str]:
-        """Resolve a safe top-level ``reasoning_effort`` for LM Studio.
-
-        The iteration-limit summary path calls ``chat.completions.create()``
-        directly, bypassing the transport. Share the helper so the two paths
-        can't drift on effort resolution and clamping.
-        """
-        from agent.lmstudio_reasoning import resolve_lmstudio_effort
-        return resolve_lmstudio_effort(
+        """Forwarder — see ``agent.provider.lmstudio_runtime.resolve_lmstudio_summary_reasoning_effort``."""
+        from agent.lmstudio_runtime import (
+            lmstudio_reasoning_options_cached,
+            resolve_lmstudio_summary_reasoning_effort,
+        )
+        return resolve_lmstudio_summary_reasoning_effort(
             self.reasoning_config,
-            self._lmstudio_reasoning_options_cached(),
+            lmstudio_reasoning_options_cached(self),
         )
 
     def _github_models_reasoning_extra_body(self) -> dict | None:
@@ -5017,7 +4505,7 @@ class AIAgent:
         New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
         invocation paths (concurrent, sequential, inline).
         """
-        from tools.delegate_tool import delegate_task as _delegate_task
+        from tools.delegation.delegate_tool import delegate_task as _delegate_task
         return _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),

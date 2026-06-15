@@ -19,7 +19,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, NonMcpEndpointError
+from tools.mcp.mcp_tool import MCPServerTask, NonMcpEndpointError
 
 
 def _make_task(name: str = "probe_srv") -> MCPServerTask:

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from tools import file_state
-from tools.file_tools import (
+from tools.core.file_tools import (
     read_file_tool,
     write_file_tool,
     patch_tool,
@@ -271,7 +271,7 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
 
     def test_returns_none_for_unread_file(self):
         # Populate tracker with a different file
-        from tools.file_tools import _read_tracker, _read_tracker_lock
+        from tools.core.file_tools import _read_tracker, _read_tracker_lock
         with _read_tracker_lock:
             _read_tracker["t1"] = {
                 "last_key": None, "consecutive": 0,
@@ -281,7 +281,7 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
         self.assertIsNone(_check_file_staleness("/tmp/x.py", "t1"))
 
     def test_returns_none_when_stat_fails(self):
-        from tools.file_tools import _read_tracker, _read_tracker_lock
+        from tools.core.file_tools import _read_tracker, _read_tracker_lock
         with _read_tracker_lock:
             _read_tracker["t1"] = {
                 "last_key": None, "consecutive": 0,

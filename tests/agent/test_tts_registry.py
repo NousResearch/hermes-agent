@@ -299,7 +299,7 @@ class TestBuiltinSync:
     """
 
     def test_registry_builtins_match_dispatcher_builtins(self):
-        from tools.tts_tool import BUILTIN_TTS_PROVIDERS
+        from tools.media.tts_tool import BUILTIN_TTS_PROVIDERS
 
         assert tts_registry._BUILTIN_NAMES == BUILTIN_TTS_PROVIDERS, (
             "agent.tts_registry._BUILTIN_NAMES and "

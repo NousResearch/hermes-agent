@@ -1070,7 +1070,7 @@ class WeComAdapter(BasePlatformAdapter):
         url: str,
         max_bytes: int,
     ) -> Tuple[bytes, Dict[str, str]]:
-        from tools.url_safety import is_safe_url
+        from tools.security.url_safety import is_safe_url
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
 

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _register_server_tools
+from tools.mcp.mcp_tool import MCPServerTask, _register_server_tools
 from tools.registry import ToolRegistry
 
 
@@ -81,7 +81,7 @@ class TestMessageHandler:
 
     @pytest.mark.asyncio
     async def test_dispatches_tool_list_changed(self):
-        from tools.mcp_tool import _MCP_NOTIFICATION_TYPES
+        from tools.mcp.mcp_tool import _MCP_NOTIFICATION_TYPES
         if not _MCP_NOTIFICATION_TYPES:
             pytest.skip("MCP SDK ToolListChangedNotification not available")
 

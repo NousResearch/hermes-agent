@@ -525,7 +525,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
-        from tools.send_message_tool import _parse_target_ref
+        from tools.communication.send_message_tool import _parse_target_ref
 
         parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
         if is_explicit:
@@ -740,7 +740,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             return msg
         return None  # local-only jobs don't deliver — not a failure
 
-    from tools.send_message_tool import _send_to_platform
+    from tools.communication.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -1219,7 +1219,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if not skill_names:
         return _scan_assembled_cron_prompt(prompt, job, has_skills=False)
 
-    from tools.skills_tool import skill_view
+    from tools.skills.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
@@ -1756,7 +1756,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
         try:
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
             _mcp_tools = discover_mcp_tools()
             if _mcp_tools:
                 logger.info(
@@ -2215,7 +2215,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         # reaped.
         def _sweep_mcp_orphans() -> None:
             try:
-                from tools.mcp_tool import _kill_orphaned_mcp_children
+                from tools.mcp.mcp_tool import _kill_orphaned_mcp_children
                 _kill_orphaned_mcp_children()
             except Exception as _e:
                 logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)

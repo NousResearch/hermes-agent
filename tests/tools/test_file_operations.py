@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from tools.file_operations import (
+from tools.core.file_operations import (
     _is_write_denied,
     ReadResult,
     WriteResult,

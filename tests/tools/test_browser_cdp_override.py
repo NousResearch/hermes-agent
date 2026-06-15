@@ -10,12 +10,12 @@ VERSION_URL = f"{HTTP_URL}/json/version"
 
 class TestResolveCdpOverride:
     def test_keeps_full_devtools_websocket_url(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser.browser_tool import _resolve_cdp_override
 
         assert _resolve_cdp_override(WS_URL) == WS_URL
 
     def test_resolves_http_discovery_endpoint_to_websocket(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser.browser_tool import _resolve_cdp_override
 
         response = Mock()
         response.raise_for_status.return_value = None
@@ -28,7 +28,7 @@ class TestResolveCdpOverride:
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
     def test_resolves_bare_ws_hostport_to_discovery_websocket(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser.browser_tool import _resolve_cdp_override
 
         response = Mock()
         response.raise_for_status.return_value = None
@@ -41,7 +41,7 @@ class TestResolveCdpOverride:
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
     def test_falls_back_to_raw_url_when_discovery_fails(self):
-        from tools.browser_tool import _resolve_cdp_override
+        from tools.browser.browser_tool import _resolve_cdp_override
 
         with patch("tools.browser_tool.requests.get", side_effect=RuntimeError("boom")):
             assert _resolve_cdp_override(HTTP_URL) == HTTP_URL

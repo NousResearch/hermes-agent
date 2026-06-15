@@ -860,31 +860,31 @@ from hermes_cli.callbacks import prompt_for_secret
 
 
 def _cleanup_all_terminals(*args, **kwargs):
-    from tools.terminal_tool import cleanup_all_environments
+    from tools.core.terminal_tool import cleanup_all_environments
 
     return cleanup_all_environments(*args, **kwargs)
 
 
 def set_sudo_password_callback(*args, **kwargs):
-    from tools.terminal_tool import set_sudo_password_callback as _set_sudo_password_callback
+    from tools.core.terminal_tool import set_sudo_password_callback as _set_sudo_password_callback
 
     return _set_sudo_password_callback(*args, **kwargs)
 
 
 def set_approval_callback(*args, **kwargs):
-    from tools.terminal_tool import set_approval_callback as _set_approval_callback
+    from tools.core.terminal_tool import set_approval_callback as _set_approval_callback
 
     return _set_approval_callback(*args, **kwargs)
 
 
 def set_secret_capture_callback(*args, **kwargs):
-    from tools.skills_tool import set_secret_capture_callback as _set_secret_capture_callback
+    from tools.skills.skills_tool import set_secret_capture_callback as _set_secret_capture_callback
 
     return _set_secret_capture_callback(*args, **kwargs)
 
 
 def _cleanup_all_browsers(*args, **kwargs):
-    from tools.browser_tool import _emergency_cleanup_all_sessions
+    from tools.browser.browser_tool import _emergency_cleanup_all_sessions
 
     return _emergency_cleanup_all_sessions(*args, **kwargs)
 
@@ -974,7 +974,7 @@ def _run_cleanup():
     except Exception:
         pass
     try:
-        from tools.mcp_tool import shutdown_mcp_servers
+        from tools.mcp.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except BaseException:
         pass
@@ -8417,7 +8417,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         sees the updated tools on the next turn.
         """
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names
             with _lock:
@@ -8952,7 +8952,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return
         self._voice_tts_done.clear()
         try:
-            from tools.tts_tool import text_to_speech_tool
+            from tools.media.tts_tool import text_to_speech_tool
             from tools.voice_mode import play_audio_file
 
             # Strip markdown and non-speech content for cleaner TTS
@@ -9113,7 +9113,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         status = "enabled" if self._voice_tts else "disabled"
 
         if self._voice_tts:
-            from tools.tts_tool import check_tts_requirements
+            from tools.media.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
 
@@ -9738,7 +9738,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             if self._voice_tts:
                 try:
-                    from tools.tts_tool import (
+                    from tools.media.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
                         _get_provider as _get_prov,
                         _import_elevenlabs,

@@ -15,20 +15,20 @@ class TestTTSProviderNullGuard:
 
     def test_explicit_null_provider_returns_default(self):
         """YAML ``tts: {provider: null}`` should fall back to default."""
-        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
+        from tools.media.tts_tool import _get_provider, DEFAULT_PROVIDER
 
         result = _get_provider({"provider": None})
         assert result == DEFAULT_PROVIDER.lower().strip()
 
     def test_missing_provider_returns_default(self):
         """No ``provider`` key at all should also return default."""
-        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
+        from tools.media.tts_tool import _get_provider, DEFAULT_PROVIDER
 
         result = _get_provider({})
         assert result == DEFAULT_PROVIDER.lower().strip()
 
     def test_valid_provider_passed_through(self):
-        from tools.tts_tool import _get_provider
+        from tools.media.tts_tool import _get_provider
 
         result = _get_provider({"provider": "OPENAI"})
         assert result == "openai"

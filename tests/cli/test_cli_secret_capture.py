@@ -7,7 +7,7 @@ import cli as cli_module
 import tools.skills_tool as skills_tool_module
 from cli import HermesCLI
 from hermes_cli.callbacks import prompt_for_secret
-from tools.skills_tool import set_secret_capture_callback
+from tools.skills.skills_tool import set_secret_capture_callback
 
 
 class _FakeBuffer:

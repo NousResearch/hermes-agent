@@ -42,7 +42,7 @@ def _make_voice_cli(**overrides):
 # Markdown stripping — import real function from tts_tool
 # ============================================================================
 
-from tools.tts_tool import _strip_markdown_for_tts
+from tools.media.tts_tool import _strip_markdown_for_tts
 
 
 class TestMarkdownStripping:
@@ -183,7 +183,7 @@ class TestStreamingTTSActivation:
         and both lazy imports succeed."""
         use_streaming_tts = False
         try:
-            from tools.tts_tool import (
+            from tools.media.tts_tool import (
                 _load_tts_config as _load_tts_cfg,
                 _get_provider as _get_prov,
                 _import_elevenlabs,
@@ -202,7 +202,7 @@ class TestStreamingTTSActivation:
             mock_el.return_value = MagicMock()
             mock_sd.return_value = MagicMock()
 
-            from tools.tts_tool import (
+            from tools.media.tts_tool import (
                 _load_tts_config as load_cfg,
                 _get_provider as get_prov,
                 _import_elevenlabs as import_el,
@@ -223,7 +223,7 @@ class TestStreamingTTSActivation:
              patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
              patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError("no elevenlabs")):
             try:
-                from tools.tts_tool import (
+                from tools.media.tts_tool import (
                     _load_tts_config as load_cfg,
                     _get_provider as get_prov,
                     _import_elevenlabs as import_el,
@@ -247,7 +247,7 @@ class TestStreamingTTSActivation:
              patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
              patch("tools.tts_tool._import_sounddevice", side_effect=OSError("no PortAudio")):
             try:
-                from tools.tts_tool import (
+                from tools.media.tts_tool import (
                     _load_tts_config as load_cfg,
                     _get_provider as get_prov,
                     _import_elevenlabs as import_el,
@@ -269,7 +269,7 @@ class TestStreamingTTSActivation:
         with patch("tools.tts_tool._load_tts_config", return_value={"provider": "edge"}), \
              patch("tools.tts_tool._get_provider", return_value="edge"):
             try:
-                from tools.tts_tool import (
+                from tools.media.tts_tool import (
                     _load_tts_config as load_cfg,
                     _get_provider as get_prov,
                     _import_elevenlabs as import_el,

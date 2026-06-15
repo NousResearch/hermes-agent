@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.delegate_tool import delegate_task
+from tools.delegation.delegate_tool import delegate_task
 from hermes_cli import plugins
 
 

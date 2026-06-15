@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools.mcp_tool import (
+from tools.mcp.mcp_tool import (
     InvalidMcpUrlError,
     _validate_remote_mcp_url,
 )

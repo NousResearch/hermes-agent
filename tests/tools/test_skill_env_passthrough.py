@@ -55,7 +55,7 @@ class TestSkillViewRegistersPassthrough:
 
         # Patch the secret capture callback to not prompt
         with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+            from tools.skills.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -82,7 +82,7 @@ class TestSkillViewRegistersPassthrough:
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
 
         with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+            from tools.skills.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -109,7 +109,7 @@ class TestSkillViewRegistersPassthrough:
         monkeypatch.delenv("NONEXISTENT_SKILL_KEY_XYZ", raising=False)
 
         with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+            from tools.skills.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -124,7 +124,7 @@ class TestSkillViewRegistersPassthrough:
         )
 
         with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+            from tools.skills.skills_tool import skill_view
 
             result = json.loads(skill_view(name="simple-skill"))
 

@@ -1527,7 +1527,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     # Normalize: command uses hyphens, skill names may use hyphens or underscores
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import _get_disabled_skill_names
+        from tools.skills.skills_tool import _get_disabled_skill_names
         from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
         disabled = _get_disabled_skill_names()
 
@@ -1839,57 +1839,16 @@ def _preserve_queued_followup_history_offset(
 
 
 async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None:
-    """Best-effort dispose for an adapter that never made it onto ``self.adapters``.
+    """Best-effort dispose — delegates to AdapterManager for clean separation.
 
-    The reconnect watcher in ``GatewayRunner._platform_reconnect_watcher``
-    constructs a fresh adapter on every retry attempt. When the connect
-    call fails — for any of the three reasons (non-retryable error,
-    retryable error, exception during connect) — the adapter is dropped
-    without ever being installed, so nothing else will call its
-    ``disconnect()``. Any resources the adapter opened in ``__init__``
-    (e.g. ``APIServerAdapter`` opens a SQLite ``ResponseStore`` that
-    holds 2 fds — the db file and its WAL sidecar) stay open until
-    garbage collection sweeps the unreachable object, which Python's
-    cyclic GC does not do promptly for asyncio-bound objects with
-    native handles. The cumulative leak is 2 fds × every retry at the
-    300s backoff cap ≈ 12 fds/hour, and the default 2560-fd ulimit
-    is exhausted in ~12h of continuous failure, after which every
-    open() call on the gateway raises ``OSError: [Errno 24] Too many
-    open files`` and the gateway becomes a zombie (#37011).
-
-    This helper centralises the dispose-with-suppression so the three
-    failure paths in the reconnect watcher can all call it without
-    each one having to know that ``disconnect()`` may itself raise
-    on a half-constructed adapter.
-
-    ``adapter`` may be ``None``: the reconnect watcher initialises
-    ``adapter = None`` before the ``try`` so the ``except Exception``
-    arm can dispose a half-constructed object, and also early-returns
-    here when ``_create_adapter()`` returned ``None``.
+    This is a thin wrapper. The actual disposal logic (including
+    half-constructed adapter handling) lives in services/adapter_manager.py.
     """
-    if adapter is None:
-        return
-    try:
-        await adapter.disconnect()
-    except Exception:
-        # Half-constructed adapters (e.g. APIServerAdapter that
-        # crashed during aiohttp app setup) can raise from
-        # disconnect() on objects that never finished initializing.
-        # We must not let that escape and abort the watcher loop.
-        #
-        # On Python 3.8+, ``asyncio.CancelledError`` inherits from
-        # ``BaseException`` (not ``Exception``), so this ``except
-        # Exception`` does not swallow task cancellation. We don't
-        # re-raise explicitly because the watcher loop intentionally
-        # treats dispose failures as best-effort: a failed ``disconnect``
-        # call should not take down the reconnect watcher that
-        # itself is what's keeping the gateway alive during a partial
-        # outage.
-        logger.debug(
-            "Adapter dispose raised on unowned adapter %r",
-            getattr(adapter, "name", type(adapter).__name__),
-            exc_info=True,
-        )
+    # Import here to avoid circular dependency at module load time
+    from services.adapter_manager import AdapterManager
+
+    manager = AdapterManager()
+    await manager.dispose_adapter(adapter)
 
 
 class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
@@ -2233,7 +2192,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _has_setup_skill(self) -> bool:
         """Check if the hermes-agent-setup skill is installed."""
         try:
-            from tools.skill_manager_tool import _find_skill
+            from tools.skills.skill_manager_tool import _find_skill
             return _find_skill("hermes-agent-setup") is not None
         except Exception:
             return False
@@ -5640,12 +5599,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _e:
                     logger.debug("process_registry.kill_all (%s) error: %s", phase, _e)
                 try:
-                    from tools.terminal_tool import cleanup_all_environments
+                    from tools.core.terminal_tool import cleanup_all_environments
                     cleanup_all_environments()
                 except Exception as _e:
                     logger.debug("cleanup_all_environments (%s) error: %s", phase, _e)
                 try:
-                    from tools.browser_tool import cleanup_all_browsers
+                    from tools.browser.browser_tool import cleanup_all_browsers
                     cleanup_all_browsers()
                 except Exception as _e:
                     logger.debug("cleanup_all_browsers (%s) error: %s", phase, _e)
@@ -7093,6 +7052,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "deny":
             return await self._handle_deny_command(event)
+
+        if canonical == "remote":
+            return await self._handle_remote_command(event)
 
         if canonical == "update":
             return await self._handle_update_command(event)
@@ -9556,7 +9518,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.media.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
@@ -10395,7 +10357,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         loop = asyncio.get_running_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names before shutdown
             with _lock:
@@ -11443,7 +11405,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return f"{prefix}\n\n{user_text}", []
             return prefix, []
 
-        from tools.transcription_tools import transcribe_audio
+        from tools.media.transcription_tools import transcribe_audio
 
         enriched_parts = []
         successful_transcripts: List[str] = []
@@ -15615,7 +15577,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Sync bundled skills on gateway start (fast -- skips unchanged)
     try:
-        from tools.skills_sync import sync_skills
+        from tools.skills.skills_sync import sync_skills
         sync_skills(quiet=True)
     except Exception:
         pass
@@ -15832,7 +15794,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # heartbeats (Discord shard, Telegram polling) until it returned.
     # See #16856.
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        from tools.mcp.mcp_tool import discover_mcp_tools
         _loop = asyncio.get_running_loop()
         await _loop.run_in_executor(None, discover_mcp_tools)
     except Exception as e:
@@ -15877,7 +15839,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     # Close MCP server connections
     try:
-        from tools.mcp_tool import shutdown_mcp_servers
+        from tools.mcp.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except Exception:
         pass

@@ -31,7 +31,7 @@ class TestCancelledErrorPropagation:
     def test_cancelled_error_is_not_swallowed_by_except_exception(self):
         """CancelledError raised inside the transport call must re-raise
         so the reconnect loop terminates cleanly on cancel — not stay wedged."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         server = MCPServerTask("cancel-test")
 
@@ -70,7 +70,7 @@ class TestCancelledErrorPropagation:
         """``shutdown()`` falls through to ``task.cancel()`` + ``await self._task``
         after a grace period. That cancel must unwedge the reconnect loop —
         otherwise ``await self._task`` hangs indefinitely."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         server = MCPServerTask("shutdown-cancel-test")
 

@@ -445,21 +445,21 @@ class TestMcpTest:
 class TestEnvVarInterpolation:
     def test_interpolate_simple(self, monkeypatch):
         monkeypatch.setenv("MY_KEY", "secret123")
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp.mcp_tool import _interpolate_env_vars
 
         result = _interpolate_env_vars("Bearer ${MY_KEY}")
         assert result == "Bearer secret123"
 
     def test_interpolate_missing_var(self, monkeypatch):
         monkeypatch.delenv("MISSING_VAR", raising=False)
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp.mcp_tool import _interpolate_env_vars
 
         result = _interpolate_env_vars("Bearer ${MISSING_VAR}")
         assert result == "Bearer ${MISSING_VAR}"
 
     def test_interpolate_nested_dict(self, monkeypatch):
         monkeypatch.setenv("API_KEY", "abc")
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp.mcp_tool import _interpolate_env_vars
 
         result = _interpolate_env_vars({
             "url": "https://example.com",
@@ -470,13 +470,13 @@ class TestEnvVarInterpolation:
 
     def test_interpolate_list(self, monkeypatch):
         monkeypatch.setenv("ARG1", "hello")
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp.mcp_tool import _interpolate_env_vars
 
         result = _interpolate_env_vars(["${ARG1}", "static"])
         assert result == ["hello", "static"]
 
     def test_interpolate_non_string(self):
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp.mcp_tool import _interpolate_env_vars
 
         assert _interpolate_env_vars(42) == 42
         assert _interpolate_env_vars(True) is True
@@ -650,7 +650,7 @@ class TestMcpRemoveEvictsManager:
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
+        from tools.mcp.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
 
         mgr = get_manager()

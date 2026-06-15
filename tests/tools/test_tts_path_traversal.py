@@ -9,7 +9,7 @@ always either a bug or prompt-injection-controlled
 
 import json
 
-from tools.tts_tool import text_to_speech_tool
+from tools.media.tts_tool import text_to_speech_tool
 
 
 def test_output_path_rejects_traversal_escape():

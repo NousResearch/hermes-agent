@@ -244,7 +244,7 @@ def main():
     if _has_mcp_servers:
         def _discover_mcp_background() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
+                from tools.mcp.mcp_tool import discover_mcp_tools
                 discover_mcp_tools()
             except Exception:
                 logger.warning(

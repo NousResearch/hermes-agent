@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub import ClawHubSource, SkillMeta
+from tools.skills.skills_hub import ClawHubSource, SkillMeta
 
 
 class _MockResponse:

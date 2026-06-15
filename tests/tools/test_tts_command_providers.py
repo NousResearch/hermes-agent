@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_tool import (
+from tools.media.tts_tool import (
     BUILTIN_TTS_PROVIDERS,
     COMMAND_TTS_OUTPUT_FORMATS,
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,

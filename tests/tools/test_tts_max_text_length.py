@@ -8,7 +8,7 @@ MiniMax allows 10000, and ElevenLabs allows 5000-40000 depending on model.
 import json
 
 
-from tools.tts_tool import (
+from tools.media.tts_tool import (
     FALLBACK_MAX_TEXT_LENGTH,
     PROVIDER_MAX_TEXT_LENGTH,
     _resolve_max_text_length,
@@ -137,7 +137,7 @@ class TestTextToSpeechToolTruncation:
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai"})
 
-        from tools.tts_tool import text_to_speech_tool
+        from tools.media.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
@@ -162,7 +162,7 @@ class TestTextToSpeechToolTruncation:
         monkeypatch.setattr("tools.tts_tool._load_tts_config",
                             lambda: {"provider": "xai"})
 
-        from tools.tts_tool import text_to_speech_tool
+        from tools.media.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
@@ -186,7 +186,7 @@ class TestTextToSpeechToolTruncation:
                             lambda: {"provider": "openai",
                                      "openai": {"max_text_length": 100}})
 
-        from tools.tts_tool import text_to_speech_tool
+        from tools.media.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 

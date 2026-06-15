@@ -19,7 +19,7 @@ def _can_symlink():
         return False
 
 
-from tools.skills_guard import (
+from tools.skills.skills_guard import (
     Finding,
     ScanResult,
     scan_file,

@@ -424,7 +424,7 @@ def _compute_tool_definitions(
     # execute_code" even when the API key isn't configured or the toolset is
     # disabled (#560-discord).
     if "execute_code" in available_tool_names:
-        from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
+        from tools.core.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema, _get_execution_mode
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
         dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
         for i, td in enumerate(filtered_tools):
@@ -1081,7 +1081,7 @@ def handle_function_call(
         # so the *consecutive* counter resets (reads after other work are fine).
         if function_name not in _READ_SEARCH_TOOLS:
             try:
-                from tools.file_tools import notify_other_tool_call
+                from tools.core.file_tools import notify_other_tool_call
                 notify_other_tool_call(task_id or "default")
             except Exception:
                 pass  # file_tools may not be loaded yet

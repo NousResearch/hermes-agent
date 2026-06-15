@@ -40,7 +40,7 @@ def _make_call_result(text="file contents here", is_error=False):
 
 def _make_mock_server(name, session=None, tools=None):
     """Create an MCPServerTask with mock attributes for testing."""
-    from tools.mcp_tool import MCPServerTask
+    from tools.mcp.mcp_tool import MCPServerTask
     server = MCPServerTask(name)
     server.session = session
     server._tools = tools or []
@@ -55,7 +55,7 @@ class TestLoadMCPConfig:
     def test_no_config_returns_empty(self):
         """No mcp_servers key in config -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"model": "test"}):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
 
@@ -69,7 +69,7 @@ class TestLoadMCPConfig:
             }
         }
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert "filesystem" in result
             assert result["filesystem"]["command"] == "npx"
@@ -77,7 +77,7 @@ class TestLoadMCPConfig:
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp.mcp_tool import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
 
@@ -88,7 +88,7 @@ class TestLoadMCPConfig:
 
 class TestSchemaConversion:
     def test_converts_mcp_tool_to_hermes_schema(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="read_file", description="Read a file")
         schema = _convert_mcp_schema("filesystem", mcp_tool)
@@ -98,7 +98,7 @@ class TestSchemaConversion:
         assert "properties" in schema["parameters"]
 
     def test_empty_input_schema_gets_default(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="ping", description="Ping", input_schema=None)
         mcp_tool.inputSchema = None
@@ -108,7 +108,7 @@ class TestSchemaConversion:
         assert schema["parameters"]["properties"] == {}
 
     def test_object_schema_without_properties_gets_normalized(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(
             name="ask",
@@ -120,7 +120,7 @@ class TestSchemaConversion:
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
     def test_definitions_refs_are_rewritten_to_defs(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(
             name="submit",
@@ -150,7 +150,7 @@ class TestSchemaConversion:
         assert "definitions" not in schema["parameters"]
 
     def test_nested_definition_refs_are_rewritten_recursively(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(
             name="nested",
@@ -187,7 +187,7 @@ class TestSchemaConversion:
 
     def test_missing_type_on_object_is_coerced(self):
         """Schemas that describe an object but omit ``type`` get type='object'."""
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "properties": {"q": {"type": "string"}},
@@ -200,7 +200,7 @@ class TestSchemaConversion:
 
     def test_null_type_on_object_is_coerced(self):
         """type: None should be treated like missing type (common MCP server bug)."""
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": None,
@@ -211,7 +211,7 @@ class TestSchemaConversion:
 
     def test_required_pruned_when_property_missing(self):
         """Gemini 400s on required names that don't exist in properties."""
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -222,7 +222,7 @@ class TestSchemaConversion:
         assert schema["required"] == ["a"]
 
     def test_required_removed_when_all_names_dangle(self):
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -234,7 +234,7 @@ class TestSchemaConversion:
 
     def test_required_pruning_applies_recursively_inside_nested_objects(self):
         """Nested object schemas also get required pruning."""
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -251,7 +251,7 @@ class TestSchemaConversion:
 
     def test_object_in_array_items_gets_properties_filled(self):
         """Array-item object schemas without properties get an empty dict."""
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -267,7 +267,7 @@ class TestSchemaConversion:
 
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -291,7 +291,7 @@ class TestSchemaConversion:
         assert schema["required"] == ["command"]
 
     def test_nested_nullable_array_items_are_collapsed(self):
-        from tools.mcp_tool import _normalize_mcp_input_schema
+        from tools.mcp.mcp_tool import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -321,7 +321,7 @@ class TestSchemaConversion:
         """A Tool object without .inputSchema must not crash registration."""
         import types
 
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         bare_tool = types.SimpleNamespace(name="probe", description="Probe")
         schema = _convert_mcp_schema("srv", bare_tool)
@@ -333,7 +333,7 @@ class TestSchemaConversion:
         """Tool with inputSchema=None produces a valid empty object schema."""
         import types
 
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         # Note: _make_mcp_tool(input_schema=None) falls back to a default —
         # build the namespace directly so .inputSchema really is None.
@@ -343,7 +343,7 @@ class TestSchemaConversion:
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
     def test_tool_name_prefix_format(self):
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="list_dir")
         schema = _convert_mcp_schema("my_server", mcp_tool)
@@ -352,7 +352,7 @@ class TestSchemaConversion:
 
     def test_hyphens_sanitized_to_underscores(self):
         """Hyphens in tool/server names are replaced with underscores for LLM compat."""
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="get-sum")
         schema = _convert_mcp_schema("my-server", mcp_tool)
@@ -367,14 +367,14 @@ class TestSchemaConversion:
 
 class TestCheckFunction:
     def test_disconnected_returns_false(self):
-        from tools.mcp_tool import _make_check_fn, _servers
+        from tools.mcp.mcp_tool import _make_check_fn, _servers
 
         _servers.pop("test_server", None)
         check = _make_check_fn("test_server")
         assert check() is False
 
     def test_connected_returns_true(self):
-        from tools.mcp_tool import _make_check_fn, _servers
+        from tools.mcp.mcp_tool import _make_check_fn, _servers
 
         server = _make_mock_server("test_server", session=MagicMock())
         _servers["test_server"] = server
@@ -385,7 +385,7 @@ class TestCheckFunction:
             _servers.pop("test_server", None)
 
     def test_session_none_returns_false(self):
-        from tools.mcp_tool import _make_check_fn, _servers
+        from tools.mcp.mcp_tool import _make_check_fn, _servers
 
         server = _make_mock_server("test_server", session=None)
         _servers["test_server"] = server
@@ -484,7 +484,7 @@ class TestToolHandler:
         return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
 
     def test_successful_call(self):
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -503,7 +503,7 @@ class TestToolHandler:
             _servers.pop("test_srv", None)
 
     def test_mcp_error_result(self):
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -522,7 +522,7 @@ class TestToolHandler:
             _servers.pop("test_srv", None)
 
     def test_disconnected_server(self):
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         _servers.pop("ghost", None)
         handler = _make_tool_handler("ghost", "any_tool", 120)
@@ -531,7 +531,7 @@ class TestToolHandler:
         assert "not connected" in result["error"]
 
     def test_exception_during_call(self):
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(side_effect=RuntimeError("connection lost"))
@@ -548,7 +548,7 @@ class TestToolHandler:
             _servers.pop("test_srv", None)
 
     def test_interrupted_call_returns_interrupted_error(self):
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         server = _make_mock_server("test_srv", session=mock_session)
@@ -665,7 +665,7 @@ class TestDiscoverAndRegister:
     def test_tools_registered_in_registry(self):
         """_discover_and_register_server registers tools with correct names."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [
@@ -696,7 +696,7 @@ class TestDiscoverAndRegister:
     def test_toolset_resolves_live_from_registry(self):
         """MCP toolsets resolve through the live registry without TOOLSETS mutation."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
         from toolsets import resolve_toolset, validate_toolset
 
         mock_registry = ToolRegistry()
@@ -725,7 +725,7 @@ class TestDiscoverAndRegister:
     def test_schema_format_correct(self):
         """Registered schemas have the correct format."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [_make_mcp_tool("do_thing", "Do something")]
@@ -780,7 +780,7 @@ class TestMCPServerTask:
 
     def test_start_connects_and_discovers_tools(self):
         """start() creates a Task that connects, discovers tools, and waits."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("echo")]
         mock_session = MagicMock()
@@ -808,7 +808,7 @@ class TestMCPServerTask:
 
     def test_no_command_raises(self):
         """Missing 'command' in config raises ValueError."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         async def _test():
             server = MCPServerTask("bad")
@@ -820,7 +820,7 @@ class TestMCPServerTask:
     def test_refresh_tools_deregisters_removed_tools(self):
         """Dynamic refresh removes stale registry entries for deleted tools."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         mock_registry = ToolRegistry()
         server = MCPServerTask("srv")
@@ -863,7 +863,7 @@ class TestMCPServerTask:
 
     def test_schedule_tools_refresh_keeps_task_until_done(self):
         """Background refresh tasks are strongly referenced and then discarded."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         async def _test():
             started = asyncio.Event()
@@ -891,7 +891,7 @@ class TestMCPServerTask:
 
     def test_shutdown_cancels_pending_refresh_tasks(self):
         """shutdown() cancels in-flight background refresh tasks."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         async def _test():
             started = asyncio.Event()
@@ -919,7 +919,7 @@ class TestMCPServerTask:
 
     def test_empty_env_gets_safe_defaults(self):
         """Empty env dict gets safe default env vars (PATH, HOME, etc.)."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
@@ -950,7 +950,7 @@ class TestMCPServerTask:
 
     def test_shutdown_signals_task_exit(self):
         """shutdown() signals the event and waits for task completion."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
@@ -983,7 +983,7 @@ class TestMCPServerTask:
 class TestToolsetInjection:
     def test_mcp_tools_resolve_through_server_aliases(self):
         """Discovered MCP tools resolve through raw server-name aliases."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
         from tools.registry import ToolRegistry
         from toolsets import resolve_toolset, validate_toolset
 
@@ -1006,7 +1006,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
 
             assert "mcp_fs_list_files" in result
@@ -1017,7 +1017,7 @@ class TestToolsetInjection:
 
     def test_server_toolset_skips_builtin_collision(self):
         """MCP raw aliases never overwrite a built-in toolset name."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
         from tools.registry import ToolRegistry
         from toolsets import resolve_toolset, validate_toolset
 
@@ -1045,7 +1045,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.registry.registry", mock_registry), \
              patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
             discover_mcp_tools()
 
             assert fake_toolsets["terminal"]["description"] == "Terminal tools"
@@ -1055,7 +1055,7 @@ class TestToolsetInjection:
 
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("ping", "Ping")]
         mock_session = MagicMock()
@@ -1086,7 +1086,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=flaky_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
 
         assert "mcp_good_ping" in result
@@ -1095,7 +1095,7 @@ class TestToolsetInjection:
 
     def test_partial_failure_retry_on_second_call(self):
         """Failed servers are retried on subsequent discover_mcp_tools() calls."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("ping", "Ping")]
         mock_session = MagicMock()
@@ -1128,7 +1128,7 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=flaky_connect), \
              patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
 
             # First call: good connects, broken fails
             result1 = discover_mcp_tools()
@@ -1155,7 +1155,7 @@ class TestGracefulFallback:
     def test_mcp_unavailable_returns_empty(self):
         """When _MCP_AVAILABLE is False, discover_mcp_tools is a no-op."""
         with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
             assert result == []
 
@@ -1164,7 +1164,7 @@ class TestGracefulFallback:
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", {}), \
              patch("tools.mcp_tool._load_mcp_config", return_value={}):
-            from tools.mcp_tool import discover_mcp_tools
+            from tools.mcp.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
             assert result == []
 
@@ -1176,7 +1176,7 @@ class TestGracefulFallback:
 class TestShutdown:
     def test_no_servers_safe(self):
         """shutdown_mcp_servers with no servers does nothing."""
-        from tools.mcp_tool import shutdown_mcp_servers, _servers
+        from tools.mcp.mcp_tool import shutdown_mcp_servers, _servers
 
         _servers.clear()
         shutdown_mcp_servers()  # Should not raise
@@ -1184,7 +1184,7 @@ class TestShutdown:
     def test_shutdown_clears_servers(self):
         """shutdown_mcp_servers calls shutdown() on each server and clears dict."""
         import tools.mcp_tool as mcp_mod
-        from tools.mcp_tool import shutdown_mcp_servers, _servers
+        from tools.mcp.mcp_tool import shutdown_mcp_servers, _servers
 
         _servers.clear()
         mock_server = MagicMock()
@@ -1205,7 +1205,7 @@ class TestShutdown:
     def test_shutdown_deregisters_registered_tools(self):
         """shutdown_mcp_servers removes MCP tools and their raw alias."""
         import tools.mcp_tool as mcp_mod
-        from tools.mcp_tool import MCPServerTask, shutdown_mcp_servers, _servers
+        from tools.mcp.mcp_tool import MCPServerTask, shutdown_mcp_servers, _servers
         from tools.registry import registry
         from toolsets import resolve_toolset, validate_toolset
 
@@ -1241,7 +1241,7 @@ class TestShutdown:
     def test_shutdown_handles_errors(self):
         """shutdown_mcp_servers handles errors during close gracefully."""
         import tools.mcp_tool as mcp_mod
-        from tools.mcp_tool import shutdown_mcp_servers, _servers
+        from tools.mcp.mcp_tool import shutdown_mcp_servers, _servers
 
         _servers.clear()
         mock_server = MagicMock()
@@ -1261,7 +1261,7 @@ class TestShutdown:
     def test_shutdown_is_parallel(self):
         """Multiple servers are shut down in parallel via asyncio.gather."""
         import tools.mcp_tool as mcp_mod
-        from tools.mcp_tool import shutdown_mcp_servers, _servers
+        from tools.mcp.mcp_tool import shutdown_mcp_servers, _servers
         import time
 
         _servers.clear()
@@ -1298,7 +1298,7 @@ class TestBuildSafeEnv:
 
     def test_only_safe_vars_passed(self):
         """Only safe baseline vars and XDG_* from os.environ are included."""
-        from tools.mcp_tool import _build_safe_env
+        from tools.mcp.mcp_tool import _build_safe_env
 
         fake_env = {
             "PATH": "/usr/bin",
@@ -1328,7 +1328,7 @@ class TestBuildSafeEnv:
 
     def test_user_env_merged(self):
         """User-specified env vars are merged into the safe env."""
-        from tools.mcp_tool import _build_safe_env
+        from tools.mcp.mcp_tool import _build_safe_env
 
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             result = _build_safe_env({"MY_CUSTOM_VAR": "hello"})
@@ -1338,7 +1338,7 @@ class TestBuildSafeEnv:
 
     def test_user_env_overrides_safe(self):
         """User env can override safe defaults."""
-        from tools.mcp_tool import _build_safe_env
+        from tools.mcp.mcp_tool import _build_safe_env
 
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             result = _build_safe_env({"PATH": "/custom/bin"})
@@ -1347,7 +1347,7 @@ class TestBuildSafeEnv:
 
     def test_none_user_env(self):
         """None user_env still returns safe vars from os.environ."""
-        from tools.mcp_tool import _build_safe_env
+        from tools.mcp.mcp_tool import _build_safe_env
 
         with patch.dict("os.environ", {"PATH": "/usr/bin", "HOME": "/root"}, clear=True):
             result = _build_safe_env(None)
@@ -1358,7 +1358,7 @@ class TestBuildSafeEnv:
 
     def test_secret_vars_excluded(self):
         """Sensitive env vars from os.environ are NOT passed through."""
-        from tools.mcp_tool import _build_safe_env
+        from tools.mcp.mcp_tool import _build_safe_env
 
         fake_env = {
             "PATH": "/usr/bin",
@@ -1387,32 +1387,32 @@ class TestSanitizeError:
     """Tests for _sanitize_error() credential stripping."""
 
     def test_strips_github_pat(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp.mcp_tool import _sanitize_error
         result = _sanitize_error("Error with ghp_abc123def456")
         assert result == "Error with [REDACTED]"
 
     def test_strips_openai_key(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp.mcp_tool import _sanitize_error
         result = _sanitize_error("key sk-projABC123xyz")
         assert result == "key [REDACTED]"
 
     def test_strips_bearer_token(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp.mcp_tool import _sanitize_error
         result = _sanitize_error("Authorization: Bearer eyJabc123def")
         assert result == "Authorization: [REDACTED]"
 
     def test_strips_token_param(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp.mcp_tool import _sanitize_error
         result = _sanitize_error("url?token=secret123")
         assert result == "url?[REDACTED]"
 
     def test_no_credentials_unchanged(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp.mcp_tool import _sanitize_error
         result = _sanitize_error("normal error message")
         assert result == "normal error message"
 
     def test_multiple_credentials(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp.mcp_tool import _sanitize_error
         result = _sanitize_error("ghp_abc123 and sk-projXyz789 and token=foo")
         assert "ghp_" not in result
         assert "sk-" not in result
@@ -1428,20 +1428,20 @@ class TestHTTPConfig:
     """Tests for HTTP transport detection and handling."""
 
     def test_is_http_with_url(self):
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
         server = MCPServerTask("remote")
         server._config = {"url": "https://example.com/mcp"}
         assert server._is_http() is True
 
     def test_is_stdio_with_command(self):
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
         server = MCPServerTask("local")
         server._config = {"command": "npx", "args": []}
         assert server._is_http() is False
 
     def test_conflicting_url_and_command_warns(self):
         """Config with both url and command logs a warning and uses HTTP."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
         server = MCPServerTask("conflict")
         config = {"url": "https://example.com/mcp", "command": "npx", "args": []}
         # url takes precedence
@@ -1449,7 +1449,7 @@ class TestHTTPConfig:
         assert server._is_http() is True
 
     def test_http_unavailable_raises(self):
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         server = MCPServerTask("remote")
         config = {"url": "https://example.com/mcp"}
@@ -1470,7 +1470,7 @@ class TestHTTPConfig:
         mirroring ``_run_http``'s behaviour when the HTTP transport is
         unavailable.
         """
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         server = MCPServerTask("local")
         config = {"command": "python3", "args": ["/tmp/echo.py"]}
@@ -1483,7 +1483,7 @@ class TestHTTPConfig:
         asyncio.run(_test())
 
     def test_http_seeds_initial_protocol_header(self):
-        from tools.mcp_tool import LATEST_PROTOCOL_VERSION, MCPServerTask
+        from tools.mcp.mcp_tool import LATEST_PROTOCOL_VERSION, MCPServerTask
 
         server = MCPServerTask("remote")
         captured = {}
@@ -1578,7 +1578,7 @@ class TestReconnection:
 
     def test_reconnect_on_disconnect(self):
         """After initial success, a connection drop triggers reconnection."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         run_count = 0
         target_server = None
@@ -1617,7 +1617,7 @@ class TestReconnection:
 
     def test_no_reconnect_on_shutdown(self):
         """If shutdown is requested, don't attempt reconnection."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         run_count = 0
         target_server = None
@@ -1655,7 +1655,7 @@ class TestReconnection:
         Before the MCP resilience fix, initial failures gave up immediately.
         Now they retry with backoff to handle transient DNS/network blips.
         """
-        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
+        from tools.mcp.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
         run_count = 0
         target_server = None
@@ -1687,7 +1687,7 @@ class TestReconnection:
 
     def test_initial_oauth_failure_does_not_retry(self):
         """Initial OAuth failures stop immediately to avoid repeated browser prompts."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         run_count = 0
         target_server = None
@@ -1721,7 +1721,7 @@ class TestReconnection:
 
     def test_preflight_probe_runs_on_initial_http_connect(self):
         """The content-type preflight probe fires on the first HTTP connect."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         target_server = None
         probe = AsyncMock()
@@ -1761,7 +1761,7 @@ class TestReconnection:
         the already-validated endpoint burns a redundant network round-trip,
         so the guard must skip it. Regression test for #40548.
         """
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         target_server = None
         probe = AsyncMock()
@@ -1803,7 +1803,7 @@ class TestConfigurableTimeouts:
 
     def test_default_timeout(self):
         """Server with no timeout config gets _DEFAULT_TOOL_TIMEOUT."""
-        from tools.mcp_tool import MCPServerTask, _DEFAULT_TOOL_TIMEOUT
+        from tools.mcp.mcp_tool import MCPServerTask, _DEFAULT_TOOL_TIMEOUT
 
         server = MCPServerTask("test_srv")
         assert server.tool_timeout == _DEFAULT_TOOL_TIMEOUT
@@ -1811,7 +1811,7 @@ class TestConfigurableTimeouts:
 
     def test_custom_timeout(self):
         """Server with timeout=180 in config gets 180."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         target_server = None
 
@@ -1843,7 +1843,7 @@ class TestConfigurableTimeouts:
 
     def test_timeout_passed_to_handler(self):
         """The tool handler uses the server's configured timeout."""
-        from tools.mcp_tool import _make_tool_handler, _servers
+        from tools.mcp.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -1879,7 +1879,7 @@ class TestUtilitySchemas:
     """Tests for _build_utility_schemas() and the schema format of utility tools."""
 
     def test_builds_four_utility_schemas(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("myserver")
         assert len(schemas) == 4
@@ -1890,7 +1890,7 @@ class TestUtilitySchemas:
         assert "mcp_myserver_get_prompt" in names
 
     def test_hyphens_sanitized_in_utility_names(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("my-server")
         names = [s["schema"]["name"] for s in schemas]
@@ -1899,7 +1899,7 @@ class TestUtilitySchemas:
         assert "mcp_my_server_list_resources" in names
 
     def test_list_resources_schema_no_required_params(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("srv")
         lr = next(s for s in schemas if s["handler_key"] == "list_resources")
@@ -1909,7 +1909,7 @@ class TestUtilitySchemas:
         assert "required" not in params
 
     def test_read_resource_schema_requires_uri(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("srv")
         rr = next(s for s in schemas if s["handler_key"] == "read_resource")
@@ -1919,7 +1919,7 @@ class TestUtilitySchemas:
         assert params["required"] == ["uri"]
 
     def test_list_prompts_schema_no_required_params(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("srv")
         lp = next(s for s in schemas if s["handler_key"] == "list_prompts")
@@ -1929,7 +1929,7 @@ class TestUtilitySchemas:
         assert "required" not in params
 
     def test_get_prompt_schema_requires_name(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("srv")
         gp = next(s for s in schemas if s["handler_key"] == "get_prompt")
@@ -1941,7 +1941,7 @@ class TestUtilitySchemas:
         assert params["required"] == ["name"]
 
     def test_schemas_have_descriptions(self):
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("test_srv")
         for entry in schemas:
@@ -1967,7 +1967,7 @@ class TestUtilityHandlers:
     # -- list_resources --
 
     def test_list_resources_success(self):
-        from tools.mcp_tool import _make_list_resources_handler, _servers
+        from tools.mcp.mcp_tool import _make_list_resources_handler, _servers
 
         mock_resource = SimpleNamespace(
             uri="file:///tmp/test.txt", name="test.txt",
@@ -1992,7 +1992,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_list_resources_empty(self):
-        from tools.mcp_tool import _make_list_resources_handler, _servers
+        from tools.mcp.mcp_tool import _make_list_resources_handler, _servers
 
         mock_session = MagicMock()
         mock_session.list_resources = AsyncMock(
@@ -2010,7 +2010,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_list_resources_disconnected(self):
-        from tools.mcp_tool import _make_list_resources_handler, _servers
+        from tools.mcp.mcp_tool import _make_list_resources_handler, _servers
         _servers.pop("ghost", None)
         handler = _make_list_resources_handler("ghost", 120)
         result = json.loads(handler({}))
@@ -2020,7 +2020,7 @@ class TestUtilityHandlers:
     # -- read_resource --
 
     def test_read_resource_success(self):
-        from tools.mcp_tool import _make_read_resource_handler, _servers
+        from tools.mcp.mcp_tool import _make_read_resource_handler, _servers
 
         content_block = SimpleNamespace(text="Hello from resource")
         mock_session = MagicMock()
@@ -2040,7 +2040,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_read_resource_missing_uri(self):
-        from tools.mcp_tool import _make_read_resource_handler, _servers
+        from tools.mcp.mcp_tool import _make_read_resource_handler, _servers
 
         server = _make_mock_server("srv", session=MagicMock())
         _servers["srv"] = server
@@ -2054,7 +2054,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_read_resource_disconnected(self):
-        from tools.mcp_tool import _make_read_resource_handler, _servers
+        from tools.mcp.mcp_tool import _make_read_resource_handler, _servers
         _servers.pop("ghost", None)
         handler = _make_read_resource_handler("ghost", 120)
         result = json.loads(handler({"uri": "test://x"}))
@@ -2064,7 +2064,7 @@ class TestUtilityHandlers:
     # -- list_prompts --
 
     def test_list_prompts_success(self):
-        from tools.mcp_tool import _make_list_prompts_handler, _servers
+        from tools.mcp.mcp_tool import _make_list_prompts_handler, _servers
 
         mock_prompt = SimpleNamespace(
             name="summarize", description="Summarize text",
@@ -2091,7 +2091,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_list_prompts_empty(self):
-        from tools.mcp_tool import _make_list_prompts_handler, _servers
+        from tools.mcp.mcp_tool import _make_list_prompts_handler, _servers
 
         mock_session = MagicMock()
         mock_session.list_prompts = AsyncMock(
@@ -2109,7 +2109,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_list_prompts_disconnected(self):
-        from tools.mcp_tool import _make_list_prompts_handler, _servers
+        from tools.mcp.mcp_tool import _make_list_prompts_handler, _servers
         _servers.pop("ghost", None)
         handler = _make_list_prompts_handler("ghost", 120)
         result = json.loads(handler({}))
@@ -2119,7 +2119,7 @@ class TestUtilityHandlers:
     # -- get_prompt --
 
     def test_get_prompt_success(self):
-        from tools.mcp_tool import _make_get_prompt_handler, _servers
+        from tools.mcp.mcp_tool import _make_get_prompt_handler, _servers
 
         mock_msg = SimpleNamespace(
             role="assistant",
@@ -2147,7 +2147,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_get_prompt_missing_name(self):
-        from tools.mcp_tool import _make_get_prompt_handler, _servers
+        from tools.mcp.mcp_tool import _make_get_prompt_handler, _servers
 
         server = _make_mock_server("srv", session=MagicMock())
         _servers["srv"] = server
@@ -2161,7 +2161,7 @@ class TestUtilityHandlers:
             _servers.pop("srv", None)
 
     def test_get_prompt_disconnected(self):
-        from tools.mcp_tool import _make_get_prompt_handler, _servers
+        from tools.mcp.mcp_tool import _make_get_prompt_handler, _servers
         _servers.pop("ghost", None)
         handler = _make_get_prompt_handler("ghost", 120)
         result = json.loads(handler({"name": "test"}))
@@ -2169,7 +2169,7 @@ class TestUtilityHandlers:
         assert "not connected" in result["error"]
 
     def test_get_prompt_default_arguments(self):
-        from tools.mcp_tool import _make_get_prompt_handler, _servers
+        from tools.mcp.mcp_tool import _make_get_prompt_handler, _servers
 
         mock_session = MagicMock()
         mock_session.get_prompt = AsyncMock(
@@ -2200,7 +2200,7 @@ class TestUtilityToolRegistration:
     def test_utility_tools_registered(self):
         """_discover_and_register_server registers all 4 utility tools."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [_make_mcp_tool("read_file", "Read a file")]
@@ -2236,7 +2236,7 @@ class TestUtilityToolRegistration:
     def test_utility_tools_in_same_toolset(self):
         """Utility tools belong to the same mcp-{server} toolset."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_session = MagicMock()
@@ -2265,7 +2265,7 @@ class TestUtilityToolRegistration:
     def test_utility_tools_have_check_fn(self):
         """Utility tools have a working check_fn."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_session = MagicMock()
@@ -2332,7 +2332,7 @@ try:
 except ImportError:
     ToolUseContent = _CompatType
 
-from tools.mcp_tool import (
+from tools.mcp.mcp_tool import (
     CreateMessageResultWithTools,
     SamplingHandler,
     SamplingToolsCapability,
@@ -3131,7 +3131,7 @@ class TestSessionKwargs:
 class TestMCPServerTaskSamplingIntegration:
     def test_sampling_handler_created_when_enabled(self):
         """MCPServerTask.run() creates a SamplingHandler when sampling is enabled."""
-        from tools.mcp_tool import MCPServerTask, _MCP_SAMPLING_TYPES
+        from tools.mcp.mcp_tool import MCPServerTask, _MCP_SAMPLING_TYPES
 
         server = MCPServerTask("int_test")
         config = {
@@ -3155,7 +3155,7 @@ class TestMCPServerTaskSamplingIntegration:
 
     def test_sampling_handler_none_when_disabled(self):
         """MCPServerTask._sampling is None when sampling is disabled."""
-        from tools.mcp_tool import MCPServerTask, _MCP_SAMPLING_TYPES
+        from tools.mcp.mcp_tool import MCPServerTask, _MCP_SAMPLING_TYPES
 
         server = MCPServerTask("int_test2")
         config = {
@@ -3173,7 +3173,7 @@ class TestMCPServerTaskSamplingIntegration:
 
     def test_session_kwargs_used_in_stdio(self):
         """When sampling is set, session_kwargs() are passed to ClientSession."""
-        from tools.mcp_tool import MCPServerTask
+        from tools.mcp.mcp_tool import MCPServerTask
 
         server = MCPServerTask("sk_test")
         server._sampling = SamplingHandler("sk_test", {"max_rpm": 7})
@@ -3191,7 +3191,7 @@ class TestDiscoveryFailedCount:
 
     def test_failed_server_increments_failed_count(self):
         """When _discover_and_register_server raises, failed_count increments."""
-        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+        from tools.mcp.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
 
         fake_config = {
             "good_server": {"command": "npx", "args": ["good"]},
@@ -3202,7 +3202,7 @@ class TestDiscoveryFailedCount:
             if name == "bad_server":
                 raise ConnectionError("Connection refused")
             # Simulate successful registration
-            from tools.mcp_tool import MCPServerTask
+            from tools.mcp.mcp_tool import MCPServerTask
             server = MCPServerTask(name)
             server.session = MagicMock()
             server._tools = [_make_mcp_tool("tool_a")]
@@ -3235,7 +3235,7 @@ class TestDiscoveryFailedCount:
 
     def test_all_servers_fail_still_prints_summary(self):
         """When all servers fail, a summary with failure count is still printed."""
-        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+        from tools.mcp.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
 
         fake_config = {
             "srv1": {"command": "npx", "args": ["a"]},
@@ -3265,7 +3265,7 @@ class TestDiscoveryFailedCount:
 
     def test_ok_servers_excludes_failures(self):
         """ok_servers count correctly excludes failed servers."""
-        from tools.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
+        from tools.mcp.mcp_tool import discover_mcp_tools, _servers, _ensure_mcp_loop
 
         fake_config = {
             "ok1": {"command": "npx", "args": ["ok1"]},
@@ -3276,7 +3276,7 @@ class TestDiscoveryFailedCount:
         async def selective_register(name, cfg):
             if name == "fail1":
                 raise ConnectionError("Refused")
-            from tools.mcp_tool import MCPServerTask
+            from tools.mcp.mcp_tool import MCPServerTask
             server = MCPServerTask(name)
             server.session = MagicMock()
             server._tools = [_make_mcp_tool("t")]
@@ -3319,7 +3319,7 @@ class TestMCPSelectiveToolLoading:
 
     def _run_discover(self, name, tool_names, config, session=None):
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers
 
         mock_registry = ToolRegistry()
         server = self._make_server(name, tool_names, session=session)
@@ -3438,7 +3438,7 @@ class TestMCPSelectiveToolLoading:
         assert "mcp_ink_resources_only_get_prompt" not in registered
 
     def test_existing_tool_names_reflect_registered_subset(self):
-        from tools.mcp_tool import _existing_tool_names, _servers, _discover_and_register_server
+        from tools.mcp.mcp_tool import _existing_tool_names, _servers, _discover_and_register_server
         from tools.registry import ToolRegistry
 
         mock_registry = ToolRegistry()
@@ -3471,7 +3471,7 @@ class TestMCPSelectiveToolLoading:
 
     def test_no_toolset_created_when_everything_is_filtered_out(self):
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers
 
         mock_registry = ToolRegistry()
         server = self._make_server("ink_none", ["create_service"], session=SimpleNamespace())
@@ -3505,7 +3505,7 @@ class TestMCPSelectiveToolLoading:
             _servers.pop("ink_none", None)
 
     def test_enabled_false_skips_connection_attempt(self):
-        from tools.mcp_tool import discover_mcp_tools
+        from tools.mcp.mcp_tool import discover_mcp_tools
 
         connect_called = []
 
@@ -3583,7 +3583,7 @@ class TestMCPBuiltinCollisionGuard:
     def test_mcp_tool_skipped_when_builtin_exists(self):
         """An MCP tool whose prefixed name collides with a built-in is skipped."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
 
@@ -3623,7 +3623,7 @@ class TestMCPBuiltinCollisionGuard:
     def test_mcp_tool_registered_when_no_builtin_collision(self):
         """MCP tools register normally when there's no collision."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [_make_mcp_tool("web_search", "Search the web")]
@@ -3649,7 +3649,7 @@ class TestMCPBuiltinCollisionGuard:
     def test_mcp_tool_allowed_when_collision_is_another_mcp(self):
         """Collision between two MCP toolsets is allowed (last wins)."""
         from tools.registry import ToolRegistry
-        from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from tools.mcp.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
 
@@ -3695,36 +3695,36 @@ class TestSanitizeMcpNameComponent:
     """Verify sanitize_mcp_name_component handles all edge cases."""
 
     def test_hyphens_replaced(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("my-server") == "my_server"
 
     def test_dots_replaced(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("ai.exa") == "ai_exa"
 
     def test_slashes_replaced(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("ai.exa/exa") == "ai_exa_exa"
 
     def test_mixed_special_characters(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("@scope/my-pkg.v2") == "_scope_my_pkg_v2"
 
     def test_alphanumeric_and_underscores_preserved(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("my_server_123") == "my_server_123"
 
     def test_empty_string(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component("") == ""
 
     def test_none_returns_empty(self):
-        from tools.mcp_tool import sanitize_mcp_name_component
+        from tools.mcp.mcp_tool import sanitize_mcp_name_component
         assert sanitize_mcp_name_component(None) == ""
 
     def test_slash_in_convert_mcp_schema(self):
         """Server names with slashes produce valid tool names via _convert_mcp_schema."""
-        from tools.mcp_tool import _convert_mcp_schema
+        from tools.mcp.mcp_tool import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="search")
         schema = _convert_mcp_schema("ai.exa/exa", mcp_tool)
@@ -3735,7 +3735,7 @@ class TestSanitizeMcpNameComponent:
 
     def test_slash_in_build_utility_schemas(self):
         """Server names with slashes produce valid utility tool names."""
-        from tools.mcp_tool import _build_utility_schemas
+        from tools.mcp.mcp_tool import _build_utility_schemas
 
         schemas = _build_utility_schemas("ai.exa/exa")
         for s in schemas:
@@ -3771,21 +3771,21 @@ class TestRegisterMcpServers:
     """Verify the new register_mcp_servers() public API."""
 
     def test_empty_servers_returns_empty(self):
-        from tools.mcp_tool import register_mcp_servers
+        from tools.mcp.mcp_tool import register_mcp_servers
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True):
             result = register_mcp_servers({})
         assert result == []
 
     def test_mcp_not_available_returns_empty(self):
-        from tools.mcp_tool import register_mcp_servers
+        from tools.mcp.mcp_tool import register_mcp_servers
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", False):
             result = register_mcp_servers({"srv": {"command": "test"}})
         assert result == []
 
     def test_skips_already_connected_servers(self):
-        from tools.mcp_tool import register_mcp_servers, _servers
+        from tools.mcp.mcp_tool import register_mcp_servers, _servers
 
         mock_server = _make_mock_server("existing")
         _servers["existing"] = mock_server
@@ -3799,7 +3799,7 @@ class TestRegisterMcpServers:
             _servers.pop("existing", None)
 
     def test_skips_disabled_servers(self):
-        from tools.mcp_tool import register_mcp_servers, _servers
+        from tools.mcp.mcp_tool import register_mcp_servers, _servers
 
         try:
             with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
@@ -3810,7 +3810,7 @@ class TestRegisterMcpServers:
             _servers.pop("srv", None)
 
     def test_connects_new_servers(self):
-        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+        from tools.mcp.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
 
         fake_config = {"my_server": {"command": "npx", "args": ["test"]}}
 
@@ -3830,7 +3830,7 @@ class TestRegisterMcpServers:
         _servers.pop("my_server", None)
 
     def test_logs_summary_on_success(self):
-        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+        from tools.mcp.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
 
         fake_config = {"srv": {"command": "npx", "args": ["test"]}}
 
@@ -3865,7 +3865,7 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_non_mcp_tool(self):
         """Non-MCP tool names always return False."""
-        from tools.mcp_tool import is_mcp_tool_parallel_safe
+        from tools.mcp.mcp_tool import is_mcp_tool_parallel_safe
         assert is_mcp_tool_parallel_safe("web_search") is False
         assert is_mcp_tool_parallel_safe("read_file") is False
         assert is_mcp_tool_parallel_safe("terminal") is False
@@ -3873,7 +3873,7 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_no_servers(self):
         """MCP tool from unknown server returns False."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             is_mcp_tool_parallel_safe, _mcp_tool_server_names,
             _parallel_safe_servers, _lock,
         )
@@ -3884,7 +3884,7 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_with_flag(self):
         """MCP tool from a parallel-safe server returns True."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             is_mcp_tool_parallel_safe, _mcp_tool_server_names,
             _parallel_safe_servers, _lock,
         )
@@ -3907,7 +3907,7 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_server_with_underscores(self):
         """Server names containing underscores are correctly matched."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             is_mcp_tool_parallel_safe, _mcp_tool_server_names,
             _parallel_safe_servers, _lock,
         )
@@ -3923,7 +3923,7 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_uses_exact_registered_server(self):
         """Ambiguous MCP names must not match a shorter parallel-safe prefix."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             is_mcp_tool_parallel_safe, _mcp_tool_server_names,
             _parallel_safe_servers, _lock,
         )
@@ -3943,7 +3943,7 @@ class TestMcpParallelToolCalls:
     def test_registered_tool_provenance_prevents_prefix_collision(self):
         """Registration records exact server ownership for ambiguous names."""
         from tools.registry import registry
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             _mcp_tool_server_names, _parallel_safe_servers,
             _register_server_tools, is_mcp_tool_parallel_safe, _lock,
         )
@@ -3973,7 +3973,7 @@ class TestMcpParallelToolCalls:
 
     def test_is_mcp_tool_parallel_safe_no_tool_suffix(self):
         """Tool name that is just 'mcp_{server}' without a tool part returns False."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             is_mcp_tool_parallel_safe, _mcp_tool_server_names,
             _parallel_safe_servers, _lock,
         )
@@ -3992,7 +3992,7 @@ class TestMcpParallelToolCalls:
 
     def test_register_mcp_servers_tracks_parallel_flag(self):
         """register_mcp_servers populates _parallel_safe_servers from config."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             register_mcp_servers, _parallel_safe_servers, _lock,
             sanitize_mcp_name_component,
         )
@@ -4025,7 +4025,7 @@ class TestMcpParallelToolCalls:
 
     def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
         """Toggling supports_parallel_tool_calls to false removes server from the set."""
-        from tools.mcp_tool import (
+        from tools.mcp.mcp_tool import (
             register_mcp_servers, _parallel_safe_servers, _lock,
             sanitize_mcp_name_component,
         )

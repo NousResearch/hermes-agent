@@ -300,7 +300,7 @@ def _process_single_prompt(
                 if config.get("verbose"):
                     print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)
 
-        from tools.terminal_tool import register_task_env_overrides
+        from tools.core.terminal_tool import register_task_env_overrides
         overrides = {
             "docker_image": container_image,
             "modal_image": container_image,

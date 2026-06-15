@@ -146,7 +146,7 @@ class TestCodeExecutionTZ:
         # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
         monkeypatch.setenv("TERMINAL_ENV", "local")
         try:
-            from tools.code_execution_tool import execute_code
+            from tools.core.code_execution_tool import execute_code
             self._execute_code = execute_code
         except ImportError:
             pytest.skip("tools.code_execution_tool not importable (missing deps)")

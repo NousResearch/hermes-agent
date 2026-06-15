@@ -31,7 +31,7 @@ sys.path.insert(0, REPO_ROOT)
 # Ensure HERMES_HOME is set (needed by tools/skills_hub.py imports)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from tools.skills_hub import (
+from tools.skills.skills_hub import (
     GitHubAuth,
     GitHubSource,
     SkillsShSource,

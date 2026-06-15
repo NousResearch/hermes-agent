@@ -22,7 +22,7 @@ def _reset():
 
 def test_local_only_helper_returns_true_for_local_env():
     from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     fops = ShellFileOperations(LocalEnvironment(cwd="/tmp"))
     assert fops._lsp_local_only() is True
@@ -30,7 +30,7 @@ def test_local_only_helper_returns_true_for_local_env():
 
 def test_local_only_helper_returns_false_for_non_local_env():
     """A mocked non-local env (Docker/Modal/SSH stand-in) returns False."""
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     # Build something that's NOT a LocalEnvironment.  We use a bare
     # MagicMock — isinstance() against LocalEnvironment is False.
@@ -44,7 +44,7 @@ def test_local_only_helper_returns_false_for_non_local_env():
 def test_snapshot_baseline_skipped_for_non_local(monkeypatch):
     """Verify the LSP service's snapshot_baseline is NOT called when
     the backend isn't local."""
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     fake_env = MagicMock()
     fake_env.execute = MagicMock(return_value=MagicMock(exit_code=0, stdout=""))
@@ -64,7 +64,7 @@ def test_snapshot_baseline_skipped_for_non_local(monkeypatch):
 
 
 def test_maybe_lsp_diagnostics_returns_empty_for_non_local(monkeypatch):
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     fake_env = MagicMock()
     fake_env.execute = MagicMock(return_value=MagicMock(exit_code=0, stdout=""))
@@ -90,7 +90,7 @@ def test_maybe_lsp_diagnostics_returns_empty_for_non_local(monkeypatch):
 
 def test_snapshot_baseline_called_for_local_env(tmp_path, monkeypatch):
     from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from tools.core.file_operations import ShellFileOperations
 
     fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
 

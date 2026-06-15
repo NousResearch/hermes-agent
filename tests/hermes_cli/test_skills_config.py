@@ -83,13 +83,13 @@ class TestIsSkillDisabled:
     @patch("hermes_cli.config.load_config")
     def test_globally_disabled(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["bad-skill"]}}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("bad-skill") is True
 
     @patch("hermes_cli.config.load_config")
     def test_globally_enabled(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["other"]}}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("good-skill") is False
 
     @patch("hermes_cli.config.load_config")
@@ -98,7 +98,7 @@ class TestIsSkillDisabled:
             "disabled": [],
             "platform_disabled": {"telegram": ["tg-skill"]}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
 
     @patch("hermes_cli.config.load_config")
@@ -107,27 +107,27 @@ class TestIsSkillDisabled:
             "disabled": ["skill-a"],
             "platform_disabled": {"telegram": []}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         # telegram has explicit empty list -> skill-a is NOT disabled for telegram
         assert _is_skill_disabled("skill-a", platform="telegram") is False
 
     @patch("hermes_cli.config.load_config")
     def test_platform_falls_back_to_global(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["skill-a"]}}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         # no platform_disabled for cli -> global
         assert _is_skill_disabled("skill-a", platform="cli") is True
 
     @patch("hermes_cli.config.load_config")
     def test_empty_config(self, mock_load):
         mock_load.return_value = {}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("any-skill") is False
 
     @patch("hermes_cli.config.load_config")
     def test_exception_returns_false(self, mock_load):
         mock_load.side_effect = Exception("config error")
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("any-skill") is False
 
     @patch("hermes_cli.config.load_config")
@@ -136,7 +136,7 @@ class TestIsSkillDisabled:
         mock_load.return_value = {"skills": {
             "platform_disabled": {"discord": ["discord-skill"]}
         }}
-        from tools.skills_tool import _is_skill_disabled
+        from tools.skills.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("discord-skill") is True
 
 
@@ -261,7 +261,7 @@ class TestFindAllSkillsFiltering:
         import agent.skill_utils as _su
         monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(_su, "get_external_skills_dirs", lambda: [])
-        from tools.skills_tool import _find_all_skills
+        from tools.skills.skills_tool import _find_all_skills
         skills = _find_all_skills()
         assert not any(s["name"] == "my-skill" for s in skills)
 
@@ -276,7 +276,7 @@ class TestFindAllSkillsFiltering:
         import agent.skill_utils as _su
         monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(_su, "get_external_skills_dirs", lambda: [])
-        from tools.skills_tool import _find_all_skills
+        from tools.skills.skills_tool import _find_all_skills
         skills = _find_all_skills()
         assert any(s["name"] == "my-skill" for s in skills)
 
@@ -292,7 +292,7 @@ class TestFindAllSkillsFiltering:
         import agent.skill_utils as _su
         monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(_su, "get_external_skills_dirs", lambda: [])
-        from tools.skills_tool import _find_all_skills
+        from tools.skills.skills_tool import _find_all_skills
         skills = _find_all_skills(skip_disabled=True)
         assert any(s["name"] == "my-skill" for s in skills)
 

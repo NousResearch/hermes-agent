@@ -69,7 +69,7 @@ class TestSendTelegramStandaloneProxy:
         instances whose ``proxy=`` kwarg is the configured URL — applied to
         both ``request`` and ``get_updates_request``.
         """
-        from tools.send_message_tool import _send_telegram
+        from tools.communication.send_message_tool import _send_telegram
 
         proxy_url = "socks5://127.0.0.1:1080"
         monkeypatch.setenv("TELEGRAM_PROXY", proxy_url)
@@ -116,7 +116,7 @@ class TestSendTelegramStandaloneProxy:
         is constructed plainly — no ``request``/``get_updates_request``
         kwargs, and HTTPXRequest is not invoked at all.
         """
-        from tools.send_message_tool import _send_telegram
+        from tools.communication.send_message_tool import _send_telegram
 
         # Wipe every env var resolve_proxy_url() inspects so the host's
         # ambient proxy settings can't flip this test green-or-red.

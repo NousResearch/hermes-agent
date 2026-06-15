@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> None:
     # loop; that path is unaffected.)  Moved from model_tools.py module
     # scope to avoid freezing the gateway's loop on lazy import (#16856).
     try:
-        from tools.mcp_tool import discover_mcp_tools
+        from tools.mcp.mcp_tool import discover_mcp_tools
         discover_mcp_tools()
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)

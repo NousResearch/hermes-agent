@@ -74,7 +74,7 @@ for name in list(sys.modules):
     if name.startswith("tools.") or name.startswith("agent.") or name.startswith("plugins."):
         sys.modules.pop(name, None)
 
-from tools.browser_tool import _get_cloud_provider, _is_local_mode
+from tools.browser.browser_tool import _get_cloud_provider, _is_local_mode
 
 provider = _get_cloud_provider()
 

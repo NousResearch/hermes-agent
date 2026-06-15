@@ -846,7 +846,7 @@ class TestEnvironmentHints:
         assert "WSL" in WSL_ENVIRONMENT_HINT
 
     def test_build_environment_hints_on_wsl(self, monkeypatch):
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: True)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
@@ -857,7 +857,7 @@ class TestEnvironmentHints:
         assert "User home directory:" in result
 
     def test_build_environment_hints_on_linux_local(self, monkeypatch):
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         import sys, platform
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setattr(sys, "platform", "linux")
@@ -877,7 +877,7 @@ class TestEnvironmentHints:
         assert "WSL" not in result
 
     def test_build_environment_hints_on_windows_local(self, monkeypatch):
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setattr(sys, "platform", "win32")
@@ -894,7 +894,7 @@ class TestEnvironmentHints:
         assert "PowerShell" in result
 
     def test_build_environment_hints_on_macos_local(self, monkeypatch):
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -909,7 +909,7 @@ class TestEnvironmentHints:
 
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
         """Docker/remote backends must hide host info — the agent can only touch the backend."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setattr(sys, "platform", "win32")
@@ -930,7 +930,7 @@ class TestEnvironmentHints:
     def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
         """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
         (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         configured = tmp_path / "workspace"
@@ -942,7 +942,7 @@ class TestEnvironmentHints:
 
     def test_build_environment_hints_falls_back_to_launch_dir(self, monkeypatch, tmp_path):
         """The #19242 local-CLI contract: no TERMINAL_CWD → the launch dir."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
@@ -952,7 +952,7 @@ class TestEnvironmentHints:
 
     def test_build_environment_hints_uses_live_probe_when_available(self, monkeypatch):
         """When the probe succeeds, its output must appear in the hint block."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setenv("TERMINAL_ENV", "modal")
         fake_probe_output = "  OS: Linux 6.8.0\n  User: root\n  Home: /root\n  Working directory: /workspace"
@@ -965,7 +965,7 @@ class TestEnvironmentHints:
 
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         for backend in ("docker", "singularity", "modal", "daytona", "ssh"):
             assert backend in _pb._REMOTE_TERMINAL_BACKENDS, (
                 f"{backend!r} must be in _REMOTE_TERMINAL_BACKENDS so its host "
@@ -974,7 +974,7 @@ class TestEnvironmentHints:
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
@@ -986,7 +986,7 @@ class TestEnvironmentHints:
 
     def test_environment_hint_env_var_overrides_config(self, monkeypatch):
         """Env var wins over config.yaml agent.environment_hint."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "ENV-WINS")
@@ -1001,7 +1001,7 @@ class TestEnvironmentHints:
 
     def test_environment_hint_falls_back_to_config(self, monkeypatch):
         """With no env var, the config.yaml value is used."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)
@@ -1015,7 +1015,7 @@ class TestEnvironmentHints:
 
     def test_environment_hint_empty_by_default(self, monkeypatch):
         """No hint configured anywhere → no embedder text, host block intact."""
-        import agent.prompt_builder as _pb
+        import agent.prompt.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.delenv("HERMES_ENVIRONMENT_HINT", raising=False)

@@ -1186,6 +1186,8 @@ def run_conversation(
                             _retry.primary_recovery_attempted = False
                             continue
                     elif directive.name == "ABORT":
+                        # Increment BEFORE check so max_retries fires on the correct iteration
+                        retry_count += 1
                         if retry_count >= max_retries:
                             agent._flush_status_buffer()
                             agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
@@ -1198,9 +1200,6 @@ def run_conversation(
                                 "error": f"Invalid API response after {max_retries} retries: {classified.reason}",
                                 "failed": True
                             }
-
-                    # Count this attempt BEFORE sleeping so max_retries fires on the correct iteration
-                    retry_count += 1
 
                     # Backoff before retry — use policy's backoff calculation
                     wait_time = calculate_backoff(retry_count, base=5.0, max_delay=120.0)

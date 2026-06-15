@@ -8,7 +8,7 @@ import json
 import pytest
 from unittest.mock import patch
 
-from tools.skills_tool import skill_view
+from tools.skills.skills_tool import skill_view
 
 
 @pytest.fixture()

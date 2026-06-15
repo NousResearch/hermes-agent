@@ -5,7 +5,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from tools.send_message_tool import (
+from tools.communication.send_message_tool import (
     _send_dingtalk,
     _send_matrix,
 )

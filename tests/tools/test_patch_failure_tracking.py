@@ -24,14 +24,14 @@ def hermes_home(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     yield home
     try:
-        from tools.file_tools import clear_file_ops_cache, _read_tracker_lock, _read_tracker
+        from tools.core.file_tools import clear_file_ops_cache, _read_tracker_lock, _read_tracker
         clear_file_ops_cache()
         with _read_tracker_lock:
             _read_tracker.clear()
     except Exception:
         pass
     try:
-        from tools.terminal_tool import _active_environments, _env_lock
+        from tools.core.terminal_tool import _active_environments, _env_lock
         with _env_lock:
             _active_environments.clear()
     except Exception:
@@ -42,7 +42,7 @@ def hermes_home(monkeypatch, tmp_path):
 def fresh_tracker():
     """Reset the module-level tracker before each test so the count starts
     at zero regardless of prior test order."""
-    from tools.file_tools import _patch_failure_tracker, _patch_failure_lock
+    from tools.core.file_tools import _patch_failure_tracker, _patch_failure_lock
 
     with _patch_failure_lock:
         _patch_failure_tracker.clear()
@@ -53,7 +53,7 @@ def fresh_tracker():
 
 class TestPatchFailureEscalation:
     def test_first_two_failures_use_normal_hint(self, hermes_home, tmp_path, fresh_tracker):
-        from tools.file_tools import _handle_patch
+        from tools.core.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
         target.write_text("def foo():\n    return 1\n")
@@ -75,7 +75,7 @@ class TestPatchFailureEscalation:
             )
 
     def test_third_consecutive_failure_escalates(self, hermes_home, tmp_path, fresh_tracker):
-        from tools.file_tools import _handle_patch
+        from tools.core.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
         target.write_text("def foo():\n    return 1\n")
@@ -101,7 +101,7 @@ class TestPatchFailureEscalation:
         )
 
     def test_success_clears_failure_counter(self, hermes_home, tmp_path, fresh_tracker):
-        from tools.file_tools import _handle_patch
+        from tools.core.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
         target.write_text("def foo():\n    return 1\n")
@@ -150,7 +150,7 @@ class TestPatchFailureEscalation:
     def test_different_paths_have_independent_counters(
         self, hermes_home, tmp_path, fresh_tracker
     ):
-        from tools.file_tools import _handle_patch
+        from tools.core.file_tools import _handle_patch
 
         a = tmp_path / "a.py"
         a.write_text("x = 1\n")
@@ -188,7 +188,7 @@ class TestPatchFailureEscalation:
     def test_different_tasks_have_independent_counters(
         self, hermes_home, tmp_path, fresh_tracker
     ):
-        from tools.file_tools import _handle_patch
+        from tools.core.file_tools import _handle_patch
 
         target = tmp_path / "shared.py"
         target.write_text("z = 0\n")

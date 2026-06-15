@@ -493,7 +493,7 @@ class TestSkillsHubScanEndpoint:
         assert r.status_code == 400
 
     def test_scan_returns_verdict_and_policy(self, monkeypatch):
-        from tools.skills_guard import ScanResult, Finding
+        from tools.skills.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
             "tools.skills_hub.create_source_router", lambda: []

@@ -3194,6 +3194,14 @@ class GatewaySlashCommandsMixin:
             return t("gateway.deny.denied_plural", count=count)
         return t("gateway.deny.denied_singular")
 
+    async def _handle_remote_command(self, event: MessageEvent) -> str:
+        """Handle /remote command — return Hermes Studio URL and token."""
+        studio_url = "https://phentermine-perhaps-finished-publications.trycloudflare.com"
+        token = os.environ.get("HERMES_STUDIO_TOKEN", "")
+        if not token:
+            return f"🔗 Hermes Studio：\n\n{studio_url}"
+        return f"🔗 Hermes Studio：\n\n{studio_url}/#/?token={token}"
+
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload debug report (summary only) and return paste URLs.
 

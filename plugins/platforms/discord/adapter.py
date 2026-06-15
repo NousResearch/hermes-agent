@@ -65,7 +65,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
-from tools.url_safety import is_safe_url
+from tools.security.url_safety import is_safe_url
 
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
@@ -2051,7 +2051,7 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)
         try:
-            from tools.tts_tool import text_to_speech_tool
+            from tools.media.tts_tool import text_to_speech_tool
             result_json = await asyncio.to_thread(
                 text_to_speech_tool, text=phrase, output_path=audio_path
             )
@@ -2411,7 +2411,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 
-            from tools.transcription_tools import transcribe_audio
+            from tools.media.transcription_tools import transcribe_audio
             result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):

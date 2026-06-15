@@ -26,8 +26,8 @@ import pytest
 
 from mcp.shared.auth import OAuthMetadata
 
-from tools.mcp_oauth import HermesTokenStorage
-from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+from tools.mcp.mcp_oauth import HermesTokenStorage
+from tools.mcp.mcp_oauth_manager import _HERMES_PROVIDER_CLS
 
 
 def _make_metadata(token_endpoint: str = "https://auth.example.com/oauth/token") -> OAuthMetadata:

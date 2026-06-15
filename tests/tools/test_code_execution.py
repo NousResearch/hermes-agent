@@ -35,7 +35,7 @@ import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.code_execution_tool import (
+from tools.core.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
     generate_hermes_tools_module,
@@ -463,7 +463,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         """Every user-facing parameter in the real schema must appear in the
         corresponding _TOOL_STUBS entry."""
         import re
-        from tools.code_execution_tool import _TOOL_STUBS
+        from tools.core.code_execution_tool import _TOOL_STUBS
 
         # Import the registry and trigger tool registration
         from tools.registry import registry
@@ -498,7 +498,7 @@ class TestStubSchemaDrift(unittest.TestCase):
         """The args_dict_expr in each stub must include every parameter from
         the signature, so that all params are actually sent over RPC."""
         import re
-        from tools.code_execution_tool import _TOOL_STUBS
+        from tools.core.code_execution_tool import _TOOL_STUBS
 
         for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
             stub_params = set(re.findall(r'(\w+)\s*:', sig))
@@ -513,7 +513,7 @@ class TestStubSchemaDrift(unittest.TestCase):
 
     def test_search_files_target_uses_current_values(self):
         """search_files stub should use 'content'/'files', not old 'grep'/'find'."""
-        from tools.code_execution_tool import _TOOL_STUBS
+        from tools.core.code_execution_tool import _TOOL_STUBS
         _, sig, doc, _ = _TOOL_STUBS["search_files"]
         self.assertIn('"content"', sig,
                       "search_files stub should default target to 'content', not 'grep'")
@@ -842,20 +842,20 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
 
 class TestLoadConfig(unittest.TestCase):
     def test_returns_empty_dict_when_cli_config_unavailable(self):
-        from tools.code_execution_tool import _load_config
+        from tools.core.code_execution_tool import _load_config
         with patch.dict("sys.modules", {"cli": None}):
             result = _load_config()
             self.assertIsInstance(result, dict)
 
     def test_returns_code_execution_section(self):
-        from tools.code_execution_tool import _load_config
+        from tools.core.code_execution_tool import _load_config
         with patch("hermes_cli.config.read_raw_config",
                    return_value={"code_execution": {"timeout": 120, "max_tool_calls": 10}}):
             result = _load_config()
         self.assertEqual(result, {"timeout": 120, "max_tool_calls": 10})
 
     def test_does_not_import_interactive_cli(self):
-        from tools.code_execution_tool import _load_config
+        from tools.core.code_execution_tool import _load_config
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \

@@ -49,7 +49,7 @@ class TestMinimaxM3StaleCacheGuard:
     def test_stale_m3_cache_dropped_and_reresolves(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.minimaxi.com/anthropic"
         mm.save_context_length("MiniMax-M3", base, 204_800)
@@ -67,7 +67,7 @@ class TestMinimaxM3StaleCacheGuard:
     def test_correct_m3_cache_preserved(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.minimaxi.com/anthropic"
         mm.save_context_length("MiniMax-M3", base, 1_000_000)
@@ -79,7 +79,7 @@ class TestMinimaxM3StaleCacheGuard:
     def test_m2_cache_not_clobbered(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import agent.utils.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.minimaxi.com/anthropic"
         # 204,800 is the CORRECT value for M2.x — guard must not touch it.

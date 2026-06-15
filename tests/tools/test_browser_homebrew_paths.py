@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
-from tools.browser_tool import (
+from tools.browser.browser_tool import (
     _discover_homebrew_node_dirs,
     _find_agent_browser,
     _run_browser_command,

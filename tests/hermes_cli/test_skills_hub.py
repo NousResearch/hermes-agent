@@ -624,7 +624,7 @@ def test_browse_skills_dedup_uses_identifier_not_name(monkeypatch):
     fix, both were keyed by name so only one survived deduplication. After the
     fix, each unique identifier produces a distinct result.
     """
-    from tools.skills_hub import SkillMeta
+    from tools.skills.skills_hub import SkillMeta
     from hermes_cli.skills_hub import browse_skills
 
     airbnb = SkillMeta(

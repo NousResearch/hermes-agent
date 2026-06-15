@@ -9,6 +9,8 @@ Routes messages to the appropriate destination based on:
 """
 
 import logging
+import os
+import re
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -21,8 +23,72 @@ logger = logging.getLogger(__name__)
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800
 
+# Matches strings that are *only* a "silence" narration with optional markdown
+# wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
+# 🔇, a bare ".", "…", and the whitespace/marker-padded variants seen in the
+# wild. Anchored to start/end so substantive messages that merely *contain* the
+# word "silent" are never matched.
+_SILENCE_NARRATION = re.compile(
+    r'^[\s*_~`]*\(?\s*(silent|silence|no\s+response|no\s+reply)\s*\.?\)?[\s*_~`]*$'
+    r'|^[\s*_~`]*[\U0001F507\.\u2026]+[\s*_~`]*$',
+    re.IGNORECASE,
+)
+
+
+def _is_silence_narration(content: Optional[str]) -> bool:
+    """Return True when ``content`` is *only* a silence-narration token.
+
+    Length-guarded (real messages are longer) and anchored to the whole string
+    so legitimate prose like "The deployment ran silently" or "Silence is
+    golden — here is the plan..." is never flagged.
+    """
+    if not content:
+        return False
+    stripped = content.strip()
+    if not stripped or len(stripped) > 64:  # length guard
+        return False
+    return bool(_SILENCE_NARRATION.match(stripped))
+
 from .config import Platform, GatewayConfig
 from .session import SessionSource
+
+
+def _looks_like_telegram_private_chat_id(chat_id: Optional[str]) -> bool:
+    if chat_id is None:
+        return False
+    try:
+        return int(chat_id) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _looks_like_int(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    try:
+        int(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _send_result_failed(result: Any) -> bool:
+    if isinstance(result, dict):
+        return result.get("success") is False
+    return getattr(result, "success", True) is False
+
+
+def _send_result_error(result: Any) -> Optional[str]:
+    if isinstance(result, dict):
+        error = result.get("error")
+    else:
+        error = getattr(result, "error", None)
+    return str(error) if error else None
+
+
+def _is_thread_not_found_delivery_error(result: Any) -> bool:
+    error = _send_result_error(result)
+    return bool(error and "thread not found" in error.lower())
 
 
 @dataclass
@@ -223,6 +289,18 @@ class DeliveryRouter:
         path.write_text(content)
         return path
 
+    def _filter_silence_narration_enabled(self) -> bool:
+        """Whether the outbound silence-narration filter is active.
+
+        ``HERMES_FILTER_SILENCE_NARRATION`` env var overrides config when set;
+        otherwise the ``gateway.filter_silence_narration`` config flag wins
+        (default True).
+        """
+        env = os.getenv("HERMES_FILTER_SILENCE_NARRATION")
+        if env is not None:
+            return env.strip().lower() in ("1", "true", "yes", "on")
+        return bool(getattr(self.config, "filter_silence_narration", True))
+
     async def _deliver_to_platform(
         self,
         target: DeliveryTarget,
@@ -248,10 +326,107 @@ class DeliveryRouter:
                 + f"\n\n... [truncated, full output saved to {saved_path}]"
             )
         
+        # Substrate-level anti-loop guard: drop hallucinated "silence narration"
+        # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.
+        # In bot-to-bot channels these tokens mirror back and forth until a
+        # model crashes with "no content after all retries". Behavioral prompt
+        # rules drift across providers; this single chokepoint covers every
+        # platform adapter regardless of which persona's prompt failed.
+        # Local/file delivery (_deliver_local) is a separate path and is never
+        # filtered — saved silence has no loop risk.
+        if self._filter_silence_narration_enabled() and _is_silence_narration(content):
+            logger.warning(
+                "Dropped silence-narration outbound to %s (chat=%s): %r",
+                target.platform.value,
+                target.chat_id,
+                content[:40],
+            )
+            return {
+                "success": True,
+                "filtered": "silence_narration",
+                "delivered": False,
+            }
+
         send_metadata = dict(metadata or {})
-        if target.thread_id and "thread_id" not in send_metadata:
-            send_metadata["thread_id"] = target.thread_id
-        return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+        is_named_telegram_private_topic = False
+        named_telegram_private_topic_name: Optional[str] = None
+        if target.thread_id:
+            has_explicit_direct_topic = (
+                "direct_messages_topic_id" in send_metadata
+                or "telegram_direct_messages_topic_id" in send_metadata
+            )
+            target_thread_id = target.thread_id
+            is_named_telegram_private_topic = (
+                target.platform == Platform.TELEGRAM
+                and _looks_like_telegram_private_chat_id(target.chat_id)
+                and not _looks_like_int(target_thread_id)
+                and "thread_id" not in send_metadata
+                and "message_thread_id" not in send_metadata
+                and not has_explicit_direct_topic
+            )
+            if is_named_telegram_private_topic:
+                named_telegram_private_topic_name = target_thread_id
+                ensure_dm_topic = getattr(adapter, "ensure_dm_topic", None)
+                if ensure_dm_topic is None:
+                    raise RuntimeError(
+                        "Telegram adapter cannot create named private DM topics"
+                    )
+                created_thread_id = await ensure_dm_topic(target.chat_id, target_thread_id)
+                if not created_thread_id:
+                    raise RuntimeError(
+                        f"Failed to create Telegram private DM topic '{target_thread_id}'"
+                    )
+                target_thread_id = str(created_thread_id)
+                send_metadata["thread_id"] = target_thread_id
+                send_metadata["telegram_dm_topic_created_for_send"] = True
+            elif (
+                target.platform == Platform.TELEGRAM
+                and _looks_like_telegram_private_chat_id(target.chat_id)
+                and "thread_id" not in send_metadata
+                and "message_thread_id" not in send_metadata
+                and not has_explicit_direct_topic
+            ):
+                # Legacy private topic/thread ids that were not created by this
+                # send path may still need a reply anchor to stay visible in the
+                # requested lane. Named targets are created above via
+                # createForumTopic and can use message_thread_id directly.
+                reply_anchor = send_metadata.get("telegram_reply_to_message_id")
+                if reply_anchor is None:
+                    raise RuntimeError(
+                        "Telegram private DM topic delivery requires telegram_reply_to_message_id; "
+                        "send to the bare chat or provide a reply anchor"
+                    )
+                send_metadata["thread_id"] = target_thread_id
+                send_metadata["telegram_dm_topic_reply_fallback"] = True
+            elif "thread_id" not in send_metadata and "message_thread_id" not in send_metadata and not has_explicit_direct_topic:
+                send_metadata["thread_id"] = target_thread_id
+        result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+        if _send_result_failed(result):
+            if (
+                is_named_telegram_private_topic
+                and named_telegram_private_topic_name
+                and _is_thread_not_found_delivery_error(result)
+            ):
+                ensure_dm_topic = getattr(adapter, "ensure_dm_topic", None)
+                if ensure_dm_topic is None:
+                    raise RuntimeError(
+                        "Telegram adapter cannot refresh named private DM topics"
+                    )
+                refreshed_thread_id = await ensure_dm_topic(
+                    target.chat_id,
+                    named_telegram_private_topic_name,
+                    force_create=True,
+                )
+                if not refreshed_thread_id:
+                    raise RuntimeError(
+                        f"Failed to refresh Telegram private DM topic '{named_telegram_private_topic_name}'"
+                    )
+                send_metadata["thread_id"] = str(refreshed_thread_id)
+                send_metadata["telegram_dm_topic_created_for_send"] = True
+                result = await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+            if _send_result_failed(result):
+                raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
+        return result
 
 
 

@@ -4,8 +4,7 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,7 +39,6 @@ from tools.send_message_tool import (
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
 from plugins.platforms.discord.adapter import (
-    _DISCORD_CHANNEL_TYPE_PROBE_CACHE,
     _derive_forum_thread_name,
     _probe_is_forum_cached,
     _remember_channel_is_forum,
@@ -165,6 +163,48 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_ntfy_topic_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")
+
+        assert chat_id == "alerts-channel"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_ntfy_topic_target_bypasses_channel_directory(self):
+        ntfy_platform = Platform("ntfy")
+        ntfy_cfg = SimpleNamespace(enabled=True, token=None, extra={"topic": "hermes-in"})
+        config = SimpleNamespace(
+            platforms={ntfy_platform: ntfy_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("should not resolve ntfy topics")), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "ntfy:alerts-channel",
+                        "message": "done",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            ntfy_platform,
+            ntfy_cfg,
+            "alerts-channel",
+            "done",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
@@ -377,7 +417,14 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
-    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path):
+    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path, monkeypatch):
+        # This test exercises the strict-allowlist path; force strict mode on
+        # and disable recency trust so the freshly-written tmp_path file is
+        # not auto-accepted by the trust window. (Recency trust is covered
+        # in test_platform_base.py. The public default flipped to non-strict
+        # in 2026-05; this test pins strict on explicitly.)
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
         config, telegram_cfg = _make_config()
         secret = tmp_path / "secret.pdf"
         secret.write_bytes(b"%PDF secret")
@@ -590,6 +637,7 @@ class TestSendToPlatformChunking:
             "***",
             "C123",
             "*hello* from <https://example.com|Hermes>",
+            thread_ts=None,
         )
 
     def test_slack_bold_italic_formatted_before_send(self, monkeypatch):
@@ -1151,6 +1199,11 @@ class TestParseTargetRefE164:
         assert chat_id == "+15551234567"
         assert is_explicit is True
 
+    def test_photon_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("photon", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
     def test_signal_bare_digits_still_work(self):
         """Bare digit strings continue to match the generic numeric branch."""
         chat_id, _, is_explicit = _parse_target_ref("signal", "15551234567")
@@ -1213,6 +1266,90 @@ class TestParseTargetRefSlack:
     def test_slack_id_not_explicit_for_other_platforms(self):
         assert _parse_target_ref("discord", "C0B0QV5434G")[2] is False
         assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
+
+
+class TestParseTargetRefEmail:
+    """_parse_target_ref recognizes email addresses as explicit for the email platform."""
+
+    def test_standard_email_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("email", "user@example.com")
+        assert chat_id == "user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_email_with_dots_in_local_part(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "first.last@example.co.uk")
+        assert chat_id == "first.last@example.co.uk"
+        assert is_explicit is True
+
+    def test_email_with_plus_tag(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "user+tag@gmail.com")
+        assert chat_id == "user+tag@gmail.com"
+        assert is_explicit is True
+
+    def test_email_strips_whitespace(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "  user@example.com  ")
+        assert chat_id == "user@example.com"
+        assert is_explicit is True
+
+    def test_invalid_email_not_explicit(self):
+        assert _parse_target_ref("email", "not-an-email")[2] is False
+        assert _parse_target_ref("email", "@example.com")[2] is False
+        assert _parse_target_ref("email", "user@")[2] is False
+        assert _parse_target_ref("email", "user@.com")[2] is False
+
+    def test_email_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("telegram", "user@example.com")[2] is False
+        assert _parse_target_ref("discord", "user@example.com")[2] is False
+        assert _parse_target_ref("slack", "user@example.com")[2] is False
+
+
+class TestEmailHomeChannelErrorHint:
+    """The no-home-channel error for email points at the real env var.
+
+    Email reads its home channel from EMAIL_HOME_ADDRESS (gateway/config.py),
+    not the generic EMAIL_HOME_CHANNEL. The error guidance must name the
+    variable that is actually consulted so users who follow it succeed.
+    """
+
+    def test_email_error_names_email_home_address(self):
+        email_cfg = SimpleNamespace(enabled=True, token="", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.EMAIL: email_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "email",
+                        "message": "hi",
+                    }
+                )
+            )
+        assert "EMAIL_HOME_ADDRESS" in result["error"]
+        assert "EMAIL_HOME_CHANNEL" not in result["error"]
+
+    def test_non_email_platform_keeps_generic_home_channel_hint(self):
+        telegram_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: telegram_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram",
+                        "message": "hi",
+                    }
+                )
+            )
+        assert "TELEGRAM_HOME_CHANNEL" in result["error"]
 
 
 class TestSendDiscordThreadId:
@@ -1510,7 +1647,6 @@ class TestSendMatrixUrlEncoding:
 
     def test_room_id_is_percent_encoded_in_url(self):
         """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
-        import aiohttp
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -1887,10 +2023,6 @@ class TestForumProbeCache:
         discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
 
     def test_cache_round_trip(self):
-        from plugins.platforms.discord.adapter import (
-            _probe_is_forum_cached,
-            _remember_channel_is_forum,
-        )
         assert _probe_is_forum_cached("xyz") is None
         _remember_channel_is_forum("xyz", True)
         assert _probe_is_forum_cached("xyz") is True
@@ -2347,6 +2479,37 @@ class TestSendViaAdapterStandaloneFallback:
             check_fn=lambda: True,
             standalone_sender_fn=send_fn,
         )
+
+    @pytest.mark.asyncio
+    async def test_live_ntfy_adapter_receives_explicit_publish_topic(self, monkeypatch):
+        from tools.send_message_tool import _send_via_adapter
+
+        platform = Platform("ntfy")
+        recorded = {}
+
+        class Adapter:
+            async def send(self, *, chat_id, content, metadata=None):
+                recorded["chat_id"] = chat_id
+                recorded["content"] = content
+                recorded["metadata"] = metadata
+                return SimpleNamespace(success=True, message_id="ntfy-id")
+
+        runner = SimpleNamespace(adapters={platform: Adapter()})
+        fake_gateway_run = ModuleType("gateway.run")
+        fake_gateway_run._gateway_runner_ref = lambda: runner
+        monkeypatch.setitem(sys.modules, "gateway.run", fake_gateway_run)
+
+        result = await _send_via_adapter(
+            platform,
+            SimpleNamespace(extra={"publish_topic": "configured-topic"}),
+            "alerts-channel",
+            "done",
+        )
+
+        assert result == {"success": True, "message_id": "ntfy-id"}
+        assert recorded["chat_id"] == "alerts-channel"
+        assert recorded["content"] == "done"
+        assert recorded["metadata"] == {"publish_topic": "alerts-channel"}
 
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_called_when_no_adapter(self, monkeypatch):

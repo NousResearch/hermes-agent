@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { SLASH_COMMANDS } from '../app/slash/registry.js'
+import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
@@ -109,5 +109,15 @@ describe('slash parity matrix', () => {
       expect(routes[name], `missing command in registry: ${name}`).toBeDefined()
       expect(routes[name], `mutating command must not fallback: ${name}`).not.toBe('fallback')
     }
+  })
+
+  it('/q alias resolves to queue, not quit (#31983)', () => {
+    // Regression for #31983: the TUI `quit` command used to carry alias `q`,
+    // which collided with the Python-side `/queue` alias. TUI-local commands
+    // dispatch before the backend, so `/q` resolved to /quit (session.die)
+    // instead of queueing a prompt.
+    const cmd = findSlashCommand('q')
+    expect(cmd, '/q must resolve to a command').toBeDefined()
+    expect(cmd!.name).toBe('queue')
   })
 })

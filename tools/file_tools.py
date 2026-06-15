@@ -85,6 +85,34 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     return _resolve_path_for_task(filepath, task_id)
 
 
+# Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
+# directory to resolve against. A stale config / .env commonly leaves the
+# literal "." here; "auto"/"cwd" are setup-wizard placeholders. Treating any of
+# these as a real relative base silently anchors edits to the agent PROCESS cwd
+# (e.g. the main repo while a worktree session is active), routing writes to the
+# wrong checkout. The gateway sanitizes the same set at import time
+# (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
+# sessions get the same protection. See references/worktree-cwd-discipline.md.
+_TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+
+def _configured_terminal_cwd() -> str | None:
+    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+
+    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
+    rejected — a relative anchor is meaningless without knowing which cwd it is
+    relative to, which is exactly the ambiguity that misroutes worktree edits.
+    Only an absolute, sentinel-free value is honored.
+    """
+    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
@@ -116,32 +144,141 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     return None
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
-    """Resolve *filepath* against the task's live terminal cwd when possible."""
-    p = Path(filepath).expanduser()
-    if not p.is_absolute():
-        base = _get_live_tracking_cwd(task_id) or os.environ.get(
-            "TERMINAL_CWD", os.getcwd()
-        )
-        p = Path(base) / p
-    return p.resolve()
+def _authoritative_workspace_root(task_id: str = "default") -> str | None:
+    """Best-effort absolute workspace root for divergence checks.
 
+    Prefers the live terminal cwd (the directory the agent is actually working
+    in). When no terminal command has run yet — so the live registry is empty —
+    falls back to a sentinel-free absolute ``$TERMINAL_CWD``. This is what lets
+    a worktree session warn about (and resolve into) the worktree from the very
+    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
 
-def _is_blocked_device(filepath: str) -> bool:
-    """Return True if the path would hang the process (infinite output or blocking input).
-
-    Uses the *literal* path — no symlink resolution — because the model
-    specifies paths directly and realpath follows symlinks all the way
-    through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
-    the check.
+    Returns ``None`` only when there is genuinely no reliable anchor, in which
+    case callers fall back to the process cwd.
     """
-    normalized = os.path.expanduser(filepath)
+    live = _get_live_tracking_cwd(task_id)
+    if live:
+        return live
+    return _configured_terminal_cwd()
+
+
+def _resolve_base_dir(task_id: str = "default") -> Path:
+    """Return the ABSOLUTE base directory for resolving relative paths.
+
+    Resolution order:
+      1. The task's live terminal cwd (the directory the agent is actually
+         working in — e.g. a git worktree). Authoritative when known.
+      2. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+         ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
+         terminal command has populated the live cwd registry.
+      3. The process cwd.
+
+    The returned base is ALWAYS absolute. This is the core invariant that
+    prevents the worktree-cwd divergence bug: a relative or sentinel
+    ``TERMINAL_CWD`` (commonly the literal ``"."`` from a stale config) is
+    meaningless as a resolution anchor — left to ``Path.resolve()`` it silently
+    resolves against whatever the agent PROCESS cwd happens to be (e.g. the main
+    repo while the terminal is in a worktree), routing edits to the wrong
+    checkout. We therefore reject sentinel/relative ``TERMINAL_CWD`` values
+    outright (rather than anchoring them to the process cwd) and fall through to
+    the process cwd only as a last resort, deterministically.
+    """
+    root = _authoritative_workspace_root(task_id)
+    if root:
+        base = Path(root).expanduser()
+    else:
+        base = Path(os.getcwd())
+    if not base.is_absolute():
+        # Last-resort anchoring: a live cwd should already be absolute, but if a
+        # terminal backend ever reports a relative cwd, anchor it to the process
+        # cwd once, here, so the result no longer depends on cwd at resolve().
+        base = Path(os.getcwd()) / base
+    return base.resolve()
+
+
+def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
+    """Resolve *filepath* against the task's absolute base directory.
+
+    See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
+    paths are returned resolved-but-unanchored.
+    """
+    p = Path(filepath).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    return (_resolve_base_dir(task_id) / p).resolve()
+
+
+def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
+    """Warn when a relative path resolved OUTSIDE the task's workspace root.
+
+    Surfaces the worktree-cwd divergence the moment it would matter: if the
+    agent passes a relative path but it resolves under a directory that is not
+    the workspace root (i.e. the edit is about to land in a different checkout
+    than the one the agent is working in), return a message naming the absolute
+    target. ``None`` when the path is absolute, the base is unknown, or the
+    resolved path is correctly under the workspace root.
+
+    The workspace root is the live terminal cwd when known, else a sentinel-free
+    absolute ``$TERMINAL_CWD`` — so a worktree session whose terminal registry
+    is still empty (no ``cd`` run yet) is warned on the very first write.
+    """
+    try:
+        if Path(filepath).expanduser().is_absolute():
+            return None
+        workspace_root = _authoritative_workspace_root(task_id)
+        if not workspace_root:
+            return None  # No authoritative workspace root to compare against.
+        root = Path(workspace_root).expanduser().resolve()
+        # Is `resolved` inside `root`?
+        try:
+            resolved.relative_to(root)
+            return None  # Inside the workspace — expected.
+        except ValueError:
+            return (
+                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
+                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"a different directory than the terminal's cwd. If this is not "
+                f"intended (e.g. a git-worktree session writing into the main "
+                f"checkout), pass an absolute path under the workspace instead."
+            )
+    except Exception:
+        return None
+
+
+def _is_blocked_device_path(path: str) -> bool:
+    """Return True for concrete device/fd paths that can hang reads."""
+    normalized = os.path.expanduser(path)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
     if normalized.startswith("/proc/") and normalized.endswith(
         ("/fd/0", "/fd/1", "/fd/2")
     ):
+        return True
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
+    # command-line args, and memory layout from the host process (issue #4427)
+    if normalized.startswith("/proc/") and normalized.endswith(
+        ("/environ", "/cmdline", "/maps")
+    ):
+        return True
+    return False
+
+
+def _is_blocked_device(filepath: str) -> bool:
+    """Return True if the path would hang the process (infinite output or blocking input).
+
+    Check the literal path first so aliases like /dev/stdin are caught before
+    they resolve to terminal-specific paths. Then check the resolved path so a
+    workspace symlink to /dev/zero cannot bypass the guard.
+    """
+    normalized = os.path.expanduser(filepath)
+    if _is_blocked_device_path(normalized):
+        return True
+    try:
+        resolved = os.path.realpath(normalized)
+    except (OSError, ValueError):
+        return False
+    if resolved != normalized and _is_blocked_device_path(resolved):
         return True
     return False
 
@@ -153,6 +290,26 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+
+_hermes_config_resolved: str | None = None
+_hermes_config_resolved_loaded = False
+
+
+def _get_hermes_config_resolved() -> str | None:
+    """Return the resolved absolute path of the Hermes config file (cached)."""
+    global _hermes_config_resolved, _hermes_config_resolved_loaded
+    if _hermes_config_resolved_loaded:
+        return _hermes_config_resolved
+    _hermes_config_resolved_loaded = True
+    try:
+        from hermes_cli.config import get_config_path
+        _hermes_config_resolved = str(get_config_path().resolve())
+    except Exception:
+        try:
+            _hermes_config_resolved = str(Path("~/.hermes/config.yaml").expanduser().resolve())
+        except Exception:
+            _hermes_config_resolved = None
+    return _hermes_config_resolved
 
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
@@ -171,24 +328,87 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
+    # Prevent agents from modifying the Hermes config file directly.
+    # approvals.mode and other security settings live here; a malicious or
+    # prompt-injected agent could silently disable exec approval by writing to
+    # this file.
+    hermes_config = _get_hermes_config_resolved()
+    if hermes_config and (resolved == hermes_config or normalized == hermes_config):
+        return (
+            f"Refusing to write to Hermes config file: {filepath}\n"
+            "Agent cannot modify security-sensitive configuration. "
+            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
+        )
+    return None
+
+
+def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
+    """Return the container-side Hermes mirror prefix for Docker file tools."""
+    try:
+        from tools.terminal_tool import (
+            _active_environments,
+            _env_lock,
+            _get_env_config,
+            _resolve_container_task_id,
+        )
+
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        return None
+
+    try:
+        with _env_lock:
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+
+        if env is not None:
+            if env.__class__.__name__ == "DockerEnvironment" and bool(
+                getattr(env, "_persistent", False)
+            ):
+                return "/root/.hermes"
+            return None
+
+        config = _get_env_config()
+    except Exception:
+        return None
+
+    if config.get("env_type") == "docker" and config.get("container_persistent", True):
+        return "/root/.hermes"
     return None
 
 
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return a cross-profile warning string when ``filepath`` lands in
-    another Hermes profile's skills/plugins/cron/memories directory.
+    """Return a soft-guard warning when ``filepath`` lands in another Hermes
+    profile's scoped area, a host-side sandbox-mirror of authoritative profile
+    state, or the Docker container's sandbox mirror of Hermes state.
 
-    Returns ``None`` when the write is in-scope (same profile) or outside
-    Hermes scope entirely. Soft guard — the agent can override by passing
-    ``cross_profile=True`` to its write tool after explicit user direction.
+    Three detectors run in order:
 
-    Defense-in-depth, NOT a security boundary — the terminal tool runs
-    as the same OS user and can write any of these paths directly.
-    See ``agent/file_safety.classify_cross_profile_target`` for the
-    detection rules.
+    * cross-profile (#TBD) — writes that hit another profile's
+      ``skills/plugins/cron/memories`` directory.
+    * sandbox-mirror (#32049) — writes that hit the
+      ``…/sandboxes/<backend>/<task>/home/.hermes/…`` mirror created by a
+      non-local terminal backend (Docker, Daytona, etc.), where the host
+      Hermes process never reads the mirror and the authoritative file is
+      left untouched.
+    * container-mirror (#32049 follow-up) — writes from inside a Docker
+      container whose bind-mounted home strips the ``sandboxes/`` prefix, so
+      the agent sees a plain ``/root/.hermes/…`` path.
+
+    Returns ``None`` when the write is in-scope or outside Hermes scope.
+    All detectors are soft guards — the agent can override any by
+    passing ``cross_profile=True`` to its write tool after explicit user
+    direction. Defense-in-depth, NOT a security boundary — the terminal
+    tool runs as the same OS user and can write any of these paths
+    directly. See ``agent/file_safety.classify_cross_profile_target``,
+    ``classify_sandbox_mirror_target`` and ``classify_container_mirror_target``
+    for the detection rules.
     """
     try:
-        from agent.file_safety import get_cross_profile_warning
+        from agent.file_safety import (
+            get_container_mirror_warning,
+            get_cross_profile_warning,
+            get_sandbox_mirror_warning,
+        )
     except Exception:
         # Fail open on import error — the existing sensitive-path guard
         # plus the write_denied list still apply.
@@ -202,7 +422,18 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     except (OSError, ValueError):
         resolved = filepath
 
-    return get_cross_profile_warning(resolved)
+    warning = get_cross_profile_warning(resolved)
+    if warning is not None:
+        return warning
+
+    warning = get_sandbox_mirror_warning(resolved)
+    if warning is not None:
+        return warning
+
+    return get_container_mirror_warning(
+        resolved,
+        mirror_prefix=_get_container_mirror_prefix_for_task(task_id),
+    )
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:
@@ -234,6 +465,43 @@ _file_ops_cache: dict = {}
 #                      by the same task don't trigger false warnings.
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}
+
+# Track consecutive patch failures per (task_id, resolved_path).  Used to
+# escalate the hint when the model repeatedly fails to patch the same file
+# (typical cause: stale view of file contents, ambiguous old_string, or
+# the file was modified externally between the agent's read and patch
+# attempt).  Reset on a successful patch to that path.
+_patch_failure_lock = threading.Lock()
+_patch_failure_tracker: dict = {}  # {task_id: {resolved_path: count}}
+
+
+def _record_patch_failure(task_id: str, resolved_path: str) -> int:
+    """Increment and return the consecutive-failure count for this path."""
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.setdefault(task_id, {})
+        # Cap dict size per task to avoid unbounded growth in long sessions
+        # where the agent fails on many distinct files.  64 distinct
+        # failing files per task is generous; older entries get evicted.
+        if len(task_failures) >= 64 and resolved_path not in task_failures:
+            try:
+                first_key = next(iter(task_failures))
+                del task_failures[first_key]
+            except StopIteration:
+                pass
+        task_failures[resolved_path] = task_failures.get(resolved_path, 0) + 1
+        return task_failures[resolved_path]
+
+
+def _reset_patch_failures(task_id: str, resolved_paths: list) -> None:
+    """Clear consecutive-failure counts for the given paths."""
+    if not resolved_paths:
+        return
+    with _patch_failure_lock:
+        task_failures = _patch_failure_tracker.get(task_id)
+        if not task_failures:
+            return
+        for rp in resolved_paths:
+            task_failures.pop(rp, None)
 
 # Per-task bounds for the containers inside each _read_tracker[task_id].
 # A CLI session uses one stable task_id for its lifetime; without these
@@ -411,13 +679,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+            if env_type in {"docker", "singularity", "modal", "daytona"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
                     "container_disk": config.get("container_disk", 51200),
                     "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
@@ -492,6 +759,52 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+
+        # ── Structured-document extraction ────────────────────────────
+        # Try before the binary-extension guard so .docx/.xlsx can render as text.
+        # Malformed documents fall through to the normal path/binary guard.
+        from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
+
+        if is_extractable_document(str(_resolved)):
+            try:
+                extracted_text = extract_document_text(str(_resolved))
+            except ExtractionError:
+                logger.debug("document extraction failed for %s", path, exc_info=True)
+            else:
+                file_ops = _get_file_ops(task_id)
+                lines = extracted_text.splitlines()
+                total_lines = len(lines)
+                end_line = offset + limit - 1
+                page_text = "\n".join(lines[offset - 1:end_line])
+                result_dict = {
+                    "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+                    "total_lines": total_lines,
+                    "file_size": os.path.getsize(_resolved),
+                    "truncated": total_lines > end_line,
+                    "extracted_document": True,
+                }
+                if result_dict["truncated"]:
+                    result_dict["hint"] = (
+                        f"Use offset={end_line + 1} to continue reading "
+                        f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
+                    )
+                content_len = len(result_dict["content"])
+                max_chars = _get_max_read_chars()
+                if content_len > max_chars:
+                    return json.dumps({
+                        "error": (
+                            f"Read produced {content_len:,} characters which exceeds "
+                            f"the safety limit ({max_chars:,} chars). "
+                            "Use offset and limit to read a smaller range. "
+                            f"The document has {total_lines} lines of extracted text."
+                        ),
+                        "path": path,
+                        "total_lines": total_lines,
+                        "file_size": result_dict["file_size"],
+                    }, ensure_ascii=False)
+                if result_dict["content"]:
+                    result_dict["content"] = redact_sensitive_text(result_dict["content"], code_file=True)
+                return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -875,12 +1188,21 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
             stale_warning = _check_file_staleness(path, task_id)
+            # Workspace-divergence warning: relative path resolving outside the
+            # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
+            cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(path, content)
+            result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning
+            effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
+            # Always report the ABSOLUTE path actually written, so a wrong-cwd
+            # mismatch is visible in the response instead of silently routing
+            # the edit to the wrong checkout.
+            result_dict["resolved_path"] = _resolved
+            if not result_dict.get("error"):
+                result_dict["files_modified"] = [_resolved]
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
@@ -910,8 +1232,24 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
+        from tools.path_security import has_traversal_component
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
+            v4a_path = _m.group(1).strip()
+            # V4A path headers come from patch CONTENT, not the explicit
+            # ``path=`` arg — so they're more attacker-influenceable (skill
+            # content, web extract, prompt injection). Reject ``..`` traversal
+            # in V4A headers: a legitimate multi-file patch from a single cwd
+            # can always emit absolute paths or paths relative to the agent's
+            # cwd without ``..``. The explicit ``path=`` arg is unchanged
+            # because the agent uses relative ``..`` paths legitimately
+            # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
+            if has_traversal_component(v4a_path):
+                return tool_error(
+                    f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                    "Use the agent's cwd-relative path (no '..') or an absolute "
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                )
+            _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -956,6 +1294,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 _path_to_resolved[_p] = _r
                 _cross = file_state.check_stale(task_id, _r) if _r else None
                 _sw = _cross or _check_file_staleness(_p, task_id)
+                if not _sw and _r:
+                    # Workspace-divergence warning (worktree-cwd bug): relative
+                    # path resolving outside the terminal's cwd.
+                    _sw = _path_resolution_warning(_p, Path(_r), task_id)
                 if _sw:
                     stale_warnings.append(_sw)
 
@@ -966,7 +1308,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
-                result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+                # Pass the resolved ABSOLUTE path to the shell layer so it
+                # operates on the exact file the tool layer resolved — the
+                # shell's own cwd may differ (worktree-cwd bug), and a relative
+                # path would let the two layers disagree about which file is
+                # being edited.
+                _replace_target = _path_to_resolved.get(path) or path
+                result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
@@ -977,20 +1325,60 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result_dict = result.to_dict()
             if stale_warnings:
                 result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
+            # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
+            # mismatch (e.g. a worktree session editing the main checkout) is
+            # visible in the response instead of silently landing elsewhere.
+            _resolved_modified = [
+                _path_to_resolved.get(_p) or _p for _p in _paths_to_check
+            ]
             # Refresh stored timestamps for all successfully-patched paths so
             # consecutive edits by this task don't trigger false warnings.
             if not result_dict.get("error"):
+                result_dict["files_modified"] = _resolved_modified
+                if len(_resolved_modified) == 1:
+                    result_dict["resolved_path"] = _resolved_modified[0]
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
                     if _r:
                         file_state.note_write(task_id, _r)
+                # Successful patch: clear any prior consecutive-failure
+                # counters for the touched paths so a future failure on
+                # the same path starts the escalation cycle fresh.
+                _reset_patch_failures(task_id, [
+                    _r for _r in (_path_to_resolved.get(_p) for _p in _paths_to_check) if _r
+                ])
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
         # Suppressed when patch_replace already attached a rich "Did you mean?"
         # snippet (which is strictly more useful than the generic hint).
         if result_dict.get("error") and "Could not find" in str(result_dict["error"]):
-            if "Did you mean one of these sections?" not in str(result_dict["error"]):
+            # Track per-file consecutive failures for replace mode.  The
+            # ``path`` arg only exists for replace mode; for V4A patches
+            # we'd need to walk the headers, but in practice V4A failures
+            # are far rarer and the existing _hint covers them adequately.
+            failure_count = 0
+            if mode == "replace" and path:
+                resolved = _path_to_resolved.get(path) or path
+                failure_count = _record_patch_failure(task_id, resolved)
+
+            if failure_count >= 3:
+                # Escalating hint after multiple consecutive failures on the
+                # same path.  Most common cause is a stale view of the file —
+                # the model is retrying with the same old_string against
+                # content that has since changed.  Surface the failure count
+                # so the model recognises it's in a loop and breaks out by
+                # re-reading or falling back to write_file.
+                result_dict["_hint"] = (
+                    f"This is failure #{failure_count} patching {path!r}. "
+                    "Stop retrying with variations of the same old_string. "
+                    "Either: (1) re-read the file fresh to verify current "
+                    "content, (2) use a longer / more unique old_string with "
+                    "surrounding context lines, or (3) use write_file to "
+                    "replace the entire file if the targeted region is hard "
+                    "to anchor."
+                )
+            elif "Did you mean one of these sections?" not in str(result_dict["error"]):
                 result_dict["_hint"] = (
                     "old_string not found. Use read_file to verify the current "
                     "content, or search_files to locate the text."
@@ -1085,7 +1473,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -12,7 +12,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -268,6 +267,26 @@ class TestGetBackendSearXNG:
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         assert web_tools._get_backend() == "tavily"
 
+    def test_auto_detect_picks_searxng_when_url_only_in_hermes_config(self, monkeypatch):
+        """#34290 follow-up: a config-only SEARXNG_URL (absent from process env)
+        must still drive auto-detect via the now config-aware ``_has_env``."""
+        from hermes_cli import config as hermes_config
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+        monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
+        monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
+        assert web_tools._get_backend() == "searxng"
+
 
 # ---------------------------------------------------------------------------
 # Integration: check_web_api_key includes searxng
@@ -281,6 +300,19 @@ class TestCheckWebApiKey:
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         assert web_tools.check_web_api_key() is True
 
+    def test_searxng_config_only_satisfies_check_web_api_key(self, monkeypatch):
+        """#34290 follow-up: config-only SEARXNG_URL satisfies the credential check."""
+        from hermes_cli import config as hermes_config
+        from tools import web_tools
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.setattr(
+            hermes_config,
+            "get_env_value",
+            lambda key: "http://config-only:8080" if key == "SEARXNG_URL" else None,
+        )
+        assert web_tools.check_web_api_key() is True
+
     def test_no_credentials_fails(self, monkeypatch):
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
@@ -292,11 +324,12 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         assert web_tools.check_web_api_key() is False
 
 
 # ---------------------------------------------------------------------------
-# searxng-only: web_extract and web_crawl return clear errors
+# searxng-only: web_extract returns a clear error
 # ---------------------------------------------------------------------------
 
 
@@ -312,26 +345,6 @@ class TestSearXNGOnlyExtractCrawlErrors:
         from agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
-    def test_web_crawl_searxng_returns_clear_error(self, monkeypatch):
-        import asyncio
-        from tools import web_tools
-
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
-        monkeypatch.setattr(web_tools, "check_website_access", lambda url: None)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
-
-        import json
-        result_str = asyncio.get_event_loop().run_until_complete(
-            web_tools.web_crawl_tool("https://example.com")
-        )
-        result = json.loads(result_str)
-        assert result["success"] is False
-        assert "search-only" in result["error"].lower() or "SearXNG" in result["error"]
-
     def test_web_extract_searxng_returns_clear_error(self, monkeypatch):
         import asyncio
         from tools import web_tools
@@ -339,10 +352,12 @@ class TestSearXNGOnlyExtractCrawlErrors:
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
-        monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+        async def _allow_ssrf(_url: str) -> bool:
+            return True
+
+        monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
 
-        import json
         result_str = asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])
         )

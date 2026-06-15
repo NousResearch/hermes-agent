@@ -27,7 +27,6 @@ isn't reachable.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -37,7 +36,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 import urllib.error
 import urllib.request

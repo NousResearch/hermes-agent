@@ -26,6 +26,16 @@ def _make_runner():
     return object.__new__(GatewayRunner)
 
 
+def test_start_is_known_gateway_command():
+    """Telegram sends /start automatically; gateway should intercept it as a no-op."""
+    from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+
+    cmd = resolve_command("start")
+    assert "start" in GATEWAY_KNOWN_COMMANDS
+    assert cmd is not None
+    assert cmd.name == "start"
+
+
 @pytest.mark.asyncio
 async def test_help_sanitizes_slash_command_mentions_for_telegram(monkeypatch):
     """Telegram help output must not expose invalid uppercase/hyphenated slashes."""

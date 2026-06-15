@@ -6,12 +6,12 @@ description: "Start-to-finish walkthrough: subscribe, set up, switch models, ena
 
 # Run Hermes Agent with Nous Portal
 
-This guide walks you through running Hermes Agent on a [Nous Portal](https://portal.nousresearch.com) subscription end to end — from signing up to verifying that every tool routes correctly. If you just want the overview of what the Portal is and what's in the subscription, see the [Nous Portal integration page](/docs/integrations/nous-portal). This page is the task script.
+This guide walks you through running Hermes Agent on a [Nous Portal](https://portal.nousresearch.com) subscription end to end — from signing up to verifying that every tool routes correctly. If you just want the overview of what the Portal is and what's in the subscription, see the [Nous Portal integration page](/integrations/nous-portal). This page is the task script.
 
 ## Prerequisites
 
-- Hermes Agent installed ([Quickstart](/docs/getting-started/quickstart))
-- A web browser on the machine you're setting up (or SSH port forwarding — see [OAuth over SSH](/docs/guides/oauth-over-ssh))
+- Hermes Agent installed ([Quickstart](/getting-started/quickstart))
+- A web browser on the machine you're setting up (or SSH port forwarding — see [OAuth over SSH](/guides/oauth-over-ssh))
 - About 5 minutes
 
 You do **not** need: an OpenAI key, an Anthropic key, a Firecrawl account, a FAL account, a Browser Use account, or any other per-vendor credential. That's the whole point.
@@ -52,12 +52,12 @@ hermes auth add nous --type oauth --manual-paste
 # Then re-run `hermes setup --portal` to wire the provider + gateway
 ```
 
-See [OAuth over SSH / Remote Hosts](/docs/guides/oauth-over-ssh) for the full walkthrough including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
+See [OAuth over SSH / Remote Hosts](/guides/oauth-over-ssh) for the full walkthrough including ProxyJump chains, mosh/tmux, and ControlMaster gotchas.
 
 ## 3. Verify it worked
 
 ```bash
-hermes portal status
+hermes portal info
 ```
 
 You should see:
@@ -95,7 +95,7 @@ You should see Hermes call `web_search` (Firecrawl-backed, through the gateway) 
 
 ## 5. Pick the model you actually want
 
-The default after `hermes setup --portal` is a sensible general-purpose model, but the whole point of the subscription is access to the full catalog. Switch with `/model` mid-session:
+`hermes setup --portal` lets you pick a model during setup, but the whole point of the subscription is access to the full catalog — switch any time with `/model` mid-session:
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic
@@ -120,7 +120,7 @@ hermes config set model.default anthropic/claude-sonnet-4.6
 
 ### Don't pick Hermes-4 for agent work
 
-Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them via [Nous Chat](https://chat.nousresearch.com) for conversation/research work, or through the [subscription proxy](/docs/user-guide/features/subscription-proxy) from non-agent tools. For Hermes Agent itself, stick to the frontier agentic models above.
+Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them via [Nous Chat](https://chat.nousresearch.com) for conversation/research work, or through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Hermes Agent itself, stick to the frontier agentic models above.
 
 The Portal's own [info page](https://portal.nousresearch.com/info) carries this warning too — it's the official Nous guidance, not just a Hermes-side opinion.
 
@@ -136,6 +136,8 @@ hermes tools
 # → TTS              → "Nous Subscription"     (recommended)
 ```
 
+These rows appear in `hermes tools` even before you've logged into Nous Portal — if you pick "Nous Subscription" without an active session, Hermes runs the Portal login inline (without changing your inference provider or your other tools).
+
 Verify your mix with:
 
 ```bash
@@ -146,7 +148,7 @@ You'll see per-tool routing — `via Nous Portal` for the ones routed through th
 
 ## 7. (Optional) Enable voice mode
 
-Because the Tool Gateway includes OpenAI TTS, [voice mode](/docs/user-guide/features/voice-mode) works without a separate OpenAI key:
+Because the Tool Gateway includes OpenAI TTS, [voice mode](/user-guide/features/voice-mode) works without a separate OpenAI key:
 
 ```bash
 hermes setup voice
@@ -158,32 +160,33 @@ Then in any messaging-platform session (Telegram, Discord, Signal, etc.), send a
 
 ## 8. (Optional) Cron + always-on workflows
 
-The Portal subscription works for [cron jobs](/docs/user-guide/features/cron) and [batch processing](/docs/user-guide/features/batch-processing) the same way it works for interactive chat — the OAuth refresh token is reused automatically. No additional setup; just schedule cron jobs and they'll bill against your subscription.
+The Portal subscription works for [cron jobs](/user-guide/features/cron) and [batch processing](/user-guide/features/batch-processing) the same way it works for interactive chat — the OAuth refresh token is reused automatically. No additional setup; just schedule cron jobs and they'll bill against your subscription.
 
 ```bash
-hermes cron add "Daily AI news summary" "every day at 9am" \
-  "Search the web for top AI news and summarize the 5 most important stories"
+hermes cron create "every day at 9am" \
+  "Search the web for top AI news and summarize the 5 most important stories" \
+  --name "Daily AI news"
 ```
 
 The cron job runs unattended, calls the model + web search + summarization all through your Portal subscription.
 
 ## Profiles and multi-user setups
 
-If you use [Hermes profiles](/docs/user-guide/profiles) (e.g. a separate config per project), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically.
+If you use [Hermes profiles](/user-guide/profiles) (e.g. a separate config per project), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically.
 
 For team setups where multiple humans share a machine, each human has their own Portal account → each home directory holds its own `~/.hermes/auth.json` → no token sharing across users. This is the right boundary.
 
 ## Troubleshooting
 
-### `hermes portal status` shows "not logged in" after `hermes setup --portal`
+### `hermes portal info` shows "not logged in" after `hermes setup --portal`
 
 The OAuth flow didn't complete. Re-run it:
 
 ```bash
-hermes auth add nous --type oauth
+hermes portal
 ```
 
-If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/docs/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
+If your browser doesn't open or the callback fails, you're likely on a remote/headless host — see [OAuth over SSH](/guides/oauth-over-ssh) for the port-forwarding and manual-paste workarounds.
 
 ### "Model: currently openrouter" (or some other provider) instead of "using Nous as inference provider"
 
@@ -200,7 +203,7 @@ hermes model
 # pick Nous Portal
 ```
 
-Re-verify with `hermes portal status`.
+Re-verify with `hermes portal info`.
 
 ### Tool Gateway tools showing partner names instead of "via Nous Portal"
 
@@ -236,7 +239,7 @@ If a model is genuinely unavailable, [open an issue](https://github.com/NousRese
 
 ### Billing not appearing on my Portal account
 
-`hermes portal status` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
+`hermes portal info` will tell you whether you're actually routing through the Portal or some other provider. Common causes:
 
 - `model.provider` set to `openrouter`/`anthropic`/etc. instead of `nous`
 - An OAuth refresh failure that fell back to a different configured provider
@@ -265,9 +268,9 @@ That's the deal. If you're using more than two of those backends anyway, the sub
 
 ## See also
 
-- **[Nous Portal integration page](/docs/integrations/nous-portal)** — Overview of what's in the subscription
-- **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — Full details on every gateway-routed tool
-- **[Subscription proxy](/docs/user-guide/features/subscription-proxy)** — Use your Portal subscription from non-Hermes tools
-- **[Voice mode](/docs/user-guide/features/voice-mode)** — Set up voice conversations on the Portal subscription
-- **[OAuth over SSH](/docs/guides/oauth-over-ssh)** — Remote / headless login patterns
-- **[Profiles](/docs/user-guide/profiles)** — Share one Portal login across multiple Hermes configurations
+- **[Nous Portal integration page](/integrations/nous-portal)** — Overview of what's in the subscription
+- **[Tool Gateway](/user-guide/features/tool-gateway)** — Full details on every gateway-routed tool
+- **[Subscription proxy](/user-guide/features/subscription-proxy)** — Use your Portal subscription from non-Hermes tools
+- **[Voice mode](/user-guide/features/voice-mode)** — Set up voice conversations on the Portal subscription
+- **[OAuth over SSH](/guides/oauth-over-ssh)** — Remote / headless login patterns
+- **[Profiles](/user-guide/profiles)** — Share one Portal login across multiple Hermes configurations

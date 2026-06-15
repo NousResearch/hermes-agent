@@ -6,7 +6,6 @@ final displayed assistant text (after streaming) without depending on the
 AIAgent instance. It must stay in sync with run_agent.py::_strip_think_blocks
 for tool-call tag coverage."""
 
-import pytest
 
 from cli import _strip_reasoning_tags
 

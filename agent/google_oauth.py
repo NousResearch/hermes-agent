@@ -656,7 +656,7 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
     creds = load_credentials()
     if creds is None:
         raise GoogleOAuthError(
-            "No Google OAuth credentials found. Run `hermes login --provider google-gemini-cli` first.",
+            "No Google OAuth credentials found. Run `hermes auth add google-gemini-cli` first.",
             code="google_oauth_not_logged_in",
         )
 
@@ -899,7 +899,15 @@ def start_oauth_flow(
         try:
             import webbrowser
 
-            webbrowser.open(auth_url, new=1, autoraise=True)
+            try:
+                from hermes_cli.auth import (
+                    _can_open_graphical_browser as _can_open_gui,
+                )
+            except Exception:
+                _can_open_gui = lambda: True  # noqa: E731
+
+            if _can_open_gui():
+                webbrowser.open(auth_url, new=1, autoraise=True)
         except Exception as exc:
             logger.debug("webbrowser.open failed: %s", exc)
 

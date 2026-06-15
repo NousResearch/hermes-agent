@@ -5,14 +5,12 @@ import os
 import pytest
 import stat
 from argparse import Namespace
-from pathlib import Path
 
 from hermes_cli.webhook import (
     webhook_command,
     _load_subscriptions,
     _save_subscriptions,
     _subscriptions_path,
-    _is_webhook_enabled,
 )
 
 

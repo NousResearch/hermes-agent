@@ -440,9 +440,9 @@ def computer_use_guidance(platform_name: Optional[str] = None) -> str:
     elif is_windows:
         offscreen_line = (
             "- If an element is behind another window, cua-driver still "
-            "drives it — no need to raise it. Some targets (Chromium-based "
-            "apps, GTK) ignore background input; pass `dispatch='foreground'` "
-            "for those.\n\n"
+            "drives it — no need to raise it. Some apps may still force "
+            "foreground behavior internally; if an action does not land, "
+            "re-capture and adapt instead of retrying blindly.\n\n"
         )
     else:
         offscreen_line = (

@@ -31,6 +31,11 @@ from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
+try:
+    from hermes_cli import __version__ as _HERMES_VERSION
+except Exception:
+    _HERMES_VERSION = "0.0.0"
+
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 # Published max output-token ceiling shared by every current Gemini text model
@@ -98,7 +103,10 @@ def probe_gemini_tier(
                 url,
                 params={"key": key},
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
+                },
             )
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
@@ -881,7 +889,8 @@ class GeminiNativeClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            "User-Agent": "hermes-agent (gemini-native)",
+            "User-Agent": f"hermes-agent/{_HERMES_VERSION} (gemini-native)",
+            "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
         }
         headers.update(self._default_headers)
         return headers

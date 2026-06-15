@@ -408,3 +408,53 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+# ---------------------------------------------------------------------------
+# X-Goog-Api-Client header tests
+# ---------------------------------------------------------------------------
+
+
+def test_x_goog_api_client_header_is_set():
+    """The X-Goog-Api-Client header should be set on inference requests."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    client = GeminiNativeClient(api_key="fake-key", model="gemini-2.0-flash")
+    headers = client._headers()
+
+    assert "X-Goog-Api-Client" in headers, "X-Goog-Api-Client header missing"
+    assert "hermes-agent/" in headers["X-Goog-Api-Client"], (
+        "hermes-agent not found in X-Goog-Api-Client header"
+    )
+
+
+def test_x_goog_api_client_header_format():
+    """Header value should be 'hermes-agent/<version>' matching the package version."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _HERMES_VERSION
+
+    client = GeminiNativeClient(api_key="fake-key", model="gemini-2.0-flash")
+    headers = client._headers()
+
+    expected = f"hermes-agent/{_HERMES_VERSION}"
+    assert headers["X-Goog-Api-Client"] == expected
+
+
+def test_user_agent_contains_version():
+    """User-Agent should include the hermes-agent version."""
+    from agent.gemini_native_adapter import GeminiNativeClient, _HERMES_VERSION
+
+    client = GeminiNativeClient(api_key="fake-key", model="gemini-2.0-flash")
+    headers = client._headers()
+
+    assert f"hermes-agent/{_HERMES_VERSION}" in headers["User-Agent"]
+
+
+def test_hermes_version_is_valid():
+    """_HERMES_VERSION should be a non-empty string."""
+    from agent.gemini_native_adapter import _HERMES_VERSION
+
+    assert isinstance(_HERMES_VERSION, str)
+    assert len(_HERMES_VERSION) > 0
+    assert _HERMES_VERSION != "0.0.0", (
+        "Version should resolve from hermes_cli.__version__, not the fallback"
+    )

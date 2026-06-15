@@ -3380,7 +3380,10 @@ def probe_api_models(
         candidates.append((alternate_base, True))
 
     tried: list[str] = []
-    headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    headers: dict[str, str] = {
+        "User-Agent": _HERMES_USER_AGENT,
+        "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
+    }
     if api_key and api_mode == "anthropic_messages":
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"

@@ -498,25 +498,11 @@ class GatewaySlashCommandsMixin:
             model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
             if isinstance(model_cfg, dict):
                 provider_name = _clean_str(model_cfg.get("provider"))
-        if not context_total and model_name:
-            try:
-                from agent.model_metadata import get_model_context_length
-
-                model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-                configured_context = None
-                if isinstance(model_cfg, dict):
-                    configured_context = model_cfg.get("context_length")
-                custom_providers = user_config.get("custom_providers") if isinstance(user_config, dict) else None
-                context_total = get_model_context_length(
-                    model_name,
-                    base_url=base_url,
-                    api_key="",
-                    config_context_length=configured_context if isinstance(configured_context, int) else None,
-                    provider=provider_name,
-                    custom_providers=custom_providers if isinstance(custom_providers, list) else None,
-                )
-            except Exception:
-                context_total = 0
+        if not context_total:
+            model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+            configured_context = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
+            if isinstance(configured_context, int) and configured_context > 0:
+                context_total = configured_context
 
         model_line = ""
         if model_name:
@@ -553,7 +539,7 @@ class GatewaySlashCommandsMixin:
         if context_line:
             lines.append(context_line)
         lines.extend([
-            t("gateway.status.tokens", tokens=f"{db_total_tokens:,} (cumulative)"),
+            t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
         if queue_depth:
@@ -2954,6 +2940,52 @@ class GatewaySlashCommandsMixin:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions — list previous sessions for gateway chats."""
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        from hermes_cli.session_listing import (
+            format_gateway_session_listing,
+            parse_session_listing_args,
+            query_session_listing,
+        )
+
+        source = event.source
+        raw_args = event.get_command_args().strip()
+        try:
+            include_all, include_unnamed, target = parse_session_listing_args(raw_args)
+        except ValueError as exc:
+            return t("gateway.resume.parse_error", error=exc)
+
+        if target:
+            resume_event = dataclasses.replace(event, text=f"/resume {target}")
+            return await self._handle_resume_command(resume_event)
+
+        current_entry = self.session_store.get_or_create_session(source)
+        rows = query_session_listing(
+            self._session_db,
+            source=source.platform.value if source.platform else None,
+            current_session_id=current_entry.session_id,
+            include_all_sources=include_all,
+            include_unnamed=include_unnamed,
+            limit=10,
+            exclude_sources=["tool"],
+        )
+        if source.platform == Platform.MATRIX and not include_all:
+            rows = [
+                row for row in rows
+                if self._same_matrix_room(
+                    source, self._gateway_session_origin_for_id(str(row.get("id") or ""))
+                )
+            ]
+        return format_gateway_session_listing(
+            rows,
+            include_source=include_all,
+            title="Sessions" if include_unnamed else "Named Sessions",
+        )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

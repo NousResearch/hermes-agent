@@ -6343,6 +6343,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _record_typing_cooldown(self, chat_id: str, exc: Exception) -> None:
         """Suppress Telegram typing refreshes for this chat after transient failures."""
+        if not hasattr(self, "_telegram_typing_cooldown_until"):
+            self._telegram_typing_cooldown_until = {}
         loop = asyncio.get_running_loop()
         retry_after = getattr(exc, "retry_after", None)
         try:
@@ -6353,6 +6355,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._telegram_typing_cooldown_until[str(chat_id)] = loop.time() + delay
 
     def _typing_in_cooldown(self, chat_id: str) -> bool:
+        if not hasattr(self, "_telegram_typing_cooldown_until"):
+            self._telegram_typing_cooldown_until = {}
+            self._telegram_typing_cooldown_seconds = 30.0
         until = self._telegram_typing_cooldown_until.get(str(chat_id))
         if until is None:
             return False

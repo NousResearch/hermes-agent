@@ -26,10 +26,6 @@ on:
 
 permissions:
   contents: read
-  # Needed so the arm64 job can push/pull its registry-backed build cache
-  # to ghcr.io (cache-to/cache-from type=registry).  See the build-arm64
-  # job for why registry cache replaced the gha cache on that arch.
-  packages: write
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
 # its own image.  PR runs reuse a PR-scoped group with
@@ -58,6 +54,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
@@ -106,6 +104,8 @@ jobs:
       # ---------------------------------------------------------------------
       - name: Install uv (for docker tests)
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        with:
+          enable-cache: false
 
       - name: Set up Python 3.11 (for docker tests)
         run: uv python install 3.11
@@ -187,11 +187,19 @@ jobs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
+    # Needed so the arm64 job can push/pull its registry-backed build cache
+    # to ghcr.io (cache-to/cache-from type=registry). See this job for why
+    # registry cache replaced the gha cache on that arch.
+    permissions:
+      contents: read
+      packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
@@ -329,14 +337,18 @@ jobs:
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           args=()
           for digest_file in *; do
             args+=("${IMAGE_NAME}@sha256:${digest_file}")
           done
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
+          if [ "$EVENT_NAME" = "release" ]; then
+            TAG="$RELEASE_TAG"
             docker buildx imagetools create \
               -t "${IMAGE_NAME}:${TAG}" \
               "${args[@]}"
@@ -346,15 +358,15 @@ jobs:
               -t "${IMAGE_NAME}:latest" \
               "${args[@]}"
           fi
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
 
       - name: Inspect image
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            docker buildx imagetools inspect "${IMAGE_NAME}:${{ github.event.release.tag_name }}"
+          if [ "$EVENT_NAME" = "release" ]; then
+            docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}"
           else
             docker buildx imagetools inspect "${IMAGE_NAME}:main"
           fi
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}

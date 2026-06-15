@@ -18,8 +18,7 @@ on:
     types: [edited]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: nix-lockfile-fix-${{ github.event.issue.number || github.event.inputs.pr_number || github.ref }}
@@ -45,6 +44,8 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: write
     concurrency:
       group: auto-fix-main
       cancel-in-progress: true
@@ -55,6 +56,7 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -134,6 +136,10 @@ jobs:
        && !contains(github.event.changes.body.from, '[x] **Apply lockfile fix**'))
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     steps:
       - name: Authorize & resolve PR
         id: resolve

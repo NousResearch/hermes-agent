@@ -99,7 +99,54 @@ class TestSignalAdapterInit:
 
     def test_self_message_filtering(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)
-        assert adapter._account_normalized == "+15551234567"
+        assert adapter._account_normalized == adapter.account
+
+    def test_track_sent_timestamp_accepts_signal_cli_result_lists(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        adapter._track_sent_timestamp([
+            {"recipientAddress": {"number": "+155****0000"}, "timestamp": 1234567890},
+            {"timestamp": 1234567891},
+        ], "+155****0000", "Verstanden.")
+
+        assert 1234567890 in adapter._recent_sent_timestamps
+        assert 1234567891 in adapter._recent_sent_timestamps
+        assert adapter._is_recent_sent_text("+155****0000", "Verstanden.") is True
+        assert adapter._is_recent_sent_text("+155****9999", "Verstanden.") is False
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_ignores_recent_outbound_text_echo(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_text("+155****1111", "Verstanden.")
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceName": "Jan",
+                "timestamp": 1000000000,
+                "dataMessage": {"message": "Verstanden."},
+            }
+        })
+
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recent_outbound_text_echo_is_scoped_to_chat(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._track_sent_text("+155****1111", "Verstanden.")
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****2222",
+                "sourceName": "Bob",
+                "timestamp": 1000000001,
+                "dataMessage": {"message": "Verstanden."},
+            }
+        })
+
+        adapter.handle_message.assert_awaited_once()
 
 
 class TestSignalConnectCleanup:

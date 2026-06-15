@@ -662,6 +662,44 @@ def has_named_custom_provider(requested_provider: str) -> bool:
         return False
 
 
+def _resolve_key_from_fallback_providers(base_url: str) -> str:
+    """Look up API key from fallback_providers config for a matching base_url.
+
+    When session resume restores a fallback provider's base_url but the
+    provider identity cannot be recovered (e.g. fallback_providers entries
+    don't have names), this function extracts the key_env from the matching
+    fallback entry and resolves the actual key from environment.
+
+    Returns the resolved API key or empty string.
+    """
+    target = _normalize_base_url_for_match(base_url)
+    if not target:
+        return ""
+    try:
+        config = load_config()
+    except Exception:
+        return ""
+
+    fallback_providers = config.get("fallback_providers")
+    if not isinstance(fallback_providers, list):
+        return ""
+
+    for entry in fallback_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = _normalize_base_url_for_match(entry.get("base_url", ""))
+        if entry_url and entry_url == target:
+            key_env = str(entry.get("key_env", "") or "").strip()
+            if key_env:
+                return os.getenv(key_env, "").strip()
+            # Fall back to api_key if key_env is not set
+            api_key = str(entry.get("api_key", "") or "").strip()
+            if api_key:
+                return api_key
+
+    return ""
+
+
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
     """Map an endpoint URL back to its canonical ``custom:<name>`` menu key.
 
@@ -758,6 +796,8 @@ def _resolve_named_custom_runtime(
             return pool_result
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+        # Check fallback_providers for a matching base_url with key_env
+        _fallback_key = _resolve_key_from_fallback_providers(base_url)
         api_key_candidates = [
             (explicit_api_key or "").strip(),
             # Gate env key fallbacks on authoritative hosts (#28660)
@@ -767,6 +807,8 @@ def _resolve_named_custom_runtime(
             # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
             # intuitive match without configuring `custom_providers` first.
             _host_derived_api_key(base_url),
+            # Check fallback_providers config for key_env (e.g. BAIDU_API_KEY)
+            _fallback_key or "",
         ]
         api_key = next(
             (c for c in api_key_candidates if has_usable_secret(c)),

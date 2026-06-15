@@ -615,6 +615,19 @@ def recover_with_credential_pool(
     # subsequent request then goes to the wrong host and 404s (see #33163).
     # The pool should only act when the agent is still on the same provider
     # that seeded the pool.
+    #
+    # Additional guard: when fallback is activated, the pool belongs to the
+    # primary provider and should NOT mutate the agent's state. The fallback
+    # provider has its own credentials resolved during _try_activate_fallback().
+    # Allowing pool operations after fallback would overwrite the fallback's
+    # base_url/api_key back to the primary's values via _swap_credential().
+    if getattr(agent, "_fallback_activated", False):
+        _ra().logger.debug(
+            "Credential pool: fallback active — skipping pool mutation "
+            "to preserve fallback provider's base_url/api_key"
+        )
+        return False, has_retried_429
+
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if current_provider and pool_provider and current_provider != pool_provider:

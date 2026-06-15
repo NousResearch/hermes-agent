@@ -85,7 +85,7 @@ class TestProviderModelIdsPreferred:
         with patch("agent.models_dev.list_agentic_models", return_value=[]):
             out = provider_model_ids("opencode-go")
         # Curated floor (see hermes_cli/models.py _PROVIDER_MODELS["opencode-go"])
-        assert "mimo-v2-pro" in out
+        assert "mimo-v2.5-pro" in out
         assert "kimi-k2.6" in out
 
     def test_opencode_zen_includes_fresh_models(self):

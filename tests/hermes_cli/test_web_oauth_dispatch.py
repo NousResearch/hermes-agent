@@ -337,51 +337,103 @@ def test_xai_oauth_listed_as_loopback_flow():
     assert "grok" in providers["xai-oauth"]["name"].lower()
 
 
-def test_oauth_catalog_marks_external_providers_not_disconnectable():
-    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
+def test_oauth_catalog_marks_external_providers_disconnectable():
+    """External CLI credentials can be unlinked from the Accounts list."""
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
 
     assert providers["qwen-oauth"]["flow"] == "external"
-    assert providers["qwen-oauth"]["disconnectable"] is False
-    assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
+    assert providers["qwen-oauth"]["disconnectable"] is True
+    assert providers["qwen-oauth"]["disconnect_hint"] is None
 
     assert providers["claude-code"]["flow"] == "external"
-    assert providers["claude-code"]["disconnectable"] is False
-    assert "provider's CLI" in providers["claude-code"]["disconnect_hint"]
+    assert providers["claude-code"]["disconnectable"] is True
+    assert providers["claude-code"]["disconnect_hint"] is None
 
 
-def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
-    """DELETE must not pretend to remove credentials owned by another CLI."""
+def test_external_oauth_disconnect_suppresses_reseed(monkeypatch, tmp_path):
+    """DELETE should unlink external CLI credentials without deleting the CLI store."""
     from hermes_cli import auth as auth_mod
 
-    def fail_clear_provider_auth(provider_id=None):
-        raise AssertionError("external providers must not reach clear_provider_auth")
-
-    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear_provider_auth)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        auth_mod,
+        "get_qwen_auth_status",
+        lambda: {
+            "logged_in": True,
+            "auth_file": str(tmp_path / ".qwen" / "oauth_creds.json"),
+            "source": "qwen-cli",
+            "access_token": "qwen-access-token",
+            "has_refresh_token": True,
+        },
+    )
 
     resp = client.delete("/api/providers/oauth/qwen-oauth", headers=HEADERS)
-    assert resp.status_code == 400, resp.text
-    assert "cannot be disconnected automatically" in resp.text
-    assert "provider's CLI" in resp.text
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ok"] is True
+
+    assert auth_mod.is_source_suppressed("qwen-oauth", "qwen-cli") is True
+
+    list_resp = client.get("/api/providers/oauth", headers=HEADERS)
+    providers = {p["id"]: p for p in list_resp.json()["providers"]}
+    assert providers["qwen-oauth"]["status"]["logged_in"] is False
 
 
-def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
-    """An env/.env-backed Anthropic API key is removed from Keys, not OAuth Accounts."""
+def test_claude_code_oauth_disconnect_suppresses_reseed(monkeypatch, tmp_path):
+    """The Claude CLI row should unlink by suppressing the shared Anthropic source."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {
+            "accessToken": "claude-access-token",
+            "refreshToken": "claude-refresh-token",
+            "expiresAt": 1234567890,
+        },
+    )
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    assert providers["claude-code"]["status"]["logged_in"] is True
+    assert providers["claude-code"]["disconnectable"] is True
+
+    delete_resp = client.delete("/api/providers/oauth/claude-code", headers=HEADERS)
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert auth_mod.is_source_suppressed("anthropic", "claude_code") is True
+
+    list_resp = client.get("/api/providers/oauth", headers=HEADERS)
+    providers = {p["id"]: p for p in list_resp.json()["providers"]}
+    assert providers["claude-code"]["status"]["logged_in"] is False
+
+
+def test_env_sourced_oauth_status_can_be_unlinked(monkeypatch, tmp_path):
+    """An env/.env-backed Anthropic API key can be hidden from the Accounts list."""
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
     resp = client.get("/api/providers/oauth", headers=HEADERS)
     assert resp.status_code == 200, resp.text
     providers = {p["id"]: p for p in resp.json()["providers"]}
 
     assert providers["anthropic"]["status"]["source"] == "env_var"
-    assert providers["anthropic"]["disconnectable"] is False
-    assert providers["anthropic"]["disconnect_hint"] == "Remove the API key from Settings → Keys instead."
+    assert providers["anthropic"]["status"]["source_env_var"] == "ANTHROPIC_API_KEY"
+    assert providers["anthropic"]["disconnectable"] is True
+    assert providers["anthropic"]["disconnect_hint"] is None
 
     delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
-    assert delete_resp.status_code == 400, delete_resp.text
-    assert "Settings" in delete_resp.text
+    assert delete_resp.status_code == 200, delete_resp.text
+    assert auth_mod.is_source_suppressed("anthropic", "env:ANTHROPIC_API_KEY") is True
+
+    list_resp = client.get("/api/providers/oauth", headers=HEADERS)
+    providers = {p["id"]: p for p in list_resp.json()["providers"]}
+    assert providers["anthropic"]["status"]["logged_in"] is False
 
 
 def test_xai_loopback_start_returns_authorize_url(monkeypatch):

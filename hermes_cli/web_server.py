@@ -4915,7 +4915,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         _HERMES_OAUTH_FILE = None  # type: ignore
 
     hermes_creds = None
-    if read_hermes_oauth_credentials:
+    if read_hermes_oauth_credentials and not _is_oauth_source_suppressed("anthropic", "hermes_pkce"):
         try:
             hermes_creds = read_hermes_oauth_credentials()
         except Exception:
@@ -4948,6 +4948,8 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         format_secret_source_suffix = None  # type: ignore
 
     for var in env_var_order:
+        if _is_oauth_source_suppressed("anthropic", f"env:{var}"):
+            continue
         value = (get_env_value(var) if get_env_value else None) or os.getenv(var)
         if not value:
             continue
@@ -4955,6 +4957,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         return {
             "logged_in": True,
             "source": "env_var",
+            "source_env_var": var,
             "source_label": f"{var}{suffix}",
             "token_preview": _truncate_token(value),
             "expires_at": None,
@@ -4970,6 +4973,8 @@ def _claude_code_only_status() -> Dict[str, Any]:
     Claude Code subscription tokens are actively flowing into Hermes even
     when they also have a separate Hermes-managed PKCE login.
     """
+    if _is_oauth_source_suppressed("anthropic", "claude_code"):
+        return {"logged_in": False, "source": None}
     try:
         from agent.anthropic_adapter import read_claude_code_credentials
         creds = read_claude_code_credentials()
@@ -4978,7 +4983,7 @@ def _claude_code_only_status() -> Dict[str, Any]:
     if creds and creds.get("accessToken"):
         return {
             "logged_in": True,
-            "source": "claude_code_cli",
+            "source": "claude_code",
             "source_label": "~/.claude/.credentials.json",
             "token_preview": _truncate_token(creds.get("accessToken")),
             "expires_at": creds.get("expiresAt"),
@@ -5065,6 +5070,110 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
 )
 
 
+def _is_oauth_source_suppressed(provider_id: str, source: str) -> bool:
+    try:
+        from hermes_cli.auth import is_source_suppressed
+        return is_source_suppressed(provider_id, source)
+    except Exception:
+        return False
+
+
+def _oauth_status_source(provider_id: str, status: Dict[str, Any]) -> Optional[tuple[str, str]]:
+    if provider_id == "claude-code":
+        return "anthropic", "claude_code"
+    if provider_id == "anthropic":
+        source = status.get("source")
+        if source == "hermes_pkce":
+            return "anthropic", "hermes_pkce"
+        if source == "env_var":
+            env_var = str(status.get("source_env_var") or "").strip()
+            if not env_var:
+                label = str(status.get("source_label") or "")
+                env_var = label.split(" ", 1)[0].strip()
+            return ("anthropic", f"env:{env_var}") if env_var else None
+        return None
+
+    source_by_provider = {
+        "nous": ("nous", "device_code"),
+        "openai-codex": ("openai-codex", "device_code"),
+        "qwen-oauth": ("qwen-oauth", "qwen-cli"),
+        "minimax-oauth": ("minimax-oauth", "oauth"),
+        "xai-oauth": ("xai-oauth", "loopback_pkce"),
+    }
+    return source_by_provider.get(provider_id)
+
+
+def _source_matches(expected: str, actual: str) -> bool:
+    if actual == expected:
+        return True
+    if expected == "device_code" and actual.endswith(":device_code"):
+        return True
+    return False
+
+
+def _unlink_oauth_provider_source(provider_id: str, status: Dict[str, Any]) -> bool:
+    resolved = _oauth_status_source(provider_id, status)
+    if resolved is None:
+        return False
+
+    provider_key, source = resolved
+    removed_entry = None
+    cleared = False
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider_key)
+        for index, entry in sorted(
+            (
+                (index, entry)
+                for index, entry in enumerate(pool.entries(), start=1)
+                if _source_matches(source, entry.source)
+            ),
+            reverse=True,
+        ):
+            removed = pool.remove_index(index)
+            if removed is not None:
+                removed_entry = removed
+                cleared = True
+    except Exception:
+        pass
+
+    if removed_entry is None:
+        from types import SimpleNamespace
+        removed_entry = SimpleNamespace(
+            provider=provider_key,
+            source=source,
+            label=source,
+            access_token="",
+        )
+
+    try:
+        from agent.credential_sources import find_removal_step
+        from hermes_cli.auth import suppress_credential_source
+
+        step = find_removal_step(provider_key, source)
+        if step is not None:
+            result = step.remove_fn(provider_key, removed_entry)
+            cleared = cleared or bool(result.cleaned)
+            if result.suppress:
+                suppress_credential_source(provider_key, source)
+                cleared = True
+        else:
+            suppress_credential_source(provider_key, source)
+            cleared = True
+    except Exception:
+        pass
+
+    if provider_key == "nous":
+        try:
+            from hermes_cli.auth import invalidate_nous_auth_status_cache
+            invalidate_nous_auth_status_cache()
+        except Exception:
+            pass
+
+    return cleared
+
+
 def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
     """Dispatch to the right status helper for an OAuth provider entry."""
     if status_fn is not None:
@@ -5075,20 +5184,24 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
     try:
         from hermes_cli import auth as hauth
         if provider_id == "nous":
+            if _is_oauth_source_suppressed("nous", "device_code"):
+                return {"logged_in": False, "source": None}
             raw = hauth.get_nous_auth_status()
             return {
                 "logged_in": bool(raw.get("logged_in")),
-                "source": "nous_portal",
+                "source": "device_code",
                 "source_label": raw.get("portal_base_url") or "Nous Portal",
                 "token_preview": _truncate_token(raw.get("access_token")),
                 "expires_at": raw.get("access_expires_at"),
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
             }
         if provider_id == "openai-codex":
+            if _is_oauth_source_suppressed("openai-codex", "device_code"):
+                return {"logged_in": False, "source": None}
             raw = hauth.get_codex_auth_status()
             return {
                 "logged_in": bool(raw.get("logged_in")),
-                "source": raw.get("source") or "openai_codex",
+                "source": "device_code",
                 "source_label": raw.get("auth_mode") or "OpenAI Codex",
                 "token_preview": _truncate_token(raw.get("api_key")),
                 "expires_at": None,
@@ -5096,33 +5209,39 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
                 "last_refresh": raw.get("last_refresh"),
             }
         if provider_id == "qwen-oauth":
+            if _is_oauth_source_suppressed("qwen-oauth", "qwen-cli"):
+                return {"logged_in": False, "source": None}
             raw = hauth.get_qwen_auth_status()
             return {
                 "logged_in": bool(raw.get("logged_in")),
-                "source": "qwen_cli",
-                "source_label": raw.get("auth_store_path") or "Qwen CLI",
+                "source": "qwen-cli",
+                "source_label": raw.get("auth_file") or "Qwen CLI",
                 "token_preview": _truncate_token(raw.get("access_token")),
                 "expires_at": raw.get("expires_at"),
                 "has_refresh_token": bool(raw.get("has_refresh_token")),
             }
         if provider_id == "minimax-oauth":
+            if _is_oauth_source_suppressed("minimax-oauth", "oauth"):
+                return {"logged_in": False, "source": None}
             raw = hauth.get_minimax_oauth_auth_status()
             return {
                 "logged_in": bool(raw.get("logged_in")),
-                "source": "minimax_oauth",
+                "source": "oauth",
                 "source_label": f"MiniMax ({raw.get('region', 'global')})",
                 "token_preview": None,
                 "expires_at": raw.get("expires_at"),
                 "has_refresh_token": True,
             }
         if provider_id == "xai-oauth":
+            if _is_oauth_source_suppressed("xai-oauth", "loopback_pkce"):
+                return {"logged_in": False, "source": None}
             raw = hauth.get_xai_oauth_auth_status()
             # source_label is meant to be a human-readable origin (auth-store
             # path / credential source), not the internal auth_mode string
             # ("oauth_pkce"). Prefer the store path, then the source slug.
             return {
                 "logged_in": bool(raw.get("logged_in")),
-                "source": raw.get("source") or "xai_oauth",
+                "source": "loopback_pkce",
                 "source_label": raw.get("auth_store") or raw.get("source") or "xAI Grok OAuth",
                 "token_preview": _truncate_token(raw.get("api_key")),
                 "expires_at": None,
@@ -5136,10 +5255,6 @@ def _resolve_provider_status(provider_id: str, status_fn) -> Dict[str, Any]:
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
     """Return the manual disconnect path when the API cannot clear this provider."""
-    if provider.get("flow") == "external":
-        return f"Use `{provider['cli_command']}` or that provider's CLI to remove it."
-    if status.get("source") == "env_var":
-        return "Remove the API key from Settings → Keys instead."
     return None
 
 
@@ -5192,13 +5307,6 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
                    f"Available: {', '.join(sorted(catalog_by_id))}",
         )
 
-    disconnect_hint = _oauth_provider_disconnect_hint(provider, {})
-    if disconnect_hint:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
-        )
-
     status = _resolve_provider_status(provider_id, provider.get("status_fn"))
     disconnect_hint = _oauth_provider_disconnect_hint(provider, status)
     if disconnect_hint:
@@ -5207,32 +5315,8 @@ async def disconnect_oauth_provider(provider_id: str, request: Request):
             detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
         )
 
-    # Anthropic clears only the Hermes-managed PKCE file and auth-store entry.
-    # The separate claude-code catalog row is external/read-only and rejected
-    # above so we never pretend to remove ~/.claude/* credentials owned by the CLI.
-    if provider_id == "anthropic":
-        cleared = False
-        try:
-            from agent.anthropic_adapter import _HERMES_OAUTH_FILE
-            if _HERMES_OAUTH_FILE.exists():
-                _HERMES_OAUTH_FILE.unlink()
-                cleared = True
-        except Exception:
-            pass
-        # Also clear the credential pool entry if present.
-        try:
-            from hermes_cli.auth import clear_provider_auth
-            cleared = clear_provider_auth("anthropic") or cleared
-        except Exception:
-            pass
-        _log.info("oauth/disconnect: %s", provider_id)
-        return {"ok": bool(cleared), "provider": provider_id}
-
     try:
-        from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
-        cleared = clear_provider_auth(provider_id)
-        if provider_id == "nous":
-            invalidate_nous_auth_status_cache()
+        cleared = _unlink_oauth_provider_source(provider_id, status)
         _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
         return {"ok": bool(cleared), "provider": provider_id}
     except Exception as e:

@@ -190,7 +190,7 @@ function ConnectedProviderRow({
   const { t } = useI18n()
   const title = providerTitle(provider)
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
-  const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
+  const canDisconnect = provider.disconnectable ?? true
 
   const disconnectHint = provider.flow === 'external'
     ? t.settings.providers.removeExternal(title, provider.cli_command)

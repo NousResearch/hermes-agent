@@ -78,13 +78,14 @@ describe('ProvidersSettings', () => {
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
-  it('does not offer removal for externally managed providers', async () => {
+  it('offers removal for externally managed connected accounts', async () => {
+    disconnectOAuthProvider.mockResolvedValue({ ok: true, provider: 'qwen-oauth' })
     listOAuthProviders.mockResolvedValue({
       providers: [
         provider('qwen-oauth', true, {
           cli_command: 'hermes auth add qwen-oauth',
-          disconnect_hint: 'Use `hermes auth add qwen-oauth` or that provider\'s CLI to remove it.',
-          disconnectable: false,
+          disconnect_hint: null,
+          disconnectable: true,
           flow: 'external',
           name: 'Qwen (via Qwen CLI)'
         })
@@ -94,7 +95,8 @@ describe('ProvidersSettings', () => {
     await renderProvidersSettings()
 
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed outside Hermes/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Qwen Code' }))
+
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('qwen-oauth'))
   })
 })

@@ -17,6 +17,53 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+# User-maintained friendly-name overlay. The directory is fully regenerated
+# from live adapters + session data on a timer, so hand-edits to
+# channel_directory.json don't survive. Aliases declared here are re-applied
+# on every build AND every load, giving durable human-friendly names (and
+# letting you pre-name a chat before it has produced any traffic).
+# Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
+CHANNEL_ALIASES_PATH = get_hermes_home() / "channel_aliases.json"
+
+
+def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
+    if not CHANNEL_ALIASES_PATH.exists():
+        return {}
+    try:
+        with open(CHANNEL_ALIASES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
+    """Overlay friendly names onto directory entries by chat_id.
+
+    Renames matching entries in place; injects a placeholder entry for an
+    aliased id that hasn't been discovered yet (so a freshly-created group is
+    addressable by name before its first message). Mutates *platforms*.
+    """
+    aliases = _load_channel_aliases()
+    for plat_name, id_map in aliases.items():
+        if not isinstance(id_map, dict):
+            continue
+        entries = platforms.setdefault(plat_name, [])
+        for chat_id, friendly in id_map.items():
+            if not friendly:
+                continue
+            matched = False
+            for e in entries:
+                if e.get("id") == chat_id:
+                    e["name"] = friendly
+                    matched = True
+            if not matched:
+                entries.append({
+                    "id": chat_id,
+                    "name": friendly,
+                    "type": "group" if str(chat_id).endswith("@g.us") else "dm",
+                    "thread_id": None,
+                })
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -95,6 +142,9 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms[entry.name] = _build_from_sessions(entry.name)
     except Exception:
         pass
+
+    # Overlay user-maintained friendly names before persisting.
+    _apply_channel_aliases(platforms)
 
     directory = {
         "updated_at": datetime.now().isoformat(),
@@ -247,12 +297,20 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
     if not DIRECTORY_PATH.exists():
-        return {"updated_at": None, "platforms": {}}
+        base = {"updated_at": None, "platforms": {}}
+        _apply_channel_aliases(base["platforms"])
+        return base
     try:
         with open(DIRECTORY_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Re-apply aliases on read so friendly names take effect immediately,
+        # even between timed rebuilds and for brand-new alias entries.
+        _apply_channel_aliases(data.setdefault("platforms", {}))
+        return data
     except Exception:
-        return {"updated_at": None, "platforms": {}}
+        base = {"updated_at": None, "platforms": {}}
+        _apply_channel_aliases(base["platforms"])
+        return base
 
 
 def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:

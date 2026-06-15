@@ -1912,6 +1912,15 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+        # Discord protocol v2 inbound worker.  Default-off; started only when
+        # discord_native_multibot is enabled in a mode that requires durable
+        # inbound deliveries to become Hermes agent runs.
+        self._discord_v2_worker = None
+        self._discord_v2_worker_task: Optional[asyncio.Task] = None
+        self._discord_v2_worker_owns_store = False
+        self._discord_v2_outbox_task: Optional[asyncio.Task] = None
+        self._discord_v2_outbox_stop_event: Optional[asyncio.Event] = None
+
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
@@ -4397,6 +4406,8 @@ class GatewayRunner:
         # Update delivery router with adapters
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
+        self._start_discord_v2_worker_if_needed()
+        self._start_discord_v2_outbox_loop_if_needed()
 
         self._running = True
         self._update_runtime_status("running")
@@ -4504,6 +4515,155 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    def _discord_v2_worker_required(self) -> bool:
+        native_config = getattr(self.config, "discord_native_multibot", None)
+        return bool(
+            native_config
+            and getattr(native_config, "enabled", False)
+            and getattr(native_config, "mode", "off") == "active"
+        )
+
+    def _build_discord_v2_worker(self):
+        if not self._discord_v2_worker_required():
+            return None
+
+        from gateway.config import Platform
+        from gateway.discord_identity_registry import DiscordIdentityRegistry
+        from gateway.discord_protocol_v2_store import DiscordProtocolV2Store
+        from gateway.discord_protocol_v2_worker import (
+            DiscordProtocolV2Worker,
+            GatewayRunnerDiscordV2Invoker,
+        )
+
+        native_config = self.config.discord_native_multibot
+        discord_adapter = self.adapters.get(Platform.DISCORD)
+        store = getattr(discord_adapter, "store", None)
+        if store is None:
+            store = DiscordProtocolV2Store()
+            self._discord_v2_worker_owns_store = True
+        else:
+            self._discord_v2_worker_owns_store = False
+
+        identity_registry = getattr(discord_adapter, "identity_registry", None)
+        if identity_registry is None:
+            identity_registry = DiscordIdentityRegistry.load(
+                native_config,
+                store,
+                secret_resolver=None,
+            )
+
+        return DiscordProtocolV2Worker(
+            store=store,
+            identity_registry=identity_registry,
+            session_store=self.session_store,
+            invoker=GatewayRunnerDiscordV2Invoker(self),
+        )
+
+    def _start_discord_v2_worker_if_needed(self) -> None:
+        if self._discord_v2_worker_task is not None:
+            return
+        worker = self._build_discord_v2_worker()
+        if worker is None:
+            return
+        self._discord_v2_worker = worker
+        self._discord_v2_worker_task = asyncio.create_task(worker.run_forever())
+        self._background_tasks.add(self._discord_v2_worker_task)
+        self._discord_v2_worker_task.add_done_callback(self._background_tasks.discard)
+        logger.info("Discord protocol v2 inbound worker started")
+
+    async def _stop_discord_v2_worker(self) -> None:
+        task = self._discord_v2_worker_task
+        worker = self._discord_v2_worker
+        if worker is not None:
+            worker.stop()
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._discord_v2_worker_task = None
+        self._discord_v2_worker = None
+        if self._discord_v2_worker_owns_store and worker is not None:
+            store = getattr(worker, "store", None)
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    logger.debug("Discord v2 worker store close failed", exc_info=True)
+        self._discord_v2_worker_owns_store = False
+
+
+    def _discord_v2_outbox_required(self) -> bool:
+        native_config = getattr(self.config, "discord_native_multibot", None)
+        return bool(
+            native_config
+            and getattr(native_config, "enabled", False)
+            and getattr(native_config, "mode", "off") == "active"
+        )
+
+    def _start_discord_v2_outbox_loop_if_needed(self) -> None:
+        if self._discord_v2_outbox_task is not None:
+            return
+        if not self._discord_v2_outbox_required():
+            return
+        from gateway.config import Platform
+
+        discord_adapter = self.adapters.get(Platform.DISCORD)
+        run_outbox_once = getattr(discord_adapter, "run_outbox_once", None)
+        if not callable(run_outbox_once):
+            return
+        self._discord_v2_outbox_stop_event = asyncio.Event()
+        self._discord_v2_outbox_task = asyncio.create_task(
+            self._run_discord_v2_outbox_loop(run_outbox_once, self._discord_v2_outbox_stop_event)
+        )
+        self._background_tasks.add(self._discord_v2_outbox_task)
+        self._discord_v2_outbox_task.add_done_callback(self._background_tasks.discard)
+        logger.info("Discord protocol v2 active outbox sender loop started")
+
+    async def _run_discord_v2_outbox_loop(self, run_outbox_once, stop_event) -> None:
+        idle_sleep_seconds = 1.0
+        error_sleep_seconds = 1.0
+        max_error_sleep_seconds = 30.0
+        while not stop_event.is_set():
+            try:
+                result = await run_outbox_once()
+                error_sleep_seconds = 1.0
+                if result is None:
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=idle_sleep_seconds)
+                    except asyncio.TimeoutError:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Discord v2 outbox sender tick failed")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=error_sleep_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                error_sleep_seconds = min(max_error_sleep_seconds, error_sleep_seconds * 2)
+
+    async def _stop_discord_v2_outbox_loop(self) -> None:
+        task = self._discord_v2_outbox_task
+        stop_event = self._discord_v2_outbox_stop_event
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            except asyncio.CancelledError:
+                raise
+        self._discord_v2_outbox_task = None
+        self._discord_v2_outbox_stop_event = None
+
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
@@ -6100,6 +6260,8 @@ class GatewayRunner:
 
             self._running = False
             self._draining = True
+            await self._stop_discord_v2_worker()
+            await self._stop_discord_v2_outbox_loop()
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.
@@ -14152,6 +14314,451 @@ class GatewayRunner:
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+    @staticmethod
+    def _approval_first_arg(event: MessageEvent) -> str:
+        return (event.get_command_args().strip().split() or [""])[0]
+
+    @staticmethod
+    def _safe_structured_approval_action_id_for_audit(action_id: str) -> str:
+        text = str(action_id or "")
+        if text.startswith(("apv_", "hermes_v2_approval:")):
+            return "<redacted_structured_approval_id>"
+        return text
+
+    @staticmethod
+    def _redact_discord_audit_value(value: Any) -> Any:
+        from gateway.secret_refs import redact_sensitive_text_value
+
+        replacement = "[REDACTED]"
+
+        def redact_text(text: str) -> str:
+            redacted = redact_sensitive_text_value(text).replace("<redacted>", replacement)
+            redacted = re.sub(
+                r"(?i)(--(?:api-key|apikey|token|secret|password|credential|auth)\s+)(\S+)",
+                rf"\1{replacement}",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?i)(\b(?:api[_-]?key|token|secret|password|credential|auth)\s*[=:]\s*)([^\s,'\"}}]+)",
+                rf"\1{replacement}",
+                redacted,
+            )
+            redacted = re.sub(
+                r"(?i)(Authorization\s*:\s*Bearer\s+)(\S+)",
+                rf"\1{replacement}",
+                redacted,
+            )
+            return redacted
+
+        def redact(item: Any, *, sensitive_key: bool = False) -> Any:
+            if isinstance(item, dict):
+                return {
+                    str(key): redact(
+                        child,
+                        sensitive_key=bool(
+                            re.search(r"token|secret|password|credential|auth", str(key), re.IGNORECASE)
+                        ),
+                    )
+                    for key, child in item.items()
+                }
+            if isinstance(item, (list, tuple, set)):
+                return [redact(child) for child in item]
+            if sensitive_key and item is not None:
+                return replacement
+            if isinstance(item, str):
+                return redact_text(item)
+            return item
+
+        return redact(value)
+
+    def _discord_primary_audit_path(self) -> Path | None:
+        cfg = self._discord_primary_ui_config()
+        sessions_dir = Path(self.config.sessions_dir).resolve()
+        raw_path = getattr(cfg, "audit_log_path", None) or str(sessions_dir / "discord_audit.jsonl")
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = sessions_dir / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(sessions_dir)
+        except Exception:
+            logger.warning("Discord primary UI audit path is outside sessions_dir; skipping write")
+            return None
+        return resolved
+
+    @classmethod
+    def _looks_like_structured_discord_approval(cls, event: MessageEvent) -> bool:
+        # Wide pre-legacy detector: any raw structured approval token,
+        # including malformed IDs, is reserved for structured approvals and must
+        # not fall through to legacy dangerous-command approvals.
+        action = cls._approval_first_arg(event)
+        return action.startswith(("act_", "apv_", "hermes_v2_approval:"))
+
+    @staticmethod
+    def _discord_role_ids_from_event(event: MessageEvent) -> set[str]:
+        user = getattr(getattr(event, "raw_message", None), "user", None)
+        roles = getattr(user, "roles", None)
+        if roles is None:
+            return set()
+        try:
+            return {str(getattr(role, "id", role)) for role in roles if str(getattr(role, "id", role))}
+        except TypeError:
+            return set()
+
+    def _discord_primary_ui_config(self):
+        return getattr(self.config, "discord_primary_ui", None)
+
+    def _is_discord_primary_admin(self, event: MessageEvent) -> bool:
+        cfg = self._discord_primary_ui_config()
+        user_id = str(getattr(event.source, "user_id", "") or "")
+        owner_ids = {str(v) for v in getattr(cfg, "owner_user_ids", []) or [] if str(v)}
+        admin_role_ids = {str(v) for v in getattr(cfg, "admin_role_ids", []) or [] if str(v)}
+        return bool((user_id and user_id in owner_ids) or (self._discord_role_ids_from_event(event) & admin_role_ids))
+
+    def _structured_discord_approval_surface_ok(self, event: MessageEvent) -> tuple[bool, str]:
+        cfg = self._discord_primary_ui_config()
+        if getattr(event.source, "platform", None) != Platform.DISCORD:
+            return False, "not_discord"
+        if getattr(self.config, "primary_ui", None) != "discord" or not getattr(cfg, "enabled", False):
+            return False, "discord_primary_ui_disabled"
+        guild_id = str(getattr(cfg, "guild_id", "") or "")
+        if not guild_id:
+            return False, "missing_guild_id"
+        if str(getattr(event.source, "guild_id", "") or "") != guild_id:
+            return False, "guild_mismatch"
+        approvals_channel_id = str(getattr(cfg, "approvals_channel_id", "") or "")
+        if not approvals_channel_id:
+            return False, "missing_approvals_channel"
+        chat_id = str(getattr(event.source, "chat_id", "") or "")
+        parent_chat_id = str(getattr(event.source, "parent_chat_id", "") or "")
+        if chat_id == approvals_channel_id or parent_chat_id == approvals_channel_id:
+            return True, "ok"
+        return False, "wrong_approvals_channel"
+
+    def _discord_protocol_v2_store_for_approvals(self):
+        """Return the existing v2 store for approval decisions, if v2 is enabled/wired."""
+
+        store = getattr(self, "discord_protocol_v2_store", None)
+        if store is not None:
+            return store
+
+        worker = getattr(self, "_discord_v2_worker", None)
+        store = getattr(worker, "store", None)
+        if store is not None:
+            return store
+
+        adapter = getattr(self, "adapters", {}).get(Platform.DISCORD)
+        store = getattr(adapter, "store", None)
+        if store is not None:
+            return store
+
+        native_config = getattr(self.config, "discord_native_multibot", None)
+        if bool(getattr(native_config, "enabled", False)) and str(
+            getattr(native_config, "mode", "off") or "off"
+        ) != "off":
+            from gateway.discord_protocol_v2_store import DiscordProtocolV2Store
+
+            store = DiscordProtocolV2Store()
+            self.discord_protocol_v2_store = store
+            return store
+        return None
+
+    @staticmethod
+    def _discord_protocol_v2_approval_request(
+        action_id: str,
+        command_decision: str,
+    ) -> tuple[str, str] | None:
+        from gateway.discord_protocol_v2_approvals import (
+            is_valid_approval_id,
+            parse_component_custom_id,
+        )
+
+        parsed = parse_component_custom_id(action_id)
+        if parsed is not None:
+            return parsed
+        if is_valid_approval_id(action_id) and command_decision in {"approve", "deny"}:
+            return command_decision, action_id
+        return None
+
+    @staticmethod
+    def _discord_protocol_v2_approval_policy_requirements(
+        approval: dict[str, Any],
+        event: MessageEvent,
+    ) -> tuple[str | None, str | None, Any | None]:
+        import json
+
+        try:
+            payload = json.loads(str(approval.get("payload_json") or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        raw_policy = payload.get("policy")
+        policy: dict[str, Any] = raw_policy if isinstance(raw_policy, dict) else {}
+        sources: tuple[dict[str, Any], dict[str, Any]] = (policy, payload)
+
+        def _first_text(*keys: str) -> str | None:
+            for source in sources:
+                for key in keys:
+                    value = source.get(key)
+                    if value is not None and str(value).strip():
+                        return str(value).strip()
+            return None
+
+        capability = _first_text("required_capability", "capability")
+        scope_key = _first_text("scope_key", "required_scope_key")
+        scope_value: Any | None = None
+        for source in sources:
+            if "scope_value" in source:
+                scope_value = source.get("scope_value")
+                break
+            if "required_scope_value" in source:
+                scope_value = source.get("required_scope_value")
+                break
+        if scope_key == "guild_ids" and scope_value is None:
+            scope_value = getattr(event.source, "guild_id", None)
+        return capability, scope_key, scope_value
+
+    async def _handle_discord_protocol_v2_approval(
+        self,
+        event: MessageEvent,
+        command_decision: str,
+        action_id: str,
+    ) -> str:
+        from gateway.discord_protocol_v2_approvals import (
+            actor_is_primary_approver,
+            agent_has_capability_or_scope,
+            decide_approval,
+            safe_approval_id_label,
+        )
+
+        parsed = self._discord_protocol_v2_approval_request(action_id, command_decision)
+        if parsed is None:
+            safe_action_id = self._safe_structured_approval_action_id_for_audit(action_id)
+            self._write_discord_primary_audit(
+                event_type="approval",
+                result="unknown",
+                event=event,
+                details={"action_id": safe_action_id, "status": "unknown", "v2": True},
+            )
+            return f"Unknown approval action: {safe_action_id}"
+
+        decision, approval_id = parsed
+        safe_approval_id = safe_approval_id_label(approval_id)
+        store = self._discord_protocol_v2_store_for_approvals()
+        if store is None:
+            self._write_discord_primary_audit(
+                event_type="approval",
+                result="unknown",
+                event=event,
+                details={"action_id": safe_approval_id, "status": "unknown", "v2": True},
+            )
+            return f"Unknown approval action: {safe_approval_id}"
+
+        actor_user_id = str(getattr(event.source, "user_id", "") or "")
+        actor_role_ids = self._discord_role_ids_from_event(event)
+        cfg = self._discord_primary_ui_config()
+        if not actor_is_primary_approver(
+            user_id=actor_user_id,
+            role_ids=actor_role_ids,
+            owner_user_ids=getattr(cfg, "owner_user_ids", []) or [],
+            admin_role_ids=getattr(cfg, "admin_role_ids", []) or [],
+        ):
+            self._write_discord_primary_audit(
+                event_type="approval",
+                result="unauthorized",
+                event=event,
+                details={
+                    "action_id": safe_approval_id,
+                    "status": "unauthorized",
+                    "reason": "discord primary admin role required",
+                    "v2": True,
+                },
+            )
+            return "Structured approvals are admin-only Discord Primary UI actions."
+
+        approval = store.get_approval(approval_id)
+        if approval is not None:
+            capability, scope_key, scope_value = self._discord_protocol_v2_approval_policy_requirements(
+                approval,
+                event,
+            )
+            if (capability or scope_key) and not agent_has_capability_or_scope(
+                store,
+                agent_id=str(approval.get("agent_id") or approval.get("target_agent_id") or ""),
+                capability=capability,
+                scope_key=scope_key,
+                scope_value=scope_value,
+            ):
+                self._write_discord_primary_audit(
+                    event_type="approval",
+                    result="unauthorized",
+                    event=event,
+                    details={
+                        "action_id": safe_approval_id,
+                        "status": "unauthorized",
+                        "reason": "agent policy capability/scope not satisfied",
+                        "v2": True,
+                    },
+                )
+                return f"Approval action {safe_approval_id} is not authorized for this agent policy."
+
+        result = decide_approval(
+            store,
+            approval_id=approval_id,
+            decision=decision,  # type: ignore[arg-type]
+            actor_user_id=actor_user_id,
+            audit_payload={
+                "discord_guild_id": getattr(event.source, "guild_id", None),
+                "discord_channel_id": getattr(event.source, "chat_id", None),
+                "discord_thread_id": getattr(event.source, "thread_id", None),
+                "custom_id": self._safe_structured_approval_action_id_for_audit(action_id)
+                if action_id.startswith("hermes_v2_approval:")
+                else None,
+            },
+        )
+        self._write_discord_primary_audit(
+            event_type="approval",
+            result=result.status,
+            event=event,
+            details={"action_id": safe_approval_id, "ok": result.ok, "status": result.status, "v2": True},
+        )
+        return result.message
+
+    def _write_discord_primary_audit(
+        self,
+        *,
+        event_type: str,
+        result: str,
+        event: MessageEvent,
+        details: dict[str, Any] | None = None,
+        command: str | None = None,
+    ) -> None:
+        try:
+            from datetime import datetime, timezone
+
+            path = self._discord_primary_audit_path()
+            if path is None:
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            safe_details = self._redact_discord_audit_value(details or {})
+            record = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "event_type": event_type,
+                "result": result,
+                "platform": str(
+                    getattr(getattr(getattr(event, "source", None), "platform", ""), "value", None)
+                    or getattr(getattr(event, "source", None), "platform", "")
+                ),
+                "guild_id": getattr(event.source, "guild_id", None),
+                "chat_id": getattr(event.source, "chat_id", None),
+                "thread_id": getattr(event.source, "thread_id", None),
+                "user_id": getattr(event.source, "user_id", None),
+                "details": safe_details,
+            }
+            if command:
+                record["command"] = command
+            data = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+            try:
+                path.chmod(0o600)
+            except Exception:
+                pass
+        except Exception:
+            logger.debug("Discord primary UI audit write failed", exc_info=True)
+
+    def _write_discord_audit_event(
+        self,
+        event_type: str,
+        *,
+        event: MessageEvent,
+        command: str | None = None,
+        result: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Backward-compatible Discord audit writer used by older tests/callers."""
+
+        self._write_discord_primary_audit(
+            event_type=event_type,
+            result=result,
+            event=event,
+            details=details,
+            command=command,
+        )
+
+    def _deny_structured_approval_surface(self, event: MessageEvent, action_id: str) -> str:
+        cfg = self._discord_primary_ui_config()
+        self._write_discord_primary_audit(
+            event_type="approval",
+            result="denied",
+            event=event,
+            details={
+                "action_id": self._safe_structured_approval_action_id_for_audit(action_id),
+                "reason": "structured_approvals_not_enabled_for_source",
+                "approvals_channel_id": str(getattr(cfg, "approvals_channel_id", "") or ""),
+            },
+        )
+        return "Structured approvals must be handled in the configured Discord approvals channel."
+
+    def _deny_structured_approval_admin(self, event: MessageEvent, command: str) -> str:
+        self._write_discord_primary_audit(
+            event_type="command",
+            result="denied",
+            event=event,
+            command=command,
+            details={"reason": "discord primary admin role required"},
+        )
+        return "Structured approvals are admin-only Discord Primary UI actions."
+
+    async def _handle_structured_discord_approval(
+        self,
+        event: MessageEvent,
+        decision: str,
+    ) -> str:
+        action_id = self._approval_first_arg(event)
+        ok, _reason = self._structured_discord_approval_surface_ok(event)
+        if not ok:
+            return self._deny_structured_approval_surface(event, action_id)
+
+        if action_id.startswith(("apv_", "hermes_v2_approval:")):
+            return await self._handle_discord_protocol_v2_approval(event, decision, action_id)
+
+        store = getattr(self, "discord_approval_store", None)
+        if store is None:
+            from gateway.discord_approvals import DiscordApprovalStore
+            store = DiscordApprovalStore(Path(self.config.sessions_dir) / "discord_approvals.json")
+            self.discord_approval_store = store
+
+        args = event.get_command_args().strip().split(maxsplit=2)
+        payload_hash = args[1] if decision == "approve" and len(args) > 1 else None
+        reason = args[1] if decision == "deny" and len(args) > 1 else None
+        if decision == "deny" and len(args) > 2:
+            reason = " ".join(args[1:])
+        result = store.decide(
+            action_id=action_id,
+            decision=decision,  # type: ignore[arg-type]
+            actor_user_id=str(getattr(event.source, "user_id", "") or ""),
+            actor_role_ids=self._discord_role_ids_from_event(event),
+            policy_user_ids=getattr(self._discord_primary_ui_config(), "owner_user_ids", []) or [],
+            policy_role_ids=getattr(self._discord_primary_ui_config(), "admin_role_ids", []) or [],
+            payload_hash=payload_hash,
+            reason=reason,
+            discord_guild_id=getattr(event.source, "guild_id", None),
+            discord_channel_id=getattr(event.source, "chat_id", None),
+            discord_thread_id=getattr(event.source, "thread_id", None),
+        )
+        self._write_discord_primary_audit(
+            event_type="approval",
+            result=result.status if not result.ok else result.status,
+            event=event,
+            details={"action_id": action_id, "ok": result.ok, "status": result.status},
+        )
+        return result.message
+
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
 
@@ -14174,6 +14781,9 @@ class GatewayRunner:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        if self._looks_like_structured_discord_approval(event):
+            return await self._handle_structured_discord_approval(event, "approve")
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
@@ -14220,6 +14830,9 @@ class GatewayRunner:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        if self._looks_like_structured_discord_approval(event):
+            return await self._handle_structured_discord_approval(event, "deny")
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
@@ -15947,6 +16560,9 @@ class GatewayRunner:
         session_key: str = None,
         run_generation: Optional[int] = None,
         event_message_id: Optional[str] = None,
+        suppress_inline_delivery: bool = False,
+        hermes_profile: Optional[str] = None,
+        hermes_home: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of
         running a local AIAgent.
@@ -16235,6 +16851,9 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        suppress_inline_delivery: bool = False,
+        hermes_profile: Optional[str] = None,
+        hermes_home: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -16259,6 +16878,9 @@ class GatewayRunner:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=event_message_id,
+                suppress_inline_delivery=suppress_inline_delivery,
+                hermes_profile=hermes_profile,
+                hermes_home=hermes_home,
             )
 
         from run_agent import AIAgent
@@ -18335,7 +18957,7 @@ class GatewayRunner:
                         or (_sc and getattr(_sc, "final_content_delivered", False))
                     )
                     first_response = result.get("final_response", "")
-                    if first_response and not _already_streamed:
+                    if first_response and not _already_streamed and not suppress_inline_delivery:
                         try:
                             logger.info(
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
@@ -18348,7 +18970,7 @@ class GatewayRunner:
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
-                    elif first_response:
+                    elif first_response and not suppress_inline_delivery:
                         logger.info(
                             "Queued follow-up for session %s: skipping resend because final streamed delivery was confirmed.",
                             session_key or "?",
@@ -18408,7 +19030,7 @@ class GatewayRunner:
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
-                _followup_adapter = self.adapters.get(source.platform)
+                _followup_adapter = None if suppress_inline_delivery else self.adapters.get(source.platform)
                 if _followup_adapter:
                     try:
                         await _followup_adapter.send_typing(
@@ -18429,6 +19051,9 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    suppress_inline_delivery=suppress_inline_delivery,
+                    hermes_profile=hermes_profile,
+                    hermes_home=hermes_home,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

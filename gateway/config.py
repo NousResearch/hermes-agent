@@ -11,12 +11,22 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from gateway.secret_refs import (
+    DEFAULT_SECRET_REF_SCHEMES,
+    FORBIDDEN_DISCORD_TOKEN_KEYS,
+    SecretRefError,
+    redact_secret_ref,
+    reject_forbidden_credential_keys,
+    reject_raw_discord_token_values,
+    validate_secret_ref,
+)
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -407,6 +417,393 @@ class StreamingConfig:
         )
 
 
+def _coerce_optional_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_primary_str_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        return []
+    result: List[str] = []
+    for item in items:
+        text = _coerce_optional_str(item)
+        if text is not None:
+            result.append(text)
+    return result
+
+
+@dataclass
+class DiscordPrimaryUIConfig:
+    """Default-off Discord primary UI configuration."""
+
+    enabled: bool = False
+    guild_id: Optional[str] = None
+    dashboard_channel_id: Optional[str] = None
+    inbox_channel_id: Optional[str] = None
+    approvals_channel_id: Optional[str] = None
+    status_channel_id: Optional[str] = None
+    kanban_forum_id: Optional[str] = None
+    default_profile: str = "default"
+    admin_role_ids: List[str] = field(default_factory=list)
+    user_role_ids: List[str] = field(default_factory=list)
+    owner_user_ids: List[str] = field(default_factory=list)
+    session_scope: str = "thread"
+    auto_create_threads: bool = False
+    require_mention: bool = True
+    audit_log_path: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        normalized = self.from_dict(self.to_dict())
+        self.enabled = normalized.enabled
+        self.guild_id = normalized.guild_id
+        self.dashboard_channel_id = normalized.dashboard_channel_id
+        self.inbox_channel_id = normalized.inbox_channel_id
+        self.approvals_channel_id = normalized.approvals_channel_id
+        self.status_channel_id = normalized.status_channel_id
+        self.kanban_forum_id = normalized.kanban_forum_id
+        self.default_profile = normalized.default_profile
+        self.admin_role_ids = normalized.admin_role_ids
+        self.user_role_ids = normalized.user_role_ids
+        self.owner_user_ids = normalized.owner_user_ids
+        self.session_scope = normalized.session_scope
+        self.auto_create_threads = normalized.auto_create_threads
+        self.require_mention = normalized.require_mention
+        self.audit_log_path = normalized.audit_log_path
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "guild_id": self.guild_id,
+            "dashboard_channel_id": self.dashboard_channel_id,
+            "inbox_channel_id": self.inbox_channel_id,
+            "approvals_channel_id": self.approvals_channel_id,
+            "status_channel_id": self.status_channel_id,
+            "kanban_forum_id": self.kanban_forum_id,
+            "default_profile": self.default_profile,
+            "admin_role_ids": list(self.admin_role_ids),
+            "user_role_ids": list(self.user_role_ids),
+            "owner_user_ids": list(self.owner_user_ids),
+            "session_scope": self.session_scope,
+            "auto_create_threads": self.auto_create_threads,
+            "require_mention": self.require_mention,
+            "audit_log_path": self.audit_log_path,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiscordPrimaryUIConfig":
+        if not isinstance(data, dict):
+            data = {}
+        session_scope = data.get("session_scope", "thread")
+        if session_scope not in {"thread", "dm"}:
+            session_scope = "thread"
+        cfg = cls.__new__(cls)
+        cfg.enabled = _coerce_bool(data.get("enabled"), False)
+        cfg.guild_id = _coerce_optional_str(data.get("guild_id"))
+        cfg.dashboard_channel_id = _coerce_optional_str(data.get("dashboard_channel_id"))
+        cfg.inbox_channel_id = _coerce_optional_str(data.get("inbox_channel_id"))
+        cfg.approvals_channel_id = _coerce_optional_str(data.get("approvals_channel_id"))
+        cfg.status_channel_id = _coerce_optional_str(data.get("status_channel_id"))
+        cfg.kanban_forum_id = _coerce_optional_str(data.get("kanban_forum_id"))
+        cfg.default_profile = _coerce_optional_str(data.get("default_profile")) or "default"
+        cfg.admin_role_ids = _coerce_primary_str_list(data.get("admin_role_ids"))
+        cfg.user_role_ids = _coerce_primary_str_list(data.get("user_role_ids"))
+        cfg.owner_user_ids = _coerce_primary_str_list(data.get("owner_user_ids"))
+        cfg.session_scope = session_scope
+        cfg.auto_create_threads = _coerce_bool(data.get("auto_create_threads"), False)
+        cfg.require_mention = _coerce_bool(data.get("require_mention"), True)
+        cfg.audit_log_path = _coerce_optional_str(data.get("audit_log_path"))
+        return cfg
+
+
+DISCORD_NATIVE_MULTIBOT_MODES = frozenset(
+    {"off", "shadow", "listen_only", "active"}
+)
+DISCORD_NATIVE_MULTIBOT_SECRET_REF_SCHEMES = DEFAULT_SECRET_REF_SCHEMES
+_DISCORD_NATIVE_MULTIBOT_FORBIDDEN_CREDENTIAL_KEYS = FORBIDDEN_DISCORD_TOKEN_KEYS
+
+
+def _normalize_config_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    """Coerce list-ish config values into non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _normalize_discord_native_multibot_mode(value: Any) -> str:
+    # YAML 1.1 treats bare ``off`` as boolean false. Preserve the documented
+    # config example without requiring users to quote it.
+    if value is False:
+        return "off"
+    if value is None:
+        return "off"
+    return str(value).strip().lower()
+
+
+def _validate_discord_native_multibot_secret_ref(ref: Any) -> str:
+    try:
+        return validate_secret_ref(
+            ref,
+            allow_env=False,
+            field_name="discord_native_multibot token_secret_ref",
+        )
+    except SecretRefError as exc:
+        raise ValueError(str(exc)) from None
+
+
+def _redact_discord_native_multibot_secret_ref(ref: Optional[str]) -> Optional[str]:
+    return redact_secret_ref(ref)
+
+
+def _validate_no_discord_native_webhook_fallback(data: dict[str, Any]) -> None:
+    """Reject attempts to enable webhook fallback from the v2 config block.
+
+    The Discord v2 rollout flag is intentionally not a bridge to the legacy
+    single-bot/webhook transport. Operators may configure the generic webhook
+    platform explicitly under ``platforms.webhook`` for diagnostics/projections,
+    but v2 itself must never auto-enable that fallback path.
+    """
+
+    fallback_keys = {
+        "webhook_fallback",
+        "diagnostic_webhook_fallback",
+        "enable_webhook_fallback",
+        "auto_enable_webhook_fallback",
+    }
+    for key in fallback_keys:
+        value = data.get(key)
+        enabled = value.get("enabled") if isinstance(value, dict) else value
+        if _coerce_bool(enabled, False):
+            raise ValueError(
+                "discord_native_multibot cannot enable webhook fallback; "
+                "configure platforms.webhook explicitly for operator-only diagnostics"
+            )
+
+
+@dataclass
+class DiscordNativeMultibotAllowedScopes:
+    """Allowed Discord scopes for a v2 native bot identity."""
+
+    guild_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"guild_ids": list(self.guild_ids)}
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "DiscordNativeMultibotAllowedScopes":
+        if not isinstance(data, dict):
+            data = {}
+        return cls(guild_ids=_coerce_str_list(data.get("guild_ids")))
+
+
+@dataclass
+class DiscordNativeMultibotIdentityConfig:
+    """Config-only identity metadata for Discord protocol v2.
+
+    This object intentionally stores only a ``token_secret_ref``. Runtime token
+    resolution is outside Slice 0A and must not be serialized here.
+    """
+
+    agent_id: str
+    hermes_profile: str = "default"
+    discord_application_id: Optional[str] = None
+    discord_bot_user_id: Optional[str] = None
+    token_secret_ref: str = ""
+    capabilities: list[str] = field(default_factory=list)
+    allowed_scopes: DiscordNativeMultibotAllowedScopes = field(
+        default_factory=DiscordNativeMultibotAllowedScopes
+    )
+    enabled: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "hermes_profile": self.hermes_profile,
+            "discord_application_id": self.discord_application_id,
+            "discord_bot_user_id": self.discord_bot_user_id,
+            "token_secret_ref": self.token_secret_ref,
+            "capabilities": list(self.capabilities),
+            "allowed_scopes": self.allowed_scopes.to_dict(),
+            "enabled": self.enabled,
+        }
+
+    def redacted_snapshot(self) -> Dict[str, Any]:
+        snapshot = self.to_dict()
+        snapshot["token_secret_ref"] = _redact_discord_native_multibot_secret_ref(
+            self.token_secret_ref
+        )
+        return snapshot
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "DiscordNativeMultibotIdentityConfig":
+        if not isinstance(data, dict):
+            raise ValueError("discord_native_multibot identities must be mappings")
+
+        try:
+            reject_forbidden_credential_keys(
+                data,
+                context="discord_native_multibot identity",
+            )
+            reject_raw_discord_token_values(
+                data,
+                context="discord_native_multibot identity",
+            )
+        except SecretRefError as exc:
+            raise ValueError(str(exc)) from None
+
+        agent_id = str(data.get("agent_id") or "").strip()
+        if not agent_id:
+            raise ValueError("discord_native_multibot identities require agent_id")
+
+        hermes_profile = (
+            str(data.get("hermes_profile") or "default").strip() or "default"
+        )
+        token_secret_ref = _validate_discord_native_multibot_secret_ref(
+            data.get("token_secret_ref")
+        )
+
+        return cls(
+            agent_id=agent_id,
+            hermes_profile=hermes_profile,
+            discord_application_id=(
+                str(data["discord_application_id"]).strip()
+                if data.get("discord_application_id") is not None
+                else None
+            ),
+            discord_bot_user_id=(
+                str(data["discord_bot_user_id"]).strip()
+                if data.get("discord_bot_user_id") is not None
+                else None
+            ),
+            token_secret_ref=token_secret_ref,
+            capabilities=_coerce_str_list(data.get("capabilities")),
+            allowed_scopes=DiscordNativeMultibotAllowedScopes.from_dict(
+                data.get("allowed_scopes")
+            ),
+            enabled=_coerce_bool(data.get("enabled"), True),
+        )
+
+
+@dataclass
+class DiscordNativeMultibotConfig:
+    """Default-off config contract for Discord Native Multi-Bot Protocol v2."""
+
+    enabled: bool = False
+    mode: str = "off"
+    guild_allowlist: list[str] = field(default_factory=list)
+    default_intake_agent_id: str = "bohumil"
+    identities: list[DiscordNativeMultibotIdentityConfig] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.mode = _normalize_discord_native_multibot_mode(self.mode)
+        self.guild_allowlist = _coerce_str_list(self.guild_allowlist)
+        self.default_intake_agent_id = str(self.default_intake_agent_id or "").strip()
+        self.validate()
+
+    def validate(self) -> None:
+        if self.mode not in DISCORD_NATIVE_MULTIBOT_MODES:
+            raise ValueError(
+                "discord_native_multibot.mode must be one of: "
+                + ", ".join(sorted(DISCORD_NATIVE_MULTIBOT_MODES))
+            )
+
+        if not self.enabled and self.mode != "off":
+            raise ValueError(
+                "discord_native_multibot enabled=false only permits mode=off; "
+                "non-off modes require enabled=true"
+            )
+
+        agent_ids = [identity.agent_id for identity in self.identities]
+        if len(agent_ids) != len(set(agent_ids)):
+            raise ValueError("discord_native_multibot identities require unique agent_id")
+
+        if self.mode == "listen_only":
+            if not self.enabled:
+                raise ValueError("discord_native_multibot listen_only requires enabled=true")
+            if not self.guild_allowlist:
+                raise ValueError("discord_native_multibot listen_only requires guild_allowlist")
+
+        if self.mode == "active":
+            if not self.enabled:
+                raise ValueError("discord_native_multibot active requires enabled=true")
+            if not self.guild_allowlist:
+                raise ValueError("discord_native_multibot active requires guild_allowlist")
+            if not self.default_intake_agent_id:
+                raise ValueError(
+                    "discord_native_multibot active requires default_intake_agent_id"
+                )
+            default_identity = next(
+                (
+                    identity
+                    for identity in self.identities
+                    if identity.agent_id == self.default_intake_agent_id
+                ),
+                None,
+            )
+            if default_identity is None or not default_identity.enabled:
+                raise ValueError(
+                    "discord_native_multibot active requires an enabled default intake identity"
+                )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "mode": self.mode,
+            "guild_allowlist": list(self.guild_allowlist),
+            "default_intake_agent_id": self.default_intake_agent_id,
+            "identities": [identity.to_dict() for identity in self.identities],
+        }
+
+    def redacted_snapshot(self) -> Dict[str, Any]:
+        snapshot = self.to_dict()
+        snapshot["identities"] = [
+            identity.redacted_snapshot() for identity in self.identities
+        ]
+        return snapshot
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "DiscordNativeMultibotConfig":
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise ValueError("discord_native_multibot must be a mapping")
+
+        _validate_no_discord_native_webhook_fallback(data)
+
+        identities_data = data.get("identities") or []
+        if not isinstance(identities_data, list):
+            raise ValueError("discord_native_multibot.identities must be a list")
+
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), False),
+            mode=_normalize_discord_native_multibot_mode(data.get("mode", "off")),
+            guild_allowlist=_coerce_str_list(data.get("guild_allowlist")),
+            default_intake_agent_id=str(
+                data.get("default_intake_agent_id", "bohumil")
+            ).strip(),
+            identities=[
+                DiscordNativeMultibotIdentityConfig.from_dict(identity_data)
+                for identity_data in identities_data
+            ],
+        )
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -495,6 +892,17 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Discord primary UI. Defaults are safe/off; classic Discord adapter is not
+    # enabled unless the platform itself has credentials and enabled=True.
+    primary_ui: Optional[str] = None
+    discord_primary_ui: DiscordPrimaryUIConfig = field(default_factory=DiscordPrimaryUIConfig)
+
+    # Discord Native Multi-Bot Protocol v2. Default-off schema only; Slice 0A
+    # must not instantiate clients or otherwise wire runtime behavior.
+    discord_native_multibot: DiscordNativeMultibotConfig = field(
+        default_factory=DiscordNativeMultibotConfig
+    )
+
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
     # growing unbounded in gateways serving many chats/threads/users over
@@ -545,6 +953,14 @@ class GatewayConfig:
             pass  # Registry not yet initialised during early import
 
         return False
+
+    def is_discord_primary_ui_enabled(self) -> bool:
+        """Return True only when both the global and Discord primary UI flags are enabled."""
+        return (
+            self.primary_ui == "discord"
+            and self.discord_primary_ui.enabled
+            and bool(self.discord_primary_ui.guild_id)
+        )
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
@@ -595,8 +1011,18 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "primary_ui": self.primary_ui,
+            "discord_primary_ui": self.discord_primary_ui.to_dict(),
+            "discord_native_multibot": self.discord_native_multibot.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
+
+    def redacted_snapshot(self) -> Dict[str, Any]:
+        snapshot = self.to_dict()
+        snapshot["discord_native_multibot"] = (
+            self.discord_native_multibot.redacted_snapshot()
+        )
+        return snapshot
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
@@ -649,6 +1075,13 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        primary_ui = data.get("primary_ui")
+        if primary_ui != "discord":
+            primary_ui = None
+        discord_primary_ui = DiscordPrimaryUIConfig.from_dict(
+            data.get("discord_primary_ui", {})
+        )
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -666,6 +1099,11 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            primary_ui=primary_ui,
+            discord_primary_ui=discord_primary_ui,
+            discord_native_multibot=DiscordNativeMultibotConfig.from_dict(
+                data.get("discord_native_multibot", {})
+            ),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -779,16 +1217,38 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict) and gateway_cfg.get("primary_ui") == "discord":
+                gw_data["primary_ui"] = "discord"
+            elif yaml_cfg.get("primary_ui") == "discord":
+                gw_data["primary_ui"] = "discord"
+
+            discord_cfg = yaml_cfg.get("discord")
+            if isinstance(discord_cfg, dict) and isinstance(discord_cfg.get("primary_ui"), dict):
+                gw_data["discord_primary_ui"] = discord_cfg["primary_ui"]
+
+            discord_native_multibot_cfg = yaml_cfg.get("discord_native_multibot")
+            if not isinstance(discord_native_multibot_cfg, dict) and isinstance(
+                gateway_cfg, dict
+            ):
+                discord_native_multibot_cfg = gateway_cfg.get("discord_native_multibot")
+            if discord_native_multibot_cfg is not None:
+                gw_data["discord_native_multibot"] = discord_native_multibot_cfg
+
             # Merge platform config into gw_data so runtime-only settings under
             # ``gateway.platforms`` are loaded the same way as top-level
             # ``platforms``. Merge nested first so top-level config keeps
             # precedence, matching the existing gateway.streaming fallback.
-            gateway_cfg = yaml_cfg.get("gateway")
             gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):
                 platforms_data = {}
                 gw_data["platforms"] = platforms_data
+            if "discord_primary_ui" in gw_data:
+                _, discord_extra = _ensure_platform_extra_dict(platforms_data, Platform.DISCORD.value)
+                discord_extra["primary_ui"] = DiscordPrimaryUIConfig.from_dict(
+                    gw_data["discord_primary_ui"]
+                ).to_dict()
 
             def _merge_platform_map(source_platforms: Any) -> None:
                 if not isinstance(source_platforms, dict):
@@ -888,6 +1348,19 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat == Platform.DISCORD:
+                    for key in (
+                        "voice_auto_join_channel_id",
+                        "voice_auto_join_channel_ids",
+                        "voice_auto_join_channel_name",
+                        "voice_auto_join_channel_names",
+                        "voice_auto_join_guild_id",
+                        "voice_auto_join_guild_ids",
+                        "voice_text_channel_id",
+                        "voice_auto_join_text_channel_id",
+                    ):
+                        if key in platform_cfg:
+                            bridged[key] = platform_cfg[key]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):

@@ -665,6 +665,16 @@ def build_session_key(
     return ":".join(key_parts)
 
 
+def build_discord_v2_session_key(topic_id: str, agent_id: str) -> str:
+    """Build the durable Discord protocol v2 topic × agent session key.
+
+    Legacy Discord session mapping stays in :func:`build_session_key`. Protocol
+    v2 owns agent identity separately from the Discord topic/work unit, so the
+    key is scoped only by ``topic_id`` and ``agent_id``.
+    """
+    return f"discord:v2:topic:{topic_id}:agent:{agent_id}"
+
+
 class SessionStore:
     """
     Manages session storage and retrieval.
@@ -858,13 +868,29 @@ class SessionStore:
         source: SessionSource,
         force_new: bool = False
     ) -> SessionEntry:
+        """Get an existing session or create a new one."""
+        return self.get_or_create_session_for_key(
+            self._generate_session_key(source),
+            source,
+            force_new=force_new,
+        )
+
+    def get_or_create_session_for_key(
+        self,
+        session_key: str,
+        source: SessionSource,
+        force_new: bool = False,
+    ) -> SessionEntry:
         """
-        Get an existing session or create a new one.
+        Get an existing session or create a new one for an explicit key.
 
         Evaluates reset policy to determine if the existing session is stale.
         Creates a session record in SQLite when a new session starts.
+
+        This is a bridge for protocol-specific durable mappings (for example
+        Discord protocol v2) that need a non-legacy session key without changing
+        :func:`build_session_key` semantics.
         """
-        session_key = self._generate_session_key(source)
         now = _now()
 
         # SQLite calls are made outside the lock to avoid holding it during I/O.
@@ -949,6 +975,56 @@ class SessionStore:
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
+            except Exception as e:
+                print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+
+        return entry
+
+    def bind_session_key(
+        self,
+        session_key: str,
+        session_id: str,
+        source: SessionSource,
+    ) -> SessionEntry:
+        """Bind an explicit session key to an existing Hermes transcript ID.
+
+        Used when an external durable mapping is authoritative for key →
+        transcript ownership. The lightweight ``sessions.json`` index is kept
+        in sync for current gateway behavior, but the provided ``session_id``
+        wins if the JSON index is missing or stale.
+        """
+        now = _now()
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                entry = SessionEntry(
+                    session_key=session_key,
+                    session_id=session_id,
+                    created_at=now,
+                    updated_at=now,
+                    origin=source,
+                    display_name=source.chat_name,
+                    platform=source.platform,
+                    chat_type=source.chat_type,
+                )
+                self._entries[session_key] = entry
+            else:
+                entry.session_id = session_id
+                entry.updated_at = now
+                entry.origin = source
+                entry.display_name = source.chat_name
+                entry.platform = source.platform
+                entry.chat_type = source.chat_type
+            self._save()
+
+        if self._db:
+            try:
+                self._db.create_session(
+                    session_id=session_id,
+                    source=source.platform.value,
+                    user_id=source.user_id,
+                )
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 

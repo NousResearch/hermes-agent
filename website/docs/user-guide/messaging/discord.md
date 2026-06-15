@@ -38,6 +38,46 @@ Hermes on Discord is not a webhook that replies statelessly. It runs through the
 
 That matters because behavior in a busy server depends on both Discord routing and Hermes session policy.
 
+### Discord Native v2 and webhook fallback
+
+Discord Native Multi-Bot Protocol v2 uses native Discord bot users for durable multi-agent routing. It does **not** auto-enable the generic `webhook` platform, and webhook fallback is not a rollout mode for v2.
+
+If an operator explicitly configures webhook fallback for diagnostics, treat it as projection-only:
+
+- it may send a diagnostic projection of an internal Hermes event to Discord;
+- it must not be used as the authoritative source for agent-to-agent triggers;
+- webhook-authored Discord messages are classified as `author_kind=webhook` and are suppressed from inbound v2 delivery, even if they mention registered agent bots;
+- routing decisions are still recorded for diagnostics so operators can see why no agent run was created.
+
+Do not use webhook fallback as the default Discord setup path. Use the normal Discord bot setup below, or native v2 bot identities when operating the multi-bot protocol.
+
+#### Native v2 operator rollout and diagnostics
+
+Native v2 rollout is intentionally staged and operator-gated:
+
+1. **shadow** — configure Bohumil and the second agent identities, persist safe metadata with `hermes discord-native sync`, and observe projections only.
+2. **listen_only** — set a narrow `guild_allowlist`; bots can observe/ingest according to the v2 lane but should not produce user-visible active responses.
+3. **active Bohumil** — make Bohumil the `default_intake_agent_id` and enable active response handling for that identity first.
+4. **active second agent** — enable the next bot identity only after Bohumil diagnostics are clean.
+5. **handoff** — enable cross-agent handoff/routing after both bots reconcile in the allowed guilds.
+
+Rollback in reverse: **active → listen_only → shadow → off**. If a token may be exposed, reset it in the Discord Developer Portal, rotate the backing secret, and re-run diagnostics.
+
+For each v2 identity, create a separate Discord application/bot user, store only a `token_secret_ref` (for example `secret://hermes/discord/bohumil-token`), invite with `bot` and `applications.commands`, enable **Message Content Intent** (and **Server Members Intent** when membership/role checks are needed), and grant the channel permissions listed below.
+
+Useful offline commands:
+
+```bash
+hermes discord-native plan
+hermes discord-native invite-links --permissions 274878286912
+hermes discord-native verify
+hermes discord-native reconcile-guild --guild-id <guild-id>
+```
+
+`plan` shows desired identities, mode, guild allowlist, and missing or unchecked secret refs. `verify` and `reconcile-guild` do **not** call Discord by default; without a fake/injected client they return `network: not_used` plus an explicit `not_implemented_without_client` status. The current `--operator-network` flag is only a future live-check gate marker and returns `operator_network_not_implemented`; it does not perform network I/O. All diagnostic output redacts plaintext tokens and full secret-ref paths.
+
+See also: `docs/runbooks/discord-native-multibot-rollout.md`.
+
 ### Session Model in Discord
 
 By default:
@@ -240,6 +280,10 @@ Select **Discord** when prompted, then paste your bot token and user ID when ask
 ### Option B: Manual Configuration
 
 Add the following to your `~/.hermes/.env` file:
+
+:::note
+This section configures the legacy single-bot Discord adapter. Discord native multi-bot v2 is different: the gateway still requires the Discord platform to be enabled (`platforms.discord.enabled: true`), but v2 identities must use `discord_native_multibot.identities[].token_secret_ref: "secret://..."`. Do **not** use `DISCORD_BOT_TOKEN` or `platforms.discord.token` as a v2 identity token; those credentials remain legacy-only. For v2 runtime secret resolution, provide `HERMES_SECRET_REFS_JSON` or `HERMES_SECRET_REF_<SHA256(secret://...)>` for each `secret://...` ref.
+:::
 
 ```bash
 # Required

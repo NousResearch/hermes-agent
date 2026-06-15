@@ -66,6 +66,10 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
+from plugins.platforms.discord.client_runtime import (
+    DiscordClientRuntime,
+    DiscordRuntimeEventHandlers,
+)
 
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
@@ -605,6 +609,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # set survives gateway restarts.
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing indicator loops per channel (DMs don't reliably
+        self._client_runtime: Optional[DiscordClientRuntime] = None
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -707,11 +712,17 @@ class DiscordAdapter(BasePlatformAdapter):
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
 
-            # Create bot — proxy= for HTTP, connector= for SOCKS.
-            # allowed_mentions is set with safe defaults (no @everyone/roles)
-            # so LLM output or echoed user content can't ping the whole
-            # server; override per DISCORD_ALLOW_MENTION_* env vars or the
-            # discord.allow_mentions.* block in config.yaml.
+            # Create bot through a reusable per-identity runtime.  The legacy
+            # adapter still owns all behavior; the runtime only centralizes
+            # client construction/start/event binding for native multibot v2.
+            self._client_runtime = DiscordClientRuntime(
+                agent_id="legacy",
+                bot_user_id=None,
+                bot_factory=commands.Bot,
+                intents_factory=Intents,
+                allowed_mentions_factory=_build_allowed_mentions,
+                proxy_kwargs_factory=proxy_kwargs_for_bot,
+            )
 
             # Close any existing client to prevent zombie websocket connections
             # on reconnect (see #18187). Without this, the old client remains
@@ -719,19 +730,17 @@ class DiscordAdapter(BasePlatformAdapter):
             # double responses.
             if self._client is not None:
                 try:
-                    if not self._client.is_closed():
-                        await self._client.close()
+                    await self._client_runtime.close_existing_client(self._client)
                 except Exception:
                     logger.debug("[%s] Failed to close previous Discord client", self.name)
                 finally:
                     self._client = None
                     self._ready_event.clear()
 
-            self._client = commands.Bot(
-                command_prefix="!",  # Not really used, we handle raw messages
-                intents=intents,
-                allowed_mentions=_build_allowed_mentions(),
-                **proxy_kwargs_for_bot(proxy_url),
+            self._client = self._client_runtime.create_client(
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+                proxy_url=proxy_url,
             )
             adapter_self = self  # capture for closure
 
@@ -880,12 +889,20 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild_id,
                     )
 
+            self._client_runtime.register_event_handlers(
+                DiscordRuntimeEventHandlers(
+                    on_ready=on_ready,
+                    on_message=on_message,
+                    on_voice_state_update=on_voice_state_update,
+                )
+            )
+
             # Register slash commands
             if self._slash_commands:
                 self._register_slash_commands()
 
             # Start the bot in background
-            self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task = self._client_runtime.start(self.config.token)
 
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
@@ -952,6 +969,7 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+        self._client_runtime = None
 
     def _write_command_sync_state(self, state: dict) -> None:
         atomic_json_write(
@@ -6206,7 +6224,18 @@ def _is_connected(config) -> bool:
 
 
 def _build_adapter(config):
-    """Factory wrapper that constructs DiscordAdapter from a PlatformConfig."""
+    """Factory wrapper that constructs the Discord adapter from PlatformConfig."""
+    from gateway.config import load_gateway_config
+    from plugins.platforms.discord.native_multibot import (
+        build_native_multibot_adapter,
+        is_native_multibot_enabled,
+    )
+
+    native_config = getattr(load_gateway_config(), "discord_native_multibot", None)
+    if native_config is not None and is_native_multibot_enabled(native_config):
+        # Fail closed: when v2 is explicitly enabled, build/check errors must not
+        # silently fall back to the legacy single-token adapter.
+        return build_native_multibot_adapter(config, native_config)
     return DiscordAdapter(config)
 
 

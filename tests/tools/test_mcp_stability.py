@@ -3,7 +3,7 @@
 import asyncio
 import os
 import signal
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
@@ -25,6 +25,69 @@ class TestMCPLoopExceptionHandler:
         _mcp_loop_exception_handler(loop, context)
         loop.default_exception_handler.assert_not_called()
 
+
+    def test_reload_mcp_servers_discovers_on_fresh_loop(self):
+        """Full reload stops the old MCP loop before scheduling discovery."""
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool_lifecycle import reload_mcp_servers
+
+        with mcp_mod._lock:
+            mcp_mod._servers.clear()
+            mcp_mod._server_connecting.clear()
+            mcp_mod._server_connect_errors.clear()
+
+        _mcp_loop._ensure_mcp_loop()
+        with mcp_mod._lock:
+            old_loop = mcp_mod._mcp_loop
+            old_thread = mcp_mod._mcp_thread
+            old_server = MagicMock()
+            old_server.name = "old"
+            old_server.shutdown = AsyncMock()
+            mcp_mod._servers["old"] = old_server
+
+        discovery_loops = []
+
+        def _fake_discover(**kwargs):
+            # A real discovery schedules its server tasks through the loop; stand up the
+            # FRESH loop it would use and record which loop the rediscovery lands on.
+            _mcp_loop._ensure_mcp_loop()
+            with mcp_mod._lock:
+                discovery_loops.append(mcp_mod._mcp_loop)
+                server = MagicMock()
+                server.name = "fresh"
+                mcp_mod._servers["fresh"] = server
+            return ["mcp_fresh_ping"]
+
+        try:
+            with patch("tools.mcp_tool_discovery.discover_mcp_tools", side_effect=_fake_discover):
+                result = reload_mcp_servers()
+
+            assert result == ["mcp_fresh_ping"]
+            old_server.shutdown.assert_awaited_once()
+            assert discovery_loops
+            assert discovery_loops[0] is not None
+            assert discovery_loops[0] is not old_loop
+            assert old_thread is not None
+            assert not old_thread.is_alive()
+            with mcp_mod._lock:
+                assert set(mcp_mod._servers) == {"fresh"}
+        finally:
+            with mcp_mod._lock:
+                mcp_mod._servers.clear()
+                mcp_mod._server_connecting.clear()
+                mcp_mod._server_connect_errors.clear()
+            _mcp_loop._stop_mcp_loop()
+
+    def test_reload_mcp_servers_refuses_discovery_when_shutdown_fails(self):
+        """A partially stopped loop must not be reused for discovery."""
+        from tools.mcp_tool_lifecycle import reload_mcp_servers
+
+        with patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", return_value=False), \
+             patch("tools.mcp_tool_discovery.discover_mcp_tools") as discover:
+            with pytest.raises(RuntimeError, match="did not stop cleanly"):
+                reload_mcp_servers()
+
+        discover.assert_not_called()
 
     def test_probe_cleanup_does_not_stop_loop_with_registered_servers(self):
         """Probe cleanup must not kill the shared loop used by live MCP tools."""

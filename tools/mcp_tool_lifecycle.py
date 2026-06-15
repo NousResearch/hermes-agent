@@ -4,8 +4,9 @@ server shutdown and draining of the background MCP loop."""
 import logging
 import asyncio
 import os
+import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -153,7 +154,7 @@ def _reregister_orphaned_adopters() -> None:
 
 
 def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None,
-                         timeout: float = 15.0):
+                         timeout: float = 15.0) -> bool:
     """Close MCP server connections (in parallel) and stop the background loop. Each server
     Task is signalled to exit its own ``async with`` so the anyio cancel-scope cleanup runs in
     the Task that opened it. ``scope`` restricts teardown to one multiplexed profile's servers
@@ -233,12 +234,45 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         if not servers_snapshot:
             clear_selected_status()
         _clear_connect_cooldowns(None if wildcard else selected_status)
-    _loop._stop_mcp_loop(only_if_idle=not wildcard)
+    stopped = _loop._stop_mcp_loop(only_if_idle=not wildcard)
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:
         from tools.mcp_tool_config import _close_mcp_stderr_logs
         _close_mcp_stderr_logs(scope=scope)
+    # True when the MCP loop was stopped (or was already absent). A False return on the
+    # process-wide wildcard means the old loop thread did not finish within the bounded wait;
+    # scoped shutdowns intentionally leave the shared loop running.
+    return True if not wildcard else bool(stopped)
+
+
+# Serializes shutdown -> discovery so overlapping reloads cannot leave the registry half-built
+# or schedule fresh server tasks while stdio transports unwind cancellation (#46512).
+_mcp_reload_lock = threading.Lock()
+
+
+def reload_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None,
+                       timeout: float = 15.0) -> List[str]:
+    """Shut down MCP servers and rediscover them on a fresh loop as ONE serialized operation.
+
+    Reload callers must not stitch together ``shutdown_mcp_servers()`` and
+    ``discover_mcp_tools()`` themselves: stdio transports rely on anyio cancellation scopes
+    that need to finish unwinding before new server tasks are scheduled. Serializing the full
+    reload here gives every UI entry point the same clean shutdown -> fresh discovery boundary.
+    """
+    from tools.mcp_tool_agent import reprobe_tool_availability
+    from tools.mcp_tool_discovery import discover_mcp_tools
+    with _mcp_reload_lock:
+        stopped = shutdown_mcp_servers(scope=scope, names=names, timeout=timeout)
+        if scope is None and names is None and not stopped:
+            raise RuntimeError(
+                "MCP event loop did not stop cleanly; refusing to rediscover "
+                "servers on a partially shut down loop"
+            )
+        # Explicit reload also re-probes tool availability (check_fn verdict cache drop),
+        # matching every reload entry point's shutdown -> reprobe -> discover sequence.
+        reprobe_tool_availability()
+        return discover_mcp_tools()
 
 
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int], Dict[int, int]]:

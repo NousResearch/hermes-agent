@@ -927,18 +927,17 @@ class CLIInfoMixin:
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect, then refresh the
         agent's tool list so the model sees the updated tools on the next turn."""
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool_agent import reprobe_tool_availability
+            from tools.mcp_tool_lifecycle import reload_mcp_servers
             from tools.mcp_tool import _servers, _lock
             with _lock:
                 old_servers = set(_servers.keys())
             if not self._command_running:
                 print(t("cli.reload_mcp.reloading"))
 
-            shutdown_mcp_servers()
-            reprobe_tool_availability()  # explicit reload also re-probes check_fn availability
-            new_tools = discover_mcp_tools()  # reads config.yaml fresh
+            # Shutdown and reconnect (reads config.yaml fresh) as one serialized operation so
+            # stdio transports finish unwinding cancellation before discovery schedules fresh
+            # server tasks.
+            new_tools = reload_mcp_servers()
 
             with _lock:
                 connected_servers = set(_servers.keys())

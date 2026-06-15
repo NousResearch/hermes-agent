@@ -2584,10 +2584,8 @@ class GatewayTurnMixin:
             with _profile_runtime_scope(Path(profile_home)):
                 return await self._execute_mcp_reload(event)
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
+            from tools.mcp_tool_lifecycle import reload_mcp_servers
             from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
-            from tools.mcp_tool_agent import reprobe_tool_availability
             from tools.mcp_tool_scope import _key_name
             from tools.registry import registry
 
@@ -2601,14 +2599,14 @@ class GatewayTurnMixin:
                     }
 
             old_servers = _scoped_server_names()
-            await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
-            # Explicit reload also re-probes tool availability (check_fn).
-            reprobe_tool_availability()
-            # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
-            # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
+            # Shutdown and reconnect (reads config.yaml fresh) as one serialized operation so
+            # stdio transports finish unwinding cancellation before discovery schedules fresh
+            # server tasks. A chat command cannot finish a browser OAuth flow either: an
+            # expired token parks with a `hermes mcp login` hint.
             from tools.mcp_oauth import suppress_interactive_oauth
             with suppress_interactive_oauth():
-                new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
+                new_tools = await self._run_in_executor_with_context(
+                    lambda: reload_mcp_servers(scope=reload_scope))
 
             connected_servers = _scoped_server_names()
             if reload_scope is not None:

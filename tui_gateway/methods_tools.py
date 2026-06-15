@@ -363,8 +363,8 @@ def _(rid, params: dict) -> dict:
         except Exception as exc:
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
         return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
-    _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
-        _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))
+    _mcp_lifecycle, _mcp_discovery = (
+        _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))
     global _mcp_reload_gen, _mcp_reload_loaded_rev
     # Revision the CALLER wants loaded; empty on legacy clients / manual /reload-mcp
     # (generation-only coalescing).
@@ -386,9 +386,10 @@ def _(rid, params: dict) -> dict:
         with _session_profile_runtime_scope({"profile_home": None}):
             loaded = _compute_mcp_rev()
             for _ in range(_MCP_RELOAD_MAX_PASSES):
-                _mcp_lifecycle.shutdown_mcp_servers()
-                _mcp_agent.reprobe_tool_availability()
-                _mcp_discovery.discover_mcp_tools()
+                # Shutdown, reprobe and reconnect as ONE serialized operation (see
+                # tools.mcp_tool_lifecycle.reload_mcp_servers) so stdio transports finish
+                # unwinding cancellation before discovery schedules fresh server tasks.
+                _mcp_lifecycle.reload_mcp_servers()
                 after = _compute_mcp_rev()
                 if after == loaded:
                     break

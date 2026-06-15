@@ -9,9 +9,11 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    register_tool_preview,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
+    _unregister_tool_preview,
     render_edit_diff_with_delta,
 )
 
@@ -109,6 +111,224 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+    def test_truthy_non_dict_args_returns_none(self):
+        """Truthy non-dict args (e.g. ``[1, 2]``) must not raise."""
+        assert build_tool_preview("terminal", [1, 2]) is None
+        assert build_tool_preview("terminal", "ls") is None
+
+
+# ----------------------------------------------------------------------
+# Declarative tool-preview schema (#28621)
+# ----------------------------------------------------------------------
+#
+# These tests exercise the registry primitive itself so that future
+# plugin-authored templates have a documented contract: dispatch field,
+# template format spec, missing-key safety, list-valued args, fallback
+# resolution, and graceful degradation on bad templates.
+
+
+class TestRegisterToolPreview:
+    """register_tool_preview / _render_registered_preview contract."""
+
+    def teardown_method(self) -> None:
+        for name in (
+            "_pytest_simple",
+            "_pytest_dispatch",
+            "_pytest_wildcard",
+            "_pytest_list_arg",
+            "_pytest_truncate",
+            "_pytest_bad",
+            "_pytest_collapse",
+            "_pytest_lastwins",
+        ):
+            _unregister_tool_preview(name)
+
+    def test_single_template_renders_args(self):
+        register_tool_preview("_pytest_simple", templates="hello {who}")
+        assert build_tool_preview("_pytest_simple", {"who": "world"}) == "hello world"
+
+    def test_field_dispatch_picks_template_by_value(self):
+        register_tool_preview(
+            "_pytest_dispatch",
+            field="action",
+            templates={
+                "add": "+ {content}",
+                "remove": "- #{fact_id}",
+            },
+        )
+        assert build_tool_preview(
+            "_pytest_dispatch", {"action": "add", "content": "pizza"}
+        ) == "+ pizza"
+        assert build_tool_preview(
+            "_pytest_dispatch", {"action": "remove", "fact_id": 7}
+        ) == "- #7"
+
+    def test_wildcard_fallback_used_when_value_not_listed(self):
+        register_tool_preview(
+            "_pytest_wildcard",
+            field="action",
+            templates={"add": "+ x", "*": "(other: {action})"},
+        )
+        assert build_tool_preview(
+            "_pytest_wildcard", {"action": "ponder"}
+        ) == "(other: ponder)"
+
+    def test_missing_field_returns_none_when_no_wildcard(self):
+        register_tool_preview(
+            "_pytest_dispatch",
+            field="action",
+            templates={"add": "+ x"},
+        )
+        assert build_tool_preview("_pytest_dispatch", {"other": "thing"}) is None
+
+    def test_missing_key_renders_as_empty_string(self):
+        register_tool_preview("_pytest_simple", templates="[{a}|{b}]")
+        assert build_tool_preview("_pytest_simple", {"a": "x"}) == "[x|]"
+
+    def test_list_arg_joins_with_commas(self):
+        register_tool_preview("_pytest_list_arg", templates="who: {entities}")
+        result = build_tool_preview(
+            "_pytest_list_arg", {"entities": ["alice", "bob", "carol"]}
+        )
+        assert result == "who: alice, bob, carol"
+
+    def test_per_field_precision_truncates_long_strings(self):
+        register_tool_preview("_pytest_simple", templates='"{content:.10}"')
+        result = build_tool_preview(
+            "_pytest_simple", {"content": "abcdefghij_TRUNCATED_TAIL"}
+        )
+        assert result == '"abcdefghij"'
+
+    def test_per_tool_truncate_overrides_global_limit(self):
+        register_tool_preview(
+            "_pytest_truncate",
+            templates="{content}",
+            truncate=15,
+        )
+        set_tool_preview_max_len(80)
+        result = build_tool_preview(
+            "_pytest_truncate", {"content": "x" * 50}
+        )
+        assert result.endswith("...")
+        assert len(result) == 15
+
+    def test_global_limit_applies_when_no_per_tool_truncate(self):
+        register_tool_preview("_pytest_simple", templates="{content}")
+        set_tool_preview_max_len(10)
+        result = build_tool_preview("_pytest_simple", {"content": "x" * 50})
+        assert result.endswith("...")
+        assert len(result) == 10
+
+    def test_string_args_get_whitespace_collapsed(self):
+        register_tool_preview("_pytest_collapse", templates="cmd: {command}")
+        result = build_tool_preview(
+            "_pytest_collapse", {"command": "echo  hello\nworld\t!"}
+        )
+        assert result == "cmd: echo hello world !"
+
+    def test_none_arg_renders_as_empty(self):
+        register_tool_preview("_pytest_simple", templates="[{value}]")
+        assert build_tool_preview("_pytest_simple", {"value": None}) == "[]"
+
+    def test_bad_template_falls_back_without_crashing(self, caplog):
+        # ``{not_a_number:d}`` against a string value raises ValueError —
+        # the registry should log and return None instead of bubbling.
+        register_tool_preview("_pytest_bad", templates="{value:d}")
+        with caplog.at_level("WARNING"):
+            result = build_tool_preview("_pytest_bad", {"value": "abc"})
+        assert result is None
+        assert any("_pytest_bad" in rec.getMessage() for rec in caplog.records)
+
+    def test_attribute_access_template_falls_back_without_crashing(self, caplog):
+        # ``{value.foo}`` makes ``str.format_map`` do attribute access on the
+        # arg, which raises AttributeError — a different exception family than
+        # the numeric ``{value:d}`` ValueError above. The fallback must catch
+        # it too so a malformed plugin template never escapes to the spinner.
+        register_tool_preview("_pytest_attr", templates="{value.foo}")
+        with caplog.at_level("WARNING"):
+            result = build_tool_preview("_pytest_attr", {"value": "abc"})
+        assert result is None
+        assert any("_pytest_attr" in rec.getMessage() for rec in caplog.records)
+
+    def test_re_registration_overwrites_previous_schema(self):
+        register_tool_preview("_pytest_lastwins", templates="v1: {x}")
+        register_tool_preview("_pytest_lastwins", templates="v2: {x}")
+        assert build_tool_preview("_pytest_lastwins", {"x": "y"}) == "v2: y"
+
+    def test_registry_takes_priority_over_legacy_chain(self):
+        # ``terminal`` is in the legacy ``primary_args`` map — registry
+        # registration should win so plugins can override even built-ins.
+        try:
+            register_tool_preview(
+                "terminal", templates="overridden: {command}"
+            )
+            assert build_tool_preview(
+                "terminal", {"command": "ls"}
+            ) == "overridden: ls"
+        finally:
+            _unregister_tool_preview("terminal")
+        # Sanity: legacy path restored after teardown.
+        assert build_tool_preview("terminal", {"command": "ls"}) == "ls"
+
+    def test_empty_templates_mapping_rejected(self):
+        with pytest.raises(ValueError):
+            register_tool_preview("_pytest_dispatch", field="action", templates={})
+
+    def test_dispatch_mapping_without_field_rejected(self):
+        with pytest.raises(ValueError):
+            register_tool_preview(
+                "_pytest_dispatch", templates={"add": "+ x"}
+            )
+
+
+class TestFactStorePluginPreview:
+    """Smoke tests for the holographic-memory plugin registrations."""
+
+    def test_fact_store_add_shows_content(self):
+        # Importing the plugin triggers register_tool_preview() calls.
+        import plugins.memory.holographic  # noqa: F401
+        assert build_tool_preview(
+            "fact_store", {"action": "add", "content": "user prefers tabs"}
+        ) == '+ "user prefers tabs"'
+
+    def test_fact_store_search_shows_query(self):
+        import plugins.memory.holographic  # noqa: F401
+        assert build_tool_preview(
+            "fact_store", {"action": "search", "query": "editor config"}
+        ) == 'search: "editor config"'
+
+    def test_fact_store_reason_joins_entities(self):
+        import plugins.memory.holographic  # noqa: F401
+        result = build_tool_preview(
+            "fact_store",
+            {"action": "reason", "entities": ["alice", "redis"]},
+        )
+        assert result == "reason: alice, redis"
+
+    def test_fact_store_update_carries_fact_id(self):
+        import plugins.memory.holographic  # noqa: F401
+        assert build_tool_preview(
+            "fact_store", {"action": "update", "fact_id": 42}
+        ) == "update: #42"
+
+    def test_fact_store_unknown_action_falls_back_to_wildcard(self):
+        import plugins.memory.holographic  # noqa: F401
+        assert build_tool_preview(
+            "fact_store", {"action": "experimental"}
+        ) == "experimental"
+
+    def test_fact_feedback_helpful_shows_thumbs_up(self):
+        import plugins.memory.holographic  # noqa: F401
+        assert build_tool_preview(
+            "fact_feedback", {"action": "helpful", "fact_id": 9}
+        ) == "+1 #9"
+
+    def test_fact_feedback_unhelpful_shows_thumbs_down(self):
+        import plugins.memory.holographic  # noqa: F401
+        assert build_tool_preview(
+            "fact_feedback", {"action": "unhelpful", "fact_id": 9}
+        ) == "-1 #9"
 
 
 class TestCuteToolMessagePreviewLength:

@@ -168,16 +168,183 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
+# -------------------------------------------------------------------------
+# Declarative tool-preview schema (#28621)
+# -------------------------------------------------------------------------
+#
+# Maps ``tool_name -> {field, templates, truncate}`` so new tools (and
+# plugins) can opt in to tool-progress previews without editing
+# ``build_tool_preview``'s if-elif chain.  Each entry is a mini DSL:
+#
+#   register_tool_preview(
+#       "fact_store",
+#       field="action",
+#       templates={
+#           "add":    "+ \"{content:.30}\"",
+#           "search": "search: \"{query:.25}\"",
+#           "*":      "{action}",
+#       },
+#       truncate=60,
+#   )
+#
+# * ``field`` selects the dispatch argument; omit when the tool has only
+#   one template.
+# * ``templates`` is consulted by exact field-value first, then ``"*"``.
+# * ``truncate`` overrides ``_tool_preview_max_len`` for this tool only.
+# * Per-field length limits use the standard ``str.format`` precision
+#   suffix, e.g. ``{content:.30}`` truncates ``args["content"]`` to 30
+#   characters before the template fills in.
+#
+# Missing keys render as empty strings (the registry never crashes a
+# spinner because of a partial tool call); list-valued args render as
+# comma-joined strings so e.g. ``{entities:.40}`` works on ``fact_store
+# reason``.
+
+_TOOL_PREVIEW_REGISTRY: dict[str, dict] = {}
+
+
+def register_tool_preview(
+    tool_name: str,
+    *,
+    templates: dict[str, str] | str,
+    field: str | None = None,
+    truncate: int | None = None,
+) -> None:
+    """Register a declarative preview template for ``tool_name`` (#28621).
+
+    Replaces hand-written if-elif branches in :func:`build_tool_preview`
+    so that plugins and third-party tools can ship preview support
+    alongside their schema definition instead of waiting for a core
+    code edit each time.
+
+    ``templates`` is either a single template string (no dispatch) or a
+    mapping keyed by the value of ``field``.  Use ``"*"`` for the
+    fallback bucket.  Templates use ``str.format_map`` semantics with
+    missing-key safety — partial tool calls degrade to empty fields,
+    they never raise.
+
+    Last-write-wins: re-registering the same ``tool_name`` overwrites
+    the previous schema, which keeps plugin reloads and test fixtures
+    predictable.
+    """
+    if isinstance(templates, str):
+        templates_map: dict[str, str] = {"*": templates}
+    else:
+        if not templates:
+            raise ValueError(
+                f"register_tool_preview({tool_name!r}): templates mapping must not be empty"
+            )
+        if field is None:
+            raise ValueError(
+                f"register_tool_preview({tool_name!r}): field= is required when "
+                "templates is a mapping"
+            )
+        templates_map = dict(templates)
+    _TOOL_PREVIEW_REGISTRY[tool_name] = {
+        "field": field,
+        "templates": templates_map,
+        "truncate": truncate,
+    }
+
+
+def _unregister_tool_preview(tool_name: str) -> None:
+    """Drop ``tool_name`` from the registry.  Test-only escape hatch."""
+    _TOOL_PREVIEW_REGISTRY.pop(tool_name, None)
+
+
+class _SafePreviewArgs(dict):
+    """``dict`` subclass that returns ``""`` for missing keys and
+    pre-normalises values for :meth:`str.format_map`.
+
+    String values get whitespace-collapsed (``\\n`` → space) so multi-line
+    inputs render on one progress-bubble line.  List / tuple values are
+    rendered as comma-joined strings so the same templates work for
+    array-valued args like ``entities`` on ``fact_store reason``.
+    ``None`` becomes ``""`` so ``{old_text}`` doesn't print ``None``.
+    """
+
+    def __missing__(self, key: str) -> str:
+        return ""
+
+    @classmethod
+    def from_args(cls, args: dict) -> "_SafePreviewArgs":
+        out = cls()
+        for k, v in args.items():
+            if v is None:
+                out[k] = ""
+            elif isinstance(v, str):
+                out[k] = _oneline(v)
+            elif isinstance(v, (list, tuple)):
+                out[k] = ", ".join(_oneline(str(x)) for x in v)
+            else:
+                out[k] = v
+        return out
+
+
+def _render_registered_preview(tool_name: str, args: dict) -> tuple[str | None, int | None]:
+    """Return ``(rendered_preview, per_tool_truncate)`` for a registered
+    tool, or ``(None, None)`` when there is no registration / no match.
+
+    Returning the truncate cap alongside the preview lets the caller
+    apply ``per_tool_truncate`` *after* it falls back to the global
+    ``_tool_preview_max_len`` — neither layer needs to know about the
+    other's existence.
+    """
+    schema = _TOOL_PREVIEW_REGISTRY.get(tool_name)
+    if schema is None:
+        return None, None
+    templates = schema["templates"]
+    field = schema["field"]
+    if field is None:
+        template = templates.get("*")
+    else:
+        value = args.get(field) if isinstance(args, dict) else None
+        key = str(value) if value is not None else ""
+        template = templates.get(key) or templates.get("*")
+    if template is None:
+        return None, schema.get("truncate")
+    safe_args = _SafePreviewArgs.from_args(args if isinstance(args, dict) else {})
+    try:
+        rendered = template.format_map(safe_args).strip()
+    except (IndexError, ValueError, KeyError, AttributeError, TypeError) as exc:
+        # A bad template should never crash the agent spinner — log it
+        # once at warning and let the caller fall through to the legacy
+        # path so the bug is obvious in logs but the user gets *some*
+        # preview rather than a stack trace.
+        logger.warning(
+            "tool_preview template for %s failed (%s); falling back to legacy preview",
+            tool_name, exc,
+        )
+        return None, schema.get("truncate")
+    return (rendered or None), schema.get("truncate")
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
     *max_len* controls truncation.  ``None`` (default) defers to the global
     ``_tool_preview_max_len`` set via config; ``0`` means unlimited.
+
+    Tools registered via :func:`register_tool_preview` (#28621) are
+    rendered from their declarative template first.  Anything not in
+    the registry falls back to the legacy hardcoded handlers below for
+    backward compatibility — migration is incremental, on a tool-by-tool
+    basis, with no flag-day.
     """
     if max_len is None:
         max_len = _tool_preview_max_len
     if not args:
         return None
+    if not isinstance(args, dict):
+        return None
+
+    rendered, per_tool_truncate = _render_registered_preview(tool_name, args)
+    if rendered is not None:
+        effective = per_tool_truncate if per_tool_truncate is not None else max_len
+        if effective and effective > 0 and len(rendered) > effective:
+            rendered = rendered[: effective - 3] + "..."
+        return rendered
+
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",

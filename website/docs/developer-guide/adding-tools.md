@@ -200,6 +200,51 @@ OPTIONAL_ENV_VARS = {
 }
 ```
 
+## Optional: Tool Progress Previews
+
+Tool-progress bubbles in the CLI spinner, the Feishu/Telegram gateways,
+and any other display surface that calls `agent.display.build_tool_preview()`
+default to showing only the tool name when a tool isn't recognised.
+That looks like a stalled call (`⚙️ weather...`) instead of useful
+context (`weather: London`). Register a **declarative preview template**
+once, next to your schema, so every surface gets a meaningful one-liner:
+
+```python
+from agent.display import register_tool_preview
+
+register_tool_preview(
+    "weather",
+    templates="weather: {location}",
+)
+```
+
+For tools whose preview depends on an action / mode argument, dispatch
+on the field directly — no `if/elif` ladder required:
+
+```python
+register_tool_preview(
+    "fact_store",
+    field="action",
+    templates={
+        "add":    '+ "{content:.30}"',     # truncate content to 30 chars
+        "search": 'search: "{query:.25}"',
+        "remove": "remove: #{fact_id}",
+        "*":      "{action}",              # fallback for unlisted actions
+    },
+    truncate=60,                            # optional per-tool cap
+)
+```
+
+Templates use Python `str.format_map` semantics. Missing keys render as
+empty strings (partial tool calls never crash the spinner). String
+values are whitespace-collapsed and lists are joined with `, ` so the
+same template works for both scalar and array-valued args. Use the
+standard precision suffix (`{content:.30}`) to truncate a specific
+field, or pass `truncate=N` to cap the final rendered string.
+
+Re-registration is last-write-wins, so plugins can also override
+built-in previews.
+
 ## Checklist
 
 - [ ] Tool file created with handler, schema, check function, and registration
@@ -207,5 +252,6 @@ OPTIONAL_ENV_VARS = {
 - [ ] Confirmed this really should be a built-in/core tool and not a plugin
 - [ ] Handler returns JSON strings, errors returned as `{"error": "..."}`
 - [ ] Optional: API key added to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py`
+- [ ] Optional: `register_tool_preview()` called so progress bubbles show useful context
 - [ ] Optional: Added to `toolset_distributions.py` for batch processing
 - [ ] Tested with `hermes chat -q "Use the weather tool for London"`

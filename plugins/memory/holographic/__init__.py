@@ -90,6 +90,41 @@ FACT_FEEDBACK_SCHEMA = {
 }
 
 
+# Declarative tool-progress previews so Feishu / Telegram / CLI bubbles
+# always carry actionable context instead of falling back to the bare
+# tool name (#28621, fixes #28598).  ``register_tool_preview`` is the
+# documented plugin-developer entry point — co-locate the call with
+# the schema so reviewers see preview + schema together.
+from agent.display import register_tool_preview  # noqa: E402
+
+register_tool_preview(
+    "fact_store",
+    field="action",
+    templates={
+        "add":        '+ "{content:.30}"',
+        "search":     'search: "{query:.25}"',
+        "probe":      "probe: {entity:.25}",
+        "related":    "related: {entity:.25}",
+        "reason":     "reason: {entities:.30}",
+        "contradict": "contradict: {entity:.25}",
+        "update":     "update: #{fact_id}",
+        "remove":     "remove: #{fact_id}",
+        "list":       "list",
+        "*":          "{action}",
+    },
+)
+
+register_tool_preview(
+    "fact_feedback",
+    field="action",
+    templates={
+        "helpful":   "+1 #{fact_id}",
+        "unhelpful": "-1 #{fact_id}",
+        "*":         "{action} #{fact_id}",
+    },
+)
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------

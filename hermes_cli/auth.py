@@ -1079,8 +1079,13 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
+    # target_path=None preserves the existing contract (write the active
+    # store at _auth_file_path()). An explicit path lets callers persist a
+    # specific store — e.g. the global-root write-through for rotating xAI
+    # OAuth grants (#43589) — reusing this function's atomic O_EXCL + 0o600
+    # write so the root auth.json gets the same TOCTOU-safe treatment.
+    auth_file = target_path if target_path is not None else _auth_file_path()
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -3983,6 +3988,62 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _profile_has_own_xai_oauth_state(auth_store: Dict[str, Any]) -> bool:
+    """True when this store has its OWN ``providers.xai-oauth`` block.
+
+    Distinguishes a profile that genuinely shadows the root xAI grant from
+    one that only *reads* root via ``_load_provider_state``'s fallback. Only
+    the latter needs the refresh write-through below.
+    """
+    providers = auth_store.get("providers")
+    return isinstance(providers, dict) and isinstance(providers.get("xai-oauth"), dict)
+
+
+def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
+    """Persist a rotated xAI OAuth ``state`` into the global-root auth.json.
+
+    Best-effort write-through for the multi-profile rotation hazard (#43589):
+    xAI rotates the refresh_token on every refresh, so when a profile session
+    refreshes a grant it resolved from the root fallback, the rotated chain
+    must land back in root. Otherwise root keeps a now-revoked refresh token
+    and every other profile reading the stale root grant dies with
+    ``invalid_grant`` once its access token expires.
+
+    Only updates ``providers.xai-oauth`` in the root store; never touches the
+    profile store (the caller already saved that). Swallows all errors — a
+    failed write-through degrades to the pre-existing behavior (root stale),
+    it must never break the profile's own successful save.
+    """
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        # Classic mode (profile == root); the profile save already hit root.
+        return
+    # Seat belt: under pytest, refuse to write the real user's
+    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
+    # (mirrors the read-side guard in _load_global_auth_store). Uses the
+    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        if global_path.exists():
+            global_store = _load_auth_store(global_path)
+        else:
+            global_store = {}
+        if not isinstance(global_store, dict):
+            return
+        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
+        _save_auth_store(global_store, global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any],
     *,
@@ -3994,6 +4055,11 @@ def _save_xai_oauth_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
+        # A profile that lacks its own xai-oauth block is reading the root
+        # grant through _load_provider_state's fallback. When such a profile
+        # refreshes the (rotating) grant, we must write the rotated chain back
+        # to root too, or root is left holding a revoked refresh token (#43589).
+        write_through_to_root = not _profile_has_own_xai_oauth_state(auth_store)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -4004,6 +4070,8 @@ def _save_xai_oauth_tokens(
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
+        if write_through_to_root:
+            _write_through_xai_oauth_to_global_root(state)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:

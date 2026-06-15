@@ -135,7 +135,7 @@ class TestWeixinChunking:
 
         assert chunks == [content]
 
-    def test_split_text_keeps_complete_code_block_together_when_possible(self):
+    def test_split_text_sends_fenced_block_as_copyable_chunk_by_default(self):
         adapter = _make_adapter()
         adapter.MAX_MESSAGE_LENGTH = 80
 
@@ -144,12 +144,11 @@ class TestWeixinChunking:
         )
         chunks = adapter._split_text(content)
 
-        assert len(chunks) >= 2
-        assert any(
-            "```python\nprint('hello world')\nprint('again')\n```" in chunk
-            for chunk in chunks
-        )
-        assert all(chunk.count("```") % 2 == 0 for chunk in chunks)
+        assert chunks == [
+            "## Intro\n\nShort paragraph.",
+            "print('hello world')\nprint('again')",
+            "Tail paragraph.",
+        ]
 
     def test_split_text_safely_splits_long_code_blocks(self):
         adapter = _make_adapter()
@@ -161,7 +160,7 @@ class TestWeixinChunking:
 
         assert len(chunks) > 1
         assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
-        assert all(chunk.count("```") >= 2 for chunk in chunks)
+        assert all("```" not in chunk for chunk in chunks)
 
     def test_split_text_can_restore_legacy_multiline_splitting_via_config(self):
         adapter = WeixinAdapter(
@@ -179,6 +178,23 @@ class TestWeixinChunking:
         chunks = adapter._split_text(content)
 
         assert chunks == ["第一行", "第二行", "第三行"]
+
+    def test_split_text_sends_copyable_fenced_block_without_wrapper(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "account_id": "acct",
+                    "token": "***",
+                    "split_multiline_messages": True,
+                },
+            )
+        )
+
+        content = adapter.format_message("说明\n\n```text\n复制这一段\n第二行\n```\n\n结尾")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["说明", "复制这一段\n第二行", "结尾"]
 
 
 class TestWeixinConfig:

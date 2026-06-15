@@ -93,11 +93,16 @@ class BrowserProvider(abc.ABC):
         Must return a dict with at least::
 
             {
-                "session_name": str,    # unique name for agent-browser --session
-                "bb_session_id": str,   # provider session ID (for close/cleanup)
-                "cdp_url": str,         # CDP websocket URL
-                "features": dict,       # feature flags that were enabled
+                "session_name": str,  # unique name for agent-browser --session
+                "bb_session_id": str, # provider session ID (for close/cleanup)
+                "cdp_url": str,       # CDP websocket URL
+                "features": dict,     # feature flags that were enabled
             }
+
+        Should also include ``browser_backend`` with a stable backend identifier
+        (for example ``"browserbase"``). The dispatcher uses this metadata to
+        emit backend-specific warnings only when they apply to the active
+        session.
 
         ``bb_session_id`` is a legacy key name kept for backward compat with
         the rest of :mod:`tools.browser_tool` — it holds the provider's

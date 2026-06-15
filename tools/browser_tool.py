@@ -330,6 +330,24 @@ def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str,
     return stdout, stderr
 
 
+def _compose_bot_detection_warning(title: str, browser_backend: str | None) -> str:
+    """Build a bot-detection warning tailored to the browser backend."""
+    common = (
+        f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
+        "Options: 1) Try adding delays between actions, 2) Access different pages first, "
+    )
+    if browser_backend == "browserbase":
+        return (
+            f"{common}3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, "
+            "requires Scale plan), 4) Some sites have very aggressive bot detection "
+            "that may be unavoidable."
+        )
+    return (
+        f"{common}3) Some sites have very aggressive bot detection that may be "
+        "unavoidable."
+    )
+
+
 def _unlink_command_output_files(*paths: str) -> None:
     for path in paths:
         try:
@@ -1979,6 +1997,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": None,
+        "browser_backend": "local",
         "features": {"local": True},
     }
 
@@ -1993,6 +2012,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": cdp_url,
+        "browser_backend": "cdp_override",
         "features": {"cdp_override": True},
     }
 
@@ -2874,18 +2894,23 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         title_lower = title.lower()
 
         if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
-                f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
-                "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
+            response["bot_detection_warning"] = _compose_bot_detection_warning(
+                title,
+                session_info.get("browser_backend"),
             )
 
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            # Browserbase-only proxy warning: only apply to Browserbase-backed sessions
+            # that explicitly lack proxies. Other backends (local Chrome, CDP override,
+            # Browser Use, Firecrawl, etc.) are not Browserbase and should not receive
+            # its plan-specific warning.
+            if (
+                session_info.get("browser_backend") == "browserbase"
+                and not features.get("proxies")
+            ):
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                     "Consider upgrading Browserbase plan for proxy support."

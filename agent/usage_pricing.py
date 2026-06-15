@@ -892,12 +892,24 @@ def estimate_usage_cost(
             )
     if usage.cache_write_tokens:
         if entry.cache_write_cost_per_million is None:
-            return CostResult(
-                amount_usd=None,
-                status="unknown",
-                source=entry.source,
-                label="n/a",
-                notes=("cache-write pricing unavailable for route",),
+            # No published cache-write rate. For OpenAI-family routes (and any
+            # provider that doesn't charge a separate cache-write premium) the
+            # live models API omits this field by design — cache-write tokens
+            # are just input tokens that were also written to cache and are
+            # billed at the regular input rate. So if we DO know the input
+            # rate, price cache-write at the input rate rather than dropping
+            # the entire turn as unpriced (which silently loses real spend).
+            # Only bail when input pricing is ALSO missing (truly unpriceable).
+            if entry.input_cost_per_million is None:
+                return CostResult(
+                    amount_usd=None,
+                    status="unknown",
+                    source=entry.source,
+                    label="n/a",
+                    notes=("cache-write pricing unavailable for route",),
+                )
+            notes.append(
+                "cache-write priced at input rate (no separate cache-write rate published)"
             )
 
     if entry.input_cost_per_million is not None:
@@ -908,6 +920,10 @@ def estimate_usage_cost(
         amount += Decimal(usage.cache_read_tokens) * entry.cache_read_cost_per_million / _ONE_MILLION
     if entry.cache_write_cost_per_million is not None:
         amount += Decimal(usage.cache_write_tokens) * entry.cache_write_cost_per_million / _ONE_MILLION
+    elif usage.cache_write_tokens and entry.input_cost_per_million is not None:
+        # Fallback: no published cache-write rate → bill at the input rate
+        # (see the cache-write guard above). Correct for OpenAI-family routes.
+        amount += Decimal(usage.cache_write_tokens) * entry.input_cost_per_million / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:
         amount += Decimal(usage.request_count) * entry.request_cost
 

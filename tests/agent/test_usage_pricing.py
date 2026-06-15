@@ -311,6 +311,70 @@ def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(m
     assert result.status == "unknown"
 
 
+def test_estimate_usage_cost_prices_cache_write_at_input_rate_when_no_cache_write_rate(monkeypatch):
+    """OpenAI-family routes (e.g. gpt-5.x via codex/openrouter) publish no
+    separate cache-write rate — cache-write tokens are billed at the input
+    rate. The estimator must price the turn (status 'estimated'), NOT drop it
+    as unpriced and silently lose real spend. Regression for the lone
+    remaining 'unpriced' turn on the tokens.ace by-profile chart (2026-06)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "gpt-5.5": {
+                "pricing": {
+                    "prompt": "0.000005",       # $5/M input
+                    "completion": "0.00003",    # $30/M output
+                    "input_cache_read": "0.0000005",  # $0.50/M cache-read
+                    # NO cache-write / input_cache_write key — the real-world gap
+                }
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "gpt-5.5",
+        CanonicalUsage(
+            input_tokens=6,
+            output_tokens=3104,
+            cache_read_tokens=206366,
+            cache_write_tokens=114435,
+        ),
+        provider="openai-codex",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # cache-write billed at the $5/M input rate, not dropped.
+    expected = (6 * 5 + 3104 * 30 + 206366 * 0.5 + 114435 * 5) / 1_000_000
+    assert abs(float(result.amount_usd) - expected) < 1e-4
+    assert any("input rate" in n for n in result.notes)
+
+
+def test_estimate_usage_cost_still_unknown_when_input_and_cache_write_both_missing(monkeypatch):
+    """If BOTH the input rate AND the cache-write rate are missing, a turn with
+    cache-write tokens is genuinely unpriceable — still bail to unknown (the
+    input-rate fallback must not paper over a truly missing price)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {
+            "mystery-model": {
+                "pricing": {
+                    "completion": "0.00001",  # only output priced
+                }
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "mystery-model",
+        CanonicalUsage(input_tokens=0, output_tokens=10, cache_write_tokens=5000),
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "unknown"
+
+
 def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",

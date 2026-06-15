@@ -296,12 +296,11 @@ def _press_combo(vks: List[int]) -> None:
 
 
 def _switch_desktop_via_keybd(direction: str, overlay_client) -> bool:
-    """Switch virtual desktop, keeping the overlay alive across the transition.
+    """Switch virtual desktop via Ctrl+Win+Left/Right SendInput.
 
-    Any SendInput-based virtual-desktop switch kills the full-screen tkinter
-    overlay subprocess because the display-context change tears down its X11
-    connection.  Workaround: stop the overlay → switch → restart it on the
-    new desktop.
+    The overlay subprocess (full-screen tkinter window) is killed by any
+    virtual-desktop transition, so we stop it before switching and restart
+    it on the new desktop.
     """
     VK_CONTROL = 0x11
     VK_LWIN = 0x5B
@@ -310,24 +309,20 @@ def _switch_desktop_via_keybd(direction: str, overlay_client) -> bool:
 
     vk_dir = VK_LEFT if direction == "left" else VK_RIGHT
 
-    press = [_key_event(VK_CONTROL, True),
-             _key_event(VK_LWIN, True),
-             _key_event(vk_dir, True)]
-    release = [_key_event(vk_dir, False),
-               _key_event(VK_LWIN, False),
-               _key_event(VK_CONTROL, False)]
+    # Single-batch SendInput matching _press_combo semantics:
+    # hold modifiers → tap arrow → release, so the system input thread
+    # sees the same event order as a physical keyboard.
+    seq = [_key_event(VK_CONTROL, True),
+           _key_event(VK_LWIN, True),
+           _key_event(vk_dir, True),
+           _key_event(vk_dir, False),
+           _key_event(VK_LWIN, False),
+           _key_event(VK_CONTROL, False)]
 
     try:
-        # 1. Gracefully stop the overlay before switching
         overlay_client.stop()
-
-        # 2. Switch virtual desktop
-        _send_inputs(press)
-        time.sleep(0.08)
-        _send_inputs(release)
-
-        # 3. Restart overlay on the new desktop
-        overlay_client._dead = False  # we killed it on purpose, not a crash
+        _send_inputs(seq)
+        overlay_client._dead = False
         overlay_client.start()
         return True
     except Exception:

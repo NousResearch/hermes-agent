@@ -1620,13 +1620,7 @@ async def get_status():
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=50)
-            now = time.time()
-            active_sessions = sum(
-                1 for s in sessions
-                if s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
-            )
+            active_sessions = db.active_session_count(idle_secs=300)
         finally:
             db.close()
     except Exception:

@@ -48,6 +48,32 @@ _start_time: Optional[float] = None
 _interval_seconds: float = 300.0  # 5 minutes
 _lock = threading.Lock()
 
+# Proactive GC configuration — trigger collection when RSS exceeds threshold.
+_gc_threshold_mb: int = 400
+_gc_cooldown_s: float = 600.0  # 10 minutes
+_last_gc_time: float = 0.0
+
+
+def _maybe_proactive_gc(rss_mb: int) -> None:
+    """Trigger gc.collect() when RSS exceeds threshold with cooldown."""
+    global _last_gc_time
+    if rss_mb < _gc_threshold_mb:
+        return
+    now = time.monotonic()
+    if now - _last_gc_time < _gc_cooldown_s:
+        return
+    _last_gc_time = now
+    before = gc.collect()
+    after_rss = _get_rss_mb()
+    logger.info(
+        "[MEMORY] proactive-gc rss=%dMB->%sMB unreachable=%d threshold=%dMB cooldown=%ds",
+        rss_mb,
+        f"{after_rss}MB" if after_rss else "unavailable",
+        before,
+        _gc_threshold_mb,
+        int(_gc_cooldown_s),
+    )
+
 
 def _get_rss_mb() -> Optional[int]:
     """Return current process resident set size in MB, or None if unavailable.
@@ -131,6 +157,9 @@ def _monitor_loop(stop_event: threading.Event, interval: float) -> None:
     while not stop_event.wait(interval):
         try:
             log_memory_usage()
+            rss = _get_rss_mb()
+            if rss is not None:
+                _maybe_proactive_gc(rss)
         except Exception as e:
             # Never let the monitor crash the gateway; just log and carry on.
             logger.debug("Memory monitor iteration failed: %s", e)

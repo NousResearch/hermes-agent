@@ -400,14 +400,14 @@ stt:
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
-  provider: "local"                  # "local" (free) | "groq" | "openai"
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -458,6 +458,8 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
+| **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
+| **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 
@@ -484,6 +486,8 @@ PortAudio is not installed:
 brew install portaudio    # macOS
 sudo apt install portaudio19-dev  # Ubuntu
 ```
+
+If you are running Hermes inside Docker on a Linux desktop, the container also needs access to your host audio socket. See the [Docker audio bridge](/user-guide/docker#optional-linux-desktop-audio-bridge) notes for a PulseAudio/PipeWire-compatible setup.
 
 ### Bot doesn't respond in Discord server channels
 

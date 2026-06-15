@@ -6,7 +6,6 @@ to shadow the installed utils module.  entry.py must sanitize sys.path before
 any non-stdlib import is resolved.
 """
 
-import importlib
 import os
 import sys
 from unittest.mock import patch

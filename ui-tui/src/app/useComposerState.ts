@@ -190,8 +190,11 @@ export function useComposerState({
 
       const lineCount = cleanedText.split('\n').length
       const pasteCollapseLines = getUiState().pasteCollapseLines
+      const pasteCollapseChars = getUiState().pasteCollapseChars
+      const linesHit = pasteCollapseLines > 0 && lineCount >= pasteCollapseLines
+      const charsHit = pasteCollapseChars > 0 && cleanedText.length >= pasteCollapseChars
 
-      if (pasteCollapseLines === 0 || lineCount < pasteCollapseLines) {
+      if (!linesHit && !charsHit) {
         return {
           cursor: cursor + cleanedText.length,
           value: value.slice(0, cursor) + cleanedText + value.slice(cursor)

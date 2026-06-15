@@ -1,7 +1,6 @@
 """Unit tests for hermes_cli.xai_retirement (May 15, 2026 model retirement)."""
 from __future__ import annotations
 
-import pytest
 
 from hermes_cli.xai_retirement import (
     MIGRATION_GUIDE_URL,

@@ -40,7 +40,7 @@ hermes auth add xai-oauth --manual-paste
 # → Paste it back into the terminal at the "Callback URL:" prompt.
 ```
 
-The same flag works on `hermes model --manual-paste` for the integrated model picker. A bare `?code=...&state=...` query fragment is accepted too if you don't want to paste the whole URL.
+The same flag works on `hermes model --manual-paste` for the integrated model picker. Hermes accepts three callback paste forms interchangeably: the full URL, a bare `?code=...&state=...` query fragment, or — when the upstream consent page renders the authorization code in-page instead of redirecting (xAI's current behavior on browser-based consoles) — just the bare code value on its own.
 
 Hermes uses the **same PKCE verifier, state and nonce** for both paths, so the upstream OAuth flow is byte-identical — `--manual-paste` is purely a transport change for the callback hop and is not a security downgrade.
 

@@ -2,11 +2,10 @@
 
 import os
 import pytest
-from unittest.mock import MagicMock, patch
-from dataclasses import dataclass
+from unittest.mock import MagicMock
 
-from gateway.platform_registry import PlatformRegistry, PlatformEntry, platform_registry
-from gateway.config import Platform, PlatformConfig, GatewayConfig
+from gateway.platform_registry import PlatformRegistry, PlatformEntry
+from gateway.config import Platform, GatewayConfig
 
 
 # ── Platform enum dynamic members ─────────────────────────────────────────

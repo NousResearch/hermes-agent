@@ -120,8 +120,8 @@ def _validate_skill_name(name: str) -> str:
     return _normalize_bundle_path(name, field_name="skill name", allow_nested=False)
 
 
-def _validate_category_name(category: str) -> str:
-    return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+def _validate_install_parent_path(category: str) -> str:
+    return _normalize_bundle_path(category, field_name="install parent path", allow_nested=True)
 
 
 def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
@@ -134,8 +134,10 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
     let ``rmtree`` wipe either the entire ``skills/`` tree or content
     outside it.
 
-    Enforce that ``install_path`` is exactly ``<skill_name>`` or
-    ``<category>/<skill_name>``. Reject anything else.
+    Enforce that ``install_path`` ends with ``<skill_name>``. Nested
+    official optional skills may legitimately install below paths such as
+    ``mlops/training/<skill_name>``; traversal, absolute paths, empty paths,
+    and mismatched final components are still rejected.
     """
     safe_skill_name = _validate_skill_name(skill_name)
     normalized = _normalize_bundle_path(
@@ -144,7 +146,7 @@ def _normalize_lock_install_path(install_path: str, skill_name: str) -> str:
         allow_nested=True,
     )
     parts = normalized.split("/")
-    if len(parts) not in {1, 2} or parts[-1] != safe_skill_name:
+    if not parts or parts[-1] != safe_skill_name:
         raise ValueError(f"Unsafe install path: {install_path}")
     return normalized
 
@@ -299,6 +301,7 @@ class GitHubAuth:
             result = subprocess.run(
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
+                stdin=subprocess.DEVNULL,
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -399,6 +402,14 @@ class GitHubSource(SkillSource):
         {"repo": "openai/skills", "path": "skills/.system/"},
         {"repo": "anthropics/skills", "path": "skills/"},
         {"repo": "huggingface/skills", "path": "skills/"},
+        # NVIDIA/skills: NVIDIA-verified skills for CUDA-X, AIQ, cuOpt,
+        # cuPyNumeric, DeepStream, NeMo, NemoClaw, etc. Each skill ships
+        # alongside a signed `skill.oms.sig`, an OMS-signed `skill-card.md`
+        # (governance card), and an `evals/` directory — synced daily from
+        # the NVIDIA product repos. Treated as `trusted` (see
+        # `tools/skills_guard.py::TRUSTED_REPOS`). Sample layout:
+        # https://github.com/NVIDIA/skills/tree/main/skills
+        {"repo": "NVIDIA/skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
     ]
 
@@ -410,6 +421,10 @@ class GitHubSource(SkillSource):
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Per-repo cache of the optional skills.sh.json grouping sidecar,
+        # mapping skill_name -> human-readable grouping title. ``None`` means
+        # "fetched, no sidecar"; a missing key means "not fetched yet".
+        self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         # Set when GitHub returns 403 with rate limit exhausted
         self._rate_limited: bool = False
 
@@ -536,11 +551,8 @@ class GitHubSource(SkillSource):
             return [SkillMeta(**s) for s in cached]
 
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
-        try:
-            resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                return []
-        except httpx.HTTPError:
+        resp = self._github_get(url)
+        if resp is None or resp.status_code != 200:
             return []
 
         entries = resp.json()
@@ -548,6 +560,7 @@ class GitHubSource(SkillSource):
             return []
 
         skills: List[SkillMeta] = []
+        groupings = self._get_skillsh_groupings(repo)
         for entry in entries:
             if entry.get("type") != "dir":
                 continue
@@ -560,6 +573,10 @@ class GitHubSource(SkillSource):
             skill_identifier = f"{repo}/{prefix}/{dir_name}" if prefix else f"{repo}/{dir_name}"
             meta = self.inspect(skill_identifier)
             if meta:
+                if groupings:
+                    category = groupings.get(meta.name) or groupings.get(dir_name)
+                    if category:
+                        meta.extra["category"] = category
                 skills.append(meta)
 
         # Cache the results
@@ -620,14 +637,97 @@ class GitHubSource(SkillSource):
 
     def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
         """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
-        if resp.status_code == 403:
+        if resp.status_code in (403, 429):
             remaining = resp.headers.get("X-RateLimit-Remaining", "")
-            if remaining == "0":
+            if remaining == "0" or resp.status_code == 429:
                 self._rate_limited = True
                 logger.warning(
                     "GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
                     "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr."
                 )
+
+    def _github_get(
+        self,
+        url: str,
+        *,
+        params: Optional[Dict] = None,
+        headers: Optional[Dict] = None,
+        timeout: float = 15.0,
+        max_retries: int = 3,
+    ) -> Optional["httpx.Response"]:
+        """GET against the GitHub API with retry/backoff on transient failures.
+
+        Returns the final ``httpx.Response`` (caller inspects status) or
+        ``None`` when every attempt raised a transport error.
+
+        Retries on:
+          - 403/429 with ``X-RateLimit-Remaining: 0`` — waits until the
+            reset time (capped) when the header is present, else exponential
+            backoff. This is the all-GitHub-tap-collapse case: a single
+            shared rate limit zeroes github + claude-marketplace + well-known
+            at once during the index build.
+          - 5xx and connection/timeout errors — exponential backoff.
+
+        On terminal rate-limit exhaustion the instance is flagged via
+        ``_check_rate_limit_response`` so the build can fail loud instead of
+        silently shipping an index with the GitHub sources dropped to zero.
+        """
+        hdrs = headers if headers is not None else self.auth.get_headers()
+        backoff = 1.0
+        last_resp: Optional["httpx.Response"] = None
+        for attempt in range(max_retries):
+            try:
+                resp = httpx.get(
+                    url, params=params, headers=hdrs,
+                    timeout=timeout, follow_redirects=True,
+                )
+            except httpx.HTTPError as e:
+                logger.debug("GitHub GET %s failed (attempt %d/%d): %s",
+                             url, attempt + 1, max_retries, e)
+                if attempt < max_retries - 1:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
+                return None
+
+            last_resp = resp
+            if resp.status_code == 200:
+                return resp
+
+            # Rate-limited: honor the reset header when present, else back off.
+            if resp.status_code in (403, 429):
+                remaining = resp.headers.get("X-RateLimit-Remaining", "")
+                is_rl = remaining == "0" or resp.status_code == 429
+                if is_rl and attempt < max_retries - 1:
+                    wait = backoff
+                    reset = resp.headers.get("X-RateLimit-Reset", "")
+                    retry_after = resp.headers.get("Retry-After", "")
+                    if retry_after.isdigit():
+                        wait = min(float(retry_after), 60.0)
+                    elif reset.isdigit():
+                        delta = float(reset) - time.time()
+                        if 0 < delta <= 60.0:
+                            wait = delta
+                    logger.debug(
+                        "GitHub rate limited on %s, waiting %.1fs (attempt %d/%d)",
+                        url, wait, attempt + 1, max_retries,
+                    )
+                    time.sleep(wait)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
+                # Out of retries (or not a rate-limit 403) — flag and return.
+                self._check_rate_limit_response(resp)
+                return resp
+
+            # 5xx — retry; 4xx (other than rate limit) — return immediately.
+            if 500 <= resp.status_code < 600 and attempt < max_retries - 1:
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                continue
+            return resp
+
+        return last_resp
+
 
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download all text files from a GitHub directory.
@@ -749,18 +849,68 @@ class GitHubSource(SkillSource):
     def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
         """Fetch a single file's content from GitHub."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
-        try:
-            resp = httpx.get(
-                url,
-                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-                timeout=15, follow_redirects=True,
-            )
-            if resp.status_code == 200:
-                return resp.text
-            self._check_rate_limit_response(resp)
-        except httpx.HTTPError as e:
-            logger.debug("GitHub contents API fetch failed: %s", e)
+        resp = self._github_get(
+            url,
+            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+        )
+        if resp is not None and resp.status_code == 200:
+            return resp.text
         return None
+
+    def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
+        """Fetch and parse the repo-root ``skills.sh.json`` grouping sidecar.
+
+        ``skills.sh.json`` is a published cross-ecosystem standard
+        (``$schema: https://skills.sh/schemas/skills.sh.schema.json``) that
+        lets a tap declare human-readable category groupings for its skills:
+
+            {"groupings": [{"title": "Inference AI", "skills": ["dynamo-..."]}]}
+
+        We flatten it into ``{skill_name: grouping_title}`` so the Skills Hub
+        UI can show a real category pill instead of a tag-derived guess. Any
+        tap that ships this file gets categorization for free — this is not
+        NVIDIA-specific.
+
+        Returns the map (possibly empty) on success, or ``None`` when the repo
+        has no sidecar / it couldn't be parsed. Cached per-repo on the instance.
+        """
+        if repo in self._skillsh_groupings:
+            return self._skillsh_groupings[repo]
+
+        content = self._fetch_file_content(repo, "skills.sh.json")
+        groupings = self._parse_skillsh_groupings(content) if content else None
+        self._skillsh_groupings[repo] = groupings
+        return groupings
+
+    @staticmethod
+    def _parse_skillsh_groupings(content: str) -> Optional[Dict[str, str]]:
+        """Flatten a ``skills.sh.json`` document into ``{skill_name: title}``.
+
+        Returns ``None`` when the content isn't a usable grouping document.
+        """
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        groupings = data.get("groupings")
+        if not isinstance(groupings, list):
+            return None
+
+        mapping: Dict[str, str] = {}
+        for group in groupings:
+            if not isinstance(group, dict):
+                continue
+            title = group.get("title")
+            members = group.get("skills")
+            if not isinstance(title, str) or not isinstance(members, list):
+                continue
+            for member in members:
+                if isinstance(member, str) and member:
+                    # First grouping wins if a skill is listed twice.
+                    mapping.setdefault(member, title)
+        return mapping
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
@@ -795,6 +945,7 @@ class GitHubSource(SkillSource):
             "repo": meta.repo,
             "path": meta.path,
             "tags": meta.tags,
+            "extra": meta.extra,
         }
 
     @staticmethod
@@ -1215,6 +1366,16 @@ class SkillsShSource(SkillSource):
 
     BASE_URL = "https://skills.sh"
     SEARCH_URL = f"{BASE_URL}/api/search"
+    # Sitemap index — the real catalog source. The homepage scrape only
+    # exposes a curated featured strip (~200 entries); the sitemap covers
+    # the full ~20k+ catalog. https://www.skills.sh/sitemap.xml points at
+    # sitemap-skills-1.xml + sitemap-skills-2.xml, each up to 10k URLs.
+    SITEMAP_INDEX_URL = "https://www.skills.sh/sitemap.xml"
+    _SITEMAP_LOC_RE = re.compile(r"<loc>([^<]+)</loc>", re.IGNORECASE)
+    _SITEMAP_SKILL_RE = re.compile(
+        r"^https?://(?:www\.)?skills\.sh/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<skill>[^/]+)/?$",
+        re.IGNORECASE,
+    )
     _SKILL_LINK_RE = re.compile(r'href=["\']/(?P<id>(?!agents/|_next/|api/)[^"\'/]+/[^"\'/]+/[^"\'/]+)["\']')
     _INSTALL_CMD_RE = re.compile(
         r'npx\s+skills\s+add\s+(?P<repo>https?://github\.com/[^\s<]+|[^\s<]+)'
@@ -1244,7 +1405,10 @@ class SkillsShSource(SkillSource):
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
         if not query.strip():
-            return self._featured_skills(limit)
+            # Empty query = bulk catalog dump (what build_skills_index.py
+            # calls with). The homepage scrape only sees ~200 featured
+            # entries; the sitemap walks the full ~20k+ catalog.
+            return self._sitemap_catalog(limit)
 
         cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
         cached = _read_index_cache(cache_key)
@@ -1304,6 +1468,97 @@ class SkillsShSource(SkillSource):
         if meta:
             return self._finalize_inspect_meta(meta, canonical, detail)
         return None
+
+    def _sitemap_catalog(self, limit: int) -> List[SkillMeta]:
+        """Walk the skills.sh sitemap to enumerate the full catalog.
+
+        Cached for the standard index TTL so we don't refetch ~2 MB of
+        sitemap XML per build. Falls back to ``_featured_skills`` if the
+        sitemap is unreachable or empty (network failure, hostname
+        change, etc.).
+        """
+        cache_key = "skills_sh_sitemap_v1"
+        cached = _read_index_cache(cache_key)
+        if cached is not None:
+            metas = [SkillMeta(**item) for item in cached]
+            return metas[:limit] if limit > 0 else metas
+
+        # skills.sh serves the per-skill sitemaps brotli-compressed, and
+        # httpx's optional brotlicffi backend has a streaming-decode bug
+        # that fails on these specific payloads. Excluding "br" from
+        # Accept-Encoding makes the server fall back to gzip (or
+        # identity), which works on every httpx install.
+        sitemap_headers = {"Accept-Encoding": "gzip"}
+
+        # Step 1: fetch the sitemap index → list of skill-sitemap URLs.
+        skill_sitemap_urls: List[str] = []
+        try:
+            resp = httpx.get(
+                self.SITEMAP_INDEX_URL,
+                timeout=20,
+                follow_redirects=True,
+                headers=sitemap_headers,
+            )
+            if resp.status_code != 200:
+                return self._featured_skills(limit)
+            for match in self._SITEMAP_LOC_RE.finditer(resp.text):
+                loc = match.group(1).strip()
+                # Sitemap index entries that point at the per-skill maps.
+                if "sitemap-skills" in loc:
+                    skill_sitemap_urls.append(loc)
+        except httpx.HTTPError:
+            return self._featured_skills(limit)
+
+        if not skill_sitemap_urls:
+            return self._featured_skills(limit)
+
+        # Step 2: fetch each skill sitemap and collect canonical "owner/repo/skill" IDs.
+        seen: set[str] = set()
+        results: List[SkillMeta] = []
+        for sitemap_url in skill_sitemap_urls:
+            try:
+                resp = httpx.get(
+                    sitemap_url,
+                    timeout=30,
+                    follow_redirects=True,
+                    headers=sitemap_headers,
+                )
+                if resp.status_code != 200:
+                    continue
+            except httpx.HTTPError:
+                continue
+            for loc_match in self._SITEMAP_LOC_RE.finditer(resp.text):
+                url = loc_match.group(1).strip()
+                m = self._SITEMAP_SKILL_RE.match(url)
+                if not m:
+                    continue
+                owner = m.group("owner")
+                repo_name = m.group("repo")
+                skill_name = m.group("skill")
+                canonical = f"{owner}/{repo_name}/{skill_name}"
+                if canonical in seen:
+                    continue
+                seen.add(canonical)
+                repo = f"{owner}/{repo_name}"
+                results.append(SkillMeta(
+                    name=skill_name,
+                    description=f"Indexed by skills.sh from {repo}",
+                    source="skills.sh",
+                    identifier=self._wrap_identifier(canonical),
+                    trust_level=self.github.trust_level_for(canonical),
+                    repo=repo,
+                    path=skill_name,
+                    extra={
+                        "detail_url": f"{self.BASE_URL}/{canonical}",
+                        "repo_url": f"https://github.com/{repo}",
+                    },
+                ))
+
+        if not results:
+            return self._featured_skills(limit)
+
+        _write_index_cache(cache_key, [_skill_meta_to_dict(item) for item in results])
+        return results[:limit] if limit > 0 else results
 
     def _featured_skills(self, limit: int) -> List[SkillMeta]:
         cache_key = "skills_sh_featured"
@@ -1691,6 +1946,12 @@ class ClawHubSource(SkillSource):
 
     BASE_URL = "https://clawhub.ai/api/v1"
 
+    # Wall-clock budget for a full catalog walk. ClawHub has 50k+ skills and
+    # the walk is sequential (~250 requests, each under per-request
+    # timeout=30 so nothing errors), so an unbounded walk can block for
+    # minutes. Bound it so a slow/large catalog cannot hang the caller.
+    CATALOG_WALK_BUDGET_SECONDS = 12
+
     def source_id(self) -> str:
         return "clawhub"
 
@@ -1857,8 +2118,19 @@ class ClawHubSource(SkillSource):
             results = self._search_catalog(query, limit=limit)
             if results:
                 return results
+        else:
+            # Empty query: route through the paginating catalog walker. When
+            # the full catalog is already disk-cached this returns it whole and
+            # the caller paginates client-side. On a cold cache, bound the walk
+            # to `limit` so a browse command renders its first page without
+            # walking the entire 50k+ catalog (max_items=0 → unbounded, used
+            # only by the offline index builder via search("", limit=0)).
+            catalog = self._load_catalog_index(max_items=limit if limit > 0 else 0)
+            if catalog:
+                return self._dedupe_results(catalog)[:limit] if limit > 0 else self._dedupe_results(catalog)
 
-        # Empty query or catalog fallback failure: use the lightweight listing API.
+        # Non-empty query catalog miss, or catalog walker failure: fall back to
+        # the lightweight listing API for a best-effort response.
         cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -1978,7 +2250,21 @@ class ClawHubSource(SkillSource):
         _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
         return results
 
-    def _load_catalog_index(self) -> List[SkillMeta]:
+    def _load_catalog_index(self, max_items: int = 0) -> List[SkillMeta]:
+        """Walk the ClawHub catalog via cursor pagination.
+
+        ``max_items`` bounds the walk: once at least that many distinct skills
+        have been gathered the walk stops early. This is what browse's
+        cold-start fallback wants — it only renders one page, so walking the
+        entire 50k+ catalog just to slice off the first N is pure waste.
+        ``max_items=0`` (the default, used by the offline index builder) means
+        walk to exhaustion.
+
+        Caching: only a *complete* catalog (cursor exhausted or page cap) is
+        written to the shared ``clawhub_catalog_v1`` cache. A walk truncated by
+        ``max_items`` OR the wall-clock budget is partial, so caching it would
+        poison the full-catalog cache with an incomplete slice.
+        """
         cache_key = "clawhub_catalog_v1"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -1987,9 +2273,28 @@ class ClawHubSource(SkillSource):
         cursor: Optional[str] = None
         results: List[SkillMeta] = []
         seen: set[str] = set()
-        max_pages = 50
+        # ClawHub has 50k+ skills as of May 2026 (live E2E walked 49,698 with
+        # an active cursor still pending); 750 pages * 200/page = 150k ceiling
+        # leaves room for catalog growth. Walk-to-exhaustion typically
+        # terminates well before this on `nextCursor` going None — the cap is
+        # a safety rail against an infinite-cursor loop.
+        max_pages = 750
+        # Wall-clock budget is for interactive browse (max_items > 0) only.
+        # The offline index builder passes max_items=0 and must walk the full
+        # catalog — a 12s cap there ships ~3k skills and trips the deploy
+        # health floor (20k).
+        deadline = (
+            time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS
+            if max_items > 0
+            else None
+        )
+        hit_deadline = False
+        hit_max_items = False
 
         for _ in range(max_pages):
+            if deadline is not None and time.monotonic() > deadline:
+                hit_deadline = True
+                break
             params: Dict[str, Any] = {"limit": 200}
             if cursor:
                 params["cursor"] = cursor
@@ -2027,7 +2332,19 @@ class ClawHubSource(SkillSource):
             if not isinstance(cursor, str) or not cursor:
                 break
 
-        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
+            # Browse's cold-start fallback only renders one page, so stop as
+            # soon as we have enough to satisfy the caller's bound. The index
+            # builder passes max_items=0 (unbounded) and walks to exhaustion.
+            if max_items > 0 and len(results) >= max_items:
+                hit_max_items = True
+                break
+
+        # Only cache a walk that reached a natural stop (cursor exhausted or
+        # page cap). A walk truncated by the wall-clock budget OR by max_items
+        # is partial, so writing it would poison the shared full-catalog cache
+        # with incomplete data.
+        if not hit_deadline and not hit_max_items:
+            _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
         return results
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
@@ -2179,9 +2496,18 @@ class ClaudeMarketplaceSource(SkillSource):
 
     def __init__(self, auth: GitHubAuth):
         self.auth = auth
+        # Persistent GitHubSource so rate-limit state survives across the
+        # marketplace-index fetch + per-skill inspect calls and can be
+        # surfaced to the index builder (see is_rate_limited).
+        self.github = GitHubSource(auth=auth)
 
     def source_id(self) -> str:
         return "claude-marketplace"
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """Whether the underlying GitHub API hit a rate limit during the crawl."""
+        return self.github.is_rate_limited
 
     def trust_level_for(self, identifier: str) -> str:
         parts = identifier.split("/", 2)
@@ -2221,15 +2547,13 @@ class ClaudeMarketplaceSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         # Delegate to GitHub Contents API since marketplace skills live in GitHub repos
-        gh = GitHubSource(auth=self.auth)
-        bundle = gh.fetch(identifier)
+        bundle = self.github.fetch(identifier)
         if bundle:
             bundle.source = "claude-marketplace"
         return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
-        gh = GitHubSource(auth=self.auth)
-        meta = gh.inspect(identifier)
+        meta = self.github.inspect(identifier)
         if meta:
             meta.source = "claude-marketplace"
             meta.trust_level = self.trust_level_for(identifier)
@@ -2243,16 +2567,15 @@ class ClaudeMarketplaceSource(SkillSource):
             return cached
 
         url = f"https://api.github.com/repos/{repo}/contents/.claude-plugin/marketplace.json"
+        resp = self.github._github_get(
+            url,
+            headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
+        )
+        if resp is None or resp.status_code != 200:
+            return []
         try:
-            resp = httpx.get(
-                url,
-                headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                return []
             data = json.loads(resp.text)
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except json.JSONDecodeError:
             return []
 
         plugins = data.get("plugins", [])
@@ -3008,7 +3331,7 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     safe_skill_name = _validate_skill_name(skill_name)
-    safe_category = _validate_category_name(category) if category else ""
+    safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
     quarantine_root = QUARANTINE_DIR.resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
@@ -3095,9 +3418,9 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
     # the destructive boundary — anything that falls through to the rmtree
     # below MUST be inside SKILLS_DIR and MUST NOT be SKILLS_DIR itself
     # (an empty/"."/"/" install_path would otherwise wipe the entire tree).
-    # _resolve_lock_install_path enforces shape (<skill_name> or
-    # <category>/<skill_name>), rejects absolute/traversal paths, and walks
-    # the path component-by-component refusing symlink/junction redirects.
+    # _resolve_lock_install_path enforces a relative path ending in
+    # <skill_name>, rejects absolute/traversal paths, and walks the path
+    # component-by-component refusing symlink/junction redirects.
     try:
         install_path = _resolve_lock_install_path(
             entry.get("install_path", ""), skill_name
@@ -3498,13 +3821,20 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
-        for src in active:
-            lim = per_source_limits.get(src.source_id(), 50)
-            fut = pool.submit(_search_one_source, src, query, lim)
-            futures[fut] = src.source_id()
+    # NOTE: a `with ThreadPoolExecutor(...) as pool` block calls
+    # ``shutdown(wait=True)`` on exit, which blocks until every submitted
+    # worker finishes — so a single slow source (e.g. ClawHub) keeps the
+    # caller blocked for minutes and renders ``overall_timeout`` a no-op.
+    # Manage the executor manually and shut it down with ``wait=False`` so
+    # the timeout is actually honoured.
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    for src in active:
+        lim = per_source_limits.get(src.source_id(), 50)
+        fut = pool.submit(_search_one_source, src, query, lim)
+        futures[fut] = src.source_id()
 
+    try:
         try:
             for fut in as_completed(futures, timeout=overall_timeout):
                 try:
@@ -3524,6 +3854,10 @@ def parallel_search_sources(
                     "Skills browse timed out waiting for: %s",
                     ", ".join(timed_out_ids),
                 )
+    finally:
+        # wait=False so a slow source cannot block the caller's return;
+        # cancel_futures drops not-yet-started work.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 

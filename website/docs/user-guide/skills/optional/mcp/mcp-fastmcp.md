@@ -21,7 +21,7 @@ Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Us
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `MCP`, `FastMCP`, `Python`, `Tools`, `Resources`, `Prompts`, `Deployment` |
-| Related skills | [`native-mcp`](/user-guide/skills/bundled/mcp/mcp-native-mcp), [`mcporter`](/user-guide/skills/optional/mcp/mcp-mcporter) |
+| Related skills | [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp), [`mcporter`](/docs/user-guide/skills/optional/mcp/mcp-mcporter) |
 
 ## Reference: full SKILL.md
 

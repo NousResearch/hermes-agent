@@ -5,7 +5,9 @@ from unittest.mock import patch
 
 from tools.url_safety import (
     is_safe_url,
+    async_is_safe_url,
     is_always_blocked_url,
+    normalize_url_for_request,
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
@@ -13,6 +15,32 @@ from tools.url_safety import (
 
 import ipaddress
 import pytest
+
+
+class TestNormalizeUrlForRequest:
+    def test_percent_encodes_non_ascii_path(self):
+        assert (
+            normalize_url_for_request("https://wttr.in/Köln")
+            == "https://wttr.in/K%C3%B6ln"
+        )
+
+    def test_preserves_existing_percent_escapes(self):
+        assert (
+            normalize_url_for_request("https://wttr.in/K%C3%B6ln")
+            == "https://wttr.in/K%C3%B6ln"
+        )
+
+    def test_preserves_reserved_query_syntax(self):
+        assert (
+            normalize_url_for_request("https://example.com/search?q=Köln&lang=de")
+            == "https://example.com/search?q=K%C3%B6ln&lang=de"
+        )
+
+    def test_idna_encodes_hostname(self):
+        assert (
+            normalize_url_for_request("https://münich.example/Köln")
+            == "https://xn--mnich-kva.example/K%C3%B6ln"
+        )
 
 
 class TestIsSafeUrl:
@@ -193,6 +221,24 @@ class TestIsSafeUrl:
     def test_qq_multimedia_hostname_dns_failure_still_blocked(self):
         with patch("socket.getaddrinfo", side_effect=socket.gaierror("Name resolution failed")):
             assert is_safe_url("https://multimedia.nt.qq.com.cn/download?id=123") is False
+
+
+class TestAsyncIsSafeUrl:
+    """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""
+
+    @pytest.mark.asyncio
+    async def test_public_url_allowed(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert await async_is_safe_url("https://example.com/x") is True
+
+    @pytest.mark.asyncio
+    async def test_localhost_blocked(self):
+        with patch("socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("127.0.0.1", 0)),
+        ]):
+            assert await async_is_safe_url("http://localhost:8080/") is False
 
 
 class TestIsBlockedIp:

@@ -5,9 +5,7 @@ accepted as base_url, and unknown keys go unreported.
 """
 
 import logging
-from unittest.mock import patch
 
-import pytest
 
 from hermes_cli.config import _normalize_custom_provider_entry
 

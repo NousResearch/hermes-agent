@@ -2679,6 +2679,13 @@ class GatewaySlashCommandsMixin:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Sync the Telegram forum topic name to match
+                    if self._is_telegram_renamable_thread(source):
+                        asyncio.ensure_future(
+                            self._rename_telegram_topic_for_session_title(
+                                source, session_id, sanitized,
+                            )
+                        )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

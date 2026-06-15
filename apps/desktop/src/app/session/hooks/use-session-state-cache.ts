@@ -181,14 +181,18 @@ export function useSessionStateCache({
       // throttles `requestAnimationFrame` to ~0 while the window is
       // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
       // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
-      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
-      // (cancelling any in-flight RAF, since we're about to publish the latest
-      // state anyway). The plain busy heartbeat stays RAF-batched: that
-      // coalescing exists only to keep periodic `session.info` updates from
-      // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !state.busy || state.needsInput
+      // stuck on Thinking until I refocus / F5" bug. The same applies to real
+      // transcript changes during an active turn: the user's optimistic prompt,
+      // tool rows, and streamed assistant text are user-visible state, not
+      // heartbeat noise. Flush those synchronously and reserve RAF batching for
+      // metadata-only/session.info heartbeats that would otherwise churn
+      // `$messages` and jerk the scroll position while reading.
+      const currentMessages = $messages.get()
+      const nextMessages = preserveLocalAssistantErrors(state.messages, currentMessages)
+      const hasTranscriptChange = !sameMessageList(nextMessages, currentMessages)
+      const mustFlushImmediately = !state.busy || state.needsInput || hasTranscriptChange
 
-      if (isCriticalTransition) {
+      if (mustFlushImmediately) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
           window.cancelAnimationFrame(viewSyncRafRef.current)
           viewSyncRafRef.current = null

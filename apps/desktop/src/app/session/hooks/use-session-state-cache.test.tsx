@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $currentFastMode,
   $currentModel,
@@ -25,9 +26,10 @@ interface HarnessProps {
   activeSessionId: string | null
   onReady: (cache: Cache) => void
   selectedStoredSessionId: string | null
+  setMessages?: (messages: ChatMessage[]) => void
 }
 
-function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessProps) {
+function Harness({ activeSessionId, onReady, selectedStoredSessionId, setMessages = () => undefined }: HarnessProps) {
   const busyRef: MutableRefObject<boolean> = { current: false }
 
   const cache = useSessionStateCache({
@@ -36,7 +38,7 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
     selectedStoredSessionId,
     setAwaitingResponse: () => undefined,
     setBusy: () => undefined,
-    setMessages: () => undefined
+    setMessages
   })
 
   onReady(cache)
@@ -119,6 +121,44 @@ describe('useSessionStateCache — per-session turn timer', () => {
     })
 
     expect($turnStartedAt.get()).toBe(startedAt)
+  })
+
+  it('publishes active-turn transcript updates even when requestAnimationFrame is throttled', () => {
+    const setMessages = vi.fn()
+    vi.mocked(window.requestAnimationFrame).mockImplementation(() => 123)
+    let cache!: Cache
+
+    render(
+      <Harness
+        activeSessionId="fg-runtime"
+        onReady={c => (cache = c)}
+        selectedStoredSessionId="fg-stored"
+        setMessages={setMessages}
+      />
+    )
+
+    act(() => {
+      cache.updateSessionState(
+        'fg-runtime',
+        state => ({
+          ...state,
+          busy: true,
+          messages: [
+            ...state.messages,
+            {
+              id: 'user-live',
+              role: 'user',
+              parts: [{ type: 'text', text: 'visible immediately' }]
+            }
+          ]
+        }),
+        'fg-stored'
+      )
+    })
+
+    expect(setMessages).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: 'user-live', role: 'user' })])
+    )
   })
 
   it('clears the global clock when the focused turn ends', () => {

@@ -5,14 +5,16 @@ import type { SessionInfo } from '@/types/hermes'
 import {
   $activeSessionId,
   $attentionSessionIds,
-  $connection,
   $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
+  reconcileLiveSessionKey,
+  sessionAliasIds,
   sessionPinId,
-  setCurrentCwd,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -75,6 +77,12 @@ describe('sessionPinId', () => {
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
   })
+
+  it('collects every compression segment as an alias', () => {
+    expect(
+      sessionAliasIds(session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] }))
+    ).toEqual(['tip', 'root', 'mid'])
+  })
 })
 
 describe('mergeSessionPage', () => {
@@ -135,63 +143,100 @@ describe('mergeSessionPage', () => {
   it('keeps a pinned session matched by its lineage root after compression', () => {
     // The pin is stored on the lineage-root id, but the loaded row surfaces
     // under its live compression tip. Matching on _lineage_root_id keeps it.
-    const previous = [session({ id: 'tip', _lineage_root_id: 'root' })] as SessionInfo[]
-    const incoming = [session({ id: 'other' })] as SessionInfo[]
+    const previous = [session({ id: 'tip', _lineage_root_id: 'root' })]
+    const incoming = [session({ id: 'other' })]
 
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
   })
 
-  it('evicts an old compression tip when the incoming page has the new tip from the same lineage', () => {
-    // Repro of #43483: after auto-compression rotates the tip (#4 → #5),
-    // the sidebar showed both the old tip and the new tip as separate rows.
-    // The old tip must be evicted because its lineage key matches the incoming
-    // new tip's lineage key.
-    const previous = [
-      session({ id: 'tip-4', _lineage_root_id: 'root' }),
-      session({ id: 'other' }),
-    ] as SessionInfo[]
-    const incoming = [
-      session({ id: 'tip-5', _lineage_root_id: 'root' }),
-    ] as SessionInfo[]
+  it('replaces a stale pinned intermediate segment with the live tip', () => {
+    const previous = [session({ id: 'mid', _lineage_root_id: 'root' })]
+    const incoming = [session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] })]
 
-    // 'tip-4' is in the keep set (e.g. it was the active/working session),
-    // but should still be evicted because the incoming page carries the same
-    // lineage under a new tip id.
-    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+    const merged = mergeSessionPage(previous, incoming, ['mid'])
 
-    expect(merged.map(s => s.id)).toEqual(['tip-5'])
-    // The new tip comes from the server payload.
-    expect(merged.find(s => s.id === 'tip-5')?._lineage_root_id).toBe('root')
+    expect(merged.map(s => s.id)).toEqual(['tip'])
   })
 
-  it('preserves an unrelated pinned session even when lineage dedup is active', () => {
-    // Regression guard: lineage dedup must not accidentally evict sessions
-    // from a different lineage that happen to be in the keep set.
-    const previous = [
-      session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
-      session({ id: 'b', _lineage_root_id: 'lineage-b' }),
-    ] as SessionInfo[]
+  it('dedupes incoming rows that describe the same lineage', () => {
     const incoming = [
-      session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
-    ] as SessionInfo[]
+      session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] }),
+      session({ id: 'mid', _lineage_root_id: 'root' })
+    ]
 
-    const merged = mergeSessionPage(previous, incoming, ['b'])
+    const merged = mergeSessionPage([], incoming, ['mid'])
 
-    expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+    expect(merged.map(s => s.id)).toEqual(['tip'])
+  })
+
+  it('prefers the live lineage row when a stale incoming segment arrives first', () => {
+    const incoming = [
+      session({ id: 'mid', _lineage_root_id: 'root', last_active: 100 }),
+      session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'], last_active: 200 })
+    ]
+
+    const merged = mergeSessionPage([], incoming, ['mid'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip'])
+  })
+})
+
+describe('reconcileLiveSessionKey', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    $sessions.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('rekeys the visible parent row to the live compression continuation', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_700_000_000_000)
+    $sessions.set([
+      session({
+        id: 'parent',
+        _lineage_root_id: 'root',
+        _lineage_ids: ['root', 'parent'],
+        last_active: 100,
+        message_count: 172,
+        title: 'Job Status Summary #11'
+      })
+    ])
+
+    reconcileLiveSessionKey('parent', 'continuation')
+
+    expect($sessions.get()).toHaveLength(1)
+    expect($sessions.get()[0]).toMatchObject({
+      id: 'continuation',
+      _lineage_root_id: 'root',
+      _lineage_ids: ['root', 'parent', 'continuation'],
+      ended_at: null,
+      is_active: true,
+      message_count: 172,
+      title: 'Job Status Summary #11'
+    })
+    expect($sessions.get()[0]?.last_active).toBe(1_700_000_000)
+  })
+
+  it('removes a stale parent row when the live row already exists', () => {
+    $sessions.set([
+      session({ id: 'parent' }),
+      session({ id: 'continuation', _lineage_root_id: 'parent', _lineage_ids: ['parent', 'continuation'] })
+    ])
+
+    reconcileLiveSessionKey('parent', 'continuation')
+
+    expect($sessions.get().map(s => s.id)).toEqual(['continuation'])
   })
 })
 
 describe('workspaceCwdForNewSession', () => {
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
-    $connection.set(null)
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
-    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
@@ -220,26 +265,6 @@ describe('workspaceCwdForNewSession', () => {
 
     expect($currentCwd.get()).toBe('/live/session/path')
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
-  })
-
-  it('keeps remote workspace memory separate from local and other remotes', () => {
-    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/local/project')
-    $currentCwd.set('/live/session/path')
-    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
-
-    expect(workspaceCwdForNewSession()).toBe('')
-
-    setCurrentCwd('/backend/project-a')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
-
-    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
-    expect(workspaceCwdForNewSession()).toBe('')
-
-    setCurrentCwd('/backend/project-b')
-    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
-
-    $connection.set(null)
-    expect(workspaceCwdForNewSession()).toBe('/local/project')
   })
 })
 

@@ -950,6 +950,46 @@ def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     return cache.get(key)
 
 
+def _provider_confirmed_config_cap(
+    model: str,
+    base_url: str,
+    configured_length: int,
+    provider: str = "",
+) -> Optional[int]:
+    """Return a cached lower cap that should constrain explicit config.
+
+    Explicit config normally wins.  For custom/local OpenAI-compatible servers,
+    though, a cached lower value means the endpoint has already proven that the
+    configured window is too optimistic.  Honor that evidence so a restarted
+    Hermes process does not keep advertising an impossible context size.
+    """
+    if not base_url or not configured_length or provider == "lmstudio":
+        return None
+
+    normalized_provider = (provider or "").lower()
+    if _is_known_provider_base_url(base_url) and normalized_provider not in {"custom", "local"}:
+        return None
+    if normalized_provider not in {"", "custom", "local", "openai-compatible"} and not is_local_endpoint(base_url):
+        return None
+
+    candidates = [model]
+    stripped = _strip_provider_prefix(model)
+    if stripped != model:
+        candidates.append(stripped)
+
+    for candidate in candidates:
+        cached = get_cached_context_length(candidate, base_url)
+        if (
+            isinstance(cached, int)
+            and 1024 <= cached < configured_length
+            and not (cached <= 32768 and _model_name_suggests_kimi(candidate))
+            and not (cached <= 204_800 and _model_name_suggests_minimax_m3(candidate))
+            and not (cached <= 256_000 and _model_name_suggests_grok_4_3(candidate))
+        ):
+            return cached
+    return None
+
+
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     """Drop a stale cache entry so it gets re-resolved on the next lookup."""
     key = f"{model}@{base_url}"
@@ -986,6 +1026,8 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     error_lower = error_msg.lower()
     # Pattern: look for numbers near context-related keywords
     patterns = [
+        r'available\s+context\s+size\s*\(?\s*(\d{4,})\s*tokens?\s*\)?',
+        r'\bn_ctx[\'"]?\s*[:=]\s*(\d{4,})',
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
@@ -1637,8 +1679,22 @@ def get_model_context_length(
     7. Hardcoded defaults (broad family patterns, longest-key-first)
     8. Local server query (last resort)
     9. Default fallback (256K)"""
-    # 0. Explicit config override — user knows best
+    # 0. Explicit config override — user knows best, unless a custom/local
+    # endpoint has already rejected that larger window and cached a lower cap.
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
+        provider_cap = _provider_confirmed_config_cap(
+            model,
+            base_url,
+            config_context_length,
+            provider=provider,
+        )
+        if provider_cap is not None:
+            logger.info(
+                "Using provider-confirmed context cap for %s@%s: %s "
+                "(configured %s)",
+                model, base_url, f"{provider_cap:,}", f"{config_context_length:,}",
+            )
+            return provider_cap
         return config_context_length
 
     # 0b. custom_providers per-model override — check before any probe.
@@ -1654,6 +1710,19 @@ def get_model_context_length(
                 custom_providers=custom_providers,
             )
             if cp_ctx:
+                provider_cap = _provider_confirmed_config_cap(
+                    model,
+                    base_url,
+                    cp_ctx,
+                    provider=provider or "custom",
+                )
+                if provider_cap is not None:
+                    logger.info(
+                        "Using provider-confirmed context cap for custom provider "
+                        "%s@%s: %s (configured %s)",
+                        model, base_url, f"{provider_cap:,}", f"{cp_ctx:,}",
+                    )
+                    return provider_cap
                 return cp_ctx
         except Exception:
             pass  # fall through to probing
@@ -1791,26 +1860,6 @@ def get_model_context_length(
                 "in config.yaml to override.",
                 model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
-            # 3b. Before falling back to the hard 256K default, consult the
-            # hardcoded catalog as a last resort.  A proxied/custom Anthropic
-            # gateway (e.g. corporate proxy) fails the Ollama/local probes
-            # above, but the model name may still match an entry in
-            # DEFAULT_CONTEXT_LENGTHS (e.g. "claude-opus-4-8" → 1M).
-            # Without this, the early return here short-circuits the catalog
-            # lookup at step 8 and silently caps context at 256K.
-            model_lower = model.lower()
-            for default_model, length in sorted(
-                DEFAULT_CONTEXT_LENGTHS.items(),
-                key=lambda x: len(x[0]),
-                reverse=True,
-            ):
-                if default_model in model_lower:
-                    logger.info(
-                        "Using hardcoded context length %s for model %r "
-                        "(custom endpoint, catalog match on %r)",
-                        f"{length:,}", model, default_model,
-                    )
-                    return length
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)

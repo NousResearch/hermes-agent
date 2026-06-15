@@ -17,7 +17,6 @@ import {
 } from '@/store/updates'
 
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
-import { UninstallSection } from './uninstall-section'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 
@@ -63,6 +62,7 @@ export function AboutSettings() {
   const behind = status?.behind ?? 0
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
+  const rebuildNeeded = status?.rebuildNeeded === true
 
   const handleCheck = async () => {
     setJustChecked(false)
@@ -84,6 +84,9 @@ export function AboutSettings() {
     statusTone = 'available'
   } else if (behind > 0) {
     statusLine = a.updateReady(behind)
+    statusTone = 'available'
+  } else if (rebuildNeeded) {
+    statusLine = a.rebuildNeeded
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest
@@ -146,6 +149,12 @@ export function AboutSettings() {
               </Button>
             )}
 
+            {rebuildNeeded && supported && !applying && (
+              <Button onClick={() => openUpdatesWindow()} size="sm">
+                {a.rebuildNow}
+              </Button>
+            )}
+
             <Button asChild className="ml-auto" size="sm" variant="text">
               <a
                 href={RELEASE_NOTES_URL}
@@ -168,8 +177,6 @@ export function AboutSettings() {
           hint={a.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
           title={a.automaticUpdates}
         />
-
-        <UninstallSection />
       </div>
     </SettingsContent>
   )

@@ -2895,6 +2895,35 @@ class TestVisionAutoSkipsKimiCoding:
         assert client is fake_or_client
         assert model == "google/gemini-3-flash-preview"
 
+    def test_opencode_zen_uses_aux_vision_model_not_text_model(self, monkeypatch):
+        """OpenCode Zen text models should use the provider's vision aux model."""
+        fake_client = MagicMock(name="opencode_zen_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "opencode-zen",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "deepseek-v4-flash-free",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda provider, model: provider == "opencode-zen" and model == "gemini-3-flash",
+        )
+        rpc_mock = MagicMock(return_value=(fake_client, "gemini-3-flash"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "opencode-zen"
+        assert client is fake_client
+        assert model == "gemini-3-flash"
+        rpc_mock.assert_called_once()
+        args, kwargs = rpc_mock.call_args
+        assert args[:2] == ("opencode-zen", "gemini-3-flash")
+        assert kwargs.get("is_vision") is True
+
     def test_kimi_coding_cn_skipped_too(self, monkeypatch):
         """Same skip applies to the CN variant."""
         fake_or_client = MagicMock(name="openrouter_client")

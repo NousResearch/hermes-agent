@@ -73,6 +73,7 @@ export interface Translations {
       backendStopped: string
       desktopBootFailed: string
       gatewaySignInRequired: string
+      gatewayUnreachable: string
       ipcBridgeUnavailable: string
     }
     failure: {
@@ -283,6 +284,8 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
+      rebuildNeeded: string
+      rebuildNow: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -779,6 +782,10 @@ export interface Translations {
     monthlyOnDayAt: (dayOfMonth: string, time: string) => string
     topOfHour: string
     everyHourAt: (minute: string) => string
+    refresh: string
+    refreshing: string
+    active: (enabled: number, total: number) => string
+    createFirst: string
     newCron: string
     emptyDescNew: string
     emptyDescSearch: string
@@ -878,10 +885,48 @@ export interface Translations {
     pinned: string
     sessions: string
     cronJobs: string
+    liveElsewhere: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
+    archiveAllTitle: string
+    archiveAllAria: string
+    archiveAllDialogTitle: string
+    archiveAllDialogDesc: string
+    archiveAllConfirm: string
+    archiveAllCancel: string
+    archiveAllSubmitting: string
+    archiveAllChecked: (count: number) => string
+    archiveAllNone: string
+    cloudChannelsTitle: string
+    cloudChannelsDesc: string
+    cloudInviteTokenAria: string
+    cloudInviteTokenPlaceholder: string
+    cloudInviteAccept: string
+    cloudInviteAccepting: string
+    cloudChannelsListTitle: string
+    cloudChannelsLoading: string
+    cloudChannelsEmpty: string
+    cloudChannelsRefresh: string
+    cloudChannelsRefreshing: string
+    cloudChannelsClose: string
+    cloudChannelsOwner: string
+    cloudChannelsRead: string
+    cloudChannelsSeq: (seq: string) => string
+    cloudMessagesTitle: string
+    cloudMessagesPickChannel: string
+    cloudMessagesLoading: string
+    cloudMessagesEmpty: string
+    cloudMessagesRefresh: string
+    cloudMessagesLoadMore: string
+    cloudMessagesLoadingMore: string
+    cloudMessagesNoContent: string
+    cloudParticipantsTitle: string
+    cloudParticipantsEmpty: string
+    cloudHostOnline: string
+    cloudHostOffline: string
+    cloudParticipantLabel: (device: string, count: string) => string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string
@@ -891,18 +936,71 @@ export interface Translations {
     loading: string
     loadMore: string
     loadCount: (step: number) => string
+    archived: string
+    archivedEmpty: string
+    bulk: {
+      selectedCount: (count: number) => string
+      pin: string
+      unpin: string
+      prompt: string
+      steer: string
+      halt: string
+      archive: string
+      restore: string
+      delete: string
+      promptCount: (count: number) => string
+      steerCount: (count: number) => string
+      haltCount: (count: number) => string
+      archiveCount: (count: number) => string
+      restoreCount: (count: number) => string
+      deleteCount: (count: number) => string
+      promptDialogTitle: (count: number) => string
+      promptDialogDesc: string
+      promptPlaceholder: string
+      promptSubmit: string
+      steerDialogTitle: (count: number) => string
+      steerDialogDesc: string
+      steerPlaceholder: string
+      steerSubmit: string
+      clearSelection: string
+      deleteDialogTitle: (count: number) => string
+      deleteDialogDesc: string
+      deleteConfirm: string
+      promptedToast: (count: number) => string
+      steeredToast: (count: number) => string
+      haltedToast: (count: number) => string
+      archivedToast: (count: number) => string
+      restoredToast: (count: number) => string
+      deletedToast: (count: number) => string
+      promptFailed: (count: number) => string
+      steerFailed: (count: number) => string
+      haltFailed: (count: number) => string
+      archiveFailed: (count: number) => string
+      restoreFailed: (count: number) => string
+      deleteFailed: (count: number) => string
+    }
     row: {
       pin: string
       unpin: string
       copyId: string
       export: string
+      shareToCloud: string
+      copyCloudId: string
+      inviteToCloud: string
+      cloudMembers: string
+      deleteCloudChannel: string
       rename: string
       archive: string
+      restore: string
+      select: string
       newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
+      sessionStarting: string
+      nextAction: string
+      waitingForNextAction: string
       needsInput: string
       waitingForAnswer: string
       handoffOrigin: (platform: string) => string
@@ -910,6 +1008,23 @@ export interface Translations {
       renameFailed: string
       renameTitle: string
       renameDesc: string
+      inviteCloudTitle: string
+      inviteCloudDesc: string
+      inviteEmailPlaceholder: string
+      inviteCreate: string
+      cloudMembersTitle: string
+      cloudMembersDesc: string
+      cloudMembersEmpty: string
+      cloudMembersRefresh: string
+      cloudMembersPermissionLabel: string
+      cloudMembersPermission: (permission: string) => string
+      cloudMembersRevoke: string
+      cloudMembersRevokeConfirm: (member: string) => string
+      cloudMembersSaving: string
+      deleteCloudTitle: string
+      deleteCloudDesc: string
+      deleteCloudConfirm: string
+      deleteCloudDeleting: string
       untitledPlaceholder: string
       ageNow: string
       ageDay: string
@@ -1026,6 +1141,8 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    rebuildTitle: string
+    rebuildBody: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -1206,6 +1323,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      rebuildNeeded: string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

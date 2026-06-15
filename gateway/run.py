@@ -13539,7 +13539,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         break
         _voice_ack_loop = asyncio.get_running_loop()
 
-        def voice_ack_callback(call_id, tool_name, args):
+        def voice_ack_callback(call_id, tool_name, args, **kwargs):
             """tool_start_callback: speak a one-time ack in the voice channel."""
             if _voice_ack_fired[0] or _voice_ack_guild[0] is None:
                 return

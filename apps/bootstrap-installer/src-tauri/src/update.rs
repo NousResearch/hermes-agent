@@ -12,8 +12,9 @@
 //!   4. launch the freshly-built desktop (reuses bootstrap::launch logic).
 //!
 //! We reuse the `BootstrapEvent` channel + the existing progress UI by
-//! emitting a synthetic two-stage manifest ("update", "rebuild"). To the
-//! frontend an update looks like a short bootstrap.
+//! emitting a synthetic update manifest ("update", "rebuild", plus "install"
+//! when we are swapping a macOS app bundle). To the frontend an update looks
+//! like a short bootstrap.
 //!
 //! Cross-platform note: `hermes update` already handles macOS/Linux (git/pip).
 //! The only OS-specific bits here are the venv shim path (resolve_hermes) and
@@ -131,7 +132,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         anyhow!(msg)
     })?;
 
-    // Synthetic manifest so the existing progress UI renders our two stages.
+    // Synthetic manifest so the existing progress UI renders the update stages.
     let mut stages = vec![
         stage_info("update", "Updating Hermes"),
         stage_info("rebuild", "Rebuilding the desktop app"),

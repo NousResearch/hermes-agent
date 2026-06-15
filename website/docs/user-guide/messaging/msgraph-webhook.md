@@ -70,7 +70,7 @@ All settings go under `platforms.msgraph_webhook.extra`:
 | `max_seen_receipts` | `5000` | Dedupe cache size for notification IDs. Oldest entries evicted when the cap is hit. |
 | `allowed_source_cidrs` | `[]` | Required for non-loopback binds. Leave empty only when the listener is bound to loopback and fronted by a local tunnel / reverse proxy. |
 
-Most settings also have an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup (the exception is `host`, which is config-only — see the note above) — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
+Each setting also has an equivalent env var (`MSGRAPH_WEBHOOK_*`) that merges into the config at gateway startup — see the [environment variables reference](/reference/environment-variables#microsoft-graph-teams-meetings).
 
 ## Security Hardening
 

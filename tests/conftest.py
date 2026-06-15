@@ -378,6 +378,15 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
     monkeypatch.setenv("TIRITH_ENABLED", "false")
+    # Lazy feature deps (tools/lazy_deps.py) pip-install on demand by design —
+    # _allow_lazy_installs() fails open for users. Unit tests must never reach
+    # pip/the network: with the SDK absent, any agent init whose tool checks
+    # touch a lazy feature (e.g. check_tts_requirements →
+    # ensure("tts.elevenlabs")) spawns a real pip install — which hangs to the
+    # suite timeout under tests that set fake proxy env vars. The kill-switch
+    # makes ensure() raise FeatureUnavailable immediately instead.
+    # tests/tools/test_lazy_deps.py overrides this var in both directions.
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the

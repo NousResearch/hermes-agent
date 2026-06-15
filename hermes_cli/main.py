@@ -3637,13 +3637,66 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
-    Uses *name* when provided, otherwise auto-generates from the URL.
+    Idempotent against both schemas: if the endpoint already lives in the
+    v12+ ``providers:`` map (same URL + compatible name/credential), that
+    entry is updated in place; otherwise deduplicates by base_url against
+    the legacy ``custom_providers`` list — if the URL already exists there,
+    updates the model name, context_length, and api_mode but doesn't add a
+    duplicate entry. Uses *name* when provided, otherwise auto-generates
+    from the URL.
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import find_matching_provider_key, load_config, save_config
 
     cfg = load_config()
+
+    # Recognize the endpoint when it already lives in the v12+ ``providers:``
+    # map and update that entry instead of re-appending a legacy
+    # custom_providers item. The legacy re-append used to feed the v11→12
+    # migration a colliding entry on its next run, duplicating every endpoint
+    # into suffixed providers: keys (taro + taro-3, ai-router + ai-router-0).
+    providers_map = cfg.get("providers")
+    if isinstance(providers_map, dict):
+        match_key = find_matching_provider_key(
+            providers_map, name or "", base_url, api_key=api_key
+        )
+        if match_key is not None and isinstance(providers_map[match_key], dict):
+            entry = providers_map[match_key]
+            changed = False
+            if model and entry.get("default_model") != model:
+                entry["default_model"] = model
+                changed = True
+            if model and context_length:
+                models_cfg = entry.get("models")
+                if not isinstance(models_cfg, dict):
+                    models_cfg = {}
+                model_cfg = models_cfg.get(model)
+                if not isinstance(model_cfg, dict):
+                    model_cfg = {}
+                if model_cfg.get("context_length") != context_length:
+                    model_cfg["context_length"] = context_length
+                    models_cfg[model] = model_cfg
+                    entry["models"] = models_cfg
+                    changed = True
+            if api_mode:
+                # Write to whichever transport field the entry already uses;
+                # an empty api_mode means auto-detect — leave the curated
+                # entry untouched rather than popping its transport.
+                mode_field = "api_mode" if "api_mode" in entry else "transport"
+                if entry.get(mode_field) != api_mode:
+                    entry[mode_field] = api_mode
+                    changed = True
+            if (
+                api_key
+                and not str(entry.get("api_key", "") or "").strip()
+                and not str(entry.get("key_env", "") or "").strip()
+            ):
+                entry["api_key"] = api_key
+                changed = True
+            if changed:
+                cfg["providers"] = providers_map
+                save_config(cfg)
+            return  # endpoint already configured, updated in place if needed
+
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
@@ -4924,6 +4977,78 @@ def _desktop_stamp_path() -> Path:
     return get_hermes_home() / "desktop-build-stamp.json"
 
 
+def _run_git_text(project_root: Path, args: list[str]) -> str | None:
+    try:
+        proc = subprocess.Popen(
+            ["git", *args],
+            cwd=project_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        output, _ = proc.communicate(timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return output.strip() or None
+
+def _normalize_github_repository(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.startswith("git@github.com:"):
+        value = value.removeprefix("git@github.com:")
+    elif value.startswith("https://github.com/"):
+        value = value.removeprefix("https://github.com/")
+    else:
+        return None
+    value = value.removesuffix(".git").rstrip("/")
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+def _read_desktop_install_identity(stamp_path: Path) -> dict[str, str | None] | None:
+    try:
+        payload = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("commit"):
+        return None
+    return {
+        "commit": payload.get("commit"),
+        "branch": payload.get("branch"),
+        "repository": payload.get("repository"),
+    }
+
+def _desktop_packaged_install_stamp_path(packaged_executable: Path) -> Path | None:
+    if sys.platform == "darwin":
+        # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app/Contents/Resources/install-stamp.json
+        return packaged_executable.parent.parent / "Resources" / "install-stamp.json"
+    if sys.platform == "win32":
+        return packaged_executable.parent / "resources" / "install-stamp.json"
+    return packaged_executable.parent / "resources" / "install-stamp.json"
+
+def _current_desktop_install_identity(project_root: Path) -> dict[str, str | None] | None:
+    commit = _run_git_text(project_root, ["rev-parse", "HEAD"])
+    if not commit:
+        return None
+    branch = _run_git_text(project_root, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch == "HEAD":
+        branch = None
+    remote_name = None
+    if branch:
+        remote_name = _run_git_text(project_root, ["config", "--get", f"branch.{branch}.remote"])
+    remote_url = _run_git_text(project_root, ["remote", "get-url", remote_name or "origin"])
+    repository = _normalize_github_repository(remote_url)
+    return {
+        "commit": commit,
+        "branch": branch,
+        "repository": repository,
+    }
+
+
 def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode: bool) -> bool:
     """Return True when the desktop build output is stale or missing.
 
@@ -4936,8 +5061,19 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         if not _desktop_dist_exists(desktop_dir):
             return True
     else:
-        if _desktop_packaged_executable(desktop_dir) is None:
+        packaged_executable = _desktop_packaged_executable(desktop_dir)
+        if packaged_executable is None:
             return True
+        current_identity = _current_desktop_install_identity(project_root)
+        if current_identity:
+            embedded_stamp_path = _desktop_packaged_install_stamp_path(packaged_executable)
+            embedded_identity = (
+                _read_desktop_install_identity(embedded_stamp_path)
+                if embedded_stamp_path is not None and embedded_stamp_path.is_file()
+                else None
+            )
+            if embedded_identity != current_identity:
+                return True
 
     stamp_file = _desktop_stamp_path()
     if not stamp_file.is_file():
@@ -4951,6 +5087,12 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
     # If the mode changed (source vs packaged), force a rebuild
     if stamp_data.get("sourceMode") != source_mode:
         return True
+
+    if not source_mode:
+        current_identity = _current_desktop_install_identity(project_root)
+        saved_identity = stamp_data.get("installIdentity")
+        if current_identity and saved_identity and saved_identity != current_identity:
+            return True
 
     saved_hash = stamp_data.get("contentHash")
     if not saved_hash:
@@ -4972,6 +5114,10 @@ def _write_desktop_build_stamp(project_root: Path, *, source_mode: bool) -> None
             "sourceMode": source_mode,
             "builtAt": datetime.now(timezone.utc).isoformat(),
         }
+        if not source_mode:
+            identity = _current_desktop_install_identity(project_root)
+            if identity:
+                stamp_data["installIdentity"] = identity
         stamp_file.write_text(json.dumps(stamp_data, indent=2) + "\n", encoding="utf-8")
     except Exception as exc:
         # Never let stamp-writing block or fail a build
@@ -6421,11 +6567,90 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     # If origin/main has commits not on upstream, don't trample
     if origin_ahead > 0:
+        if upstream_ahead == 0:
+            print()
+            print(f"  ✓ Fork already has {origin_ahead} commit(s) ahead of upstream")
+            return
+
+        # Fork has diverged — merge upstream into origin/main to keep fork
+        # up to date without losing local changes. This is the standard fork
+        # workflow: origin/main = upstream/main + your features.
         print()
-        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
-        print("  Skipping upstream sync to preserve your changes.")
-        print("  If you want to merge upstream changes, run:")
-        print("    git pull upstream main")
+        print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream, and is")
+        print(f"  {upstream_ahead} commit(s) behind. Merging upstream into fork main...")
+
+        try:
+            # Checkout local main (tracking origin/main)
+            subprocess.run(
+                git_cmd + ["checkout", "main"],
+                cwd=cwd,
+                capture_output=True,
+                check=True,
+            )
+            # Merge upstream/main into local main
+            merge_result = subprocess.run(
+                git_cmd + ["merge", "upstream/main", "--no-edit", "--no-ff"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if merge_result.returncode != 0:
+                # A failed merge leaves the working tree mid-merge with
+                # conflict markers, which breaks the CLI itself (main.py
+                # won't parse) and every later update stage. Abort to
+                # restore a clean tree before continuing.
+                merge_in_progress = (
+                    subprocess.run(
+                        git_cmd + ["rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                        cwd=cwd,
+                        capture_output=True,
+                        check=False,
+                    ).returncode
+                    == 0
+                )
+                tree_restored = True
+                if merge_in_progress:
+                    tree_restored = (
+                        subprocess.run(
+                            git_cmd + ["merge", "--abort"],
+                            cwd=cwd,
+                            capture_output=True,
+                            check=False,
+                        ).returncode
+                        == 0
+                    )
+                print("  ✗ Merge failed (conflict). Skipping upstream sync.")
+                if tree_restored:
+                    print("  Working tree restored. To sync manually:")
+                    print("    cd ~/.hermes/hermes-agent && git merge upstream/main")
+                else:
+                    print("  ⚠ Could not abort the merge — working tree may be broken. Inspect with:")
+                    print("    cd ~/.hermes/hermes-agent && git status")
+                return
+
+            # Push the merged result to origin/main
+            push_result = subprocess.run(
+                git_cmd + ["push", "origin", "main"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if push_result.returncode != 0:
+                stderr = push_result.stderr.strip()
+                if "rejected" in stderr:
+                    print("  ✗ Push rejected. Fork main may have been updated elsewhere.")
+                    print("  Run: git pull upstream main && git push origin main")
+                else:
+                    print("  ✗ Push failed.")
+                    if stderr:
+                        print(f"  {stderr.splitlines()[0]}")
+                return
+
+            print(f"  ✓ Merged upstream into fork main and pushed ({origin_ahead} fork + {upstream_ahead} upstream commits)")
+        except subprocess.CalledProcessError as exc:
+            print(f"  ✗ Sync failed: {exc}")
         return
 
     # If upstream is not ahead, fork is up to date
@@ -8279,6 +8504,44 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _resolve_update_target(
+    git_cmd: list[str], cwd: Path, branch: str
+) -> tuple[str, str, str]:
+    """Return the remote, remote branch, and compare ref for ``branch``.
+
+    ``hermes update`` historically hard-coded ``origin/<branch>``. That works
+    for normal installs, but managed desktop installs can have ``origin`` point
+    at upstream while their local ``main`` tracks a fork remote. Honor the
+    branch's configured upstream when it exists so update checks and pulls the
+    ref Git would use for that branch.
+    """
+    fallback_remote = "origin"
+    fallback_ref = f"{fallback_remote}/{branch}"
+    try:
+        result = subprocess.run(
+            git_cmd
+            + [
+                "for-each-ref",
+                "--format=%(upstream:short)",
+                f"refs/heads/{branch}",
+            ],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return fallback_remote, branch, fallback_ref
+
+    upstream_ref = result.stdout.strip() if result.returncode == 0 else ""
+    if "/" not in upstream_ref:
+        return fallback_remote, branch, fallback_ref
+
+    remote, remote_branch = upstream_ref.split("/", 1)
+    if not remote or not remote_branch:
+        return fallback_remote, branch, fallback_ref
+    return remote, remote_branch, upstream_ref
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -8530,6 +8793,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # minutes on a non-single-branch checkout. Fetch only what we update
         # against.
         branch = _resolve_update_branch(args)
+        # Honor the branch's configured tracking remote (a managed desktop
+        # install can keep main tracking a fork remote while origin points
+        # upstream) — compare and pull against the ref Git itself would use.
+        update_remote, update_remote_branch, update_ref = _resolve_update_target(
+            git_cmd, PROJECT_ROOT, branch
+        )
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
@@ -8538,6 +8807,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             capture_output=True,
             text=True,
         )
+        if update_remote != "origin":
+            fetch_target_result = subprocess.run(
+                git_cmd + ["fetch", update_remote],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+            )
+            if fetch_target_result.returncode != 0:
+                stderr = fetch_target_result.stderr.strip()
+                print(f"✗ Failed to fetch updates from {update_remote}.")
+                if stderr:
+                    print(f"  {stderr.splitlines()[0]}")
+                sys.exit(1)
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
@@ -8591,7 +8873,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # the common case when the requested branch exists upstream
                 # but was never checked out locally.
                 track_result = subprocess.run(
-                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                    git_cmd + ["checkout", "-B", branch, update_ref],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
@@ -8622,7 +8904,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Check if there are updates
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"HEAD..{update_ref}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8687,7 +8969,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
             pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+                git_cmd + ["pull", "--ff-only", update_remote, update_remote_branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -8700,17 +8982,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                 )
                 reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    git_cmd + ["reset", "--hard", update_ref],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
                 if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
+                    print(f"✗ Failed to reset to {update_ref}.")
                     if reset_result.stderr.strip():
                         print(f"  {reset_result.stderr.strip()}")
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        f"  Try manually: git fetch {update_remote} && git reset --hard {update_ref}"
                     )
                     sys.exit(1)
 
@@ -8914,14 +9196,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Model catalog seed during update failed: %s", e)
 
         # After git pull, source files on disk are newer than cached Python
-        # modules in this process.  Reload hermes_constants so that any lazy
-        # import executed below (skills sync, gateway restart) sees new
-        # attributes like display_hermes_home() added since the last release.
+        # modules in this process.  Reload modules used below so that the
+        # updater does not restart gateways with pre-update launchd/systemd
+        # logic still cached in sys.modules.
         try:
             import importlib
             import hermes_constants as _hc
 
             importlib.reload(_hc)
+            _gateway_mod = sys.modules.get("hermes_cli.gateway")
+            if _gateway_mod is not None:
+                importlib.reload(_gateway_mod)
         except Exception:
             pass  # non-fatal — worst case a lazy import fails gracefully
 
@@ -9707,15 +9992,35 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_macos():
                 try:
                     from hermes_cli.gateway import (
+                        launchd_start,
                         launchd_restart,
                         get_launchd_label,
                         get_launchd_plist_path,
                     )
 
                     plist_path = get_launchd_plist_path()
+                    label = get_launchd_label()
+
+                    def _try_launchd_repair(reason: str) -> bool:
+                        try:
+                            print(f"  → {label}: {reason}; repairing launchd job...")
+                            launchd_start()
+                            restarted_services.append(label)
+                            return True
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(f"  ⚠ Gateway launchd repair failed: {stderr}")
+                        except SystemExit as e:
+                            print(
+                                f"  ⚠ Gateway launchd repair exited with code {e.code}"
+                            )
+                        except Exception as e:
+                            print(f"  ⚠ Gateway launchd repair failed: {e}")
+                        return False
+
                     if plist_path.exists():
                         check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
+                            ["launchctl", "list", label],
                             capture_output=True,
                             text=True,
                             timeout=5,
@@ -9723,10 +10028,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         if check.returncode == 0:
                             try:
                                 launchd_restart()
-                                restarted_services.append(get_launchd_label())
+                                restarted_services.append(label)
                             except subprocess.CalledProcessError as e:
                                 stderr = (getattr(e, "stderr", "") or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")
+                                _try_launchd_repair("restart failed")
+                        else:
+                            detail = (check.stderr or check.stdout or "").strip()
+                            reason = "launchd job is not loaded"
+                            if detail:
+                                reason = f"{reason} ({detail})"
+                            _try_launchd_repair(reason)
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 
@@ -11397,6 +11709,132 @@ def cmd_claw(args):
     claw_command(args)
 
 
+_POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS = frozenset(
+    {
+        "-w", "--worktree",
+        "--accept-hooks",
+        "--yolo",
+        "--pass-session-id",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--tui",
+        "--cli",
+        "--dev",
+    }
+)
+
+_POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS = frozenset(
+    {
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-s", "--skills",
+    }
+)
+
+
+def _subcommand_option_strings(subparsers) -> dict[str, set[str]]:  # noqa: ANN001
+    choices = getattr(subparsers, "choices", {}) or {}
+    return {
+        name: {
+            option
+            for action in getattr(parser, "_actions", [])
+            for option in getattr(action, "option_strings", [])
+        }
+        for name, parser in choices.items()
+    }
+
+
+def _hoist_post_subcommand_global_flags(
+    argv: list[str],
+    known_cmds: set[str] | frozenset[str],
+    subcommand_option_strings: dict[str, set[str]] | None = None,
+) -> list[str]:
+    """Move known top-level launcher flags before the subcommand.
+
+    ``argparse`` only accepts parent-parser options before a subcommand unless
+    each child parser repeats them. That is easy to forget in launchers and
+    relaunch paths: ``hermes dashboard --no-open --tui`` should not die just
+    because ``--tui`` trails the dashboard command. Keep this deliberately
+    conservative: hoist only top-level flags whose values remain meaningful at
+    the parent level, and leave command-specific flags untouched.
+    """
+    if not argv:
+        return argv
+
+    try:
+        separator_index = argv.index("--")
+    except ValueError:
+        separator_index = len(argv)
+
+    head = argv[:separator_index]
+    tail = argv[separator_index:]
+
+    command_index = None
+    i = 0
+    while i < len(head):
+        token = head[i]
+        if token.startswith("-"):
+            if "=" in token:
+                i += 1
+                continue
+            if token in _TOP_LEVEL_VALUE_FLAGS and i + 1 < len(head):
+                i += 2
+                continue
+            i += 1
+            continue
+        if token in known_cmds:
+            command_index = i
+            break
+        return argv
+
+    if command_index is None:
+        return argv
+
+    prefix = head[:command_index]
+    command_and_args = head[command_index:]
+    command_name = command_and_args[0]
+    native_options = (subcommand_option_strings or {}).get(command_name, set())
+    hoisted: list[str] = []
+    remainder: list[str] = []
+    i = 0
+    while i < len(command_and_args):
+        token = command_and_args[i]
+        if i > 0 and token in _POST_SUBCOMMAND_TOP_LEVEL_BOOL_FLAGS:
+            (remainder if token in native_options else hoisted).append(token)
+            i += 1
+            continue
+
+        if i > 0:
+            inline_value_match = next(
+                (
+                    flag
+                    for flag in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS
+                    if token.startswith(f"{flag}=")
+                ),
+                None,
+            )
+            if inline_value_match:
+                (remainder if inline_value_match in native_options else hoisted).append(token)
+                i += 1
+                continue
+
+            if token in _POST_SUBCOMMAND_TOP_LEVEL_VALUE_FLAGS and i + 1 < len(command_and_args):
+                (remainder if token in native_options else hoisted).extend(
+                    [token, command_and_args[i + 1]]
+                )
+                i += 2
+                continue
+
+        remainder.append(token)
+        i += 1
+
+    if not hoisted:
+        return argv
+
+    return [*prefix, *hoisted, *remainder, *tail]
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
@@ -12342,7 +12780,14 @@ def main():
         # and raises OSError on failure (which propagates as a traceback).
         sys.exit(1)
 
-    _processed_argv = _coalesce_session_name_args(sys.argv[1:])
+    _known_cmds = (
+        set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
+    )
+    _processed_argv = _hoist_post_subcommand_global_flags(
+        _coalesce_session_name_args(sys.argv[1:]),
+        _known_cmds,
+        _subcommand_option_strings(subparsers),
+    )
 
     # ── Defensive subparser routing (bpo-9338 workaround) ───────────
     # On some Python versions (notably <3.11), argparse fails to route

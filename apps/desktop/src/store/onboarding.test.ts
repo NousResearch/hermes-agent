@@ -63,6 +63,16 @@ function onboardingContext(requestGateway: OnboardingContext['requestGateway']):
   return { requestGateway }
 }
 
+function gatewayTransportTimeout(): OnboardingContext['requestGateway'] {
+  return async method => {
+    if (method === 'setup.status' || method === 'setup.runtime_check') {
+      throw new Error(`request timed out: ${method}`)
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  }
+}
+
 describe('refreshOnboarding', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -114,6 +124,25 @@ describe('refreshOnboarding', () => {
     expect(ready).toBe(false)
     expect(api).not.toHaveBeenCalled()
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['cached'])
+  })
+
+  it('does not turn backend transport timeouts into provider setup', async () => {
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(baseState({ configured: true, providers: null }))
+
+    const ready = await refreshOnboarding(onboardingContext(gatewayTransportTimeout()))
+
+    expect(ready).toBe(false)
+    expect(api).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+    expect($desktopOnboarding.get().configured).toBe(true)
+    expect($desktopOnboarding.get().providers).toBeNull()
+    expect($desktopOnboarding.get().reason).toBe('request timed out: setup.runtime_check')
   })
 
   it('deduplicates concurrent provider refresh calls', async () => {

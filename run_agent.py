@@ -1250,6 +1250,31 @@ class AIAgent:
                 pass
         return AIAgent._model_requires_responses_api(model)
 
+    def _emit_token_usage(self, input_tokens: int, output_tokens: int,
+                          total_tokens: int, context_tokens: int,
+                          context_length: int) -> None:
+        """Emit structured token usage data to the gateway for real-time UI updates.
+
+        The gateway forwards this as a structured ``token.usage`` event so the
+        desktop app's context bar can update smoothly during a turn rather than
+        jumping to the final value at end-of-turn.
+        """
+        if not self.status_callback:
+            return
+        import json
+        payload = json.dumps({
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "context_tokens": context_tokens,
+            "context_length": context_length,
+            "context_pct": round(context_tokens / context_length * 100, 1) if context_length > 0 else 0,
+        })
+        try:
+            self.status_callback("token_usage", payload)
+        except Exception:
+            logger.debug("status_callback error in _emit_token_usage", exc_info=True)
+
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
 
@@ -1632,6 +1657,9 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    # Explicit sender from a remote client wins; None lets
+                    # append_message auto-stamp the local device for user rows.
+                    sender_device=msg.get("sender_device") if role == "user" else None,
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)

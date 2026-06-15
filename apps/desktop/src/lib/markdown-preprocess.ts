@@ -8,14 +8,7 @@ const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
-// Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
-// abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
-// a very common LLM pattern) doesn't swallow the trailing `**` into the href.
-// `*` is never meaningful in a real URL path, and GFM's own autolink extension
-// likewise strips trailing emphasis/punctuation — so dropping it here is safe
-// and keeps the emphasis run intact. Other trailing punctuation is still peeled
-// off by the final `[^\s<>"'`*.,;:!?]` class.
-const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
+const RAW_URL_RE = /https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i

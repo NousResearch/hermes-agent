@@ -25,6 +25,7 @@ import {
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import { $remoteSessions } from '@/store/remote-sessions'
 import {
   $activeSessionId,
   $attentionSessionIds,
@@ -101,6 +102,10 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Backoff is 1,2,4,8,15,15… s; the 6th attempt lands ~45s into a sustained
+    // outage. Past that we stop pretending it's transient and raise a
+    // recoverable boot error (the escape hatch) instead of an endless spinner.
+    const RECONNECT_ESCALATION_ATTEMPTS = 6
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -126,13 +131,6 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
-        // remote backend can become unreachable, but it has no child process
-        // whose 'exit' would clear the main process's cached descriptor — without
-        // this the renderer re-dials the same dead endpoint forever and stays on
-        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
-
         const conn = await desktop.getConnection($activeGatewayProfile.get())
 
         if (cancelled) {
@@ -184,6 +182,15 @@ export function useGatewayBoot({
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1
+      // After a sustained failure window (~45s of backoff, the >=6th attempt),
+      // surface a RECOVERABLE boot error so BootFailureOverlay (Use local
+      // gateway / Sign in / Retry) replaces the dead-end CONNECTING spinner.
+      // The backoff loop keeps running underneath; a later successful reconnect
+      // clears it (onState 'open' below). Only post-boot — initial-boot failure
+      // has its own error path.
+      if (bootCompleted && reconnectAttempt >= RECONNECT_ESCALATION_ATTEMPTS && !$desktopBoot.get().error) {
+        failDesktopBoot(translateNow('boot.errors.gatewayUnreachable'))
+      }
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
         void attemptReconnect()
@@ -231,13 +238,9 @@ export function useGatewayBoot({
         reconnectAttempt = 0
         reauthNotified = false
         clearReconnectTimer()
-
-        // A revalidate-driven reconnect can rebuild the backend in place when the
-        // cached remote was found dead, which re-drives the boot-progress overlay.
-        // Unlike the initial boot, nothing calls completeDesktopBoot() afterwards,
-        // so dismiss it here once we're open again — otherwise the overlay sticks
-        // at ~94%. A no-op on a normal (non-rebuild) reconnect.
-        if (bootCompleted) {
+        // Recovered from the prolonged-drop escape hatch: clear the recoverable
+        // boot error and hide the overlay now that we're connected again.
+        if ($desktopBoot.get().error) {
           completeDesktopBoot()
         }
       } else if (bootCompleted && (st === 'closed' || st === 'error')) {
@@ -282,6 +285,17 @@ export function useGatewayBoot({
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {
           keep.add(normalizeProfileKey(session.profile))
+        }
+      }
+
+      // A REMOTE session that's still running (or waiting on input) keeps its
+      // endpoint backend alive so the stream keeps painting after the user
+      // switches away; idle remotes are pruned like idle profiles (channels
+      // Phase 2b). Endpoint keys contain '://' so they can't collide with
+      // profile keys.
+      for (const remote of $remoteSessions.get()) {
+        if (live.has(remote.sessionId)) {
+          keep.add(remote.endpoint)
         }
       }
 

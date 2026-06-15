@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
@@ -11,8 +11,8 @@ import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } fro
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
-import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -140,6 +140,7 @@ function IdleView({
 }) {
   const { t } = useI18n()
   const u = t.updates
+  const rebuildNeeded = status?.rebuildNeeded === true
 
   if (!status && checking) {
     return (
@@ -186,13 +187,37 @@ function IdleView({
     )
   }
 
-  if (behind === 0) {
+  if (behind === 0 && !rebuildNeeded) {
     return (
       <CenteredStatus
         body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
         title={u.allSetTitle}
       />
+    )
+  }
+
+  // When a checkout is both behind and stale, show the commit list first. The
+  // pull/rebuild flow supersedes the local stale-bundle nudge.
+  if (behind === 0 && rebuildNeeded) {
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <BrandMark className="size-16" />
+          <DialogTitle className="text-center text-xl">{u.rebuildTitle}</DialogTitle>
+          <DialogDescription className="text-center text-sm">
+            {u.rebuildBody}
+          </DialogDescription>
+        </div>
+        <div className="grid gap-2">
+          <Button className="font-semibold" onClick={onInstall} size="lg">
+            {u.updateNow}
+          </Button>
+          <Button className="font-medium" onClick={onLater} type="button" variant="text">
+            {u.maybeLater}
+          </Button>
+        </div>
+      </div>
     )
   }
 
@@ -257,10 +282,14 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
-    void writeClipboardText(command).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1800)
-    })
+    void copyTextWithFeedback(command, { successMessage: u.copied, successTitle: u.copy })
+      .then(copied => {
+        if (copied) {
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1800)
+        }
+      })
+      .catch(() => undefined)
   }
 
   return (

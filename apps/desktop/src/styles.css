@@ -686,6 +686,22 @@ textarea,
   user-select: text;
 }
 
+[data-slot='sidebar-foreground'] {
+  color: var(--color-sidebar-foreground);
+}
+
+[data-slot='sidebar-accent-foreground'] {
+  color: var(--color-sidebar-accent-foreground);
+}
+
+text-sidebar-foreground {
+  color: var(--color-sidebar-foreground);
+}
+
+text-sidebar-accent-foreground {
+  color: var(--color-sidebar-accent-foreground);
+}
+
 button,
 [role='button'] {
   -webkit-user-select: none;
@@ -954,31 +970,32 @@ canvas {
   line-height: 1.45;
 }
 
-.fit-text {
-  --fit-captured-length: initial;
-  --fit-support-sentinel: var(--fit-captured-length, 9999px);
-
-  display: flex;
-  container-type: inline-size;
+[data-slot='aui_intro-wordmark'] > [aria-hidden='true'] {
+  position: absolute;
+  inset: 0 auto auto 0;
+  pointer-events: none;
 }
 
-.fit-text > [aria-hidden] {
+.fit-text {
+  display: flex;
+  font-size: var(--fit-text-min, 1rem);
+  container-type: inline-size;
+  --captured-length: initial;
+  --support-sentinel: var(--captured-length, 9999px);
+}
+
+.fit-text > [aria-hidden='true'] {
   visibility: hidden;
 }
 
-.fit-text > :not([aria-hidden]) {
+.fit-text > :not([aria-hidden='true']) {
   flex-grow: 1;
   container-type: inline-size;
-
-  --fit-captured-length: 100cqi;
-  --fit-available-space: var(--fit-captured-length);
+  --captured-length: 100cqi;
+  --available-space: var(--captured-length);
 }
 
-.fit-text > :not([aria-hidden]) > * {
-  --fit-support-sentinel: inherit;
-  --fit-captured-length: 100cqi;
-  --fit-ratio: tan(atan2(var(--fit-available-space), var(--fit-available-space) - var(--fit-captured-length)));
-
+.fit-text > :not([aria-hidden='true']) > * {
   display: block;
   inline-size: var(--fit-available-space);
   font-size: clamp(
@@ -989,12 +1006,18 @@ canvas {
 }
 
 @container (inline-size > 0) {
-  .fit-text > :not([aria-hidden]) > * {
+  .fit-text > :not([aria-hidden='true']) > * {
     white-space: nowrap;
   }
 }
 
-@property --fit-captured-length {
+@property --captured-length {
+  syntax: '<length>';
+  initial-value: 0px;
+  inherits: true;
+}
+
+@property --captured-length2 {
   syntax: '<length>';
   initial-value: 0px;
   inherits: true;

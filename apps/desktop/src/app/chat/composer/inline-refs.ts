@@ -13,22 +13,54 @@ import {
 /** A chip to insert: a raw `@kind:value` string, or a typed value + display label. */
 export type InlineRefInput = string | { kind: string; label?: string; value: string }
 
-/** MIME for an in-app session drag (sidebar row → composer). */
+/** MIME for an in-app session drag (sidebar row → composer / pin sections). */
 export const HERMES_SESSION_MIME = 'application/x-hermes-session'
+
+/** Marker MIME set when the dragged row is currently pinned. dragover events
+ * expose only `types` (payload data is sealed until drop), so pin-state has to
+ * ride as a type for drop zones to filter drags they would act on. */
+export const HERMES_SESSION_PINNED_MIME = 'application/x-hermes-session-pinned'
+
+/** Marker MIME set when the dragged row comes from the Archived section, for
+ * the same dragover-only-sees-types reason as the pinned marker. */
+export const HERMES_SESSION_ARCHIVED_MIME = 'application/x-hermes-session-archived'
 
 export interface SessionDragPayload {
   id: string
   profile: string
   title: string
+  /** Durable pin id (lineage root) — what pin/unpin drop targets key on. */
+  pinId?: string
+  /** True when the drag started on a pinned sidebar row. */
+  pinned?: boolean
+  /** True when the drag started on an Archived-section row. */
+  archived?: boolean
 }
 
 export function writeSessionDrag(transfer: DataTransfer, payload: SessionDragPayload) {
   transfer.setData(HERMES_SESSION_MIME, JSON.stringify(payload))
+
+  if (payload.pinned) {
+    transfer.setData(HERMES_SESSION_PINNED_MIME, '1')
+  }
+
+  if (payload.archived) {
+    transfer.setData(HERMES_SESSION_ARCHIVED_MIME, '1')
+  }
+
   transfer.effectAllowed = 'copy'
 }
 
 export function dragHasSession(transfer: DataTransfer | null) {
   return Boolean(transfer) && Array.from(transfer!.types || []).includes(HERMES_SESSION_MIME)
+}
+
+export function dragSessionIsPinned(transfer: DataTransfer | null) {
+  return Boolean(transfer) && Array.from(transfer!.types || []).includes(HERMES_SESSION_PINNED_MIME)
+}
+
+export function dragSessionIsArchived(transfer: DataTransfer | null) {
+  return Boolean(transfer) && Array.from(transfer!.types || []).includes(HERMES_SESSION_ARCHIVED_MIME)
 }
 
 export function readSessionDrag(transfer: DataTransfer | null): null | SessionDragPayload {
@@ -41,7 +73,16 @@ export function readSessionDrag(transfer: DataTransfer | null): null | SessionDr
   try {
     const parsed = JSON.parse(raw) as Partial<SessionDragPayload>
 
-    return parsed.id ? { id: parsed.id, profile: parsed.profile || 'default', title: parsed.title || '' } : null
+    return parsed.id
+      ? {
+          archived: Boolean(parsed.archived),
+          id: parsed.id,
+          pinId: parsed.pinId || parsed.id,
+          pinned: Boolean(parsed.pinned),
+          profile: parsed.profile || 'default',
+          title: parsed.title || ''
+        }
+      : null
   } catch {
     return null
   }

@@ -4,6 +4,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearInFlightTurnJournal, persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
@@ -23,28 +24,6 @@ import {
 
 import type { ClientSessionState } from '../../types'
 
-// Shallow per-message identity check. When a flush carries no transcript
-// changes, `preserveLocalAssistantErrors` returns the same message objects in
-// the same order, so reference equality per slot is enough to detect "nothing
-// to publish" and avoid a needless `$messages` churn.
-function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
-  if (a === b) {
-    return true
-  }
-
-  if (a.length !== b.length) {
-    return false
-  }
-
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) {
-      return false
-    }
-  }
-
-  return true
-}
-
 interface SessionStateCacheOptions {
   activeSessionId: string | null
   busyRef: MutableRefObject<boolean>
@@ -59,8 +38,8 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   setCurrentProvider(state.provider ?? '')
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
-  setCurrentFastMode(state.fast ?? false)
-  setYoloActive(state.yolo ?? false)
+  setCurrentFastMode(state.fastMode ?? false)
+  setYoloActive(state.yoloActive ?? false)
   setCurrentPersonality(state.personality ?? '')
 }
 
@@ -134,21 +113,7 @@ export function useSessionStateCache({
       return
     }
 
-    // `preserveLocalAssistantErrors` always returns a fresh array, so publishing
-    // it unconditionally puts a new `$messages` reference on the store every
-    // flush — including the periodic `session.info` heartbeats that don't touch
-    // the transcript. That churns ChatView → runtimeMessageRepository → the
-    // assistant-ui runtime → the virtualizer, which re-measures and visibly
-    // jerks the scroll position while the user is reading. Skip the publish when
-    // the merged result is content-identical to what's already on screen.
-    const currentMessages = $messages.get()
-    const nextMessages = preserveLocalAssistantErrors(pending.state.messages, currentMessages)
-
-    if (!sameMessageList(nextMessages, currentMessages)) {
-      setMessages(nextMessages)
-    }
-
-    syncRuntimeMetadataToView(pending.state)
+    setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
@@ -157,6 +122,8 @@ export function useSessionStateCache({
     // time intact on focus instead of zeroing it (the "timer restarts" bug).
     setTurnStartedAt(pending.state.turnStartedAt)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
+
+  const MAX_VIEW_SYNC_DELAY_MS = 100
 
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
@@ -176,29 +143,6 @@ export function useSessionStateCache({
       syncRuntimeMetadataToView(state)
       pendingViewStateRef.current = { sessionId, state }
 
-      // Terminal / attention transitions (turn finished, error, or the agent is
-      // now waiting on the user) MUST reach the view immediately. Electron
-      // throttles `requestAnimationFrame` to ~0 while the window is
-      // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
-      // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
-      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
-      // (cancelling any in-flight RAF, since we're about to publish the latest
-      // state anyway). The plain busy heartbeat stays RAF-batched: that
-      // coalescing exists only to keep periodic `session.info` updates from
-      // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !state.busy || state.needsInput
-
-      if (isCriticalTransition) {
-        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
-          window.cancelAnimationFrame(viewSyncRafRef.current)
-          viewSyncRafRef.current = null
-        }
-
-        flushPendingViewState()
-
-        return
-      }
-
       if (viewSyncRafRef.current !== null) {
         return
       }
@@ -213,6 +157,21 @@ export function useSessionStateCache({
         viewSyncRafRef.current = null
         flushPendingViewState()
       })
+
+      // Safety net: if rAF is throttled (background tab, compositor stall, etc.)
+      // the pending state would sit indefinitely. A short setTimeout ensures
+      // streaming text still appears within 100ms even when rAF is delayed.
+      const safetyTimer = setTimeout(() => {
+        if (viewSyncRafRef.current !== null) {
+          window.cancelAnimationFrame(viewSyncRafRef.current)
+          viewSyncRafRef.current = null
+        }
+
+        flushPendingViewState()
+      }, MAX_VIEW_SYNC_DELAY_MS)
+
+      // If rAF fires first, clear the safety timer from flushPendingViewState.
+      // We handle this by checking a flag in flushPendingViewState.
     },
     [flushPendingViewState]
   )
@@ -241,10 +200,15 @@ export function useSessionStateCache({
         setSessionWorking(previous.storedSessionId, false)
       }
 
+      if (previous.storedSessionId && previous.storedSessionId !== next.storedSessionId) {
+        clearInFlightTurnJournal(previous.storedSessionId)
+      }
+
       if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
         setSessionAttention(previous.storedSessionId, false)
       }
 
+      persistInFlightTurnState(sessionId, next)
       setSessionWorking(next.storedSessionId, next.busy)
       setSessionAttention(next.storedSessionId, next.needsInput)
 

@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import {
   cancelOAuthSession,
   getGlobalModelOptions,
@@ -517,6 +518,12 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   const state = $desktopOnboarding.get()
   const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
 
+  if (runtime.unavailable) {
+    patch({ reason })
+
+    return false
+  }
+
   writeCachedConfigured(false)
   patch({ configured: false, reason })
 
@@ -665,7 +672,7 @@ export function cancelOnboardingFlow() {
 
 async function copyAndFlash(text: string, predicate: (flow: OnboardingFlow) => boolean) {
   try {
-    await navigator.clipboard.writeText(text)
+    await copyTextWithFeedback(text)
   } catch {
     return
   }

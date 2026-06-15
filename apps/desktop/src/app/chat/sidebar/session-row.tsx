@@ -1,23 +1,23 @@
 import { useStore } from '@nanostores/react'
+import { motion } from 'motion/react'
+import { useState } from 'react'
 import type * as React from 'react'
 
-import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
-import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { type SessionDragPayload, writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
-import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, sessionPinId } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+import type { SessionPresenceRecord } from '@/types/hermes'
 
-import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionActionsMenu, type SessionBulkContextActions, SessionContextMenu } from './session-actions-menu'
 
-interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
+export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
   isPinned: boolean
   isSelected: boolean
@@ -28,7 +28,32 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onResume: () => void
   reorderable?: boolean
   dragging?: boolean
-  dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  nativeDraggable?: boolean
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
+  /** Presence record for this session (from another device) — indicates live/active state. */
+  presence?: SessionPresenceRecord
+  /** Row renders in the Archived section: menus swap Archive→Restore, pin
+   * gestures are disabled (a pin can't resolve an archived row), and the drag
+   * payload carries the archived marker so drop zones can offer "restore". */
+  archived?: boolean
+  onRestore?: () => void
+  /** Row participates in its section's multi-select. */
+  selectable?: boolean
+  /** ≥1 row in THIS section is selected → clicks toggle membership instead of
+   * resuming, and the leading slot becomes a checkbox. */
+  selectionActive?: boolean
+  /** This row is in the current selection. */
+  checked?: boolean
+  onToggleSelect?: (mode: 'range' | 'single') => void
+  /** Multi-selected ids to use for the row's right-click menu when this row is checked. */
+  bulkSelectedSessionIds?: readonly string[]
+  onArchiveSelectedSessions?: SessionBulkContextActions['onArchiveSessions']
+  onDeleteSelectedSessions?: SessionBulkContextActions['onDeleteSessions']
+  onHaltSelectedSessions?: SessionBulkContextActions['onHaltSessions']
+  onPromptSelectedSessions?: SessionBulkContextActions['onPromptSessions']
+  onRestoreSelectedSessions?: SessionBulkContextActions['onRestoreSessions']
+  onSteerSelectedSessions?: SessionBulkContextActions['onSteerSessions']
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -37,7 +62,7 @@ const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
   [60_000, 'ageMin']
 ]
 
-function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
+export function formatSidebarRowAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
   for (const [ms, key] of AGE_TICKS) {
@@ -58,9 +83,25 @@ export function SidebarSessionRow({
   onDelete,
   onPin,
   onResume,
+  presence,
   reorderable = false,
   dragging = false,
-  dragHandleProps,
+  nativeDraggable = !reorderable,
+  onSessionDragEnd,
+  onSessionDragStart,
+  archived = false,
+  onRestore,
+  selectable = false,
+  selectionActive = false,
+  checked = false,
+  onToggleSelect,
+  bulkSelectedSessionIds,
+  onArchiveSelectedSessions,
+  onDeleteSelectedSessions,
+  onHaltSelectedSessions,
+  onPromptSelectedSessions,
+  onRestoreSelectedSessions,
+  onSteerSelectedSessions,
   className,
   style,
   ref,
@@ -69,170 +110,273 @@ export function SidebarSessionRow({
   const { t } = useI18n()
   const r = t.sidebar.row
   const title = sessionTitle(session)
-  const age = formatAge(session.last_active || session.started_at, r)
-  const handleLabel = `Reorder ${title}`
-  // A handed-off session's live source is local, but it originated on a
-  // messaging platform — surface that origin as a small badge so e.g. a
-  // Telegram thread continued here still reads as Telegram.
-  const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
-  const handoffLabel = handoffSource ? sessionSourceLabel(handoffSource) ?? handoffSource : null
+  const age = formatSidebarRowAge(session.last_active || session.started_at, r)
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
+  const [actionsKeyboardFocus, setActionsKeyboardFocus] = useState(false)
+  const actionsVisible = actionsMenuOpen || actionsKeyboardFocus
+
+  const bulkContextActions =
+    checked && bulkSelectedSessionIds && bulkSelectedSessionIds.length > 1
+      ? {
+          archived,
+          onArchiveSessions: onArchiveSelectedSessions,
+          onDeleteSessions: onDeleteSelectedSessions,
+          onHaltSessions: onHaltSelectedSessions,
+          onPromptSessions: onPromptSelectedSessions,
+          onRestoreSessions: onRestoreSelectedSessions,
+          onSteerSessions: onSteerSelectedSessions,
+          sessionIds: bulkSelectedSessionIds
+        }
+      : undefined
+
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const titleActive = isSelected || checked || (isWorking && !needsInput)
+  const titleEmphasized = titleActive
+
+  const toggleSelect = (mode: 'range' | 'single') => {
+    triggerHaptic('selection')
+    onToggleSelect?.(mode)
+  }
+
+  const handleSessionDragStart = (event: React.DragEvent<HTMLElement>) => {
+    const target = event.target instanceof HTMLElement ? event.target : null
+
+    if (target?.closest('[data-session-row-actions]')) {
+      event.preventDefault()
+
+      return
+    }
+
+    const payload: SessionDragPayload = {
+      archived,
+      id: session.id,
+      pinId: sessionPinId(session),
+      pinned: isPinned,
+      profile: session.profile || 'default',
+      title
+    }
+
+    writeSessionDrag(event.dataTransfer, payload)
+    onSessionDragStart?.(payload)
+  }
 
   return (
     <SessionContextMenu
+      archived={archived}
+      bulkActions={bulkContextActions}
       onArchive={onArchive}
       onDelete={onDelete}
       onPin={onPin}
+      onRestore={onRestore}
+      onSelect={selectable && onToggleSelect ? () => toggleSelect('single') : undefined}
       pinned={isPinned}
       profile={session.profile}
       sessionId={session.id}
       title={title}
     >
       <div
-        className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
-          isSelected && 'bg-(--ui-row-active-background)',
-          isWorking && 'text-foreground',
-          // Opaque surface while lifted so the dragged row erases what's under
-          // it (translucency let the rows below bleed through).
-          dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
-          className
-        )}
-        data-working={isWorking ? 'true' : undefined}
-        draggable
-        onDragStart={event => {
-          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
-          // native drag so the two DnD systems don't fight.
-          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
-            event.preventDefault()
-
-            return
-          }
-
-          writeSessionDrag(event.dataTransfer, {
-            id: session.id,
-            profile: session.profile || 'default',
-            title
-          })
-        }}
+        className="[-webkit-app-region:no-drag]"
+        data-session-drag-source={nativeDraggable ? true : undefined}
+        data-session-id={session.id}
+        draggable={nativeDraggable}
+        onDragEnd={nativeDraggable ? () => onSessionDragEnd?.() : undefined}
+        onDragStart={nativeDraggable ? handleSessionDragStart : undefined}
         ref={ref}
         style={style}
         {...rest}
       >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
-        <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
-          onClick={event => {
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              onPin()
-
-              return
-            }
-
-            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window — the universal "open in a new window" gesture. Archive
-            // lives in the row's ⋯ and right-click menus. Falls through to a
-            // normal resume when standalone windows aren't available (web embed).
-            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
-
-              return
-            }
-
-            onResume()
-          }}
-          type="button"
-        >
-          {reorderable ? (
-            <span
-              {...dragHandleProps}
-              aria-label={handleLabel}
-              className={cn(
-                // Scope the dot↔grabber swap to a local group so the grabber
-                // only reveals when hovering/focusing the handle itself, not
-                // anywhere on the row. Width MUST match the non-reorderable dot
-                // column (w-3.5) so rows don't shift horizontally when reorder is
-                // toggled (e.g. scoped → ALL-profiles view).
-                'group/handle relative -my-0.5 grid w-3.5 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing',
-                // The quest-glow box-shadow extends past the dot; let it bleed
-                // out instead of being clipped by this handle's overflow-hidden.
-                needsInput && 'overflow-visible'
-              )}
-              data-reorder-handle
-              onClick={event => event.stopPropagation()}
-            >
-              <SidebarRowDot
-                className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                isWorking={isWorking}
-                needsInput={needsInput}
-              />
-              <Codicon
-                className={cn(
-                  'absolute text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/handle:opacity-80 group-focus-within/handle:opacity-80 hover:text-(--ui-text-secondary)',
-                  dragging && 'text-(--ui-text-secondary) opacity-100'
-                )}
-                name="grabber"
-                size="0.75rem"
-              />
-            </span>
-          ) : (
-            <span
-              className={cn(
-                'grid w-3.5 shrink-0 place-items-center',
-                needsInput ? 'overflow-visible' : 'overflow-hidden'
-              )}
-            >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
+        <motion.div
+          className={cn(
+            'group/session-row relative grid min-h-[1.625rem] w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center rounded-md transition-[background-color,color,opacity,box-shadow] duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+            reorderable && 'active:cursor-grabbing',
+            (isSelected || checked) && 'bg-(--ui-row-active-background)',
+            isWorking && 'text-foreground',
+            dragging && 'z-10 cursor-grabbing opacity-60',
+            '[-webkit-app-region:no-drag]',
+            className
           )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
-              <PlatformAvatar
-                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
-              />
-            </Tip>
-          ) : null}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </span>
-        </button>
-        <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+          data-actions-visible={actionsVisible ? 'true' : undefined}
+          data-selected={checked ? 'true' : undefined}
+          data-session-row-chrome
+          data-working={isWorking ? 'true' : undefined}
+          layout="position"
+          onDoubleClick={selectionActive ? () => onResume() : undefined}
+          transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
+        >
+          {isWorking && !needsInput && !dragging && <span aria-hidden="true" className="arc-border" />}
+          <button
+            className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
+            onClick={event => {
+              const canSelect = Boolean(selectable && onToggleSelect)
+
+              // Desktop-convention selection on every selectable row:
+              //   ⌘/⌃-click  — toggle THIS row in or out (non-contiguous sets,
+              //                gaps welcome; also how a selection starts).
+              //                Takes the binding over from open-in-new-window,
+              //                which stays in the row's ⋯ / right-click menus.
+              //   ⌥-click    — same toggle (legacy alias from the first cut).
+              //   shift-click — contiguous range from the anchor; a cold
+              //                shift-click seeds the anchor from the OPEN row
+              //                so the run includes where the user started.
+              //   plain click — resume normally; while a selection is active it
+              //                toggles instead, and double-click still resumes.
+              // Every gesture toggles, so re-clicking a selected row deselects
+              // it regardless of modifier.
+              if (canSelect && (event.metaKey || event.ctrlKey || event.altKey)) {
+                event.preventDefault()
+                event.stopPropagation()
+                toggleSelect('single')
+
+                return
+              }
+
+              if (canSelect && event.shiftKey) {
+                event.preventDefault()
+                event.stopPropagation()
+                toggleSelect('range')
+
+                return
+              }
+
+              if (canSelect && selectionActive) {
+                event.preventDefault()
+                event.stopPropagation()
+                toggleSelect('single')
+
+                return
+              }
+
+              // Rows outside any selectable section keep the legacy bindings.
+              if (event.shiftKey) {
+                event.preventDefault()
+                event.stopPropagation()
+
+                if (!archived) {
+                  triggerHaptic('selection')
+                  onPin()
+                }
+
+                return
+              }
+
+              // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+              // window on non-selectable rows. Falls through to a normal resume
+              // when standalone windows aren't available (web embed).
+              if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
+                event.preventDefault()
+                event.stopPropagation()
+                triggerHaptic('selection')
+                void openSessionInNewWindow(session.id)
+
+                return
+              }
+
+              onResume()
+            }}
+            type="button"
+          >
+            {selectionActive ? (
+              // Selection mode: the leading dot column becomes the checkbox, so
+              // rows don't shift horizontally when a selection starts (same
+              // w-3.5 slot the other leading affordances use).
+              <span aria-checked={checked} className="grid w-3.5 shrink-0 place-items-center" role="checkbox">
+                <span
+                  className={cn(
+                    'grid size-3 place-items-center rounded-[3px] border transition-colors',
+                    checked
+                      ? 'border-foreground/80 bg-foreground/90 text-(--ui-sidebar-surface-background,var(--background))'
+                      : 'border-(--ui-stroke-secondary) bg-transparent'
+                  )}
+                >
+                  {checked && <Codicon name="check" size="0.5rem" />}
+                </span>
+              </span>
+            ) : (
+              <span
+                className={cn(
+                  'grid w-3.5 shrink-0 place-items-center',
+                  needsInput ? 'overflow-visible' : 'overflow-hidden',
+                  'self-center'
+                )}
+              >
+                <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+              </span>
+            )}
+            <div className="min-w-0 flex-1">
+              <span
+                className={cn(
+                  'block truncate text-[0.8125rem] group-hover/session-row:text-(--ui-text-primary)',
+                  titleActive ? 'text-(--ui-text-primary)' : 'text-(--ui-text-secondary)',
+                  titleEmphasized ? 'font-medium' : 'font-normal'
+                )}
+                data-session-row-title
+              >
+                {title}
+              </span>
+            </div>
+          </button>
+          {/* Trailing slot: on an IDLE row the timestamp is visible and slides
+            left only while the row is hovered or the menu/keyboard action is
+            actually visible. Plain pointer focus must not keep it displaced
+            after the menu closes. On an ACTIVE row the pulsing orange dot on
+            the left already signals "running", so the timestamp is hidden —
+            but its width is still reserved (opacity-0, not unmounted) so the
+            menu lands in the same spot and the row height never shifts.
+            Transform/opacity only — no layout reflow. */}
+          <div
+            className="relative flex h-full min-w-14 items-center justify-end self-stretch pl-1"
+            data-session-row-trailing
+          >
+            <span
+              className={cn(
+                'pointer-events-none min-w-6 pr-1 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
+                // Slide left past the menu's footprint so the age stays fully
+                // legible beside the revealed 3-dot button.
+                'group-hover/session-row:-translate-x-6 group-data-[actions-visible=true]/session-row:-translate-x-6',
+                // Active sessions: the orange dot is the status cue; hide the
+                // timestamp (keep its reserved width) for the whole active run.
+                // A clarify-blocked run keeps the timestamp visible because
+                // the actionable state is "waiting on user", not live motion.
+                isWorking && !needsInput && 'opacity-0'
+              )}
+              data-session-row-age
+            >
               {age}
             </span>
-          )}
-          <SessionActionsMenu
-            onArchive={onArchive}
-            onDelete={onDelete}
-            onPin={onPin}
-            pinned={isPinned}
-            profile={session.profile}
-            sessionId={session.id}
-            title={title}
-          >
-            <Button
-              aria-label={r.actionsFor(title)}
-              className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-              size="icon"
-              title={r.sessionActions}
-              variant="ghost"
-            >
-              <Codicon name="ellipsis" size="0.875rem" />
-            </Button>
-          </SessionActionsMenu>
-        </div>
+            <div className="absolute inset-y-0 right-1 grid place-items-center">
+              <SessionActionsMenu
+                archived={archived}
+                onArchive={onArchive}
+                onDelete={onDelete}
+                onOpenChange={setActionsMenuOpen}
+                onPin={onPin}
+                onRestore={onRestore}
+                onSelect={selectable && onToggleSelect ? () => toggleSelect('single') : undefined}
+                pinned={isPinned}
+                profile={session.profile}
+                sessionId={session.id}
+                title={title}
+              >
+                <Button
+                  aria-label={r.actionsFor(title)}
+                  className="size-5 translate-x-1 scale-90 rounded-[4px] bg-transparent text-transparent opacity-0 transition-all duration-150 ease-out group-hover/session-row:translate-x-0 group-hover/session-row:scale-100 group-hover/session-row:text-(--ui-text-tertiary) group-hover/session-row:opacity-100 group-data-[actions-visible=true]/session-row:translate-x-0 group-data-[actions-visible=true]/session-row:scale-100 group-data-[actions-visible=true]/session-row:text-(--ui-text-tertiary) group-data-[actions-visible=true]/session-row:opacity-100 hover:bg-(--ui-control-active-background)! hover:text-foreground! focus-visible:translate-x-0 focus-visible:scale-100 focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-0 data-[state=open]:translate-x-0 data-[state=open]:scale-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+                  data-session-row-actions
+                  onBlur={() => setActionsKeyboardFocus(false)}
+                  onFocus={event => setActionsKeyboardFocus(event.currentTarget.matches(':focus-visible'))}
+                  onPointerDown={event => event.stopPropagation()}
+                  size="icon"
+                  title={r.sessionActions}
+                  variant="ghost"
+                >
+                  <Codicon name="ellipsis" size="0.875rem" />
+                </Button>
+              </SessionActionsMenu>
+            </div>
+          </div>
+        </motion.div>
       </div>
     </SessionContextMenu>
   )
@@ -271,7 +415,7 @@ function SidebarRowDot({
       className={cn(
         'rounded-full',
         isWorking
-          ? "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
+          ? "relative size-1.5 bg-orange-500 shadow-[0_0_0.625rem_color-mix(in_srgb,#f97316_60%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-orange-500 before:opacity-70 before:content-['']"
           : 'size-1 bg-(--ui-text-quaternary) opacity-80',
         className
       )}

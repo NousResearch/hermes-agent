@@ -719,3 +719,88 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_save_custom_provider_updates_existing_providers_map_entry(monkeypatch, tmp_path):
+    """Re-onboarding an endpoint that already lives in the v12+ ``providers:``
+    map updates that entry in place instead of re-appending a legacy
+    custom_providers item (which later migrations duplicated into suffixed
+    providers: keys — taro + taro-3, ai-router + ai-router-0)."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.dump(
+            {
+                "providers": {
+                    "taro": {
+                        "api": "http://10.10.20.211:8080/v1",
+                        "name": "taro",
+                        "api_key": "sk-taro",
+                    }
+                }
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    def _save(cfg):
+        saved.update(cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    # Trailing slash on purpose — URL matching is normalized.
+    _save_custom_provider(
+        "http://10.10.20.211:8080/v1/",
+        api_key="sk-taro",
+        model="qwen3-coder",
+        context_length=131072,
+        name="taro",
+        api_mode="chat_completions",
+    )
+
+    assert "custom_providers" not in saved
+    entry = saved["providers"]["taro"]
+    assert entry["default_model"] == "qwen3-coder"
+    assert entry["models"]["qwen3-coder"]["context_length"] == 131072
+    assert entry["transport"] == "chat_completions"
+    assert entry["api_key"] == "sk-taro"
+
+
+def test_save_custom_provider_distinct_url_same_name_appends_legacy(monkeypatch, tmp_path):
+    """A genuinely distinct endpoint that happens to share a display name with
+    a ``providers:`` entry still gets saved as its own entry."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        yaml.dump(
+            {
+                "providers": {
+                    "taro": {
+                        "api": "http://10.10.20.211:8080/v1",
+                        "name": "taro",
+                    }
+                }
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    def _save(cfg):
+        saved.update(cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider("http://10.10.20.213:8080/v1", name="taro")
+
+    assert saved["providers"]["taro"]["api"] == "http://10.10.20.211:8080/v1"
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 1
+    assert entries[0]["base_url"] == "http://10.10.20.213:8080/v1"

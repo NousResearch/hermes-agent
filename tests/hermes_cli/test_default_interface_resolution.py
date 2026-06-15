@@ -182,6 +182,76 @@ class TestParserFlags:
         assert "--tui" in inherited
 
 
+class TestPostSubcommandGlobalFlagHoisting:
+    def _dashboard_parser(self):
+        from hermes_cli._parser import build_top_level_parser
+
+        parser, subparsers, _chat = build_top_level_parser()
+        dashboard = subparsers.add_parser("dashboard")
+        dashboard.add_argument("--port", type=int, default=9119)
+        dashboard.add_argument("--host", default="127.0.0.1")
+        dashboard.add_argument("--no-open", action="store_true")
+        return parser, subparsers
+
+    def test_dashboard_accepts_trailing_tui_flag(self):
+        parser, subparsers = self._dashboard_parser()
+        argv = m._hoist_post_subcommand_global_flags(
+            ["dashboard", "--no-open", "--host", "127.0.0.1", "--port", "65535", "--tui"],
+            set(subparsers.choices.keys()),
+            m._subcommand_option_strings(subparsers),
+        )
+
+        args = parser.parse_args(argv)
+
+        assert args.command == "dashboard"
+        assert args.tui is True
+        assert args.no_open is True
+        assert args.host == "127.0.0.1"
+        assert args.port == 65535
+
+    def test_dashboard_accepts_trailing_skills_and_tui_flags(self):
+        parser, subparsers = self._dashboard_parser()
+        argv = m._hoist_post_subcommand_global_flags(
+            ["dashboard", "--no-open", "--skills", "desktop-backend", "--tui"],
+            set(subparsers.choices.keys()),
+            m._subcommand_option_strings(subparsers),
+        )
+
+        args = parser.parse_args(argv)
+
+        assert args.command == "dashboard"
+        assert args.skills == ["desktop-backend"]
+        assert args.tui is True
+        assert args.no_open is True
+
+    def test_chat_keeps_native_provider_flag_after_subcommand(self):
+        parser, subparsers = self._dashboard_parser()
+        argv = m._hoist_post_subcommand_global_flags(
+            ["chat", "--provider", "gmi"],
+            set(subparsers.choices.keys()),
+            m._subcommand_option_strings(subparsers),
+        )
+
+        args = parser.parse_args(argv)
+
+        assert argv == ["chat", "--provider", "gmi"]
+        assert args.command == "chat"
+        assert args.provider == "gmi"
+
+    def test_double_dash_stops_global_flag_hoisting(self):
+        _parser, subparsers = self._dashboard_parser()
+        argv = ["dashboard", "--", "--tui"]
+
+        assert (
+            m._hoist_post_subcommand_global_flags(
+                argv,
+                set(subparsers.choices.keys()),
+                m._subcommand_option_strings(subparsers),
+            )
+            == argv
+        )
+
+
 # ---------------------------------------------------------------------------
 # config default — shipped default preserves classic behavior
 # ---------------------------------------------------------------------------

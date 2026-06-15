@@ -82,25 +82,11 @@ def _parse_package_from_args(
     if not args:
         return None, None
 
-    # Skip flags to find the package token.
-    # Honor npx's explicit install target: --package=NAME / --package NAME and
-    # the -p NAME short form, which name a package distinct from the executed
-    # binary. Without this the first bare positional (often the command name)
-    # is mistaken for the package.
+    # Skip flags to find the package token
     package_token = None
-    take_next = False
     for arg in args:
         if not isinstance(arg, str):
             continue
-        if take_next:
-            package_token = arg
-            break
-        if arg in ("--package", "-p"):
-            take_next = True
-            continue
-        if arg.startswith("--package="):
-            package_token = arg[len("--package="):]
-            break
         if arg.startswith("-"):
             continue
         package_token = arg

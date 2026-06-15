@@ -218,6 +218,14 @@ def build_turn_context(
 
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
+    # F-003 sender attribution: a remote client (different device attached to
+    # this gateway) declares who typed this prompt. The key rides the message
+    # dict into session persistence (the flush passes it through; the API
+    # builder strips it) and overrides the local-device auto-stamp.
+    _pending_sender = getattr(agent, "_pending_user_sender_device", None)
+    if _pending_sender:
+        user_msg["sender_device"] = _pending_sender
+        agent._pending_user_sender_device = None
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -291,6 +299,7 @@ def build_turn_context(
                 f">= {_compressor.threshold_tokens:,} threshold. "
                 "This may take a moment."
             )
+            _pre_compress_preflight_tokens = _preflight_tokens
             for _pass in range(3):
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
@@ -312,6 +321,13 @@ def build_turn_context(
                 )
                 if not _compressor.should_compress(_preflight_tokens):
                     break
+            if _preflight_tokens < _pre_compress_preflight_tokens:
+                # Surface the result in the desktop statusbar — auto-compression
+                # is otherwise invisible mid-session (#126 context-bar feature).
+                agent._emit_status(
+                    f"📦 Compression complete: ~{_pre_compress_preflight_tokens:,} "
+                    f"→ ~{_preflight_tokens:,} tokens."
+                )
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""

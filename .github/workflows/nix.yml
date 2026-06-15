@@ -63,6 +63,9 @@ jobs:
 
       - name: Post sticky PR comment (stale hashes)
         if: steps.hash_check.outputs.stale == 'true' && github.event_name == 'pull_request'
+        # The lockfile comment is cosmetic housekeeping: a comment-API failure
+        # (e.g. a transient 401) must not fail an otherwise green nix job.
+        continue-on-error: true
         uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
           header: nix-lockfile-check
@@ -89,6 +92,9 @@ jobs:
           github.event_name == 'pull_request' &&
           (steps.hash_check.outputs.stale == 'false' ||
            steps.flake.outcome == 'success')
+        # The lockfile comment is cosmetic housekeeping: a comment-API failure
+        # (e.g. a transient 401) must not fail an otherwise green nix job.
+        continue-on-error: true
         uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
         with:
           header: nix-lockfile-check

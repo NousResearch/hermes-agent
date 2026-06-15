@@ -44,7 +44,7 @@ hermes chat --verbose
 
 # 隔离的 git worktree（用于并行运行多个 agent）
 hermes -w                         # 在 worktree 中以交互模式运行
-hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
+hermes -w -q "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 ```
 
 ## 界面布局

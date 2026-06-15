@@ -3251,6 +3251,22 @@ _LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
 _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
 
 
+def _run_launchctl(
+    args: list[str],
+    *,
+    check: bool = True,
+    timeout: float | None = 30,
+) -> subprocess.CompletedProcess[str]:
+    """Run launchctl without leaking expected fallback stderr into GUI updaters."""
+    return subprocess.run(
+        ["launchctl", *args],
+        capture_output=True,
+        check=check,
+        text=True,
+        timeout=timeout,
+    )
+
+
 def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
     """True when launchctl failed because the job isn't loaded (retry bootstrap)."""
     return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
@@ -3468,16 +3484,8 @@ def refresh_launchd_plist_if_needed() -> bool:
     plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
-        check=False,
-        timeout=90,
-    )
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-        check=False,
-        timeout=30,
-    )
+    _run_launchctl(["bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+    _run_launchctl(["bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
     print(
         "↻ Updated gateway launchd service definition to match the current Hermes install"
     )
@@ -3505,11 +3513,7 @@ def launchd_install(force: bool = False):
     plist_path.write_text(new_plist)
 
     try:
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
+        _run_launchctl(["bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if not _launchctl_domain_unsupported(e.returncode):
             raise
@@ -3529,11 +3533,7 @@ def launchd_install(force: bool = False):
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
-        check=False,
-        timeout=90,
-    )
+    _run_launchctl(["bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
 
     if plist_path.exists():
         plist_path.unlink()
@@ -3555,16 +3555,8 @@ def launchd_start():
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(new_plist, encoding="utf-8")
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
-            subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-                check=True,
-                timeout=30,
-            )
+            _run_launchctl(["bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            _run_launchctl(["kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         except subprocess.CalledProcessError as e:
             if not _launchctl_domain_unsupported(e.returncode):
                 raise
@@ -3575,27 +3567,15 @@ def launchd_start():
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-            check=True,
-            timeout=30,
-        )
+        _run_launchctl(["kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
             raise
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
-            subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-                check=True,
-                timeout=30,
-            )
+            _run_launchctl(["bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            _run_launchctl(["kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
             # Even a fresh bootstrap can't manage the domain on this host —
             # degrade to a detached background process (issue #23387).
@@ -3622,7 +3602,7 @@ def launchd_stop():
     # immediately restarts it because KeepAlive is unconditionally true.
     # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
     try:
-        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+        _run_launchctl(["bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
         # Job already unloaded (3/113/125), or the domain can't be managed at
         # all (5/125, macOS 26+ detached-fallback process, issue #23387) — in
@@ -3711,7 +3691,7 @@ def launchd_restart():
                     print(
                         f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
                     )
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+        _run_launchctl(["kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
@@ -3726,12 +3706,8 @@ def launchd_restart():
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         try:
-            subprocess.run(
-                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-                check=True,
-                timeout=30,
-            )
-            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            _run_launchctl(["bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+            _run_launchctl(["kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise

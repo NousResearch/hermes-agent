@@ -38,6 +38,13 @@ export function createClientSessionState(
   return {
     storedSessionId,
     messages,
+    model: '',
+    provider: '',
+    reasoningEffort: '',
+    serviceTier: '',
+    fastMode: false,
+    yoloActive: false,
+    personality: '',
     branch: '',
     cwd: '',
     model: '',
@@ -328,7 +335,12 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [] } }
+      metadata: {
+        custom: {
+          attachmentRefs: message.attachmentRefs ?? [],
+          ...(message.senderDevice ? { senderDevice: message.senderDevice } : {})
+        }
+      }
     } as ThreadMessage
   }
 

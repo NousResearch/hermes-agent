@@ -13,13 +13,6 @@ export interface ImageAttachResponse {
   path?: string
   text?: string
   message?: string
-  // Returned by the byte-upload variant (image.attach_bytes) used in remote mode.
-  count?: number
-  bytes?: number
-  name?: string
-  width?: number
-  height?: number
-  token_estimate?: number
 }
 
 export interface ImageDetachResponse {
@@ -108,19 +101,33 @@ export type CommandDispatchResponse =
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
 
-export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
+export type SidebarNavId =
+  | 'artifacts'
+  | 'cloud-channels'
+  | 'command-center'
+  | 'messaging'
+  | 'new-session'
+  | 'settings'
+  | 'skills'
 
 export interface SidebarNavItem {
   id: SidebarNavId
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
-  action?: 'new-session'
+  action?: 'cloud-channels' | 'new-session'
 }
 
 export interface ClientSessionState {
   storedSessionId: string | null
   messages: ChatMessage[]
+  model?: string
+  provider?: string
+  reasoningEffort?: string
+  serviceTier?: string
+  fastMode?: boolean
+  yoloActive?: boolean
+  personality?: string
   branch: string
   cwd: string
   model: string

@@ -7,13 +7,6 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
-      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
-      // and drop it if a remote one has gone unreachable, so the next
-      // getConnection() rebuilds a reachable descriptor instead of the renderer
-      // re-dialing a dead remote forever. No-op for local backends (they
-      // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
-      // remote cache was dropped.
-      revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
@@ -103,8 +96,10 @@ declare global {
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
-        setBranch: (name: string) => Promise<{ branch: string }>
+        getBranch: () => Promise<{ branch: string; remote: string | null }>
+        setBranch: (name: string) => Promise<{ branch: string; remote: string | null }>
+        getRemote: () => Promise<{ remote: string | null }>
+        setRemote: (name: string | null) => Promise<{ branch: string; remote: string | null }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -203,6 +198,10 @@ export interface DesktopUpdateStatus {
   message?: string
   error?: string
   behind?: number
+  /** True when source code changed (merge, local edit) but the running .app
+   *  hasn't been rebuilt yet. The update flow should offer a rebuild even
+   *  though there are no new git commits to pull. */
+  rebuildNeeded?: boolean
   currentSha?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]

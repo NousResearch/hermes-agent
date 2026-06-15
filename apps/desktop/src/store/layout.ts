@@ -22,13 +22,12 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
+const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
+const SIDEBAR_ARCHIVED_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarArchivedOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
-const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
-const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
-const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
 
 export const CHAT_SIDEBAR_PANE_ID = 'chat-sidebar'
 export const FILE_BROWSER_PANE_ID = 'file-browser'
@@ -58,23 +57,19 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
-export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
-export const $sidebarSessionOrderManual = atom(storedBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, false))
-export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
-// Order of the top-level repo "parent" groups in the worktree tree (worktrees
-// within a parent reuse $sidebarWorkspaceOrderIds).
-export const $sidebarWorkspaceParentOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY))
 export const $sidebarPinsOpen = atom(true)
-// Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
-// true the whole time it's a floating overlay (not just while shown) so the
-// consumer mounts contents off-screen, ready to slide. ChatSidebar mounts its
-// rows on `sidebarOpen || this`.
-export const $sidebarOverlayMounted = atom(false)
 export const $sidebarRecentsOpen = atom(true)
-// Cron-job sessions live in their own section below recents, collapsed by
-// default (it only renders at all when cron sessions exist) so the
-// scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
+// Collapsed-but-overlay-mounted sidebar (hover peek) still renders full content.
+export const $sidebarOverlayMounted = atom(false)
+// Manual drag order for sessions / workspace groups, persisted across runs.
+export const $sidebarSessionOrderIds = atom(storedStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY))
+export const $sidebarWorkspaceOrderIds = atom(storedStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY))
 export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
+// Archived section: collapsed by default — it's cold storage, not the working
+// set — but the expanded state persists so reopening the app doesn't re-bury a
+// list the user works from.
+export const $sidebarArchivedOpen = atom(storedBoolean(SIDEBAR_ARCHIVED_OPEN_STORAGE_KEY, false))
+export const $archivedSessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 // Messaging platform sections collapse by default (they can be numerous and
 // tall). We persist the ids the user has *explicitly expanded*, so the default
 // stays collapsed unless they've opened a platform before.
@@ -88,13 +83,10 @@ export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
+$sidebarArchivedOpen.subscribe(open => persistBoolean(SIDEBAR_ARCHIVED_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
-$sidebarSessionOrderManual.subscribe(manual => persistBoolean(SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY, manual))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
-$sidebarWorkspaceParentOrderIds.subscribe(ids =>
-  persistStringArray(SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY, [...ids])
-)
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
@@ -155,6 +147,14 @@ export function setSidebarCronOpen(open: boolean) {
   $sidebarCronOpen.set(open)
 }
 
+export function setSidebarArchivedOpen(open: boolean) {
+  $sidebarArchivedOpen.set(open)
+}
+
+export function bumpArchivedSessionsLimit(step: number = SIDEBAR_SESSIONS_PAGE_SIZE) {
+  $archivedSessionsLimit.set($archivedSessionsLimit.get() + Math.max(1, Math.floor(step)))
+}
+
 export function toggleSidebarMessagingOpen(sourceId: string) {
   const current = $sidebarMessagingOpenIds.get()
 
@@ -173,21 +173,9 @@ export function setSidebarSessionOrderIds(ids: string[]) {
   }
 }
 
-export function setSidebarSessionOrderManual(manual: boolean) {
-  if ($sidebarSessionOrderManual.get() !== manual) {
-    $sidebarSessionOrderManual.set(manual)
-  }
-}
-
 export function setSidebarWorkspaceOrderIds(ids: string[]) {
   if (!arraysEqual($sidebarWorkspaceOrderIds.get(), ids)) {
     $sidebarWorkspaceOrderIds.set(ids)
-  }
-}
-
-export function setSidebarWorkspaceParentOrderIds(ids: string[]) {
-  if (!arraysEqual($sidebarWorkspaceParentOrderIds.get(), ids)) {
-    $sidebarWorkspaceParentOrderIds.set(ids)
   }
 }
 
@@ -213,15 +201,16 @@ export function unpinSession(sessionId: string) {
   }
 }
 
-// Replace the whole pinned order at once (drag-reorder hands back the new order
-// rather than a single move). Keep only ids that are actually pinned so a stale
-// row can't smuggle an unpinned id into the store.
-export function setPinnedSessionOrder(ids: string[]) {
+export function reorderPinnedSession(sessionId: string, targetIndex: number) {
   const prev = $pinnedSessionIds.get()
-  const pinned = new Set(prev)
-  const next = ids.filter(id => pinned.has(id))
 
-  if (next.length === prev.length && !arraysEqual(prev, next)) {
+  if (!prev.includes(sessionId)) {
+    return
+  }
+
+  const next = insertUniqueId(prev, sessionId, targetIndex)
+
+  if (!arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
 }

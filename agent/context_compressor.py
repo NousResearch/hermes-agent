@@ -671,7 +671,7 @@ class ContextCompressor(ContextEngine):
     def __init__(
         self,
         model: str,
-        threshold_percent: float = 0.50,
+        threshold_percent: float = 0.85,
         protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
@@ -737,6 +737,10 @@ class ContextCompressor(ContextEngine):
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
         self.last_real_prompt_tokens = 0
+        # How many conversation messages ``last_prompt_tokens`` accounts for.
+        # Lets ``live_context_tokens`` price only the tail appended since the
+        # last API call instead of freezing or re-estimating the whole list.
+        self.last_prompt_messages_len: Optional[int] = None
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
@@ -768,19 +772,77 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
 
-    def update_from_response(self, usage: Dict[str, Any]):
-        """Update tracked token usage from API response."""
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
-        self.last_completion_tokens = usage.get("completion_tokens", 0)
-        self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
-        if self.last_prompt_tokens > 0:
-            self.last_real_prompt_tokens = self.last_prompt_tokens
-            if self.last_prompt_tokens < self.threshold_tokens:
+    def update_from_response(self, usage: Dict[str, Any], messages_len: Optional[int] = None):
+        """Update tracked token usage from API response.
+
+        ``messages_len`` is the length of the conversation list the prompt was
+        built from, recorded so mid-turn estimates know where the
+        provider-counted prefix ends.
+        """
+        prompt_tokens = usage.get("prompt_tokens", 0) or 0
+        previous_prompt_tokens = self.last_prompt_tokens or 0
+        same_snapshot = (
+            messages_len is not None
+            and self.last_prompt_messages_len is not None
+            and messages_len == self.last_prompt_messages_len
+        )
+        preserve_preflight_display = (
+            prompt_tokens > 0
+            and previous_prompt_tokens > prompt_tokens
+            and same_snapshot
+            and not self.awaiting_real_usage_after_compression
+        )
+
+        # Preflight estimates include the whole request envelope before the API
+        # call. Some providers later report a lower exact prompt count for the
+        # same message prefix, which made live context meters bounce down/up
+        # between rough and exact snapshots during one turn. Keep the display
+        # base monotonic for that prefix, while still recording the real count
+        # below for fit/deferral heuristics. A post-compression real count is
+        # allowed to shrink because that is an actual context reset.
+        self.last_prompt_tokens = previous_prompt_tokens if preserve_preflight_display else prompt_tokens
+        if messages_len is not None:
+            self.last_prompt_messages_len = messages_len
+        self.last_completion_tokens = usage.get("completion_tokens", 0) or 0
+        self.last_total_tokens = usage.get("total_tokens", prompt_tokens + self.last_completion_tokens) or 0
+        if prompt_tokens > 0:
+            self.last_real_prompt_tokens = prompt_tokens
+            if prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+
+    def live_context_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        """Best-effort size of the context *right now*, mid-turn.
+
+        ``last_prompt_tokens`` is exact but frozen at the last API call (or
+        preflight estimate); assistant text and tool results appended since
+        aren't in it, so consumers that poll it mid-turn — the desktop context
+        bar during a long tool batch — appear stuck. Price the tail appended
+        since the snapshot on top of the known base instead.
+        """
+        base = self.last_prompt_tokens or 0
+        snap = self.last_prompt_messages_len
+        if base > 0 and snap is not None and 0 <= snap <= len(messages):
+            tail = 0
+            if snap < len(messages):
+                try:
+                    tail = estimate_messages_tokens_rough(messages[snap:])
+                except Exception:
+                    tail = 0
+            return base + tail
+        try:
+            rough = estimate_messages_tokens_rough(messages)
+        except Exception:
+            rough = 0
+        if self.awaiting_real_usage_after_compression:
+            # Right after compression the stale pre-compression base would
+            # overstate a freshly shrunk conversation; trust the rough
+            # estimate of the compressed list until real usage arrives.
+            return rough or base
+        return max(base, rough)
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
@@ -1334,7 +1396,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
-
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
         # user's configured timezone via hermes_time.now(). The compaction summary
@@ -1382,6 +1443,23 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             )
         else:
             _temporal_anchoring_rule = ""
+
+        # Preamble shared by both first-compaction and iterative-update prompts.
+        # Keep the wording deliberately plain: Azure/OpenAI-compatible content
+        # filters have flagged stronger "injection" / "do not respond" framing.
+        _summarizer_preamble = (
+            "You are a summarization agent creating a context checkpoint. "
+            "Treat the conversation turns below as source material for a "
+            "compact record of prior work. "
+            "Produce only the structured summary; do not add a greeting, "
+            "preamble, or prefix. "
+            "Write the summary in the same language the user was using in the "
+            "conversation — do not translate or switch to English. "
+            "NEVER include API keys, tokens, passwords, secrets, credentials, "
+            "or connection strings in the summary — replace any that appear "
+            "with [REDACTED]. Note that the user had credentials present, but "
+            "do not preserve their values."
+        )
 
         # Shared structured template (used by both paths).
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
@@ -1457,6 +1535,7 @@ Be specific with file paths, commands, line numbers, and results.]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
+
 Write only the summary body. Do not include any preamble or prefix."""
 
         if self._previous_summary:
@@ -2069,41 +2148,6 @@ This compaction should PRIORITISE preserving all information related to the focu
             accumulated += msg_tokens
             cut_idx = i
 
-        # If the backward walk never broke early because the entire transcript
-        # fits within soft_ceiling, accumulated now holds the total transcript
-        # size.  Without intervention _ensure_last_user_message_in_tail pushes
-        # cut_idx forward to include the last user message, and the caller's
-        # compress_start >= compress_end guard either returns unchanged (no-op)
-        # or compresses a single message — both of which trigger the infinite
-        # compaction loop described in #40803.
-        #
-        # Fix: when the whole transcript fits in soft_ceiling, compute a
-        # meaningful cut point using the raw (non-inflated) budget so that
-        # compression actually summarizes a worthwhile middle section.
-        if cut_idx <= head_end and accumulated <= soft_ceiling and accumulated > 0:
-            # The entire compressable region fits in the soft ceiling.
-            # Re-walk with the raw budget (no 1.5x multiplier) to find a
-            # split that gives the summarizer something useful.
-            raw_budget = token_budget
-            raw_accumulated = 0
-            for j in range(n - 1, head_end - 1, -1):
-                raw_msg = messages[j]
-                raw_content = raw_msg.get("content") or ""
-                raw_len = _content_length_for_budget(raw_content)
-                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
-                for tc in raw_msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        raw_tok += len(args) // _CHARS_PER_TOKEN
-                if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
-                    cut_idx = j
-                    break
-                raw_accumulated += raw_tok
-                cut_idx = j
-            # If the raw-budget walk also consumed everything (very small
-            # transcript), fall through — the existing fallback logic below
-            # will still force a minimal cut after head_end.
-
         # Ensure we protect at least min_tail messages
         fallback_cut = n - min_tail
         cut_idx = min(cut_idx, fallback_cut)
@@ -2422,5 +2466,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # The conversation list is being replaced wholesale; the old
+        # messages-length snapshot no longer maps onto the new list.
+        self.last_prompt_messages_len = None
 
         return compressed

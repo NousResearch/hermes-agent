@@ -1,0 +1,34 @@
+# .github/workflows/renderer-tests.yml
+#
+# Gate the desktop renderer's vitest suite. Until 2026-06-10 nothing in CI ran
+# these, so renderer regressions merged silently — the upstream-sync era left a
+# half-dozen "component evolved / clobbered, test survived" failures (sleep/wake
+# session recovery, the per-session turn clock, ...) that were only caught by
+# hand. Scoped to src/ because electron/*.cjs + scripts/*.cjs are `node --test`
+# files and build/native-deps is vendored — vitest can't collect them.
+name: Renderer tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renderer-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  renderer-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run --prefix apps/desktop test:ui -- src

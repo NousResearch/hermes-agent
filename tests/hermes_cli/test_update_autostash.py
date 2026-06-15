@@ -477,6 +477,7 @@ def _make_update_side_effect(
     reset_fails=False,
     fetch_fails=False,
     fetch_stderr="",
+    upstream_ref="",
 ):
     """Build a subprocess.run side_effect for cmd_update tests."""
     recorded = []
@@ -484,12 +485,14 @@ def _make_update_side_effect(
     def side_effect(cmd, **kwargs):
         recorded.append(cmd)
         joined = " ".join(str(c) for c in cmd)
-        if "fetch" in joined and "origin" in joined:
+        if "fetch" in joined:
             if fetch_fails:
                 return SimpleNamespace(stdout="", stderr=fetch_stderr, returncode=128)
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "for-each-ref" in joined:
+            return SimpleNamespace(stdout=f"{upstream_ref}\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -541,6 +544,101 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+def test_cmd_update_uses_target_branch_tracking_remote(monkeypatch, tmp_path):
+    """A live install updating to main should honor main's configured upstream.
+
+    The macOS desktop update path can run from a temporary live branch while the
+    local ``main`` branch tracks a fork remote. In that shape, hard-coding
+    ``origin/main`` makes the updater report "Already up to date" against the
+    wrong remote and leaves the app on stale code.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    side_effect, recorded = _make_update_side_effect(
+        current_branch="live/hermes-desktop-thinking-off-20260604",
+        commit_count="2",
+        upstream_ref="fork/main",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace(branch="main"))
+
+    assert ["git", "fetch", "fork"] in recorded
+    assert ["git", "rev-list", "HEAD..fork/main", "--count"] in recorded
+    assert ["git", "pull", "--ff-only", "fork", "main"] in recorded
+    assert ["git", "pull", "--ff-only", "origin", "main"] not in recorded
+
+
+def test_cmd_update_repairs_macos_launchd_when_gateway_job_is_missing(
+    monkeypatch, tmp_path, capsys
+):
+    """A desktop update must repair launchd when the plist exists but the job
+    is not loaded.
+
+    This is the macOS screenshot failure mode: launchctl reports
+    "Could not find service ai.hermes.gateway", then the relaunched desktop
+    times out waiting for the backend.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None
+    )
+
+    import importlib
+    from hermes_cli import gateway as gateway_cli
+
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+    monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+
+    plist_path = tmp_path / "Library" / "LaunchAgents" / "ai.hermes.gateway.plist"
+    plist_path.parent.mkdir(parents=True)
+    plist_path.write_text("<plist />")
+    monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+
+    calls = []
+    monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+    monkeypatch.setattr(gateway_cli, "launchd_restart", lambda: calls.append("restart"))
+    monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda **kwargs: [])
+    monkeypatch.setattr(
+        gateway_cli, "find_profile_gateway_processes", lambda **kwargs: []
+    )
+    monkeypatch.setattr(
+        gateway_cli,
+        "launch_detached_profile_gateway_restart",
+        lambda profile, pid: False,
+    )
+    monkeypatch.setattr(
+        gateway_cli, "_graceful_restart_via_sigusr1", lambda *a, **kw: False
+    )
+    monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda **kwargs: None)
+
+    side_effect, _ = _make_update_side_effect()
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["launchctl", "list", "ai.hermes.gateway"]:
+            return SimpleNamespace(
+                stdout="",
+                stderr='Could not find service "ai.hermes.gateway"',
+                returncode=113,
+            )
+        return side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main.cmd_update(SimpleNamespace(yes=True))
+
+    assert calls == ["start"]
+    out = capsys.readouterr().out
+    assert "launchd job is not loaded" in out
+    assert "repairing launchd job" in out
 
 
 # ---------------------------------------------------------------------------

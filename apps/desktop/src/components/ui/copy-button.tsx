@@ -4,10 +4,11 @@ import { Button } from '@/components/ui/button'
 import { ContextMenuItem } from '@/components/ui/context-menu'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
-import { useI18n } from '@/i18n'
+import { translateNow, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notify, notifyError } from '@/store/notifications'
 
 type CopyPayload = string | (() => Promise<string> | string)
 type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
@@ -34,6 +35,50 @@ export async function writeClipboardText(text: string) {
   throw new Error('Clipboard API is unavailable')
 }
 
+export interface CopyTextFeedbackOptions {
+  errorMessage?: string
+  haptic?: boolean
+  notifyFailure?: boolean
+  notifySuccess?: boolean
+  successMessage?: string
+  successTitle?: string
+}
+
+export async function copyTextWithFeedback(text: string, options: CopyTextFeedbackOptions = {}): Promise<boolean> {
+  if (!text) {
+    return false
+  }
+
+  const {
+    errorMessage = translateNow('common.copyFailed'),
+    haptic = true,
+    notifyFailure = true,
+    notifySuccess = true,
+    successMessage = translateNow('common.copied'),
+    successTitle
+  } = options
+
+  try {
+    await writeClipboardText(text)
+
+    if (haptic) {
+      triggerHaptic('selection')
+    }
+
+    if (notifySuccess) {
+      notify({ kind: 'success', message: successMessage, title: successTitle })
+    }
+
+    return true
+  } catch (error) {
+    if (notifyFailure) {
+      notifyError(error, errorMessage)
+    }
+
+    throw error
+  }
+}
+
 export interface CopyButtonProps {
   appearance?: CopyButtonAppearance
   buttonSize?: React.ComponentProps<typeof Button>['size']
@@ -45,6 +90,7 @@ export interface CopyButtonProps {
   haptic?: boolean
   iconClassName?: string
   label?: string
+  notifySuccess?: boolean
   onCopied?: () => void
   onCopyError?: (error: unknown) => void
   preventDefault?: boolean
@@ -65,6 +111,7 @@ export function CopyButton({
   haptic = true,
   iconClassName,
   label,
+  notifySuccess = true,
   onCopied,
   onCopyError,
   preventDefault = false,
@@ -104,11 +151,13 @@ export function CopyButton({
           return
         }
 
-        await writeClipboardText(value)
-
-        if (haptic) {
-          triggerHaptic('selection')
-        }
+        await copyTextWithFeedback(value, {
+          errorMessage: resolvedErrorMessage,
+          haptic,
+          notifySuccess,
+          successMessage: t.common.copied,
+          successTitle: resolvedLabel
+        })
 
         if (resetRef.current !== null) {
           window.clearTimeout(resetRef.current)
@@ -134,7 +183,18 @@ export function CopyButton({
         }, COPIED_RESET_MS)
       }
     },
-    [haptic, onCopied, onCopyError, preventDefault, stopPropagation, text]
+    [
+      haptic,
+      notifySuccess,
+      onCopied,
+      onCopyError,
+      preventDefault,
+      resolvedErrorMessage,
+      resolvedLabel,
+      stopPropagation,
+      t.common.copied,
+      text
+    ]
   )
 
   const Icon = status === 'copied' ? Check : status === 'error' ? X : Copy
@@ -158,6 +218,7 @@ export function CopyButton({
 
   const feedbackLabel =
     status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
+
   const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
 
   if (appearance === 'menu-item' || appearance === 'context-menu-item') {

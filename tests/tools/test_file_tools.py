@@ -450,6 +450,27 @@ class TestSensitivePathCheck:
         assert "error" in result
         assert "sensitive system path" in result["error"]
 
+    def test_macos_temp_scratch_not_blocked(self):
+        # Regression: macOS $TMPDIR resolves under /private/var/, so the broad
+        # /private/var/ sensitive prefix used to refuse EVERY scratch-worktree
+        # write (agents working in a temp git worktree got "no result").
+        from tools.file_tools import _check_sensitive_path
+        for p in (
+            "/private/var/folders/xt/abc/T/scratch/h1/docs/notes/x.md",
+            "/var/folders/xt/abc/T/scratch/file.md",
+            "/private/var/tmp/work/out.txt",
+            "/tmp/scratch/x.md",
+        ):
+            assert _check_sensitive_path(p) is None, p
+
+    def test_real_private_var_still_blocked(self):
+        # The temp exemption must NOT open up the genuinely-sensitive
+        # /private/var/ subtrees or the docker socket.
+        from tools.file_tools import _check_sensitive_path
+        for p in ("/private/var/db/secret", "/private/var/root/x",
+                  "/var/run/docker.sock", "/etc/passwd", "/private/etc/hosts"):
+            assert _check_sensitive_path(p) is not None, p
+
     @patch("tools.file_tools._get_file_ops")
     def test_normal_file_not_blocked(self, mock_get, monkeypatch):
         monkeypatch.setattr("tools.file_tools._hermes_config_resolved", "/home/user/.hermes/config.yaml")

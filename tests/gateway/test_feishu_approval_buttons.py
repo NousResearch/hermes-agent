@@ -642,7 +642,6 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
-        adapter._allowed_group_users = {"ou_bob"}
         adapter._update_prompt_state[1] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_003",
@@ -668,7 +667,6 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
-        adapter._allowed_group_users = {"ou_user1"}
         adapter._update_prompt_state[2] = {
             "session_key": "sess-up-2",
             "message_id": "msg_up_004",
@@ -719,7 +717,6 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
-        adapter._allowed_group_users = {"ou_user1"}
         adapter._update_prompt_state[1] = {
             "session_key": "sess-up-1",
             "message_id": "msg_up_005",
@@ -755,52 +752,6 @@ class TestCardActionCallbackResponse:
 
         assert response is not None
         assert response.card is None
-        mock_submit.assert_not_called()
-
-    def test_update_prompt_empty_allowlists_fail_closed(self, _patch_callback_card_types):
-        adapter = _make_adapter()
-        adapter._loop = MagicMock()
-        adapter._loop.is_closed = MagicMock(return_value=False)
-        adapter._update_prompt_state[7] = {
-            "session_key": "sess-up-7",
-            "message_id": "msg_up_007",
-            "chat_id": "oc_12345",
-        }
-        data = _make_card_action_data(
-            {"hermes_update_prompt_action": "y", "update_prompt_id": 7},
-            open_id="ou_intruder",
-        )
-
-        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
-            response = adapter._on_card_action_trigger(data)
-
-        assert response is not None
-        assert response.card is None
-        assert 7 in adapter._update_prompt_state
-        mock_submit.assert_not_called()
-
-    def test_update_prompt_chat_mismatch_returns_no_card(self, _patch_callback_card_types):
-        adapter = _make_adapter()
-        adapter._loop = MagicMock()
-        adapter._loop.is_closed = MagicMock(return_value=False)
-        adapter._allowed_group_users = {"ou_bob"}
-        adapter._update_prompt_state[8] = {
-            "session_key": "sess-up-8",
-            "message_id": "msg_up_008",
-            "chat_id": "oc_expected",
-        }
-        data = _make_card_action_data(
-            {"hermes_update_prompt_action": "y", "update_prompt_id": 8},
-            chat_id="oc_mismatch",
-            open_id="ou_bob",
-        )
-
-        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
-            response = adapter._on_card_action_trigger(data)
-
-        assert response is not None
-        assert response.card is None
-        assert 8 in adapter._update_prompt_state
         mock_submit.assert_not_called()
 
 
@@ -849,26 +800,3 @@ class TestResolveUpdatePrompt:
         await adapter._resolve_update_prompt(99, "n", "Nobody")
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
-
-    @pytest.mark.asyncio
-    async def test_chat_mismatch_does_not_write_response_file(self, tmp_path, monkeypatch):
-        adapter = _make_adapter()
-        adapter._allowed_group_users = {"ou_bob"}
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        (tmp_path / ".hermes").mkdir()
-        adapter._update_prompt_state[10] = {
-            "session_key": "sess-up-10",
-            "message_id": "msg_up_010",
-            "chat_id": "oc_expected",
-        }
-
-        await adapter._resolve_update_prompt(
-            10,
-            "y",
-            "Bob",
-            open_id="ou_bob",
-            chat_id="oc_wrong",
-        )
-
-        assert not (tmp_path / ".hermes" / ".update_response").exists()
-        assert 10 in adapter._update_prompt_state

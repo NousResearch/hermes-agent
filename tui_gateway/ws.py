@@ -170,6 +170,25 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
+def _ready_payload() -> dict:
+    """Payload for the ``gateway.ready`` frame sent on every ws accept.
+
+    ``device_name`` is this gateway's resolved device identity. Clients keep
+    the FIRST ready frame they see (their local gateway, connected at boot)
+    as their own identity for cross-device sender attribution — later ready
+    frames from remote backends carry the peer's name, not theirs (channels
+    Phase 2b). Best-effort: resolver failure must never break the handshake.
+    """
+    payload: dict = {"skin": server.resolve_skin()}
+    try:
+        from hermes_constants import get_device_name
+
+        payload["device_name"] = get_device_name() or ""
+    except Exception:
+        payload["device_name"] = ""
+    return payload
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -196,7 +215,7 @@ async def handle_ws(ws: Any) -> None:
                 "method": "event",
                 "params": {
                     "type": "gateway.ready",
-                    "payload": {"skin": server.resolve_skin()},
+                    "payload": _ready_payload(),
                 },
             }
         )
@@ -305,10 +324,13 @@ async def handle_ws(ws: Any) -> None:
             # Reap sessions this transport owned (close_on_disconnect sidecar
             # sessions) or detach the rest to the drop sentinel so later emits
             # don't crash into a closed socket or fall through to desktop stdout
-            # logs. Detached sessions are handed to the grace-windowed WS-orphan
-            # reaper inside _close_sessions_for_transport (a quick reconnect /
-            # session.resume cancels it). This is the single WS-disconnect
-            # teardown path.
+            # logs (#38591 fallout: a detached in-process session would
+            # otherwise hold its _SlashWorker open per browser refresh).
+            # Fanout-aware: sessions co-viewed through other live clients only
+            # lose this one transport. Detached sessions are handed to the
+            # grace-windowed WS-orphan reaper inside
+            # _close_sessions_for_transport (a quick reconnect / session.resume
+            # cancels it). This is the single WS-disconnect teardown path.
             #
             # Offloaded: _close_session_by_id does a blocking worker.close()
             # (terminate + waits) plus a synchronous DB write — inline that

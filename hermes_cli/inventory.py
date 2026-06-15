@@ -116,7 +116,6 @@ def build_models_payload(
     canonical_order: bool = False,
     pricing: bool = False,
     capabilities: bool = False,
-    force_fresh_nous_tier: bool = False,
     max_models: int = 50,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -140,10 +139,6 @@ def build_models_payload(
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
       controls (fast toggle / reasoning) to what each model actually
       supports, instead of offering knobs the backend would reject.
-    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
-      selecting Portal-recommended Nous models and applying tier gating. Keep
-      this false for UI picker opens; explicit auth/model flows can opt in
-      when they need freshly-purchased credits to show up immediately.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -153,26 +148,79 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
-        force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
     )
 
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+    effective_current_provider = _normalize_current_provider(ctx, rows)
+    rows = _hide_shadow_bare_custom_row(rows, effective_current_provider)
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+        _apply_pricing(rows)
     if capabilities:
         _apply_capabilities(rows)
 
     return {
         "providers": rows,
         "model": ctx.current_model,
-        "provider": ctx.current_provider,
+        "provider": effective_current_provider,
     }
+
+
+def _norm_url(url: str) -> str:
+    return str(url or "").strip().rstrip("/").lower()
+
+
+def _single_named_custom_match(rows: list[dict], base_url: str) -> Optional[dict]:
+    url = _norm_url(base_url)
+    if not url:
+        return None
+    matches = [
+        row
+        for row in rows
+        if row.get("is_user_defined")
+        and str(row.get("slug") or "").startswith("custom:")
+        and _norm_url(row.get("api_url") or "") == url
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _normalize_current_provider(ctx: ConfigContext, rows: list[dict]) -> str:
+    """Map legacy bare ``custom`` state back to the named custom row.
+
+    Older sessions can carry ``provider=custom`` plus a base_url even though
+    the configured picker row is ``custom:<name>``. Returning the bare provider
+    makes desktop pickers put the checkmark under a duplicate CUSTOM group.
+    """
+
+    current = ctx.current_provider
+    if current != "custom":
+        return current
+
+    match = _single_named_custom_match(rows, ctx.current_base_url)
+    if not match:
+        return current
+
+    target = str(match.get("slug") or current)
+    for row in rows:
+        row["is_current"] = row.get("slug") == target
+    return target
+
+
+def _hide_shadow_bare_custom_row(rows: list[dict], current_provider: str) -> list[dict]:
+    """Hide the canonical ``custom`` row when a named custom provider is active."""
+
+    if not str(current_provider or "").startswith("custom:"):
+        return rows
+    return [
+        row
+        for row in rows
+        if not (row.get("slug") == "custom" and row.get("source") == "canonical")
+    ]
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
@@ -299,11 +347,7 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
-def _apply_pricing(
-    rows: list[dict],
-    *,
-    force_fresh_nous_tier: bool = False,
-) -> None:
+def _apply_pricing(rows: list[dict]) -> None:
     """Enrich each provider row with per-model pricing + Nous tier gating.
 
     Mutates ``rows`` in-place. For every row whose provider supports live
@@ -369,9 +413,7 @@ def _apply_pricing(
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = check_nous_free_tier(
-                        force_fresh=force_fresh_nous_tier
-                    )
+                    nous_free_tier = check_nous_free_tier(force_fresh=True)
                 row["free_tier"] = bool(nous_free_tier)
                 if nous_free_tier:
                     _selectable, unavailable = partition_nous_models_by_tier(

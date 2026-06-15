@@ -21,7 +21,7 @@ import {
 } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import { contextBarLabel, contextCapacityClassName, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
@@ -35,6 +35,7 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $currentUsage,
+  $sessionActivityStatus,
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
@@ -58,7 +59,8 @@ import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-contr
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
-  chatOpen: boolean
+  // Optional: callers without a chat-pane concept keep the terminal toggle visible.
+  chatOpen?: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
@@ -76,7 +78,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
-  chatOpen,
+  chatOpen = true,
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
@@ -104,6 +106,7 @@ export function useStatusbarItems({
   const currentUsage = useStore($currentUsage)
   const desktopActionTasks = useStore($desktopActionTasks)
   const previewServerRestartStatus = useStore($previewServerRestartStatus)
+  const sessionActivityStatus = useStore($sessionActivityStatus)
   const sessionStartedAt = useStore($sessionStartedAt)
   const turnStartedAt = useStore($turnStartedAt)
   const workingSessionIds = useStore($workingSessionIds)
@@ -117,6 +120,11 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
+  const contextCapacityClass = useMemo(
+    () => contextCapacityClassName(currentUsage.context_percent),
+    [currentUsage.context_percent]
+  )
 
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
@@ -216,18 +224,23 @@ export function useStatusbarItems({
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
     const remote = connection?.mode === 'remote'
+    // Stale-build detection: source HEAD moved past the packaged bundle's
+    // commit, so the running app needs a local rebuild (not a git pull).
+    const rebuildNeeded = updateStatus?.rebuildNeeded === true
 
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+    const rebuildHint = !applying && rebuildNeeded ? ' (+rebuild)' : ''
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : `${base}${behindHint}`
+      : `${base}${behindHint}${rebuildHint}`
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
       !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      !applying && rebuildNeeded && copy.rebuildNeeded,
       appVersion && copy.desktopVersion(appVersion),
       sha && copy.commit(sha),
       updateStatus?.branch && copy.branch(updateStatus.branch)
@@ -236,7 +249,7 @@ export function useStatusbarItems({
       .join(' · ')
 
     return {
-      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      className: !applying && (behind > 0 || rebuildNeeded) ? 'text-primary hover:text-primary' : undefined,
       detail: appVersion && sha && !applying && !remote ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
@@ -255,7 +268,8 @@ export function useStatusbarItems({
     updateApply.stage,
     updateStatus?.behind,
     updateStatus?.branch,
-    updateStatus?.currentSha
+    updateStatus?.currentSha,
+    updateStatus?.rebuildNeeded
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -388,7 +402,18 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
-        detail: contextBar || undefined,
+        // Gateway lifecycle statuses (compression progress, background-process
+        // notices) surfaced mid-turn; cleared by stream activity.
+        className: 'max-w-72',
+        hidden: !sessionActivityStatus,
+        icon: <Loader2 className="size-3 animate-spin" />,
+        id: 'activity-status',
+        label: <span className="truncate">{sessionActivityStatus?.text ?? ''}</span>,
+        title: sessionActivityStatus?.text,
+        variant: 'text'
+      },
+      {
+        detail: contextBar ? <span className={contextCapacityClass}>{contextBar}</span> : undefined,
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
@@ -463,6 +488,7 @@ export function useStatusbarItems({
       busy,
       chatOpen,
       contextBar,
+      contextCapacityClass,
       contextUsage,
       copy,
       currentFastMode,
@@ -470,6 +496,7 @@ export function useStatusbarItems({
       currentProvider,
       currentReasoningEffort,
       modelMenuContent,
+      sessionActivityStatus,
       sessionStartedAt,
       showYoloToggle,
       terminalTakeover,

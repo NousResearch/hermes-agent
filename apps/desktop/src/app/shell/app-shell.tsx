@@ -29,19 +29,10 @@ interface AppShellProps {
   children: ReactNode
   leftStatusbarItems?: readonly StatusbarItem[]
   leftTitlebarTools?: readonly TitlebarTool[]
-  // Fixed-position overlays that must share <main>'s stacking context so pane
-  // resize handles (z-20) paint above them. The persistent terminal lives here:
-  // hoisting it to the root `overlays` layer (sibling of <main>, z above z-3)
-  // would cover every pane's drag handle.
-  mainOverlays?: ReactNode
   onOpenSettings: () => void
   overlays?: ReactNode
-  // Rails that sit at the window's left edge in the flipped layout but never
-  // force-collapse to hover-reveal overlays — so they cover the top-left traffic
-  // lights (and zero the titlebar inset) even below the collapse breakpoint.
   previewPaneOpen?: boolean
   statusbarItems?: readonly StatusbarItem[]
-  terminalPaneOpen?: boolean
   titlebarTools?: readonly TitlebarTool[]
 }
 
@@ -64,12 +55,10 @@ export function AppShell({
   children,
   leftStatusbarItems,
   leftTitlebarTools,
-  mainOverlays,
   onOpenSettings,
   overlays,
   previewPaneOpen = false,
   statusbarItems,
-  terminalPaneOpen = false,
   titlebarTools
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
@@ -89,15 +78,10 @@ export function AppShell({
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
-  // Flipped layout: the file browser does instead. Both force-collapse to a
-  // hover-reveal overlay (0px track) below the collapse breakpoint, so the edge
-  // is uncovered there regardless of their stored open state. A standalone
-  // session window renders no sidebar at all, so its edge is always uncovered.
+  // Flipped layout: the file browser does instead. Both force-collapse below
+  // the breakpoint, so they no longer cover the edge in narrow windows.
   const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
-  // The terminal + preview rails never force-collapse, so when they're the
-  // leftmost open pane (flipped layout) they cover the edge even when narrow.
-  const persistentLeftPaneOpen = panesFlipped && (terminalPaneOpen || previewPaneOpen)
-
+  const persistentLeftPaneOpen = panesFlipped && previewPaneOpen
   const leftEdgePaneOpen =
     !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)
 
@@ -177,11 +161,6 @@ export function AppShell({
 
           {children}
         </PaneShell>
-
-        {/* Fixed overlays scoped to main's stacking context (terminal). Rendered
-            after PaneShell so it paints over pane content, but its z stays under
-            the panes' z-20 resize handles, keeping every pane resizable. */}
-        {mainOverlays}
 
         <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
       </main>

@@ -473,7 +473,7 @@ model:
 
 ```bash
 # StepFun
-hermes chat --provider stepfun --model step-3.5-flash
+hermes chat --provider stepfun --model step-3-mini
 # 需要：~/.hermes/.env 中的 STEPFUN_API_KEY
 ```
 
@@ -481,7 +481,7 @@ hermes chat --provider stepfun --model step-3.5-flash
 ```yaml
 model:
   provider: "stepfun"
-  default: "step-3.5-flash"
+  default: "step-3-mini"
 ```
 
 基础 URL 可通过 `STEPFUN_BASE_URL` 覆盖（默认：`https://api.stepfun.com/v1`）。

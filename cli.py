@@ -415,7 +415,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
+            "threshold": 0.85,    # Compress at 85% of model's context limit
         },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
@@ -7274,7 +7274,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return True  # confirmation cancelled — command handled, keep REPL alive
+                return
             self.new_session(silent=True)
             _clear_output_history()
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -7408,7 +7408,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 "The current conversation history will be discarded.",
                 cmd_original=cmd_original,
             ) is None:
-                return True  # confirmation cancelled — command handled, keep REPL alive
+                return
             self.new_session(title=title)
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -7451,7 +7451,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _undo_desc,
                 cmd_original=cmd_original,
             ) is None:
-                return True  # confirmation cancelled — command handled, keep REPL alive
+                return
             self.undo_last(_undo_n)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
@@ -9030,7 +9030,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             self._invalidate()
 
-    def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
+    def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict, **kwargs):
         """Capture local before-state for write-capable tools."""
         try:
             from agent.display import capture_local_edit_snapshot
@@ -9041,7 +9041,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
 
-    def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
+    def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str, **kwargs):
         """Render file edits with inline diff after write-capable tools complete."""
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:

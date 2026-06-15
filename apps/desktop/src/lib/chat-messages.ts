@@ -18,6 +18,8 @@ export type ChatMessage = {
   hidden?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** Device a user message was typed on (F-003 sender attribution). */
+  senderDevice?: string
 }
 
 export type GatewayEventPayload = {
@@ -47,6 +49,7 @@ export type GatewayEventPayload = {
   fast?: boolean
   yolo?: boolean
   running?: boolean
+  session_key?: string
   cwd?: string
   branch?: string
   credential_warning?: string
@@ -64,6 +67,14 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // status.update (gateway lifecycle statuses: compression progress,
+  // background-process notices)
+  kind?: string
+  // gateway.ready (the emitting gateway's resolved device name)
+  device_name?: string
+  // session.participants (channels Phase 3: who's viewing this session, deduped
+  // by device name with a live-client count). Shape mirrors SessionParticipant.
+  participants?: { device: string; count: number }[]
   // terminal.read.request (GUI agent reading the in-app terminal pane)
   start?: number
   count?: number
@@ -194,8 +205,45 @@ export function appendTextPart(parts: ChatMessagePart[], delta: string): ChatMes
 }
 
 export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
-  const next = appendTextPart(parts, delta)
-  const last = next.at(-1)
+  const next = [...parts]
+  let textIndex = next.length - 1
+
+  if (next[textIndex]?.type !== 'text') {
+    textIndex = -1
+
+    // Reasoning rows are chrome around the model voice; tool rows are
+    // chronology. Continue prose through trailing reasoning, but never move it
+    // backward across a tool call.
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      const part = next[index]
+
+      if (part.type === 'text') {
+        textIndex = index
+
+        break
+      }
+
+      if (part.type !== 'reasoning') {
+        break
+      }
+    }
+  }
+
+  if (textIndex === -1) {
+    next.push(textPart(delta))
+    textIndex = next.length - 1
+  } else {
+    const part = next[textIndex]
+
+    if (part?.type === 'text') {
+      next[textIndex] = { ...part, text: `${part.text}${delta}` }
+    } else {
+      next.push(textPart(delta))
+      textIndex = next.length - 1
+    }
+  }
+
+  const last = next[textIndex]
 
   if (last?.type === 'text') {
     const current = last.text
@@ -205,10 +253,28 @@ export function appendAssistantTextPart(parts: ChatMessagePart[], delta: string)
 
     const needsMediaPass = deltaMayContainMedia || current.includes('MEDIA:')
     const nextText = needsMediaPass ? renderMediaTags(current) : current
-    next[next.length - 1] = nextText === current ? last : { ...last, text: nextText }
+    next[textIndex] = nextText === current ? last : { ...last, text: nextText }
   }
 
   return next
+}
+
+function appendAssistantParts(parts: ChatMessagePart[], appended: ChatMessagePart[]): ChatMessagePart[] {
+  return appended.reduce<ChatMessagePart[]>((next, part) => {
+    if (part.type === 'text') {
+      return appendAssistantTextPart(next, part.text)
+    }
+
+    return [...next, part]
+  }, parts)
+}
+
+function assistantTurnContinuationParts(parts: ChatMessagePart[]): boolean {
+  return parts.some(part => part.type === 'reasoning' || part.type === 'tool-call')
+}
+
+function shouldAppendToActiveAssistant(active: ChatMessage, nextParts: ChatMessagePart[]): boolean {
+  return assistantTurnContinuationParts(active.parts) || assistantTurnContinuationParts(nextParts)
 }
 
 export function appendReasoningPart(parts: ChatMessagePart[], delta: string): ChatMessagePart[] {
@@ -690,7 +756,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       return false
     }
 
-    active.parts = [...active.parts, ...parts]
+    active.parts = appendAssistantParts(active.parts, parts)
     active.timestamp = timestamp ?? active.timestamp
 
     return true
@@ -788,11 +854,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
           ? result[activeAssistantIndex]
           : null
 
-      const currentHasToolCall = parts.some(part => part.type === 'tool-call')
-      const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
-
-      if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
-        activeAssistant.parts = [...activeAssistant.parts, ...parts]
+      if (activeAssistant && shouldAppendToActiveAssistant(activeAssistant, parts)) {
+        activeAssistant.parts = appendAssistantParts(activeAssistant.parts, parts)
         activeAssistant.timestamp = message.timestamp ?? activeAssistant.timestamp
 
         return
@@ -801,11 +864,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const senderDevice =
+      message.role === 'user' && typeof message.sender_device === 'string' && message.sender_device.trim()
+        ? message.sender_device.trim()
+        : undefined
+
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
       role: message.role,
       parts,
-      timestamp: message.timestamp
+      timestamp: message.timestamp,
+      ...(senderDevice ? { senderDevice } : {})
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null

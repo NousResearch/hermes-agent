@@ -1,0 +1,335 @@
+import { type DragEvent as ReactDragEvent, useCallback, useEffect, useRef, useState } from 'react'
+
+import {
+  dragHasSession,
+  dragSessionIsArchived,
+  dragSessionIsPinned,
+  readSessionDrag,
+  type SessionDragPayload
+} from '@/app/chat/composer/inline-refs'
+
+/** Drag-state flags readable during dragover (they ride as marker MIME types;
+ * the payload itself is sealed until drop). */
+export interface SessionDragFlags {
+  pinned: boolean
+  archived: boolean
+}
+
+interface SessionDropZoneOptions {
+  /** Which drags this zone acts on. Pinned/Sessions/Archived each choose their
+   * own policy based on the drag's pinned/archived flags. */
+  accepts: (flags: SessionDragFlags) => boolean
+  /** Locally active sidebar drag. Chromium can hide custom MIME `types` during
+   * dragover, so this is the trusted same-renderer fallback until drop. */
+  draggingSession?: null | SessionDragPayload
+  /** The native drag payload itself is not reliably readable until drop, so
+   * the owner passes the active row id for hover-time self-anchor filtering. */
+  draggingSessionId?: null | string
+  /** The drop event rides along so handlers can resolve the drop position
+   * (see {@link sessionDropAnchor}). */
+  onDropSession: (session: SessionDragPayload, event: ReactDragEvent, anchor: null | SessionDropAnchor) => void
+}
+
+export interface SessionDropAnchor {
+  /** Live session id of the row under the pointer. */
+  sessionId: string
+  /** True when the dragged row should be inserted before this target row. */
+  before: boolean
+}
+
+interface SessionDropAnchorOptions {
+  /** Row currently being dragged. It should never become its own preview
+   * target. */
+  movingSessionId?: null | string
+  /** Previous stable anchor. Used only when the pointer is over the animated
+   * dragged row and there is no better physical row/gap target. */
+  previous?: null | SessionDropAnchor
+}
+
+export function placeSessionIdAtAnchor(
+  ids: readonly string[],
+  movingId: string,
+  anchor: null | SessionDropAnchor
+): null | string[] {
+  if (!anchor || anchor.sessionId === movingId) {
+    return null
+  }
+
+  const next = ids.filter(id => id !== movingId)
+  const at = next.indexOf(anchor.sessionId)
+
+  if (at < 0) {
+    return null
+  }
+
+  next.splice(anchor.before ? at : at + 1, 0, movingId)
+
+  return next
+}
+
+export function previewItemsAtAnchor<T extends { id: string }>(
+  items: T[],
+  movingItem: null | T | undefined,
+  anchor: null | SessionDropAnchor
+): T[] {
+  if (!movingItem || !anchor) {
+    if (movingItem && !anchor && !items.some(item => item.id === movingItem.id)) {
+      return [...items, movingItem]
+    }
+
+    return items
+  }
+
+  const nextIds = placeSessionIdAtAnchor(
+    items.map(item => item.id),
+    movingItem.id,
+    anchor
+  )
+
+  if (!nextIds) {
+    return items
+  }
+
+  const byId = new Map(items.map(item => [item.id, item]))
+  byId.set(movingItem.id, movingItem)
+
+  return nextIds.map(id => byId.get(id)).filter((item): item is T => Boolean(item))
+}
+
+export type SessionDropPreviewMode = 'native' | 'pointer' | null | undefined
+
+export function previewItemsForSessionDrop<T extends { id: string }>(
+  items: T[],
+  movingItem: null | T | undefined,
+  anchor: null | SessionDropAnchor,
+  options: { active: boolean; mode: SessionDropPreviewMode }
+): T[] {
+  if (!options.active || (options.mode !== 'native' && options.mode !== 'pointer')) {
+    return items
+  }
+
+  return previewItemsAtAnchor(items, movingItem, anchor)
+}
+
+export function sessionDropMarkerIndex(ids: readonly string[], anchor: null | SessionDropAnchor): number {
+  if (!anchor) {
+    return ids.length
+  }
+
+  const index = ids.indexOf(anchor.sessionId)
+
+  if (index < 0) {
+    return ids.length
+  }
+
+  return anchor.before ? index : index + 1
+}
+
+function rowAnchorFromRect(
+  sessionId: string,
+  rect: DOMRect,
+  clientY: number
+): SessionDropAnchor {
+  return { before: clientY < rect.top + rect.height / 2, sessionId }
+}
+
+function rowsInScope(event: ReactDragEvent): HTMLElement[] {
+  const currentTarget = event.currentTarget as HTMLElement | null
+
+  if (currentTarget?.querySelectorAll) {
+    return [...currentTarget.querySelectorAll<HTMLElement>('[data-session-id]')]
+  }
+
+  const target = event.target as HTMLElement | null
+  const row = target?.closest?.('[data-session-id]') as HTMLElement | null
+
+  return row ? [row] : []
+}
+
+/**
+ * Resolve the insertion anchor from the user's physical pointer position.
+ * Rows split at their midpoint; gaps split at their midpoint.
+ */
+export function sessionDropAnchor(
+  event: ReactDragEvent,
+  options: SessionDropAnchorOptions = {}
+): null | SessionDropAnchor {
+  const rows = rowsInScope(event)
+    .map(row => ({ rect: row.getBoundingClientRect(), row, sessionId: row.dataset.sessionId }))
+    .filter(
+      (entry): entry is { rect: DOMRect; row: HTMLElement; sessionId: string } =>
+        Boolean(entry.sessionId) && entry.sessionId !== options.movingSessionId
+    )
+    .sort((a, b) => a.rect.top - b.rect.top)
+
+  if (rows.length === 0) {
+    return null
+  }
+
+  for (const { rect, sessionId } of rows) {
+    if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
+      return rowAnchorFromRect(sessionId, rect, event.clientY)
+    }
+  }
+
+  for (let index = 0; index < rows.length - 1; index += 1) {
+    const current = rows[index]
+    const next = rows[index + 1]
+
+    if (event.clientY > current.rect.bottom && event.clientY < next.rect.top) {
+      const gapMidpoint = current.rect.bottom + (next.rect.top - current.rect.bottom) / 2
+
+      return event.clientY < gapMidpoint
+        ? { before: false, sessionId: current.sessionId }
+        : { before: true, sessionId: next.sessionId }
+    }
+  }
+
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+
+  if (event.clientY < first.rect.top) {
+    return { before: true, sessionId: first.sessionId }
+  }
+
+  if (event.clientY > last.rect.bottom) {
+    return { before: false, sessionId: last.sessionId }
+  }
+
+  return options.previous ?? null
+}
+
+/**
+ * Native drop target for sidebar session rows — the whole row drag already
+ * carries `application/x-hermes-session`, so sections can pin, unpin, restore,
+ * archive, or reorder without a separate handle.
+ *
+ * A zone only engages for drags it would act on (Pinned accepts unpinned rows,
+ * Sessions accepts pinned rows); other drags never preventDefault, so the
+ * cursor honestly reports "no drop here". The enter/leave depth counter keeps
+ * nested children from flickering the highlight, mirroring use-file-drop-zone.
+ *
+ * Spread `dropHandlers` onto the section container; style off `active`.
+ */
+export function useSessionDropZone({
+  accepts: acceptsFlags,
+  draggingSession,
+  draggingSessionId,
+  onDropSession
+}: SessionDropZoneOptions) {
+  const [active, setActive] = useState(false)
+  const [anchor, setAnchor] = useState<null | SessionDropAnchor>(null)
+  const anchorRef = useRef<null | SessionDropAnchor>(null)
+  const depth = useRef(0)
+
+  const movingSessionId = draggingSession?.id ?? draggingSessionId
+
+  const accepts = useCallback(
+    (event: ReactDragEvent) => {
+      const hasSession = Boolean(draggingSession) || dragHasSession(event.dataTransfer)
+
+      if (!hasSession) {
+        return false
+      }
+
+      const flags = draggingSession
+        ? { archived: Boolean(draggingSession.archived), pinned: Boolean(draggingSession.pinned) }
+        : {
+            archived: dragSessionIsArchived(event.dataTransfer),
+            pinned: dragSessionIsPinned(event.dataTransfer)
+          }
+
+      return acceptsFlags(flags)
+    },
+    [acceptsFlags, draggingSession]
+  )
+
+  const reset = useCallback(() => {
+    depth.current = 0
+    setActive(false)
+    setAnchor(null)
+    anchorRef.current = null
+  }, [])
+
+  useEffect(() => {
+    if (!movingSessionId) {
+      reset()
+    }
+  }, [movingSessionId, reset])
+
+  const updateAnchor = useCallback(
+    (event: ReactDragEvent) => {
+      const nextAnchor = sessionDropAnchor(event, {
+        movingSessionId,
+        previous: anchorRef.current
+      })
+
+      anchorRef.current = nextAnchor
+      setAnchor(nextAnchor)
+    },
+    [movingSessionId]
+  )
+
+  const onDragEnter = useCallback(
+    (event: ReactDragEvent) => {
+      if (!accepts(event)) {
+        return
+      }
+
+      event.preventDefault()
+      depth.current += 1
+      setActive(true)
+      updateAnchor(event)
+    },
+    [accepts, updateAnchor]
+  )
+
+  const onDragOver = useCallback(
+    (event: ReactDragEvent) => {
+      if (!accepts(event)) {
+        return
+      }
+
+      event.preventDefault()
+      // The row drag advertises effectAllowed='copy' (for composer drops);
+      // anything else here would cancel the drop.
+      event.dataTransfer.dropEffect = 'copy'
+      updateAnchor(event)
+    },
+    [accepts, updateAnchor]
+  )
+
+  // Unaccepted drags never increment, but their leave events still arrive —
+  // guard the decrement so they can't drive depth negative and wedge the
+  // highlight on a later accepted drag.
+  const onDragLeave = useCallback(() => {
+    if (depth.current > 0 && --depth.current <= 0) {
+      reset()
+    }
+  }, [reset])
+
+  const onDrop = useCallback(
+    (event: ReactDragEvent) => {
+      if (!accepts(event)) {
+        return
+      }
+
+      event.preventDefault()
+      const dropAnchor = anchorRef.current
+      reset()
+
+      const session = readSessionDrag(event.dataTransfer) ?? draggingSession
+
+      if (session) {
+        onDropSession(session, event, dropAnchor)
+      }
+    },
+    [accepts, draggingSession, onDropSession, reset]
+  )
+
+  return {
+    anchor,
+    active,
+    dropHandlers: { onDragEnter, onDragLeave, onDragOver, onDrop }
+  }
+}

@@ -2,7 +2,6 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 contextBridge.exposeInMainWorld('hermesDesktop', {
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
-  revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
@@ -139,15 +138,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:bootstrap:event', listener)
   },
   getVersion: () => ipcRenderer.invoke('hermes:version'),
-  uninstall: {
-    summary: () => ipcRenderer.invoke('hermes:uninstall:summary'),
-    run: mode => ipcRenderer.invoke('hermes:uninstall:run', { mode })
-  },
   updates: {
     check: () => ipcRenderer.invoke('hermes:updates:check'),
     apply: opts => ipcRenderer.invoke('hermes:updates:apply', opts),
     getBranch: () => ipcRenderer.invoke('hermes:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('hermes:updates:branch:set', name),
+    getRemote: () => ipcRenderer.invoke('hermes:updates:remote:get'),
+    setRemote: name => ipcRenderer.invoke('hermes:updates:remote:set', name),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('hermes:updates:progress', listener)

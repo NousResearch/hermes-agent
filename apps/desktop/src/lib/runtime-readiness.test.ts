@@ -62,4 +62,18 @@ describe('interpretRuntimeReadiness', () => {
     expect(result.source).toBe('fallback')
     expect(result.reason).toBe('setup.runtime_check timeout')
   })
+
+  it('marks backend transport timeouts as unavailable instead of unconfigured', () => {
+    const result = interpretRuntimeReadiness({
+      setup: null,
+      setupError: 'request timed out: setup.status',
+      runtime: null,
+      runtimeError: 'request timed out: setup.runtime_check'
+    })
+
+    expect(result.ready).toBe(false)
+    expect(result.source).toBe('fallback')
+    expect(result.unavailable).toBe(true)
+    expect(result.reason).toBe('request timed out: setup.runtime_check')
+  })
 })

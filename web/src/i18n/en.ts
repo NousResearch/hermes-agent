@@ -527,12 +527,6 @@ export const en: Translations = {
   theme: {
     title: "Theme",
     switchTheme: "Switch theme",
-    fontTitle: "Font",
-    fontDefault: "Theme default",
-    fontDefaultHint: "Use the active theme's font",
-    fontSans: "Sans",
-    fontSerif: "Serif",
-    fontMono: "Mono",
   },
 
   achievements: {

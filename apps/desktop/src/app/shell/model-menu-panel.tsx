@@ -18,6 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { routerHostSummary } from '@/lib/model-metadata'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
@@ -148,6 +149,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
                 const isCurrent = activeId !== null
                 const name = modelDisplayParts(family.id).name
+                const host = routerHostSummary(group.provider, family.id)
                 // Capabilities are looked up against the active/base id; the
                 // -fast variant carries the same param support as its base.
                 const caps = group.provider.capabilities?.[family.id]
@@ -199,6 +201,14 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     >
                       <span className="min-w-0 flex-1 truncate">
                         {name}
+                        {host ? (
+                          <span
+                            className="ml-1 rounded-sm bg-(--ui-control-hover-background) px-1 text-[0.66rem] font-semibold text-(--ui-text-tertiary)"
+                            title={host.title}
+                          >
+                            {host.label}
+                          </span>
+                        ) : null}
                         {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
                       </span>
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}

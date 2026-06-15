@@ -1204,8 +1204,6 @@ def list_authenticated_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    *,
-    force_fresh_nous_tier: bool = False,
     max_models: int = 8,
     current_model: str = "",
 ) -> List[dict]:
@@ -1225,9 +1223,6 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
-    ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
-    account-sensitive flows. UI picker opens should leave it false so they do
-    not block on fresh Portal/account checks every time.
     """
     import os
     from agent.models_dev import (
@@ -1570,7 +1565,7 @@ def list_authenticated_providers(
                     _portal = _st.get("portal_base_url", "") or ""
                 except Exception:
                     _portal = ""
-                if _nous_free(force_fresh=force_fresh_nous_tier):
+                if _nous_free(force_fresh=True):
                     model_ids, _ = _union_free(model_ids, _pricing, _portal)
                 else:
                     model_ids, _ = _union_paid(model_ids, _pricing, _portal)
@@ -1746,16 +1741,18 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
+            model_metadata: dict[str, dict] = {}
             if api_url and api_key and discover:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import cached_api_model_metadata, fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
                         models_list = live_models
+                        model_metadata = cached_api_model_metadata(api_url)
                 except Exception:
                     pass
 
-            results.append({
+            row = {
                 "slug": ep_name,
                 "name": display_name,
                 "is_current": ep_name == current_provider,
@@ -1764,7 +1761,10 @@ def list_authenticated_providers(
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
-            })
+            }
+            if model_metadata:
+                row["model_metadata"] = model_metadata
+            results.append(row)
             seen_slugs.add(ep_name.lower())
             seen_slugs.add(custom_provider_slug(display_name).lower())
             _pair = (
@@ -1884,6 +1884,7 @@ def list_authenticated_providers(
                     "name": display_name,
                     "api_url": api_url,
                     "api_key": api_key,
+                    "model_metadata": {},
                     "models": [],
                     "discover_models": discover,
                 }
@@ -1994,11 +1995,12 @@ def list_authenticated_providers(
             )
             if should_probe:
                 try:
-                    from hermes_cli.models import fetch_api_models
+                    from hermes_cli.models import cached_api_model_metadata, fetch_api_models
 
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
                         grp["models"] = live_models
+                        grp["model_metadata"] = cached_api_model_metadata(api_url)
                         grp["total_models"] = len(live_models)
                 except Exception:
                     pass
@@ -2016,6 +2018,7 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
+                "model_metadata": grp.get("model_metadata", {}),
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())

@@ -90,7 +90,9 @@ def test_anthropic_no_cache_fields(monkeypatch):
     agent = _make_agent(monkeypatch, "anthropic_messages", "anthropic",
                         lambda: _anthropic_resp(500, 20))
     agent.run_conversation("hi")
-    assert agent.context_compressor.last_prompt_tokens == 500
+    assert agent.context_compressor.last_prompt_tokens >= 500
+    assert agent.context_compressor.last_real_prompt_tokens == 500
+    assert agent.session_prompt_tokens == 500
 
 
 def test_anthropic_cache_read_only(monkeypatch):

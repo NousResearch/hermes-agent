@@ -374,3 +374,125 @@ def test_sudo_stdin_guard_container_bypass(clean_session):
         for cmd in _SUDO_STDIN_BLOCK:
             result = check_all_command_guards(cmd, env)
             assert result["approved"] is True, f"container {env} should bypass sudo guard on {cmd!r}"
+
+
+# -------------------------------------------------------------------------
+# Self-host kill guard
+# -------------------------------------------------------------------------
+# Killing the process that hosts the running session (desktop dashboard /
+# gateway, CLI) orphans the session mid-turn. The guard compares numeric
+# kill targets and the $$/$PPID self-tokens against this process + parent.
+
+import os as _os
+
+from tools.approval import _check_self_host_kill
+
+
+def test_self_host_kill_blocks_own_pid(clean_session):
+    blocked, desc = _check_self_host_kill(f"kill {_os.getpid()}")
+    assert blocked is True
+    assert str(_os.getpid()) in desc
+
+
+def test_self_host_kill_blocks_parent_pid(clean_session):
+    blocked, _ = _check_self_host_kill(f"kill -9 {_os.getppid()}")
+    assert blocked is True
+
+
+def test_self_host_kill_blocks_shell_self_tokens(clean_session):
+    assert _check_self_host_kill("kill $$")[0] is True
+    assert _check_self_host_kill("kill -TERM $PPID")[0] is True
+
+
+def test_self_host_kill_blocks_chained_command(clean_session):
+    blocked, _ = _check_self_host_kill(f"echo done && kill -TERM {_os.getpid()}")
+    assert blocked is True
+
+
+def test_self_host_kill_allows_foreign_pid(clean_session):
+    assert _check_self_host_kill("kill 999999999")[0] is False
+    assert _check_self_host_kill("kill -9 999999998 999999999")[0] is False
+
+
+def test_self_host_kill_ignores_pkill_and_pgid_forms(clean_session):
+    # pkill matches by name, not our numeric-target scope; negative pgids
+    # are explicitly out of scope (kill -1 is already hardline).
+    assert _check_self_host_kill("pkill -f some-other-daemon")[0] is False
+    assert _check_self_host_kill("kill -- -12345")[0] is False
+
+
+def test_self_host_kill_ignores_unrelated_commands(clean_session):
+    assert _check_self_host_kill("echo kill it with fire")[0] is False
+    assert _check_self_host_kill("ls -la")[0] is False
+
+
+def test_check_all_command_guards_blocks_self_host_kill(clean_session):
+    result = check_all_command_guards(f"kill {_os.getpid()}", "local")
+    assert result["approved"] is False
+    assert result.get("hardline") is True
+    assert "session-not-found" in result["message"]
+
+
+def test_yolo_cannot_bypass_self_host_kill(clean_session, monkeypatch):
+    enable_session_yolo("hardline_test")
+    try:
+        result = check_all_command_guards(f"kill -9 {_os.getpid()}", "local")
+        assert result["approved"] is False, "session yolo leaked the self-host kill guard"
+    finally:
+        disable_session_yolo("hardline_test")
+
+
+def test_container_bypasses_self_host_kill(clean_session):
+    # Containerized backends short-circuit every guard: PIDs inside the
+    # container namespace are not the host gateway's.
+    result = check_all_command_guards(f"kill {_os.getpid()}", "docker")
+    assert result["approved"] is True
+
+
+def test_self_host_kill_blocks_command_and_builtin_wrappers(clean_session):
+    # `command kill` and `builtin kill` are plain shell spellings that
+    # still execute kill; they must not slip past the command-position
+    # anchor.
+    pid = _os.getpid()
+    assert _check_self_host_kill(f"command kill {pid}")[0] is True
+    assert _check_self_host_kill(f"command -- kill {pid}")[0] is True
+    assert _check_self_host_kill(f"builtin kill {pid}")[0] is True
+    assert _check_self_host_kill(f"builtin -- kill {pid}")[0] is True
+    assert _check_self_host_kill("command -p kill $$")[0] is True
+    assert _check_self_host_kill("command -p -- kill $$")[0] is True
+    assert _check_self_host_kill(f"command builtin kill {pid}")[0] is True
+    assert _check_self_host_kill(f"command -- builtin -- kill {pid}")[0] is True
+
+
+def test_self_host_kill_blocks_standard_wrapper_prefixes(clean_session):
+    pid = _os.getpid()
+    assert _check_self_host_kill(f"sudo kill {pid}")[0] is True
+    assert _check_self_host_kill(f"sudo -- kill {pid}")[0] is True
+    assert _check_self_host_kill(f"env kill {pid}")[0] is True
+    assert _check_self_host_kill(f"env -- kill {pid}")[0] is True
+    assert _check_self_host_kill("exec kill $PPID")[0] is True
+    assert _check_self_host_kill(f"nohup setsid kill -9 {pid}")[0] is True
+
+
+def test_self_host_kill_allows_foreign_pid_via_wrappers(clean_session):
+    assert _check_self_host_kill("command kill 999999999")[0] is False
+    assert _check_self_host_kill("builtin kill -9 999999998")[0] is False
+
+
+def test_self_host_kill_allows_command_v_lookup(clean_session):
+    # `command -v kill` resolves the name without executing kill, so it
+    # is not a wrapper; only `command [-p]` executes its operand.
+    assert _check_self_host_kill(f"command -v kill {_os.getpid()}")[0] is False
+
+
+def test_check_all_command_guards_blocks_wrapped_self_host_kill(clean_session):
+    for cmd in (
+        f"command kill {_os.getpid()}",
+        f"command -- kill {_os.getpid()}",
+        f"builtin kill {_os.getpid()}",
+        f"builtin -- kill {_os.getpid()}",
+        f"env -- kill {_os.getpid()}",
+    ):
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, cmd
+        assert result.get("hardline") is True, cmd

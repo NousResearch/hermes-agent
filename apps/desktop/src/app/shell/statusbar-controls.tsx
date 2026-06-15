@@ -17,7 +17,7 @@ export interface StatusbarMenuItem {
   disabled?: boolean
   hidden?: boolean
   href?: string
-  onSelect?: () => void
+  onSelect?: (modifiers?: StatusbarSelectModifiers) => void
   title?: string
   to?: string
 }
@@ -35,7 +35,7 @@ export interface StatusbarItem {
   menuClassName?: string
   menuContent?: ReactNode
   menuItems?: readonly StatusbarMenuItem[]
-  onSelect?: (modifiers: StatusbarSelectModifiers) => void
+  onSelect?: (modifiers?: StatusbarSelectModifiers) => void
   title?: string
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'

@@ -4,7 +4,9 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+import json
 import os
+import socket
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -434,6 +436,210 @@ def is_termux() -> bool:
     """
     prefix = os.getenv("PREFIX", "")
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+_DEVICE_NAME_CACHE: str | None = None
+
+
+def _resolve_meshboard_device_name() -> str | None:
+    """Resolve device name from MeshBoard registry, if available.
+
+    Uses the same resolution strategy as MeshBoard's own host detection:
+    1. ``host-id`` marker file at mesh root (explicit, operator-set).
+    2. ``MESHBOARD_LOCAL_HOST`` env var.
+    3. Match by ``lan_hint`` IP against local network interfaces.
+    4. Match by ``ssh_alias`` against hostname (case-insensitive).
+    5. Match by device ``id`` against hostname (case-insensitive).
+
+    Returns the device ``label`` from the matching record, or None.
+    """
+    import platform
+    import subprocess
+
+    hostname = (platform.node() or "").rstrip(".").lower()
+    hostname_base = hostname.replace(".local", "").replace(".lan", "")
+
+    # Gather local IPs for lan_hint matching
+    local_ips: set[str] = set()
+    try:
+        # Linux: hostname -I
+        result = subprocess.run(
+            ["hostname", "-I"], capture_output=True, text=True, timeout=2, check=False
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            local_ips = set(result.stdout.split())
+    except Exception:
+        pass
+    if not local_ips:
+        try:
+            # macOS: ifconfig parsing
+            result = subprocess.run(
+                ["ifconfig"], capture_output=True, text=True, timeout=2, check=False
+            )
+            if result.returncode == 0:
+                import re
+                for m in re.finditer(r"inet (\d+\.\d+\.\d+\.\d+)", result.stdout):
+                    local_ips.add(m.group(1))
+        except Exception:
+            pass
+
+    # Look for MeshBoard registry
+    for mesh_root in [
+        Path.home() / "Workspaces" / ".mesh",
+        Path(os.environ.get("MESHBOARD_RUNTIME", "")).expanduser()
+            if os.environ.get("MESHBOARD_RUNTIME") else None,
+    ]:
+        if mesh_root is None:
+            continue
+        devices_path = mesh_root / "registry" / "devices.json"
+        if not devices_path.exists():
+            continue
+        try:
+            with open(devices_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        devices = data.get("devices", []) or []
+
+        # 1. host-id marker file
+        marker = mesh_root / "host-id"
+        if marker.exists():
+            try:
+                host_id = marker.read_text().strip()
+                if host_id:
+                    for dev in devices:
+                        if str(dev.get("id", "")) == host_id:
+                            label = dev.get("label")
+                            if isinstance(label, str) and label.strip():
+                                return label.strip()
+            except Exception:
+                pass
+
+        # 2. MESHBOARD_LOCAL_HOST env var
+        env_host = os.environ.get("MESHBOARD_LOCAL_HOST", "").strip()
+        if env_host:
+            for dev in devices:
+                if str(dev.get("id", "")) == env_host:
+                    label = dev.get("label")
+                    if isinstance(label, str) and label.strip():
+                        return label.strip()
+
+        # 3. Match by lan_hint IP
+        for dev in devices:
+            lan_hint = str(dev.get("lan_hint", "")).strip()
+            if lan_hint and lan_hint in local_ips:
+                label = dev.get("label")
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+
+        # 4. Match by ssh_alias (case-insensitive)
+        for dev in devices:
+            ssh_alias = str(dev.get("ssh_alias", "")).strip().lower()
+            if ssh_alias and (ssh_alias == hostname or ssh_alias == hostname_base):
+                label = dev.get("label")
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+
+        # 5. Match by device id (case-insensitive)
+        for dev in devices:
+            dev_id = str(dev.get("id", "")).strip().lower()
+            if dev_id and (dev_id == hostname or dev_id == hostname_base):
+                label = dev.get("label")
+                if isinstance(label, str) and label.strip():
+                    return label.strip()
+
+    return None
+
+
+def _resolve_tailscale_device_name() -> str | None:
+    """Resolve device name from Tailscale, if available.
+
+    Runs ``tailscale status --json`` and extracts the self device's
+    ``HostName`` field. Returns None if Tailscale is not installed,
+    not running, or the command fails.
+    """
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=5, check=False
+        )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        self_node = data.get("Self", {})
+        hostname = self_node.get("HostName")
+        if isinstance(hostname, str) and hostname.strip():
+            return hostname.strip()
+    except Exception:
+        pass
+    return None
+
+
+def get_device_name() -> str:
+    """Return a human-friendly device name.
+
+    Resolution order (opt-in integrations, all optional):
+      1. ``device.name`` from ``config.yaml`` (universal base layer — user-set).
+      2. MeshBoard ``devices.json`` label (matched by host-id marker, IP, or ssh_alias).
+      3. Tailscale self ``HostName`` (opt-in, works when tailscale CLI is present).
+      4. ``socket.gethostname()`` as last resort (stripped of .local suffix).
+
+    Result is cached for the process lifetime.
+    """
+    global _DEVICE_NAME_CACHE
+    if _DEVICE_NAME_CACHE is not None:
+        return _DEVICE_NAME_CACHE
+
+    # 1. config.yaml device.name (universal, user-controlled base layer)
+    try:
+        cfg_path = get_config_path()
+        if cfg_path.exists():
+            import yaml  # deferred — yaml is always installed with Hermes
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            device_cfg = cfg.get("device")
+            if isinstance(device_cfg, dict):
+                name = device_cfg.get("name")
+                if isinstance(name, str) and name.strip():
+                    _DEVICE_NAME_CACHE = name.strip()
+                    return _DEVICE_NAME_CACHE
+            elif isinstance(device_cfg, str) and device_cfg.strip():
+                _DEVICE_NAME_CACHE = device_cfg.strip()
+                return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    # 2. MeshBoard integration (optional — gracefully skips if no registry)
+    try:
+        mb_name = _resolve_meshboard_device_name()
+        if mb_name:
+            _DEVICE_NAME_CACHE = mb_name
+            return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    # 3. Tailscale integration (optional — gracefully skips if no tailscale)
+    try:
+        ts_name = _resolve_tailscale_device_name()
+        if ts_name:
+            _DEVICE_NAME_CACHE = ts_name
+            return _DEVICE_NAME_CACHE
+    except Exception:
+        pass
+
+    # 4. hostname fallback (universal last resort)
+    try:
+        hn = socket.gethostname()
+        # Strip .local suffix for readability
+        if hn.endswith(".local"):
+            hn = hn[:-6]
+        _DEVICE_NAME_CACHE = hn or "unknown"
+    except Exception:
+        _DEVICE_NAME_CACHE = "unknown"
+
+    return _DEVICE_NAME_CACHE
 
 
 _wsl_detected: bool | None = None

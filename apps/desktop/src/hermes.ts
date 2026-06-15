@@ -43,7 +43,6 @@ import type {
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
-const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
 export type {
   ActionResponse,
@@ -139,8 +138,7 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
-    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
   })
 
   return {
@@ -150,19 +148,38 @@ export async function listSessions(
   }
 }
 
-// Unified, read-only session list aggregated across ALL profiles. Served by the
-// primary backend straight off each profile's state.db — no per-profile backend
-// is spawned. Single-profile users get the same rows as listSessions(), tagged
-// profile="default".
-// Source scoping lets callers split the unified list into independent slices:
-// recents pass `excludeSources: ['cron']`, the cron-jobs section passes
-// `source: 'cron'`. Without this a burst of (always-newest) cron sessions
-// consumes the whole recents page and starves real conversations.
+export function autoArchiveOldSessions(
+  preserveIds: string[] = []
+): Promise<{ ok: boolean; archived: number; skipped?: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number; skipped?: boolean }>({
+    path: '/api/sessions/auto-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
+export function bulkArchiveSessions(preserveIds: string[] = []): Promise<{ ok: boolean; archived: number }> {
+  return window.hermesDesktop.api<{ ok: boolean; archived: number }>({
+    path: '/api/sessions/bulk-archive',
+    method: 'POST',
+    body: { preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000) }
+  })
+}
+
+// Optional source scoping for session lists: `source` fetches one class's rows
+// (the cron slice, a single messaging platform), `excludeSources` drops classes
+// (recents exclude cron + messaging). The server applies the same filter to the
+// page AND its totals, so "load more" math always matches the rows a section
+// actually lists.
 export interface SessionSourceFilter {
   source?: string
   excludeSources?: string[]
 }
 
+// Unified, read-only session list aggregated across ALL profiles. Served by the
+// primary backend straight off each profile's state.db — no per-profile backend
+// is spawned. Single-profile users get the same rows as listSessions(), tagged
+// profile="default".
 export async function listAllProfileSessions(
   limit = 40,
   minMessages = 0,
@@ -180,8 +197,7 @@ export async function listAllProfileSessions(
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
-    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`
   })
 
   return {
@@ -485,15 +501,6 @@ export function selectToolsetProvider(
     path: `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
     method: 'PUT',
     body: { provider }
-  })
-}
-
-export function runToolsetPostSetup(name: string, key: string): Promise<ActionResponse & { key: string }> {
-  return window.hermesDesktop.api<ActionResponse & { key: string }>({
-    ...profileScoped(),
-    path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
-    method: 'POST',
-    body: { key }
   })
 }
 

@@ -240,6 +240,36 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+def _context_usage_for_tool_events(agent, messages: list) -> dict:
+    """Build the usage payload attached to tool.start/complete events.
+
+    Context numbers come from ``ContextCompressor.live_context_tokens`` so the
+    UI context bar keeps moving while tool results pile up mid-turn instead of
+    freezing at the last API call's prompt size.
+    """
+    usage = {
+        "model": getattr(agent, "model", ""),
+        "input": getattr(agent, "session_input_tokens", 0) or 0,
+        "output": getattr(agent, "session_output_tokens", 0) or 0,
+        "total": getattr(agent, "session_total_tokens", 0) or 0,
+        "calls": getattr(agent, "session_api_calls", 0) or 0,
+    }
+    comp = getattr(agent, "context_compressor", None)
+    if comp:
+        try:
+            ctx_used = comp.live_context_tokens(messages)
+        except Exception:
+            ctx_used = getattr(comp, "last_prompt_tokens", 0) or 0
+        ctx_used = ctx_used or usage["total"] or 0
+        ctx_max = getattr(comp, "context_length", 0) or 0
+        if ctx_max:
+            usage["context_used"] = ctx_used
+            usage["context_max"] = ctx_max
+            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+        usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    return usage
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -438,12 +468,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
+    # Inject context usage into tool events so frontend can update
+    # the context bar in real-time during tool execution.
+    usage = _context_usage_for_tool_events(agent, messages)
     for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
         if block_result is not None:
             continue
         if agent.tool_start_callback:
+            # usage= feeds the desktop's live context bar; legacy callbacks
+            # (CLI, upstream consumers, tests) still take the bare 3-arg form,
+            # so retry positionally when the receiver rejects the kwarg.
             try:
-                agent.tool_start_callback(tc.id, name, args)
+                agent.tool_start_callback(tc.id, name, args, usage=usage)
+            except TypeError:
+                try:
+                    agent.tool_start_callback(tc.id, name, args)
+                except Exception as cb_err:
+                    logging.debug(f"Tool start callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -714,9 +755,17 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._current_tool = None
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
+        # Inject context usage into tool.complete events for real-time updates.
+        _usage = _context_usage_for_tool_events(agent, messages)
+
         if not blocked and agent.tool_complete_callback:
             try:
-                agent.tool_complete_callback(tc.id, name, args, function_result)
+                agent.tool_complete_callback(tc.id, name, args, function_result, usage=_usage)
+            except TypeError:
+                    try:
+                        agent.tool_complete_callback(tc.id, name, args, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool complete callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -897,8 +946,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
         if not _execution_blocked and agent.tool_start_callback:
+            # Inject context usage for real-time context bar updates.
+            _t_usage = _context_usage_for_tool_events(agent, messages)
             try:
-                agent.tool_start_callback(tool_call.id, function_name, function_args)
+                agent.tool_start_callback(tool_call.id, function_name, function_args, usage=_t_usage)
+            except TypeError:
+                try:
+                    agent.tool_start_callback(tool_call.id, function_name, function_args)
+                except Exception as cb_err:
+                    logging.debug(f"Tool start callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -1353,8 +1409,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
 
         if not _execution_blocked and agent.tool_complete_callback:
+            # Inject context usage for real-time context bar updates.
+            _sc_usage = _context_usage_for_tool_events(agent, messages)
             try:
-                agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result, usage=_sc_usage)
+            except TypeError:
+                    try:
+                        agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool complete callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 

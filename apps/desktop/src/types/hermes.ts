@@ -163,6 +163,8 @@ export interface MessagingPlatformTestResponse {
 
 export interface GatewayReadyPayload {
   skin?: unknown
+  /** The emitting gateway's resolved device name (channels Phase 2b). */
+  device_name?: string
 }
 
 export interface HermesConfig {
@@ -174,6 +176,9 @@ export interface HermesConfig {
   display?: {
     personality?: string
     skin?: string
+  }
+  desktop?: {
+    yolo_default?: boolean
   }
   terminal?: {
     cwd?: string
@@ -237,11 +242,21 @@ export interface ModelOptionProvider {
   /** Per-model option support, keyed by model id (present when the picker
    *  requested capabilities). Lets the UI gate fast/reasoning controls. */
   capabilities?: Record<string, ModelCapabilities>
+  /** Per-model provider metadata from live /models endpoints. */
+  model_metadata?: Record<string, ModelMetadata>
 }
 
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
+}
+
+export interface ModelMetadata {
+  router_backend?: string
+  router_host?: string
+  router_hosts?: string[]
+  /** Short human blurb for the model, surfaced in the picker row. */
+  description?: string
 }
 
 export interface ModelOptionsResponse {
@@ -288,6 +303,9 @@ export interface SessionInfo {
    *  continuation tip. Stable across compressions — used as the durable id for
    *  pins so a pinned conversation survives auto-compression. */
   _lineage_root_id?: null | string
+  /** Every persisted session id in the compression chain, root through live tip.
+   *  Lets old pinned/search/selection ids resolve to the same displayed row. */
+  _lineage_ids?: string[]
   input_tokens: number
   is_active: boolean
   last_active: number
@@ -313,6 +331,34 @@ export interface SessionInfo {
   profile?: string
   /** True when {@link profile} is the default profile. */
   is_default_profile?: boolean
+  /** Human-friendly device name (e.g. "ko-mac", "Taro"). Resolved from
+   *  config.yaml → MeshBoard devices.json → hostname at session creation. */
+  device_name?: null | string
+}
+
+/** Cross-device session presence record (written by Hermes CLI). */
+export interface SessionPresenceRecord {
+  client?: string
+  cwd?: string
+  endpoint?: string
+  expires_at?: number
+  host?: string
+  instance_id?: string
+  metadata?: Record<string, unknown>
+  model?: string
+  pid?: number
+  profile?: string
+  session_id: string
+  session_key?: string
+  source?: string
+  status?: string
+  title?: string
+  updated_at?: number
+  version?: number
+}
+
+export interface SessionPresenceListResponse {
+  sessions: SessionPresenceRecord[]
 }
 
 export interface SessionMessage {
@@ -324,6 +370,8 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   role: 'assistant' | 'system' | 'tool' | 'user'
+  /** Device a user message was typed on (F-003 sender attribution). */
+  sender_device?: null | string
   text?: unknown
   timestamp?: number
   tool_call_id?: null | string
@@ -337,11 +385,20 @@ export interface SessionMessagesResponse {
 }
 
 export interface SessionResumeResponse {
+  inflight?: null | SessionInFlightTurn
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
-  resumed: string
+  resumed?: string
+  running?: boolean
   session_id: string
+  session_key?: string
+}
+
+export interface SessionInFlightTurn {
+  assistant?: string
+  streaming?: boolean
+  user?: string
 }
 
 export interface SessionRuntimeInfo {
@@ -366,6 +423,7 @@ export interface SessionRuntimeInfo {
 
 export interface UsageStats {
   calls: number
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_used?: number

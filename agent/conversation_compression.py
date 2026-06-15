@@ -186,11 +186,23 @@ def check_compression_model_feasibility(agent: Any) -> None:
             # the raw messages plus a small summarisation instruction.
             old_threshold = threshold
             new_threshold = aux_context
+            main_ctx = agent.context_compressor.context_length
+
+            # Respect compression.min_threshold: never auto-lower below
+            # the user's configured floor, even if the aux model is
+            # smaller.  Below this ratio, warn but allow the higher
+            # threshold — compression may fail if the aux model cannot
+            # fit the full window, but the user explicitly asked for it.
+            min_threshold = getattr(agent, "_compression_min_threshold", 0.0)
+            if min_threshold > 0.0 and main_ctx and main_ctx > 0:
+                min_tokens = int(main_ctx * min_threshold)
+                if new_threshold < min_tokens:
+                    new_threshold = min_tokens
+
             agent.context_compressor.threshold_tokens = new_threshold
             # Keep threshold_percent in sync so future main-model
             # context_length changes (update_model) re-derive from a
             # sensible number rather than the original too-high value.
-            main_ctx = agent.context_compressor.context_length
             if main_ctx:
                 agent.context_compressor.threshold_percent = (
                     new_threshold / main_ctx
@@ -228,7 +240,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"{_main_label}'s compression threshold was "
                 f"{old_threshold:,} tokens. "
                 f"Auto-lowered this session's threshold to "
-                f"{new_threshold:,} tokens so compression can run.\n"
+                f"{new_threshold:,} tokens so compression can run."
+            )
+            # Add a note about min_threshold if the clamp was applied
+            _min_threshold_hint = ""
+            if min_threshold > 0 and new_threshold > aux_context:
+                _min_threshold_hint = (
+                    f"\n  (compression.min_threshold={min_threshold:.2f} "
+                    f"prevented further lowering — set a lower "
+                    f"min_threshold or use a larger compression model "
+                    f"if compression fails)"
+                )
+            msg += (
+                f"{_min_threshold_hint}\n"
                 f"  To make this permanent, edit config.yaml — either:\n"
                 f"  1. Use a larger compression model:\n"
                 f"       auxiliary:\n"
@@ -236,7 +260,10 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"           model: <model-with-{old_threshold:,}+-context>\n"
                 f"  2. Lower the compression threshold:\n"
                 f"       compression:\n"
-                f"         threshold: 0.{safe_pct:02d}"
+                f"         threshold: 0.{safe_pct:02d}\n"
+                f"  3. Set a min threshold floor:\n"
+                f"       compression:\n"
+                f"         min_threshold: 0.{safe_pct:02d}"
             )
             agent._compression_warning = msg
             agent._emit_status(msg)

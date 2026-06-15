@@ -54,7 +54,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
             </span>
           </div>
           <div className="text-muted-foreground">
-            {progress.done} of {progress.total} steps
+            {progress.current} of {progress.total} steps
           </div>
         </div>
         {/* Top progress bar — plain HTML, derived from --primary so it

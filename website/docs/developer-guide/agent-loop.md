@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent` class — a large file that handles everything from prompt assembly to tool dispatch to provider failover.
+The core orchestration engine is `run_agent.py`'s `AIAgent` class — a large file (~4,400 lines) that handles everything from prompt assembly to tool dispatch to provider failover.
 
 ## Core Responsibilities
 

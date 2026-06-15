@@ -73,16 +73,28 @@ export const $bootstrap = atom<BootstrapStateModel>(INITIAL)
 export const $logPath = atom<string | null>(null)
 export const $hermesHome = atom<string | null>(null)
 
-export const $progress = computed($bootstrap, (b) => {
+export interface ProgressSnapshot {
+  done: number
+  current: number
+  total: number
+  fraction: number
+}
+
+export function getProgressSnapshot(b: BootstrapStateModel): ProgressSnapshot {
   const total = b.stageOrder.length
-  if (total === 0) return { done: 0, total: 0, fraction: 0 }
+  if (total === 0) return { done: 0, current: 0, total: 0, fraction: 0 }
   let done = 0
   for (const name of b.stageOrder) {
     const s = b.stages[name]?.state
     if (s === 'succeeded' || s === 'skipped' || s === 'failed') done += 1
   }
-  return { done, total, fraction: done / total }
-})
+  const activeIndex =
+    b.currentStage == null ? -1 : b.stageOrder.indexOf(b.currentStage)
+  const current = activeIndex >= 0 ? activeIndex + 1 : done
+  return { done, current, total, fraction: current / total }
+}
+
+export const $progress = computed($bootstrap, getProgressSnapshot)
 
 // ---------------------------------------------------------------------------
 // Tauri event subscription
@@ -130,6 +142,124 @@ type BootstrapEvent =
 
 let unlisten: UnlistenFn | null = null
 
+export function applyBootstrapEvent(payload: BootstrapEvent): void {
+  const cur = $bootstrap.get()
+  switch (payload.type) {
+    case 'manifest': {
+      const stages: Record<string, StageRecord> = {}
+      const order: string[] = []
+      const incomingOrder = payload.stages.map(s => s.name)
+      const sameStageOrder =
+        cur.stageOrder.length === incomingOrder.length &&
+        cur.stageOrder.every((name, index) => name === incomingOrder[index])
+      const preserveActiveRun = cur.status === 'running' && sameStageOrder
+
+      for (const s of payload.stages) {
+        const existing = preserveActiveRun ? cur.stages[s.name] : null
+        stages[s.name] = {
+          info: s,
+          state: existing?.state ?? null,
+          durationMs: existing?.durationMs,
+          error: existing?.error
+        }
+        order.push(s.name)
+      }
+      $bootstrap.set({
+        ...cur,
+        status: 'running',
+        protocolVersion: payload.protocolVersion,
+        stages,
+        stageOrder: order,
+        currentStage: preserveActiveRun ? cur.currentStage : null,
+        installRoot: null,
+        error: null,
+        logs: preserveActiveRun ? cur.logs : []
+      })
+      $route.set('progress')
+      break
+    }
+    case 'stage': {
+      const existing = cur.stages[payload.name]
+      if (!existing) {
+        console.warn('stage event for unknown stage', payload.name)
+        break
+      }
+      const next: StageRecord = {
+        ...existing,
+        state: payload.state,
+        durationMs: payload.durationMs,
+        error: payload.error
+      }
+      const currentStage =
+        payload.state === 'running'
+          ? payload.name
+          : cur.currentStage === payload.name
+            ? null
+            : cur.currentStage
+      $bootstrap.set({
+        ...cur,
+        stages: { ...cur.stages, [payload.name]: next },
+        currentStage
+      })
+      break
+    }
+    case 'log': {
+      const logs = [
+        ...cur.logs,
+        {
+          stage: payload.stage,
+          line: payload.line,
+          stream: payload.stream
+        }
+      ]
+      // Keep the rolling buffer bounded so the UI doesn't get OOM'd
+      // during a long install (playwright chromium download is ~10k lines).
+      const trimmed = logs.length > 2000 ? logs.slice(-2000) : logs
+      $bootstrap.set({ ...cur, logs: trimmed })
+      break
+    }
+    case 'complete': {
+      const completedStages = Object.fromEntries(
+        Object.entries(cur.stages).map(([name, record]) => [
+          name,
+          {
+            ...record,
+            state:
+              record.state === 'failed' || record.state === 'skipped'
+                ? record.state
+                : 'succeeded'
+          } satisfies StageRecord
+        ])
+      )
+
+      $bootstrap.set({
+        ...cur,
+        status: 'completed',
+        stages: completedStages,
+        installRoot: payload.installRoot,
+        currentStage: null
+      })
+      // Install: show the "launch Hermes" success screen. Update: this is a
+      // hand-off — the installer relaunches the desktop and exits within a
+      // few hundred ms, so routing to success just flashes that screen
+      // before the window closes. Stay on progress until we exit.
+      if ($mode.get() !== 'update') {
+        $route.set('success')
+      }
+      break
+    }
+    case 'failed':
+      $bootstrap.set({
+        ...cur,
+        status: 'failed',
+        error: payload.error,
+        currentStage: null
+      })
+      $route.set('failure')
+      break
+  }
+}
+
 export async function initialize(): Promise<void> {
   if (unlisten) return
 
@@ -148,83 +278,7 @@ export async function initialize(): Promise<void> {
   }
 
   unlisten = await listen<BootstrapEvent>('bootstrap', (event) => {
-    const payload = event.payload
-    const cur = $bootstrap.get()
-    switch (payload.type) {
-      case 'manifest': {
-        const stages: Record<string, StageRecord> = {}
-        const order: string[] = []
-        for (const s of payload.stages) {
-          stages[s.name] = { info: s, state: null }
-          order.push(s.name)
-        }
-        $bootstrap.set({
-          ...cur,
-          status: 'running',
-          protocolVersion: payload.protocolVersion,
-          stages,
-          stageOrder: order,
-          currentStage: null,
-          installRoot: null,
-          error: null,
-          logs: []
-        })
-        $route.set('progress')
-        break
-      }
-      case 'stage': {
-        const existing = cur.stages[payload.name]
-        if (!existing) {
-          console.warn('stage event for unknown stage', payload.name)
-          break
-        }
-        const next: StageRecord = {
-          ...existing,
-          state: payload.state,
-          durationMs: payload.durationMs,
-          error: payload.error
-        }
-        $bootstrap.set({
-          ...cur,
-          stages: { ...cur.stages, [payload.name]: next },
-          currentStage:
-            payload.state === 'running' ? payload.name : cur.currentStage
-        })
-        break
-      }
-      case 'log': {
-        const logs = [...cur.logs, { stage: payload.stage, line: payload.line, stream: payload.stream }]
-        // Keep the rolling buffer bounded so the UI doesn't get OOM'd
-        // during a long install (playwright chromium download is ~10k lines).
-        const trimmed = logs.length > 2000 ? logs.slice(-2000) : logs
-        $bootstrap.set({ ...cur, logs: trimmed })
-        break
-      }
-      case 'complete':
-        $bootstrap.set({
-          ...cur,
-          status: 'completed',
-          installRoot: payload.installRoot,
-          currentStage: null
-        })
-        // Install: show the "launch Hermes" success screen. Update: this is a
-        // hand-off — the installer relaunches the desktop and exits within a
-        // few hundred ms, so routing to success just flashes that screen
-        // before the window closes. Stay on progress until we exit.
-        if ($mode.get() !== 'update') {
-          $route.set('success')
-        }
-        break
-      case 'failed':
-        $bootstrap.set({
-          ...cur,
-          status: 'failed',
-          error: payload.error,
-          currentStage: null
-        })
-        $route.set('failure')
-        break
-    }
+    applyBootstrapEvent(event.payload)
   })
 
   // Update mode is a hand-off, not a user-initiated flow: the desktop already
@@ -258,7 +312,9 @@ export async function startUpdate(): Promise<void> {
   // Update is driven by the desktop handing off (Hermes-Setup.exe --update);
   // there's no welcome click. Reset + jump straight to progress, then let the
   // Rust side stream the synthetic update manifest.
-  $bootstrap.set(INITIAL)
+  if ($bootstrap.get().status !== 'running') {
+    $bootstrap.set(INITIAL)
+  }
   $route.set('progress')
   await invoke('start_update')
 }

@@ -1149,7 +1149,8 @@ DEFAULT_CONFIG = {
 
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "threshold": 0.85,            # compress when context usage exceeds this ratio
+        "min_threshold": 0.0,         # floor for auto-lowered threshold (0.0 = allow any aux-model-safe value)
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
@@ -1170,16 +1171,6 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
-                                      # route raises its compaction trigger to 85% (vs the
-                                      # global `threshold` above). Codex hard-caps gpt-5.5
-                                      # at a 272K window, so the default 50% would compact
-                                      # at ~136K and waste half the usable context. Set to
-                                      # False to opt back down to the global threshold
-                                      # (e.g. 0.50) for Codex gpt-5.5 sessions. Only this
-                                      # exact route is affected — gpt-5.5 on OpenAI's
-                                      # direct API, OpenRouter, and Copilot keep the
-                                      # global threshold regardless.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -2040,6 +2031,12 @@ DEFAULT_CONFIG = {
         "destructive_slash_confirm": True,
     },
 
+    # Native desktop app preferences. Desktop defaults new chats to
+    # session-scoped YOLO while CLI/TUI/cron keep approvals.mode semantics.
+    "desktop": {
+        "yolo_default": True,
+    },
+
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
@@ -2130,11 +2127,11 @@ DEFAULT_CONFIG = {
         # raise these to keep more early failure evidence.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
-        # Profile assigned to the root/orchestration task after Triage
-        # decomposition. When unset, falls back to the default profile (the
-        # one `hermes` launches with no -p flag). This does not control the
-        # decomposer prompt, model, or skills; configure that LLM path under
-        # auxiliary.kanban_decomposer.
+        # Profile that decomposes tasks in the Triage column. When unset,
+        # falls back to the default profile (the one `hermes` launches with
+        # no -p flag). Set this to a dedicated 'orchestrator' profile if you
+        # want decomposition to use a different model/skills from your main
+        # working profile.
         "orchestrator_profile": "",
         # Where a child task lands if the orchestrator can't match an
         # assignee to any installed profile. When unset, falls back to the
@@ -2336,6 +2333,28 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # Desktop sidebar hygiene: soft-archive older, inactive chats at
+        # startup so a heavy local state.db does not leave thousands of old
+        # conversations in the default Sessions list. This never deletes data:
+        # archived chats stay recoverable from Settings -> Archived Chats.
+        "auto_archive": True,
+        # Keep at least this many most-recent surfaced conversations
+        # unarchived. Pinned/active ids sent by the desktop are preserved even
+        # when they fall outside this cap.
+        "auto_archive_keep_recent": 100,
+        # Also archive inactive surfaced conversations older than this many
+        # days, even when the recent cap has not been exceeded. 0 disables the
+        # age cutoff while leaving the keep_recent cap active.
+        "auto_archive_after_days": 14,
+        # Avoid sweeping state.db on every renderer refresh.
+        "auto_archive_min_interval_hours": 6,
+        # Match the desktop sidebar's normal min_messages=1 list so empty
+        # abandoned drafts are left to the explicit empty-session cleanup.
+        "auto_archive_min_messages": 1,
+        # Sessions with ended_at=NULL and activity inside this window are
+        # presumed live and never auto-archived. Matches the web API's existing
+        # active-session heuristic.
+        "auto_archive_active_grace_seconds": 300,
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.
@@ -2372,12 +2391,6 @@ DEFAULT_CONFIG = {
     # never fires again.  Users can wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
-        # Structured profile-build path offered on the very first gateway
-        # message ever. "ask" (default) -> offer to build a user profile
-        # (opt-in, consent-gated; the agent asks before any lookup and never
-        # reads connected accounts silently). "off" -> plain intro only.
-        # The offer fires at most once (latched under onboarding.seen).
-        "profile_build": "ask",
     },
 
     # ``hermes update`` behaviour.
@@ -3903,42 +3916,6 @@ def _normalize_custom_provider_entry(
     return normalized
 
 
-def _custom_provider_entry_to_provider_config(
-    entry: Any,
-    *,
-    provider_key: str = "",
-) -> Optional[Dict[str, Any]]:
-    """Translate a legacy custom provider entry to the v12 providers shape."""
-    normalized = _normalize_custom_provider_entry(
-        dict(entry) if isinstance(entry, dict) else entry,
-        provider_key=provider_key,
-    )
-    if normalized is None:
-        return None
-
-    provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
-
-    for field in (
-        "name",
-        "api_key",
-        "key_env",
-        "models",
-        "context_length",
-        "rate_limit_delay",
-        "discover_models",
-        "extra_body",
-    ):
-        if field in normalized:
-            provider_entry[field] = normalized[field]
-
-    if "model" in normalized:
-        provider_entry["default_model"] = normalized["model"]
-    if "api_mode" in normalized:
-        provider_entry["transport"] = normalized["api_mode"]
-
-    return provider_entry
-
-
 def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
     """Normalize ``providers`` config entries into the legacy custom-provider shape."""
     if not isinstance(providers_dict, dict):
@@ -3951,6 +3928,96 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
             custom_providers.append(normalized)
 
     return custom_providers
+
+
+_API_KEY_ENV_TEMPLATE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _provider_credential_identity(api_key: Any, key_env: Any) -> Tuple[str, str]:
+    """Reduce a provider credential to a comparable identity tuple.
+
+    Returns one of:
+
+    - ``("literal", "<secret>")`` — an inline key, a ``${VAR}`` template, or a
+      ``key_env`` that resolves in the current environment (templates and
+      env refs are resolved so "the same secret spelled two ways" compares
+      equal).
+    - ``("env", "VAR")`` — an env-backed credential that does not resolve in
+      this process; identity is the variable name itself.
+    - ``("none", "")`` — no credential configured.
+    """
+    api_key = str(api_key or "").strip()
+    key_env = str(key_env or "").strip()
+    template = _API_KEY_ENV_TEMPLATE_RE.fullmatch(api_key)
+    if template:
+        key_env, api_key = template.group(1), ""
+    if api_key:
+        return ("literal", api_key)
+    if key_env:
+        resolved = os.environ.get(key_env, "").strip()
+        if resolved:
+            return ("literal", resolved)
+        return ("env", key_env)
+    return ("none", "")
+
+
+def find_matching_provider_key(
+    providers_dict: Any,
+    name: str,
+    base_url: str,
+    api_key: str = "",
+    key_env: str = "",
+) -> Optional[Any]:
+    """Return the ``providers:`` map key that already holds this endpoint.
+
+    The actual map key object is returned (not a str() copy) so callers can
+    index ``providers_dict`` with it directly.
+
+    A candidate matches an existing entry when the normalized URL is equal
+    AND the display name is compatible (equal case-insensitively, or absent
+    on either side — the entry's key doubles as its name fallback, matching
+    ``_normalize_custom_provider_entry``) AND the credential identity is
+    compatible (equal, or absent on either side; an entry with no key and an
+    onboarding run that supplies one are the same endpoint).
+
+    Same display name on a DIFFERENT URL or with a different credential is
+    not a match — those are genuinely distinct endpoints and keep the
+    collision-suffix behaviour. Returns None when nothing matches.
+    """
+    if not isinstance(providers_dict, dict):
+        return None
+    cand_url = str(base_url or "").strip().rstrip("/").lower()
+    if not cand_url:
+        return None
+    cand_name = str(name or "").strip().lower()
+    cand_cred = _provider_credential_identity(api_key, key_env)
+    for key, entry in providers_dict.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_url = ""
+        for url_key in ("base_url", "url", "api"):
+            raw_url = entry.get(url_key)
+            if isinstance(raw_url, str) and raw_url.strip():
+                entry_url = raw_url.strip().rstrip("/").lower()
+                break
+        if not entry_url or entry_url != cand_url:
+            continue
+        entry_name = str(entry.get("name", "") or "").strip().lower()
+        if not entry_name:
+            entry_name = str(key).strip().lower()
+        if cand_name and entry_name and cand_name != entry_name:
+            continue
+        entry_cred = _provider_credential_identity(
+            entry.get("api_key"), entry.get("key_env")
+        )
+        if (
+            cand_cred[0] != "none"
+            and entry_cred[0] != "none"
+            and cand_cred != entry_cred
+        ):
+            continue
+        return key
+    return None
 
 
 def get_compatible_custom_providers(
@@ -4441,13 +4508,55 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not isinstance(providers_dict, dict):
                 providers_dict = {}
             migrated_count = 0
+            migrated_keys: List[str] = []
             for entry in custom_list:
                 if not isinstance(entry, dict):
                     continue
                 old_name = entry.get("name", "")
-                old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
+                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
+                old_key = entry.get("api_key", "")
                 if not old_url:
                     continue  # skip entries with no URL
+
+                # Idempotency: when an existing ``providers:`` entry is the
+                # SAME endpoint (same URL + compatible name/credential),
+                # merge missing fields into it instead of writing a suffixed
+                # duplicate. Re-running this migration after onboarding had
+                # re-populated custom_providers used to duplicate every
+                # endpoint as ``taro`` + ``taro-3``, ``ai-router`` +
+                # ``ai-router-0``, ... — one picker section per copy.
+                existing_key = find_matching_provider_key(
+                    providers_dict,
+                    old_name,
+                    old_url,
+                    api_key=old_key,
+                    key_env=entry.get("key_env", ""),
+                )
+                if existing_key is not None:
+                    existing = providers_dict[existing_key]
+                    # Add-only merge — never clobber a curated entry.
+                    if (
+                        entry.get("model")
+                        and not existing.get("default_model")
+                        and not existing.get("model")
+                    ):
+                        existing["default_model"] = entry["model"]
+                    if (
+                        entry.get("api_mode")
+                        and not existing.get("transport")
+                        and not existing.get("api_mode")
+                    ):
+                        existing["transport"] = entry["api_mode"]
+                    if (
+                        old_key
+                        and old_key not in {"no-key", "no-key-required", ""}
+                        and not str(existing.get("api_key", "") or "").strip()
+                        and not str(existing.get("key_env", "") or "").strip()
+                    ):
+                        existing["api_key"] = old_key
+                    migrated_count += 1
+                    migrated_keys.append(existing_key)
+                    continue
 
                 # Generate a kebab-case key from the display name
                 key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
@@ -4464,26 +4573,32 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     except Exception:
                         key = f"endpoint-{migrated_count}"
 
-                # Don't overwrite existing entries
-                base_key = key
-                suffix = migrated_count
-                while key in providers_dict:
-                    key = f"{base_key}-{suffix}"
-                    suffix += 1
+                # Same key but a genuinely different endpoint/credential —
+                # keep both visible under a counter suffix. Loop until the
+                # key is actually free: the old single-shot
+                # f"{key}-{migrated_count}" could itself collide and
+                # silently overwrite a real entry.
+                if key in providers_dict:
+                    n = 2
+                    while f"{key}-{n}" in providers_dict:
+                        n += 1
+                    key = f"{key}-{n}"
 
-                new_entry = _custom_provider_entry_to_provider_config(
-                    entry,
-                    provider_key=key,
-                )
-                if new_entry is None:
-                    continue
-                if not old_name:
-                    new_entry.pop("name", None)
-                if new_entry.get("api_key") in {"no-key", "no-key-required", ""}:
-                    new_entry.pop("api_key", None)
+                new_entry = {"api": old_url}
+                if old_name:
+                    new_entry["name"] = old_name
+                if old_key and old_key not in {"no-key", "no-key-required", ""}:
+                    new_entry["api_key"] = old_key
+
+                # Carry over model and api_mode if present
+                if entry.get("model"):
+                    new_entry["default_model"] = entry["model"]
+                if entry.get("api_mode"):
+                    new_entry["transport"] = entry["api_mode"]
 
                 providers_dict[key] = new_entry
                 migrated_count += 1
+                migrated_keys.append(key)
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
@@ -4492,8 +4607,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 save_config(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
-                    for key in list(providers_dict.keys())[-migrated_count:]:
-                        ep = providers_dict[key]
+                    for key in migrated_keys:
+                        ep = providers_dict.get(key, {})
                         print(f"    → {key}: {ep.get('api', '')}")
 
     # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
@@ -6118,7 +6233,7 @@ def show_config():
     enabled = compression.get('enabled', True)
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
-        print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        print(f"  Threshold:    {compression.get('threshold', 0.85) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

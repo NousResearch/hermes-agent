@@ -400,14 +400,14 @@ stt:
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
-  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"                  # "local" (free) | "groq" | "openai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
+  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax"
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -458,8 +458,6 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
-| **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
-| **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 

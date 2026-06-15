@@ -24,6 +24,7 @@ export interface RuntimeReadinessResult {
   ready: boolean
   reason: null | string
   source: 'fallback' | 'runtime_check' | 'setup_status'
+  unavailable?: boolean
 }
 
 export type RuntimeReadinessRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -50,6 +51,20 @@ function normalizeMessage(value: null | string | undefined): null | string {
   const next = value?.trim()
 
   return next ? next : null
+}
+
+function isTransportFailure(value: null | string): boolean {
+  const message = value?.toLowerCase() ?? ''
+
+  return (
+    message.includes('timed out') ||
+    message.includes('timeout') ||
+    message.includes('failed to fetch') ||
+    message.includes('connection refused') ||
+    message.includes('econnrefused') ||
+    message.includes('timed out connecting to hermes backend') ||
+    message.includes("background gateway didn't come up")
+  )
 }
 
 async function requestWithFallback<T>(
@@ -126,6 +141,20 @@ export function interpretRuntimeReadiness(
       ready: setupConfigured,
       reason: setupConfigured ? null : (runtimeFailure ?? setupFailure ?? defaultReason),
       source: 'setup_status'
+    }
+  }
+
+  if (
+    signals.setup == null &&
+    signals.runtime == null &&
+    (isTransportFailure(setupFailure) || isTransportFailure(runtimeFailure))
+  ) {
+    return {
+      checksDisagree: false,
+      ready: false,
+      reason: runtimeFailure ?? setupFailure ?? defaultReason,
+      source: 'fallback',
+      unavailable: true
     }
   }
 

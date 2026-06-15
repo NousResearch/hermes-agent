@@ -141,18 +141,6 @@ def _list_auth_returning(rows: list[dict]):
     )
 
 
-def _nous_row(model: str = "openai/gpt-5.5") -> dict:
-    return {
-        "slug": "nous",
-        "name": "Nous",
-        "models": [model],
-        "total_models": 1,
-        "is_current": True,
-        "is_user_defined": False,
-        "source": "built-in",
-    }
-
-
 def test_build_models_payload_returns_expected_shape():
     rows = [
         {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
@@ -166,6 +154,57 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["model"] == "m1"
     assert payload["provider"] == "openrouter"
     assert payload["providers"] == rows
+
+
+def test_build_models_payload_maps_legacy_custom_to_named_provider():
+    """Desktop sessions may still report provider='custom' while carrying the
+    base_url for a named custom provider. The payload must return the named
+    slug so the picker checkmark lands under that provider instead of CUSTOM."""
+    rows = [
+        {"slug": "custom", "name": "Custom endpoint",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": True, "is_user_defined": False,
+         "source": "canonical"},
+        {"slug": "custom:taro", "name": "taro",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": True, "is_user_defined": True,
+         "source": "user-config", "api_url": "http://10.10.20.211:8080/v1"},
+    ]
+    ctx = _empty_ctx(
+        provider="custom",
+        model="qwen3.6-27b",
+        base_url="http://10.10.20.211:8080/v1/",
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    assert payload["provider"] == "custom:taro"
+    slugs = [row["slug"] for row in payload["providers"]]
+    assert "custom" not in slugs
+    assert payload["providers"][0]["is_current"] is True
+
+
+def test_build_models_payload_hides_shadow_custom_for_named_current():
+    rows = [
+        {"slug": "custom", "name": "Custom endpoint",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": False, "is_user_defined": False,
+         "source": "canonical"},
+        {"slug": "custom:taro", "name": "taro",
+         "models": ["qwen3.6-27b"], "total_models": 1,
+         "is_current": True, "is_user_defined": True,
+         "source": "user-config", "api_url": "http://10.10.20.211:8080/v1"},
+    ]
+    ctx = _empty_ctx(
+        provider="custom:taro",
+        model="qwen3.6-27b",
+        base_url="http://10.10.20.211:8080/v1",
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    assert payload["provider"] == "custom:taro"
+    assert [row["slug"] for row in payload["providers"]] == ["custom:taro"]
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():
@@ -183,98 +222,6 @@ def test_build_models_payload_does_not_call_provider_model_ids():
          patch("hermes_cli.models.provider_model_ids") as mock_pm:
         build_models_payload(ctx)
     mock_pm.assert_not_called()
-
-
-def test_build_models_payload_uses_cached_nous_tier_by_default():
-    """Picker payloads should not force fresh Nous account checks.
-
-    Desktop/status picker opens are request/response UI paths. They can hit
-    the short free-tier cache; explicit model/auth flows can still opt into a
-    fresh account check when needed.
-    """
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    rows = [_nous_row()]
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=rows,
-    ) as mock_list:
-        build_models_payload(ctx)
-
-    mock_list.assert_called_once()
-    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is False
-
-
-def test_build_models_payload_can_force_fresh_nous_tier():
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    rows = [_nous_row()]
-    with patch(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        return_value=rows,
-    ) as mock_list:
-        build_models_payload(ctx, force_fresh_nous_tier=True)
-
-    mock_list.assert_called_once()
-    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
-
-
-def test_list_authenticated_providers_force_fresh_is_keyword_only():
-    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
-
-    It was inserted between ``custom_providers`` and ``max_models``; making it
-    keyword-only ensures no positional caller passing ``max_models`` as the 5th
-    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
-    future signature edit that drops the ``*`` separator is caught.
-    """
-    import inspect
-
-    from hermes_cli.model_switch import list_authenticated_providers
-
-    sig = inspect.signature(list_authenticated_providers)
-    param = sig.parameters["force_fresh_nous_tier"]
-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    assert param.default is False
-
-
-def test_pricing_uses_cached_nous_tier_by_default():
-    rows = [_nous_row()]
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    with (
-        _list_auth_returning(rows),
-        patch(
-            "hermes_cli.models.get_pricing_for_provider",
-            return_value={
-                "openai/gpt-5.5": {
-                    "prompt": "0.000001",
-                    "completion": "0.000002",
-                },
-            },
-        ),
-        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
-    ):
-        build_models_payload(ctx, pricing=True)
-
-    mock_free.assert_called_once_with(force_fresh=False)
-
-
-def test_pricing_can_force_fresh_nous_tier():
-    rows = [_nous_row()]
-    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
-    with (
-        _list_auth_returning(rows),
-        patch(
-            "hermes_cli.models.get_pricing_for_provider",
-            return_value={
-                "openai/gpt-5.5": {
-                    "prompt": "0.000001",
-                    "completion": "0.000002",
-                },
-            },
-        ),
-        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
-    ):
-        build_models_payload(ctx, pricing=True, force_fresh_nous_tier=True)
-
-    mock_free.assert_called_once_with(force_fresh=True)
 
 
 def test_include_unconfigured_appends_canonical_skeletons():

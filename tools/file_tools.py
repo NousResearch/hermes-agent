@@ -291,6 +291,40 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# Standard world-writable scratch/temp roots. On macOS, $TMPDIR resolves to
+# /private/var/folders/.../T and /var/tmp to /private/var/tmp — both live UNDER
+# /private/var/, so the broad "/private/var/" sensitive prefix above would
+# false-positive EVERY temp write (e.g. an agent working in a temp git
+# worktree, which is exactly where MeshBoard scratch worktrees live -> every
+# file write was refused as "sensitive", so the run produced no result). These
+# are scratch locations, not system files; exempt them. Real /private/var/db,
+# /private/var/root, /private/var/run/docker.sock, etc. stay protected because
+# they are not under any temp root.
+_TEMP_SCRATCH_PATH_PREFIXES = (
+    "/private/var/folders/",
+    "/private/var/tmp/",
+    "/var/folders/",
+    "/var/tmp/",
+    "/tmp/",
+)
+
+
+def _is_temp_scratch_path(resolved: str) -> bool:
+    """True when the symlink-resolved path lives under a standard temp/scratch
+    root. realpath() defeats symlink escapes: a temp symlink pointing at /etc
+    resolves out of temp and stays caught by the sensitive-path check."""
+    try:
+        real = os.path.realpath(resolved)
+    except (OSError, ValueError):
+        real = resolved
+    prefixes = set(_TEMP_SCRATCH_PATH_PREFIXES)
+    try:
+        import tempfile
+        prefixes.add(os.path.realpath(tempfile.gettempdir()).rstrip("/") + "/")
+    except Exception:
+        pass
+    return any(real.startswith(p) for p in prefixes)
+
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
 
@@ -323,9 +357,14 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
+    # Standard temp/scratch roots resolve under /private/var/ on macOS but are
+    # NOT sensitive, so skip ONLY the broad prefix scan for them. The exact-path
+    # and Hermes-config checks below still apply (a config placed in temp must
+    # stay protected).
+    if not _is_temp_scratch_path(resolved):
+        for prefix in _SENSITIVE_PATH_PREFIXES:
+            if resolved.startswith(prefix) or normalized.startswith(prefix):
+                return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
     # Prevent agents from modifying the Hermes config file directly.

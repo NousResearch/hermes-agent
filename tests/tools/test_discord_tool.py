@@ -1,7 +1,6 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
-import os
 import urllib.error
 from io import BytesIO
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
-    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,

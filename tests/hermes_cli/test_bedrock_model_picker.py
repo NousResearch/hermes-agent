@@ -16,12 +16,10 @@ Covers the three paths changed by fix/bedrock-provider-model-ids-live-discovery:
 All Bedrock API calls are mocked — no real AWS credentials needed.
 """
 
-import os
 from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +93,7 @@ class TestProviderModelIdsBedrock:
 
     def test_falls_back_to_static_list_when_discovery_empty(self, monkeypatch):
         """When discover_bedrock_models() returns [], fall back to curated static list."""
-        from hermes_cli.models import _PROVIDER_MODELS, provider_model_ids
+        from hermes_cli.models import provider_model_ids
 
         with patch("agent.bedrock_adapter.discover_bedrock_models", return_value=[]), \
              patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):

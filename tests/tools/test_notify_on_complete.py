@@ -10,10 +10,8 @@ Covers:
 
 import json
 import os
-import queue
 import time
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.process_registry import (
@@ -101,6 +99,8 @@ class TestCompletionQueue:
         assert completion["session_id"] == s.id
         assert completion["command"] == "echo hello"
         assert completion["exit_code"] == 0
+        assert completion["completion_reason"] == "exited"
+        assert completion["termination_source"] == ""
         assert "build succeeded" in completion["output"]
 
     def test_move_to_finished_nonzero_exit(self, registry):
@@ -139,6 +139,35 @@ class TestCompletionQueue:
         assert registry.completion_queue.qsize() == 1
         completion = registry.completion_queue.get_nowait()
         assert completion["exit_code"] == -15  # from the first (kill) call
+
+    def test_kill_process_sets_completion_reason_and_source(self, registry):
+        s = _make_session(notify_on_complete=True, output="stopping")
+        s.process = MagicMock()
+        s.process.pid = 4242
+        registry._running[s.id] = s
+
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def children(self, recursive=False):
+                return []
+
+            def terminate(self):
+                pass
+
+        import psutil as _psutil
+
+        with patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)), \
+             patch.object(registry, "_write_checkpoint"):
+            result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert result["completion_reason"] == "killed"
+        assert result["termination_source"] == "process.kill"
+        completion = registry.completion_queue.get_nowait()
+        assert completion["completion_reason"] == "killed"
+        assert completion["termination_source"] == "process.kill"
 
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""

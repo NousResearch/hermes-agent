@@ -6,7 +6,6 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 """
 
 import json
-import os
 import stat
 import time
 from pathlib import Path

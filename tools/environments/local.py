@@ -75,6 +75,27 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
+# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
+# providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
+# Bedrock-specific bearer token, which is a Hermes inference secret exactly
+# analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
+# ``boto3`` toolchain off it, so stripping it from terminal/execute_code
+# subprocesses costs no user capability.
+#
+# The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
+# left inheritable.  Per SECURITY.md §3.2 the local terminal is the user's
+# trusted operator shell; the agent having the same general AWS access the
+# user's own shell has is the intended posture, not a leak.  Hard-blocklisting
+# those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
+# the agent terminal — not just Bedrock users, since the registry is iterated
+# unconditionally — and (b) be unrecoverable, because env_passthrough.py
+# refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
+# issue #32314 discussion.
+_AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
+    "AWS_BEARER_TOKEN_BEDROCK",
+})
+
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
@@ -84,6 +105,8 @@ def _build_provider_env_blocklist() -> frozenset:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
             blocked.update(pconfig.api_key_env_vars)
+            if pconfig.auth_type == "aws_sdk":
+                blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
     except ImportError:
@@ -152,6 +175,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",
@@ -203,11 +227,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _inject_context_hermes_home(sanitized)
 
-    # Per-profile HOME isolation for background processes (same as _make_run_env).
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        sanitized["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(sanitized)
 
     return sanitized
 
@@ -276,6 +297,72 @@ _SANE_PATH = (
 )
 
 
+def _append_missing_sane_path_entries(existing_path: str) -> str:
+    """Return a normalised POSIX PATH with missing sane entries appended.
+
+    On POSIX the caller-supplied PATH is rewritten (not merely appended to):
+    empty entries and duplicate entries are dropped, preserving
+    first-occurrence order, then each missing ``_SANE_PATH`` entry is appended
+    once at the end so existing entries keep their precedence.
+
+    Two intentional normalisations beyond the bare "add Homebrew dirs" fix:
+
+    - **Empty entries are stripped.** A leading/trailing/double ``:`` encodes
+      an empty PATH element, which POSIX shells interpret as the current
+      working directory — a mild foot-gun in a default terminal environment.
+      We drop these rather than carry them through.
+    - **Duplicates are collapsed** (first occurrence wins), so a caller PATH
+      that already contains repeats is not propagated verbatim.
+
+    For a well-formed PATH (no empties, no duplicates) the leading segment is
+    byte-identical to the input and ordering is preserved; only the missing
+    sane entries are appended. On Windows this is a no-op passthrough (the
+    separator is ``;`` and the native PATH must not be touched).
+    """
+    if _IS_WINDOWS:
+        return existing_path
+
+    sane_entries = [entry for entry in _SANE_PATH.split(":") if entry]
+    if not existing_path:
+        return ":".join(sane_entries)
+
+    # De-duplicate the caller PATH (first occurrence wins) and drop empty
+    # entries before merging in the sane fallbacks.
+    seen: set[str] = set()
+    ordered_entries: list[str] = []
+    for entry in existing_path.split(":"):
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        ordered_entries.append(entry)
+
+    # _SANE_PATH is a static, duplicate-free constant, so a membership check
+    # against the caller entries is sufficient — no need to track `seen` here.
+    for entry in sane_entries:
+        if entry not in seen:
+            ordered_entries.append(entry)
+
+    return ":".join(ordered_entries)
+
+
+def _path_env_key(run_env: dict) -> str | None:
+    """Return the PATH env key to update without altering Windows casing.
+
+    Note: this is deliberately a *second* Windows guard, distinct from the
+    early-return in ``_append_missing_sane_path_entries``. Its job is to pick
+    the correctly-cased key (``Path`` vs ``PATH``) so completion writes back to
+    the key the caller already used; the helper's guard makes that helper safe
+    to call standalone (it is, e.g. in the Windows unit tests). Both are
+    intentional.
+    """
+    if not _IS_WINDOWS:
+        return "PATH"
+    for key in run_env:
+        if key.upper() == "PATH":
+            return key
+    return None
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
@@ -291,32 +378,19 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
-    existing_path = run_env.get("PATH", "")
-    # The "/usr/bin not already present → inject sane POSIX path" heuristic
-    # only makes sense on POSIX.  On Windows the PATH separator is ";"
-    # (the split(":") above turns a full Windows PATH into a single
-    # unrecognisable chunk, which then triggers prepending POSIX paths
-    # to a Windows PATH — completely wrong).  Skip the injection entirely
-    # on Windows; the native PATH already points at whatever shell
-    # Hermes is driving via _find_bash (Git Bash), and Git Bash itself
-    # prepends its MSYS2 /usr/bin equivalent via the shell-init files.
-    if not _IS_WINDOWS and "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+    path_key = _path_env_key(run_env)
+    if path_key is not None:
+        run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
 
     _inject_context_hermes_home(run_env)
 
-    # Per-profile HOME isolation: redirect system tool configs (git, ssh, gh,
-    # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
-    # subprocess sees the override — the Python process keeps the real HOME.
-    from hermes_constants import get_subprocess_home
-    _profile_home = get_subprocess_home()
-    if _profile_home:
-        run_env["HOME"] = _profile_home
+    from hermes_constants import apply_subprocess_home_env
+    apply_subprocess_home_env(run_env)
 
     # Inject ContextVar-based session vars into subprocess env.
     # ContextVars don't propagate to child processes, so we bridge them here.
     try:
-        from gateway.session_context import get_session_env, _UNSET, _VAR_MAP
+        from gateway.session_context import _UNSET, _VAR_MAP
         for var_name, var in _VAR_MAP.items():
             value = var.get()
             if value is not _UNSET and value:

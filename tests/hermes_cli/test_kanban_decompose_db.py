@@ -166,3 +166,65 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
 
     assert any("Decomposed into" in (c.body or "") for c in comments)
     assert any(ev.kind == "decomposed" for ev in events)
+
+
+def test_decompose_children_inherit_dir_workspace(kanban_home):
+    """Fan-out children inherit the root's dir workspace, not scratch."""
+    proj = "/home/teknium/myproject"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="codegen root", assignee="worker",
+            workspace_kind="dir", workspace_path=proj, triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[{"title": "part A"}, {"title": "part B", "parents": [0]}],
+            author="decomposer",
+        )
+    assert child_ids and len(child_ids) == 2
+    with kb.connect() as conn:
+        for cid in child_ids:
+            t = kb.get_task(conn, cid)
+            assert t.workspace_kind == "dir"
+            assert t.workspace_path == proj
+
+
+def test_decompose_children_stay_scratch_when_root_scratch(kanban_home):
+    """No regression: a scratch root still fans out into scratch children."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="scratch root", assignee="worker",
+            workspace_kind="scratch", triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[{"title": "s1"}], author="decomposer",
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, child_ids[0])
+    assert t.workspace_kind == "scratch"
+    assert t.workspace_path is None
+
+
+def test_decompose_per_child_workspace_override(kanban_home):
+    """An explicit per-child workspace beats inheritance."""
+    proj = "/home/teknium/myproject"
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="root", assignee="worker",
+            workspace_kind="dir", workspace_path=proj, triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn, tid, root_assignee="orchestrator",
+            children=[
+                {"title": "override", "workspace_kind": "dir",
+                 "workspace_path": "/other/repo"},
+                {"title": "inherit"},
+            ],
+            author="decomposer",
+        )
+    with kb.connect() as conn:
+        over = kb.get_task(conn, child_ids[0])
+        inh = kb.get_task(conn, child_ids[1])
+    assert over.workspace_path == "/other/repo"
+    assert inh.workspace_path == proj

@@ -3885,9 +3885,10 @@ def run_conversation(
                     agent._thinking_prefill_retries = 0
                     agent._empty_content_retries = 0
                 # Successful tool execution — reset the post-tool nudge
-                # flag so it can fire again if the model goes empty on
-                # a LATER tool round.
+                # flags so they can fire again if the model goes empty or
+                # returns progress-only text on a LATER tool round.
                 agent._post_tool_empty_retried = False
+                agent._post_tool_progress_retried = 0
 
                 messages.append(assistant_msg)
                 agent._emit_interim_assistant_message(assistant_msg)
@@ -4280,6 +4281,64 @@ def run_conversation(
                 # status from earlier failed attempts in this turn.
                 agent._clear_status_buffer()
 
+                if agent._looks_like_post_tool_progress_only(
+                    final_response,
+                    messages,
+                    current_turn_user_idx=current_turn_user_idx,
+                ):
+                    agent._post_tool_progress_retried = getattr(
+                        agent, "_post_tool_progress_retried", 0
+                    ) + 1
+                    logger.info(
+                        "Progress-only response after tool calls — nudging model "
+                        "to produce final closeout (%d/2)",
+                        agent._post_tool_progress_retried,
+                    )
+                    if agent._post_tool_progress_retried <= 2:
+                        agent._buffer_status(
+                            "⚠️ Model returned only a progress update after "
+                            "tool calls — nudging for final answer"
+                        )
+                        interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                        interim_msg["_post_tool_progress_synthetic"] = True
+                        messages.append(interim_msg)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "You just executed tool calls and then returned only a "
+                                "progress/status update. Do not say you are still "
+                                "working. Use the tool results above to provide the "
+                                "final answer now, including what was done, verified, "
+                                "and any remaining blockers."
+                            ),
+                            "_post_tool_progress_synthetic": True,
+                        })
+                        agent._session_messages = messages
+                        continue
+
+                    _turn_exit_reason = "post_tool_progress_only_exhausted"
+                    final_response = (
+                        "No final answer: the model returned only progress/status "
+                        "updates after tool execution twice. Please retry in a fresh, "
+                        "narrower turn or switch profiles."
+                    )
+                    final_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                    final_msg["content"] = final_response
+                    # Internal progress-nudge turns are for the retry API calls only.
+                    # Do not persist them as user-visible/resumable conversation
+                    # history, especially on the exhaustion path where they are no
+                    # longer at the transcript tail after the failure response.
+                    messages = [
+                        msg for msg in messages
+                        if not (
+                            isinstance(msg, dict)
+                            and msg.get("_post_tool_progress_synthetic")
+                        )
+                    ]
+                    agent._session_messages = messages
+                    messages.append(final_msg)
+                    break
+
                 if (
                     agent.api_mode == "codex_responses"
                     and agent.valid_tool_names
@@ -4328,6 +4387,7 @@ def run_conversation(
                         messages[-1].get("_thinking_prefill")
                         or messages[-1].get("_empty_recovery_synthetic")
                         or messages[-1].get("_empty_terminal_sentinel")
+                        or messages[-1].get("_post_tool_progress_synthetic")
                     )
                 ):
                     messages.pop()

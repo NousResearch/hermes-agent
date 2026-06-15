@@ -372,7 +372,7 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-_MCP_TOOL_PREFIX = "mcp_"
+_MCP_TOOL_PREFIX = "mcp__"
 
 
 def _get_claude_code_version() -> str:
@@ -2349,14 +2349,17 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
+        # 3. Prefix tool names with mcp__ (Claude Code convention)
         #    Skip names that already begin with the marker — native MCP server
         #    tools (from mcp_servers: in config.yaml) are registered under their
         #    full mcp_<server>_<tool> name and would double-prefix otherwise,
         #    breaking round-trip registry lookup in normalize_response. GH-25255.
+        #    Check both single-underscore (legacy MCP) and double-underscore
+        #    (new prefix) to avoid double-prefixing either format.
+        _MCP_SKIP = ("mcp__", "mcp_")
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
+                if "name" in tool and not tool["name"].startswith(_MCP_SKIP):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)
@@ -2366,7 +2369,7 @@ def build_anthropic_kwargs(
                 for block in content:
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
+                            if not block["name"].startswith(_MCP_SKIP):
                                 block["name"] = _MCP_TOOL_PREFIX + block["name"]
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name

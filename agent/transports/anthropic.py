@@ -88,7 +88,7 @@ class AnthropicTransport(ProviderTransport):
         from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        _MCP_PREFIX = "mcp_"
+        _MCP_PREFIX = "mcp__"
 
         text_parts = []
         reasoning_parts = []

@@ -10,6 +10,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -34,7 +35,8 @@ class _FakeAS(BaseHTTPRequestHandler):
         redirect = q["redirect_uri"][0]
         # The redirect must be the IP literal matching the bound host — a
         # `localhost` redirect can resolve to ::1 and miss the IPv4 listener.
-        assert redirect.startswith("http://127.0.0.1:8765"), redirect
+        # Host must be the IP literal (port may fall back off :8765).
+        assert redirect.startswith("http://127.0.0.1:") and "/callback" in redirect, redirect
         # Consent shows a home-relative display path — never an absolute path
         # that would leak the username / home layout off the machine.
         cp = q["config_path"][0]
@@ -201,3 +203,114 @@ def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):
     assert host["saveMessages"] is False
     assert "recallMode" not in host
     assert "environment" not in saved
+
+
+# ── Desktop "Connect" button path: background launcher, status, dispatch ──
+
+
+@pytest.fixture
+def reset_flow():
+    oauth_flow._status = oauth_flow.FlowStatus()
+    oauth_flow._flow_thread = None
+    yield
+    oauth_flow._status = oauth_flow.FlowStatus()
+    oauth_flow._flow_thread = None
+
+
+def _wait_until(predicate, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_launcher_runs_flow_in_background_and_reports_connected(monkeypatch, reset_flow):
+    seen = {}
+    gate = threading.Event()
+
+    def fake(**kwargs):
+        seen.update(kwargs)  # captures source default + eagerly-resolved path/host
+        gate.wait(2)  # hold the flow open so the launcher returns while pending
+
+    monkeypatch.setattr(oauth_flow, "authorize_via_loopback", fake)
+    monkeypatch.setattr(oauth_flow, "_detect_connection", lambda: (True, "oauth"))
+
+    st = oauth_flow.start_loopback_flow_background(config_path=Path("/t/honcho.json"), host="hermes")
+    assert st["state"] == "pending"  # returns immediately, before the flow finishes
+    assert _wait_until(lambda: seen.get("source") == "hermes-desktop")  # default source tag
+    assert seen["host"] == "hermes"
+    gate.set()
+    assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "connected")
+
+
+def test_launcher_reports_error_on_flow_failure(monkeypatch, reset_flow):
+    def boom(**kwargs):
+        raise RuntimeError("loopback bind failed")
+
+    monkeypatch.setattr(oauth_flow, "authorize_via_loopback", boom)
+    monkeypatch.setattr(oauth_flow, "_detect_connection", lambda: (False, None))
+
+    oauth_flow.start_loopback_flow_background(config_path=Path("/t/honcho.json"), host="hermes")
+    assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "error")
+    assert "loopback bind failed" in oauth_flow.get_flow_status()["detail"]
+
+
+def test_launcher_is_idempotent_while_pending(monkeypatch, reset_flow):
+    block = threading.Event()
+    calls = []
+
+    def fake(**kwargs):
+        calls.append(1)
+        block.wait(2)
+
+    monkeypatch.setattr(oauth_flow, "authorize_via_loopback", fake)
+    monkeypatch.setattr(oauth_flow, "_detect_connection", lambda: (False, None))
+
+    s1 = oauth_flow.start_loopback_flow_background(config_path=Path("/t/h.json"), host="hermes")
+    assert _wait_until(lambda: len(calls) == 1)  # first flow is running
+    s2 = oauth_flow.start_loopback_flow_background(config_path=Path("/t/h.json"), host="hermes")
+    block.set()
+    assert s1["state"] == "pending" and s2["state"] == "pending"
+    assert _wait_until(lambda: oauth_flow.get_flow_status()["state"] == "connected")
+    assert calls == [1]  # the second call did not spawn a second flow
+
+
+def test_get_flow_status_reports_stored_connection(tmp_path, monkeypatch, reset_flow):
+    from plugins.memory.honcho import client as honcho_client
+
+    cfgfile = tmp_path / "honcho.json"
+    monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: cfgfile)
+    monkeypatch.setattr(honcho_client, "resolve_active_host", lambda: "hermes")
+    monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+
+    cfgfile.write_text(json.dumps({"hosts": {"hermes": {}}}))
+    assert oauth_flow.get_flow_status()["connected"] is False
+
+    cfgfile.write_text(json.dumps({"hosts": {"hermes": {"apiKey": "hch-v3-static"}}}))
+    s = oauth_flow.get_flow_status()
+    assert s["connected"] is True and s["auth"] == "apikey"
+
+    cfgfile.write_text(json.dumps({"hosts": {"hermes": {
+        "apiKey": "hch-at-tok",
+        "oauth": {"refreshToken": "hch-rt-x", "expiresAt": 9_999_999_999,
+                  "clientId": "hermes-desktop", "tokenEndpoint": "http://x/oauth/token"},
+    }}}))
+    s = oauth_flow.get_flow_status()
+    assert s["connected"] is True and s["auth"] == "oauth"
+
+
+def test_web_server_dispatches_by_provider_convention():
+    # The generic seam behind the two routes: provider → plugins.memory.<p>.oauth_flow.
+    from fastapi import HTTPException
+
+    from hermes_cli.web_server import _memory_oauth_flow
+
+    mod = _memory_oauth_flow("honcho")
+    assert hasattr(mod, "start_loopback_flow_background") and hasattr(mod, "get_flow_status")
+
+    for bad in ("builtin", "no-such-provider", "../etc"):
+        with pytest.raises(HTTPException) as exc:
+            _memory_oauth_flow(bad)
+        assert exc.value.status_code == 404

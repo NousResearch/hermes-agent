@@ -82,7 +82,7 @@ $browserSource = [ordered]@{
         css = ""
         shutdown = $false
         restart_when_active = $true
-        reroute_audio = $false
+        reroute_audio = $true
     }
     mixers = 255
     sync = 0
@@ -98,7 +98,7 @@ $browserSource = [ordered]@{
     hotkeys = [ordered]@{}
     deinterlace_mode = 0
     deinterlace_field_order = 0
-    monitoring_type = 0
+    monitoring_type = 2
     private_settings = [ordered]@{}
 }
 
@@ -236,7 +236,10 @@ if ($Launch) {
     if (-not $obsExe) {
         throw "OBS executable was not found."
     }
-    Start-Process -FilePath $obsExe -ArgumentList @("--collection", $CollectionName, "--profile", $ProfileName)
+    Start-Process `
+        -FilePath $obsExe `
+        -WorkingDirectory (Split-Path -Parent $obsExe) `
+        -ArgumentList @("--collection", $CollectionName, "--profile", $ProfileName)
     $result.launched = $true
 }
 

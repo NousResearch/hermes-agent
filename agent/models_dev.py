@@ -575,10 +575,12 @@ def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
 def list_agentic_models(provider: str) -> List[str]:
     """Return model IDs suitable for agentic use from models.dev.
 
-    Filters for tool_call=True and excludes noise (TTS, embedding,
-    dated preview snapshots, live/streaming, image-only models).
+    Filters for tool_call=True, context_window >= 64K tokens, and excludes noise
+    (TTS, embedding, dated preview snapshots, live/streaming, image-only models).
     Returns an empty list on any failure.
     """
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
     models = _get_provider_models(provider)
     if models is None:
         return []
@@ -591,6 +593,14 @@ def list_agentic_models(provider: str) -> List[str]:
             continue
         if not entry.get("tool_call", False):
             continue
+        # Filter out models with context window < 64K tokens
+        limit = entry.get("limit") or {}
+        if isinstance(limit, dict):
+            ctx = limit.get("context")
+            if ctx is not None:
+                ctx_int = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 0
+                if ctx_int > 0 and ctx_int < MINIMUM_CONTEXT_LENGTH:
+                    continue
         if _NOISE_PATTERNS.search(mid):
             continue
         result.append(mid)

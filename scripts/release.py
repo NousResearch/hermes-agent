@@ -85,6 +85,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "237263164+ft-ioxcs@users.noreply.github.com": "ft-ioxcs",
     "tharushkadinujaya05@gmail.com": "0xneobyte",
     "138671361+Veritas-7@users.noreply.github.com": "Veritas-7",
     "keiron@onehanded.com": "kmccammon",

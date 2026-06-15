@@ -2,6 +2,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
+import { $profileBrandingEnabled } from '@/store/profile'
 import {
   $currentCwd,
   setAvailablePersonalities,
@@ -67,12 +68,13 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
-
       const backendTheme = config.dashboard?.theme
 
       if (backendTheme) {
         setTheme(backendTheme)
       }
+
+      $profileBrandingEnabled.set(Boolean(config.dashboard?.profile_branding))
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

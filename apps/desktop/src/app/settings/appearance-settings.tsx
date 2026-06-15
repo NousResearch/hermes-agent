@@ -3,12 +3,13 @@ import { useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $profileBrandingEnabled, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
 import { useTheme } from '@/themes/context'
@@ -31,6 +32,19 @@ async function updateBackendTheme(name: string) {
   }
 }
 
+async function updateProfileBranding(enabled: boolean) {
+  try {
+    const config = await getHermesConfigRecord()
+    config.dashboard = {
+      ...((config.dashboard as Record<string, unknown>) || {}),
+      profile_branding: enabled
+    }
+    await saveHermesConfig(config)
+    $profileBrandingEnabled.set(enabled)
+  } catch {
+    // Ignore save errors
+  }
+}
 function ThemePreview({ name }: { name: string }) {
   const t = resolveTheme(name)
 
@@ -153,6 +167,7 @@ export function AppearanceSettings() {
   const toolViewMode = useStore($toolViewMode)
   const translucency = useStore($translucency)
   const profiles = useStore($profiles)
+  const profileBranding = useStore($profileBrandingEnabled)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
   const a = t.settings.appearance
 
@@ -224,6 +239,22 @@ export function AppearanceSettings() {
             }
             description={a.translucencyDesc}
             title={a.translucencyTitle}
+          />
+
+          <ListRow
+            action={
+              <div className="flex items-center justify-end">
+                <Switch
+                  checked={profileBranding}
+                  onCheckedChange={value => {
+                    triggerHaptic('crisp')
+                    void updateProfileBranding(value)
+                  }}
+                />
+              </div>
+            }
+            description="Use your active profile's custom name in welcome screens and chat placeholders."
+            title="Personalize Agent Name"
           />
 
           <ListRow

@@ -189,6 +189,7 @@ export interface HermesConfig {
   }
   dashboard?: {
     theme?: string
+    profile_branding?: boolean
   }
 }
 

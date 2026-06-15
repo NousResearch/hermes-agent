@@ -6,6 +6,13 @@
 const PROFILE_TAG_SATURATION = 68
 const PROFILE_TAG_LIGHTNESS = 58
 
+const PROFILE_COLOR_PRESETS: Record<string, string> = {
+  astra: 'hsl(262 78% 66%)',
+  vulcan: 'hsl(20 88% 60%)',
+  lyra: 'hsl(192 78% 56%)',
+  sable: 'hsl(42 72% 62%)'
+}
+
 function hashString(value: string): number {
   let hash = 0
 
@@ -25,6 +32,10 @@ export function profileColor(name: null | string | undefined): null | string {
     return null
   }
 
+  if (PROFILE_COLOR_PRESETS[key]) {
+    return PROFILE_COLOR_PRESETS[key]
+  }
+
   const hue = hashString(key) % 360
 
   return `hsl(${hue} ${PROFILE_TAG_SATURATION}% ${PROFILE_TAG_LIGHTNESS}%)`
@@ -32,10 +43,7 @@ export function profileColor(name: null | string | undefined): null | string {
 
 // A profile's effective color: a user-picked override wins, else the
 // deterministic hue. Default/empty stays neutral (null) regardless.
-export function resolveProfileColor(
-  name: null | string | undefined,
-  overrides: Record<string, string>
-): null | string {
+export function resolveProfileColor(name: null | string | undefined, overrides: Record<string, string>): null | string {
   const key = (name ?? '').trim()
 
   if (!key || key === 'default') {

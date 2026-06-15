@@ -13,7 +13,83 @@ import {
 } from '@/lib/storage'
 import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
+import { autoReloadMcpForProfile } from '@/store/mcp-auto-reload'
 import type { ProfileInfo } from '@/types/hermes'
+
+export interface DesktopProfileIdentity {
+  accent: string
+  hidden?: boolean
+  subtitle?: string
+  title: string
+}
+
+const DESKTOP_PROFILE_IDENTITIES: Record<string, DesktopProfileIdentity> = {
+  astra: {
+    title: 'Astra',
+    subtitle: 'Orchestrator · Windows GLM',
+    accent: 'hsl(262 78% 66%)'
+  },
+  vulcan: {
+    title: 'Vulcan',
+    subtitle: 'Coding specialist · Qwen 3.6 35B-A3B',
+    accent: 'hsl(20 88% 60%)'
+  },
+  lyra: {
+    title: 'Lyra',
+    subtitle: 'Research specialist · Gemma 4 26B',
+    accent: 'hsl(192 78% 56%)'
+  },
+  sable: {
+    title: 'Sable',
+    subtitle: 'Deals specialist · Windows GLM',
+    accent: 'hsl(42 72% 62%)'
+  },
+  'hermes-openclaw-lab': {
+    title: 'OpenClaw Lab',
+    subtitle: 'Legacy lab profile',
+    accent: 'hsl(215 16% 54%)',
+    hidden: true
+  },
+  default: {
+    title: 'Default',
+    subtitle: 'Legacy root profile',
+    accent: 'hsl(215 16% 54%)'
+  }
+}
+
+export function getDesktopProfileIdentity(
+  profile: (Pick<ProfileInfo, 'is_default' | 'name'> & { description?: string }) | string
+): DesktopProfileIdentity {
+  const name = typeof profile === 'string' ? normalizeProfileKey(profile) : normalizeProfileKey(profile.name)
+  const fromMap = DESKTOP_PROFILE_IDENTITIES[name]
+
+  if (fromMap) {
+    return fromMap
+  }
+
+  if (typeof profile !== 'string' && typeof profile.description === 'string' && profile.description.trim()) {
+    return {
+      title: profile.name,
+      subtitle: profile.description.trim(),
+      accent: `hsl(215 16% 54%)`
+    }
+  }
+
+  return {
+    title: name,
+    accent: `hsl(215 16% 54%)`
+  }
+}
+
+export function isDesktopVisibleProfile(
+  profile: Pick<ProfileInfo, 'is_default' | 'name'> & { description?: string }
+): boolean {
+  if (profile.is_default) {
+    return true
+  }
+
+  return !getDesktopProfileIdentity(profile).hidden
+}
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
@@ -252,6 +328,11 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   try {
     await gatewaySwitch
+    const gateway = $gateway.get()
+
+    if (gateway) {
+      void autoReloadMcpForProfile(target, gateway)
+    }
   } finally {
     gatewaySwitch = null
     $gatewaySwapTarget.set(null)
@@ -393,3 +474,5 @@ export function touchActiveGatewayBackend(): void {
   const target = normalizeProfileKey($activeGatewayProfile.get())
   void window.hermesDesktop?.touchBackend?.(target).catch(() => undefined)
 }
+
+export const $profileBrandingEnabled = atom<boolean>(false)

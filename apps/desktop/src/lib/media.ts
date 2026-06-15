@@ -57,7 +57,23 @@ export function mediaMarkdownHref(path: string): string {
 }
 
 export function mediaExternalUrl(path: string): string {
-  return /^(?:https?|file):/i.test(path) ? path : `file://${path}`
+  if (/^(?:https?):/i.test(path)) return path
+  if (/^file:/i.test(path)) {
+    if (isRemoteGateway()) {
+      const conn = $connection.get()
+      if (conn?.baseUrl && conn?.token) {
+        return `${conn.baseUrl}/api/files/download?path=${encodeURIComponent(filePathFromMediaPath(path))}&token=${encodeURIComponent(conn.token)}`
+      }
+    }
+    return path
+  }
+  if (isRemoteGateway()) {
+    const conn = $connection.get()
+    if (conn?.baseUrl && conn?.token) {
+      return `${conn.baseUrl}/api/files/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(conn.token)}`
+    }
+  }
+  return `file://${path}`
 }
 
 // Custom Electron scheme (registered in electron/main.cjs) that streams a local

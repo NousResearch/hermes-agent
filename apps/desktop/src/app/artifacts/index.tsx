@@ -33,6 +33,7 @@ import { PAGE_INSET_NEG_X, PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { sessionRoute } from '../routes'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
+import { mediaExternalUrl } from '@/lib/media'
 
 type ArtifactKind = 'image' | 'file' | 'link'
 type ArtifactFilter = 'all' | ArtifactKind
@@ -127,14 +128,13 @@ function artifactHref(value: string): string {
   if (
     value.startsWith('http://') ||
     value.startsWith('https://') ||
-    value.startsWith('file://') ||
     value.startsWith('data:')
   ) {
     return value
   }
 
-  if (value.startsWith('/')) {
-    return `file://${encodeURI(value)}`
+  if (value.startsWith('file://') || value.startsWith('/')) {
+    return mediaExternalUrl(value)
   }
 
   return value
@@ -483,10 +483,11 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const openArtifact = useCallback(async (href: string) => {
     try {
+      const resolved = mediaExternalUrl(href)
       if (window.hermesDesktop?.openExternal) {
-        await window.hermesDesktop.openExternal(href)
+        await window.hermesDesktop.openExternal(resolved)
       } else {
-        window.open(href, '_blank', 'noopener,noreferrer')
+        window.open(resolved, '_blank', 'noopener,noreferrer')
       }
     } catch (err) {
       notifyError(err, a.openFailed)

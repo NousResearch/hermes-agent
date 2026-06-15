@@ -836,6 +836,17 @@ function openExternalUrl(rawUrl) {
   // file association. If the OS can't open it (`error` is a non-empty
   // string), fall back to revealing the file in the system file manager.
   if (parsed.protocol === 'file:') {
+    // For remote gateways, convert file:// to HTTP download URL so the
+    // browser can fetch the file from the remote server.
+    let config
+    try { config = readDesktopConnectionConfig() } catch { config = { mode: 'local' } }
+    if (config.mode === 'remote' && config.remote && config.remote.url) {
+      const filePath = decodeURIComponent(parsed.pathname)
+      const downloadUrl = config.remote.url + '/api/files/download?path=' + encodeURIComponent(filePath)
+      void shell.openExternal(downloadUrl)
+      return true
+    }
+
     let localPath
     try {
       localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })

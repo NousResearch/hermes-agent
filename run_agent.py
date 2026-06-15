@@ -4792,6 +4792,15 @@ class AIAgent:
                 return bool(github_model_reasoning_efforts(self.model))
             except Exception:
                 return False
+        if base_url_host_matches(self._base_url_lower, "api.minimax.io"):
+            # MiniMax (api.minimax.io): enable reasoning extra_body
+            # (reasoning_split, thinking, reasoning_effort) for both the
+            # Anthropic-format and OpenAI-format endpoints. Without this the
+            # safety gate strips those fields before they reach the API, so M3
+            # leaks thinking into response content and burns output tokens. M3
+            # specifically benefits from the OpenAI-compatible endpoint
+            # (/v1/chat/completions) for prompt caching.
+            return True
         if (self.provider or "").strip().lower() == "lmstudio":
             opts = self._lmstudio_reasoning_options_cached()
             # "off-only" (or absent) means no real reasoning capability.

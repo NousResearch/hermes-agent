@@ -81,6 +81,19 @@ _FTS_TRIGGERS = (
     "messages_fts_trigram_update",
 )
 
+# Subset of _FTS_TRIGGERS that target the trigram virtual table. These fire on
+# every messages INSERT/UPDATE/DELETE and need the SQLite 'trigram' tokenizer.
+# Some interpreters ship FTS5 but NOT the trigram tokenizer (e.g. an
+# anaconda-3.7 python whose bundled SQLite predates/omits it), so a write under
+# such a runtime would abort with "no such tokenizer: trigram" unless these
+# triggers are dropped. They're recreated automatically when next opened by a
+# trigram-capable runtime.
+_FTS_TRIGRAM_TRIGGERS = (
+    "messages_fts_trigram_insert",
+    "messages_fts_trigram_delete",
+    "messages_fts_trigram_update",
+)
+
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -409,6 +422,7 @@ class SessionDB:
         self._write_count = 0
         self._fts_enabled = False
         self._fts_unavailable_warned = False
+        self._trigram_unavailable_warned = False
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -494,6 +508,39 @@ class SessionDB:
                 raise
             self._warn_fts5_unavailable(exc)
             return False
+
+    @staticmethod
+    def _is_trigram_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        err = str(exc).lower()
+        return "no such tokenizer" in err and "trigram" in err
+
+    def _sqlite_supports_trigram(self, cursor: sqlite3.Cursor) -> bool:
+        """Probe whether the trigram tokenizer is available. FTS5 can be present
+        while the trigram tokenizer is not (some older/odd SQLite builds, e.g.
+        an anaconda python). Returns False (no raise) when unsupported."""
+        try:
+            cursor.execute(
+                "CREATE VIRTUAL TABLE temp._hermes_trigram_probe "
+                "USING fts5(x, tokenize='trigram')"
+            )
+            cursor.execute("DROP TABLE temp._hermes_trigram_probe")
+            return True
+        except sqlite3.OperationalError as exc:
+            if self._is_trigram_unavailable_error(exc):
+                return False
+            # FTS5-entirely-missing is handled by _sqlite_supports_fts5; anything
+            # else is a real error worth surfacing.
+            if self._is_fts5_unavailable_error(exc):
+                return False
+            raise
+
+    @staticmethod
+    def _drop_trigram_triggers(cursor: sqlite3.Cursor) -> None:
+        for trigger in _FTS_TRIGRAM_TRIGGERS:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
 
     @staticmethod
     def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
@@ -929,12 +976,35 @@ class SessionDB:
             # Trigram FTS5 for CJK/substring search. This is optional relative
             # to the main FTS table; if it cannot be created, CJK search falls
             # back to LIKE.
+            #
+            # Crucially, the trigram tokenizer can be ABSENT even when FTS5 is
+            # present (e.g. an anaconda python's bundled SQLite). In that case we
+            # must NOT install the trigram triggers — they would fire on every
+            # messages INSERT/UPDATE and abort the write with "no such tokenizer:
+            # trigram". Instead, drop any pre-existing trigram triggers so writes
+            # under this interpreter succeed; a later open under a trigram-capable
+            # runtime recreates them and backfills.
             if self._fts_enabled:
-                trigram_enabled = self._ensure_fts_schema(
-                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                )
-                if trigram_enabled and triggers_need_repair:
-                    self._rebuild_fts_indexes(cursor)
+                if self._sqlite_supports_trigram(cursor):
+                    trigram_enabled = self._ensure_fts_schema(
+                        cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                    )
+                    if trigram_enabled and triggers_need_repair:
+                        self._rebuild_fts_indexes(cursor)
+                else:
+                    # FTS5 present but trigram tokenizer missing: keep core
+                    # persistence working by removing the failing triggers.
+                    self._drop_trigram_triggers(cursor)
+                    if not self._trigram_unavailable_warned:
+                        self._trigram_unavailable_warned = True
+                        logger.warning(
+                            "SQLite 'trigram' tokenizer unavailable for %s; "
+                            "CJK/substring session search degraded to LIKE and "
+                            "trigram triggers were dropped so message writes "
+                            "continue. Open under a trigram-capable Python "
+                            "(the managed hermes venv) to restore it.",
+                            self.db_path,
+                        )
 
         self._conn.commit()
 

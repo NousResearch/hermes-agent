@@ -161,6 +161,37 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
 
+    def test_resolve_provider_auto_uses_runtime_model_not_stale_global(self):
+        """Auto must not pair the selected runtime provider with a stale global model."""
+        from agent import auxiliary_client as ac
+
+        ac.set_runtime_main(
+            "openai-codex",
+            "claude-opus-4-8",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="stale-token",
+            api_mode="codex_responses",
+        )
+        try:
+            with patch(
+                "agent.auxiliary_client._build_codex_client",
+                return_value=(MagicMock(), "gpt-5.5"),
+            ):
+                _client, model = ac.resolve_provider_client(
+                    "auto",
+                    main_runtime={
+                        "provider": "openai-codex",
+                        "model": "gpt-5.5",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "api_key": "live-token",
+                        "api_mode": "codex_responses",
+                    },
+                )
+        finally:
+            ac.clear_runtime_main()
+
+        assert model == "gpt-5.5"
+
     def test_runtime_base_url_passed_for_named_api_key_provider(self):
         """Named API-key providers inherit the live session endpoint for aux work."""
         token_plan_url = "https://token-plan-sgp.xiaomimimo.com/v1"

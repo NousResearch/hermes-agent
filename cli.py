@@ -90,6 +90,35 @@ except Exception:
 import threading
 import queue
 
+_PROCESS_NOTIFICATION_INPUT_SENTINEL = "__hermes_process_notification_input__"
+
+
+def _make_process_notification_input(raw_event: dict, formatted_text: str) -> dict:
+    """Package a process notification for the CLI input queue.
+
+    The interactive loop historically enqueued only the formatted text, which
+    discarded the raw completion/watch/delegation event before the next agent
+    turn could inspect it.  Keep both pieces together while preserving a plain
+    string interface for normal user input.
+    """
+    return {
+        _PROCESS_NOTIFICATION_INPUT_SENTINEL: True,
+        "raw_event": raw_event,
+        "formatted_text": formatted_text,
+    }
+
+
+def _unpack_process_notification_input(value):
+    """Return ``(formatted_text, raw_event)`` for process notifications.
+
+    Non-notification values are returned unchanged with ``raw_event=None`` so
+    existing queued strings and image tuples keep their previous behavior.
+    """
+    if isinstance(value, dict) and value.get(_PROCESS_NOTIFICATION_INPUT_SENTINEL) is True:
+        return value.get("formatted_text", ""), value.get("raw_event")
+    return value, None
+
+
 def CanonicalUsage(*args, **kwargs):
     from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
 
@@ -3303,6 +3332,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._stream_table_buf: list[str] = []
         self._in_stream_table = False
         self._pending_edit_snapshots = {}
+        self._last_process_notification_event: Optional[dict] = None
         self._last_input_mode_recovery = 0.0
         self._input_mode_recovery_notice_shown = False
         
@@ -12938,12 +12968,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             try:
                                 from tools.process_registry import process_registry
                                 for _evt, _synth in process_registry.drain_notifications():
-                                    self._pending_input.put(_synth)
+                                    self._pending_input.put(_make_process_notification_input(_evt, _synth))
                             except Exception:
                                 pass
                         continue
                     
                     if not user_input:
+                        continue
+
+                    user_input, _process_notification_event = _unpack_process_notification_input(user_input)
+                    self._last_process_notification_event = _process_notification_event
+                    if not isinstance(user_input, (str, tuple)):
+                        logger.warning("Dropped unsupported queued input type: %s", type(user_input).__name__)
                         continue
 
                     # The user has typed and submitted something, so any
@@ -13076,7 +13112,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         try:
                             from tools.process_registry import process_registry
                             for _evt, _synth in process_registry.drain_notifications():
-                                self._pending_input.put(_synth)
+                                self._pending_input.put(_make_process_notification_input(_evt, _synth))
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

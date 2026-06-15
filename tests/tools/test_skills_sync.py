@@ -1188,3 +1188,138 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+
+class TestEmptyCategoryDirsBugFix34237:
+    """#34237: skills sync was creating empty category directories with only
+    a DESCRIPTION.md inside, even when no skills from that category were
+    actually copied. The reporter saw 16/22 categories empty after a fresh
+    install.
+
+    Root cause: ``sync_skills`` unconditionally walked the bundled tree for
+    DESCRIPTION.md files, ``mkdir(parents=True)``'d the parent category
+    directory, and copied the description — regardless of whether any
+    skills under that category had been copied. The fix gates DESCRIPTION.md
+    placement on whether the destination category directory exists AND has
+    at least one SKILL.md inside it.
+    """
+
+    def _setup_bundled_with_multiple_categories(self, tmp_path):
+        """Create a bundled tree with 2 categories — only ONE has a skill."""
+        bundled = tmp_path / "bundled_skills"
+        # Category that WILL have a skill installed:
+        (bundled / "populated-category" / "real-skill").mkdir(parents=True)
+        (bundled / "populated-category" / "real-skill" / "SKILL.md").write_text("# Real")
+        (bundled / "populated-category" / "DESCRIPTION.md").write_text("Has skills")
+        # Category that has ONLY a DESCRIPTION.md, no skill files. The bug
+        # causes this directory to be created in SKILLS_DIR despite nothing
+        # being installed.
+        (bundled / "empty-category").mkdir()
+        (bundled / "empty-category" / "DESCRIPTION.md").write_text("Will be empty")
+        # A third — also no skills, but with multiple bundled DESCRIPTION
+        # files at nested depth shouldn't change the rule:
+        (bundled / "another-empty").mkdir()
+        (bundled / "another-empty" / "DESCRIPTION.md").write_text("Also empty")
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_empty_category_dirs_are_not_created(self, tmp_path):
+        """The headline bug: directories for categories with zero skills
+        installed must NOT be created in SKILLS_DIR."""
+        bundled = self._setup_bundled_with_multiple_categories(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        # The populated category SHOULD exist and have its DESCRIPTION.md
+        assert (skills_dir / "populated-category").is_dir()
+        assert (skills_dir / "populated-category" / "real-skill" / "SKILL.md").exists()
+        assert (skills_dir / "populated-category" / "DESCRIPTION.md").exists()
+
+        # Empty categories must NOT have been created:
+        assert not (skills_dir / "empty-category").exists(), (
+            "Empty category dir was created — regression of #34237"
+        )
+        assert not (skills_dir / "another-empty").exists(), (
+            "Empty category dir was created — regression of #34237"
+        )
+
+    def test_description_skipped_for_pre_existing_empty_dir(self, tmp_path):
+        """If a user manually created an empty category dir, DESCRIPTION.md
+        still should NOT be placed there (no skill = no description)."""
+        bundled = self._setup_bundled_with_multiple_categories(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # Pre-create an empty category dir.
+        (skills_dir / "empty-category").mkdir(parents=True)
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        # The directory still exists (we didn't delete user data), but the
+        # description was NOT copied because the dir has no SKILL.md.
+        assert (skills_dir / "empty-category").is_dir()
+        assert not (skills_dir / "empty-category" / "DESCRIPTION.md").exists(), (
+            "DESCRIPTION.md was copied into an empty category — regression of #34237"
+        )
+
+    def test_description_added_when_skill_present(self, tmp_path):
+        """Sanity check: when a category has a SKILL.md, DESCRIPTION.md IS
+        copied (the existing happy path still works)."""
+        bundled = self._setup_bundled_with_multiple_categories(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+        assert (skills_dir / "populated-category" / "DESCRIPTION.md").exists()
+        content = (skills_dir / "populated-category" / "DESCRIPTION.md").read_text()
+        assert "Has skills" in content
+
+
+class TestCategoryHasSkillsHelper:
+    """Unit tests for the helper function."""
+
+    def test_returns_false_for_nonexistent_dir(self, tmp_path):
+        from tools.skills_sync import _category_has_skills
+        assert _category_has_skills(tmp_path / "does-not-exist") is False
+
+    def test_returns_false_for_empty_dir(self, tmp_path):
+        from tools.skills_sync import _category_has_skills
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert _category_has_skills(empty) is False
+
+    def test_returns_false_for_dir_with_only_description(self, tmp_path):
+        from tools.skills_sync import _category_has_skills
+        d = tmp_path / "desc-only"
+        d.mkdir()
+        (d / "DESCRIPTION.md").write_text("just a description")
+        assert _category_has_skills(d) is False
+
+    def test_returns_true_with_skill_md_at_top_level(self, tmp_path):
+        from tools.skills_sync import _category_has_skills
+        d = tmp_path / "has-skill"
+        d.mkdir()
+        (d / "SKILL.md").write_text("# Skill")
+        assert _category_has_skills(d) is True
+
+    def test_returns_true_with_skill_md_nested(self, tmp_path):
+        from tools.skills_sync import _category_has_skills
+        d = tmp_path / "has-nested-skill"
+        (d / "my-skill").mkdir(parents=True)
+        (d / "my-skill" / "SKILL.md").write_text("# Nested")
+        assert _category_has_skills(d) is True

@@ -451,6 +451,28 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
+def _category_has_skills(category_dir: Path) -> bool:
+    """Return True when ``category_dir`` contains at least one SKILL.md.
+
+    Used by :func:`sync_skills` to gate DESCRIPTION.md placement so that
+    we don't leave empty category directories under ``~/.hermes/skills/``
+    on a fresh install where no skills from a given category were
+    actually copied (#34237).
+
+    Searches recursively because skills live in nested subdirectories like
+    ``skills/<category>/<skill-name>/SKILL.md``.
+    """
+    if not category_dir.is_dir():
+        return False
+    try:
+        # Any SKILL.md anywhere under the category counts.
+        return next(category_dir.rglob("SKILL.md"), None) is not None
+    except (OSError, IOError):
+        # If we can't introspect the dir, conservatively say "no" so we
+        # don't drop a stray DESCRIPTION.md into something inaccessible.
+        return False
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
@@ -636,13 +658,26 @@ def sync_skills(quiet: bool = False) -> dict:
     for name in cleaned:
         del manifest[name]
 
-    # Also copy DESCRIPTION.md files for categories (if not already present)
+    # Also copy DESCRIPTION.md files for categories — but ONLY for categories
+    # that have at least one skill copied into them. Previously this walked
+    # every bundled DESCRIPTION.md and mkdir'd its parent, leaving 16/22
+    # empty category directories in SKILLS_DIR even on a fresh install where
+    # nothing was actually installed under them (#34237).
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         rel = desc_md.relative_to(bundled_dir)
         dest_desc = SKILLS_DIR / rel
+        # Skip if the destination category dir doesn't exist OR exists but
+        # is empty (no skills landed there). The category dir is created
+        # earlier in this function only when a skill from that category is
+        # actually copied, so this check correctly gates DESCRIPTION.md to
+        # populated categories.
+        category_dir = dest_desc.parent
+        if not category_dir.exists():
+            continue
+        if not _category_has_skills(category_dir):
+            continue
         if not dest_desc.exists():
             try:
-                dest_desc.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(desc_md, dest_desc)
             except (OSError, IOError) as e:
                 logger.debug("Could not copy %s: %s", desc_md, e)

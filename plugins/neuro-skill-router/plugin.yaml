@@ -1,0 +1,7 @@
+name: neuro-skill-router
+version: "0.8.0"
+description: "Route 332+ skills through 5-signal RRF fusion — LLM only sees top-3. pre_llm_call hook: router.query(user_message) → injects [Top 3 skills] as context before LLM ever sees the query. 6-10ms per query, 2.3s one-time startup."
+author: "wuykjl (https://github.com/wuykjl/neuro-skill)"
+hooks:
+  - on_session_start
+  - pre_llm_call

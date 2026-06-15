@@ -412,6 +412,22 @@ class PairingStore:
         """Hash a pairing code with the given salt using SHA-256."""
         return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
 
+    def _finish_approval(
+        self, platform: str, pending: dict, matched_key: str, matched_entry: dict
+    ) -> dict:
+        """Remove a pending request and approve its user. Must hold self._lock."""
+        del pending[matched_key]
+        self._save_json(self._pending_path(platform), pending)
+
+        self._approve_user(
+            platform, matched_entry["user_id"], matched_entry.get("user_name", "")
+        )
+
+        return {
+            "user_id": matched_entry["user_id"],
+            "user_name": matched_entry.get("user_name", ""),
+        }
+
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
     ) -> Optional[str]:
@@ -524,26 +540,44 @@ class PairingStore:
                 self._record_failed_attempt(platform)
                 return None
 
-            del pending[matched_key]
-            self._save_json(self._pending_path(platform), pending)
+            return self._finish_approval(platform, pending, matched_key, matched_entry)
 
-            # Add to approved list
-            self._approve_user(platform, matched_entry["user_id"],
-                               matched_entry.get("user_name", ""))
+    def approve_request(self, platform: str, request_id: str) -> Optional[dict]:
+        """
+        Approve a pending pairing request by its server-side request id.
 
-            return {
-                "user_id": matched_entry["user_id"],
-                "user_name": matched_entry.get("user_name", ""),
-            }
+        This is for admin surfaces (`pairing list`, dashboard approve buttons)
+        that show pending requests but must not reveal the one-time code sent
+        to the user. Returns ``{user_id, user_name}`` on success and ``None``
+        for invalid/expired requests or platform lockout.
+        """
+        with self._lock:
+            self._cleanup_expired(platform)
+            request_id = str(request_id or "").strip().lower()
+
+            if self._is_locked_out(platform):
+                return None
+
+            pending = self._load_json(self._pending_path(platform))
+            for entry_id, entry in pending.items():
+                if not isinstance(entry, dict):
+                    continue
+                if "salt" not in entry or "hash" not in entry:
+                    continue
+                if secrets.compare_digest(str(entry_id).lower(), request_id):
+                    return self._finish_approval(platform, pending, entry_id, entry)
+
+            self._record_failed_attempt(platform)
+            return None
 
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform.
 
-        Codes are stored hashed — the ``code`` field is replaced with the
-        first 8 hex characters of the hash so admins can distinguish entries
-        without revealing the original code. Legacy plaintext-key entries
-        (pre-hash format) are shown with a "legacy" placeholder so admins
-        can see them age out without crashing on a missing ``hash`` field.
+        Codes are stored hashed and are never returned. Modern entries expose a
+        server-side ``request_id`` that an admin can pass to approve the
+        listed request directly. ``code`` remains as a backward-compatible alias
+        for ``request_id`` for older dashboard clients. ``code_hash_prefix`` is
+        diagnostic-only and is not an approvable code.
         """
         results = []
         with self._lock:
@@ -559,10 +593,15 @@ class PairingStore:
                         continue
                     age_min = int((time.time() - created_at) / 60)
                     hash_val = info.get("hash")
+                    salt_val = info.get("salt")
+                    is_modern = isinstance(hash_val, str) and isinstance(salt_val, str)
+                    request_id = str(entry_id) if is_modern else ""
                     code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
                     results.append({
                         "platform": p,
-                        "code": code_display,
+                        "request_id": request_id,
+                        "code": request_id,
+                        "code_hash_prefix": code_display,
                         "user_id": info.get("user_id", ""),
                         "user_name": info.get("user_name", ""),
                         "age_minutes": age_min,

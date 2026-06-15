@@ -370,7 +370,7 @@ markers = [
 # scripts/run_tests_parallel.py). Per-file isolation gives every test
 # file a fresh Python interpreter; pytest-timeout catches Python-level
 # hangs within a file. UI tests use xdist grouping where needed.
-addopts = "-m 'not integration' -n auto --dist=loadgroup --timeout=30 --timeout-method=thread"
+addopts = "-m 'not integration'"
 asyncio_mode = "auto"
 
 [tool.ty.environment]

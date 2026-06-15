@@ -1361,6 +1361,58 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 422
 
+    def test_model_fallbacks_profile_scoped(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.config import load_config
+        from hermes_cli.web_server import _profile_scope
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True, exist_ok=True)
+
+        worker_payload = {
+            "fallbacks": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ]
+        }
+
+        from typing import Any
+        # PUT to the worker profile by specifying profile in the payload (body.profile)
+        payload_with_profile: dict[str, Any] = dict(worker_payload)
+        payload_with_profile["profile"] = "worker"
+        put_resp = self.client.put("/api/model/fallbacks", json=payload_with_profile)
+        assert put_resp.status_code == 200
+        assert put_resp.json()["fallbacks"] == worker_payload["fallbacks"]
+
+        # GET the worker profile fallbacks using the query parameter ?profile=worker
+        get_resp = self.client.get("/api/model/fallbacks?profile=worker")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["fallbacks"] == worker_payload["fallbacks"]
+
+        # Verify default profile is unaffected
+        default_resp = self.client.get("/api/model/fallbacks")
+        assert default_resp.status_code == 200
+        assert default_resp.json()["fallbacks"] != worker_payload["fallbacks"]
+
+        # Verify we can also write using PUT query parameter (?profile=worker) with the original payload (no profile in body)
+        another_payload = {
+            "fallbacks": [
+                {"provider": "nous", "model": "hermes-4"},
+            ]
+        }
+        put_resp2 = self.client.put("/api/model/fallbacks?profile=worker", json=another_payload)
+        assert put_resp2.status_code == 200
+        assert put_resp2.json()["fallbacks"] == another_payload["fallbacks"]
+
+        # GET to verify it was written
+        get_resp2 = self.client.get("/api/model/fallbacks?profile=worker")
+        assert get_resp2.status_code == 200
+        assert get_resp2.json()["fallbacks"] == another_payload["fallbacks"]
+
+        # Direct check on load_config under the _profile_scope context manager
+        with _profile_scope("worker"):
+            cfg = load_config()
+            assert cfg["fallback_providers"] == another_payload["fallbacks"]
+
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
         assert resp.status_code == 200

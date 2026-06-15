@@ -1019,6 +1019,7 @@ class FallbackProvidersUpdate(BaseModel):
     """Payload for PUT /api/model/fallbacks."""
 
     fallbacks: List[FallbackProviderEntry]
+    profile: Optional[str] = None
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -4209,29 +4210,31 @@ def _apply_model_assignment_sync(
 
 
 @app.get("/api/model/fallbacks")
-def get_model_fallbacks():
+def get_model_fallbacks(profile: Optional[str] = None):
     """Return the configured fallback provider chain."""
     try:
         from hermes_cli.fallback_cmd import read_chain
 
-        cfg = load_config()
-        return {"fallbacks": read_chain(cfg)}
+        with _profile_scope(profile):
+            cfg = load_config()
+            return {"fallbacks": read_chain(cfg)}
     except Exception:
         _log.exception("GET /api/model/fallbacks failed")
         raise HTTPException(status_code=500, detail="Failed to read fallback providers")
 
 
 @app.put("/api/model/fallbacks")
-def set_model_fallbacks(body: FallbackProvidersUpdate):
+def set_model_fallbacks(body: FallbackProvidersUpdate, profile: Optional[str] = None):
     """Persist fallback providers in config.yaml order."""
     cleaned = [entry.model_dump(exclude_none=True) for entry in body.fallbacks]
 
     try:
         from hermes_cli.fallback_cmd import write_chain
 
-        cfg = load_config()
-        write_chain(cfg, cleaned)
-        save_config(cfg)
+        with _profile_scope(body.profile or profile):
+            cfg = load_config()
+            write_chain(cfg, cleaned)
+            save_config(cfg)
         return {"ok": True, "fallbacks": cleaned}
     except HTTPException:
         raise

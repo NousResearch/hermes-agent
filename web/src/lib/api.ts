@@ -78,6 +78,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/model/auxiliary",
   "/api/model/moa",
   "/api/model/options",
+  "/api/model/fallbacks",
 ];
 
 function withManagementProfile(url: string): string {

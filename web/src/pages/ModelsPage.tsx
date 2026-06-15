@@ -627,10 +627,7 @@ export default function ModelsPage() {
   const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
 
-  const applyAssignment = async ({ scope, task, provider, model }: { scope: "main" | "auxiliary"; task: string; provider: string; model: string }) => {
-    await api.setModelAssignment({ scope, task, provider, model });
-    onAssigned();
-  };
+
 
   const saveFallbackChain = async (next: FallbackEntry[], prev: FallbackEntry[]) => {
     if (fallbackBusyRef.current) return false;

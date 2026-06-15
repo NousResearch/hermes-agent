@@ -161,6 +161,35 @@ def _composition_chars_per_token() -> float:
 COMPOSITION_CHARS_PER_TOKEN = _composition_chars_per_token()
 
 
+# Fixed-bucket char->token divisor. The shared 3.5 above is tuned for NON-FIXED
+# content (history/tool-results/tool-args) which packs DENSER than 4 chars/token
+# (see the under-count note above: /4 under-counts at 170k-280k history-heavy
+# turns). The FIXED prefix -- system prompt + tool schemas + skills index -- is
+# different content and was MEASURED to pack LOOSER: o200k (gpt-5.x) real ratio
+# 4.09 chars/tok, claude-opus real 4.35 (n=60 each, live turns.db), so /3.5
+# over-counts the fixed prefix by ~17-24%. 4.0 measured on o200k(4.09)+
+# claude-opus(4.35); applied to ALL families by fiat (the fixed bytes are
+# identical across models, only tokenizer density varies, and it clustered
+# tightly 4.09-4.35); override via HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED if a
+# family proves materially different. Same 2.0-8.0 clamp; display-only, never
+# billing. Two divisors on purpose: accurate on the stable fixed prefix,
+# conservative (slightly high) on the volatile non-fixed tail so the
+# context-pressure warning fires early rather than late.
+def _composition_chars_per_token_fixed() -> float:
+    raw = os.environ.get("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if 2.0 <= val <= 8.0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return 4.0
+
+
+COMPOSITION_CHARS_PER_TOKEN_FIXED = _composition_chars_per_token_fixed()
+
+
 # Per-message wire-framing overhead, in tokens. Every chat message carries
 # structural scaffolding the char-based estimators don't see: role tokens,
 # message delimiters, and (for tool turns) tool-call id wrappers. The content
@@ -1869,6 +1898,21 @@ def _ceil_chars_to_tokens(chars: int) -> int:
     return int(math.ceil(chars / COMPOSITION_CHARS_PER_TOKEN))
 
 
+def _ceil_chars_to_tokens_fixed(chars: int) -> int:
+    """Ceiling-divide a char count into tokens by COMPOSITION_CHARS_PER_TOKEN_FIXED.
+
+    Sibling of _ceil_chars_to_tokens, but for the FIXED request prefix (system
+    prompt + tool schemas + skills index). That content was measured to pack
+    looser than the non-fixed tail (~4.0-4.35 chars/tok vs ~3.5), so it uses its
+    own divisor (default 4.0, tunable via HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED)
+    -- see the COMPOSITION_CHARS_PER_TOKEN_FIXED comment. Same ceiling/min-0
+    behavior. Display-only; never billing.
+    """
+    if chars <= 0:
+        return 0
+    return int(math.ceil(chars / COMPOSITION_CHARS_PER_TOKEN_FIXED))
+
+
 def estimate_tokens_rough(text: str) -> int:
     """Rough token estimate (~3.5 chars/token) for pre-flight checks.
 
@@ -1974,11 +2018,11 @@ def estimate_request_tokens_rough(
     """
     total = 0
     if system_prompt:
-        total += _ceil_chars_to_tokens(len(system_prompt))
+        total += _ceil_chars_to_tokens_fixed(len(system_prompt))
     if messages:
         total += estimate_messages_tokens_rough(messages)
     if tools:
-        total += _ceil_chars_to_tokens(len(str(tools)))
+        total += _ceil_chars_to_tokens_fixed(len(str(tools)))
     return total
 
 
@@ -1996,15 +2040,19 @@ def compose_request_breakdown(
     api_messages + effective_system + agent.tools), so the buckets describe
     reality, not a re-derived proxy over the stored transcript.
 
-    Buckets (all char/N estimates where N = COMPOSITION_CHARS_PER_TOKEN,
-    default 3.5; tunable via env HERMES_COMPOSITION_CHARS_PER_TOKEN):
-      Fixed (stable cacheable prefix):
+    Buckets (char/N estimates with a TWO-TIER divisor N):
+      Fixed (stable cacheable prefix) use COMPOSITION_CHARS_PER_TOKEN_FIXED
+        (default 4.0; env HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED) -- this
+        content was measured to pack ~4.0-4.35 chars/tok:
         sys_tokens, tool_schema_tokens
         - sys_tokens splits into identity_tokens + skills_tokens, where
           skills_tokens is the skill-index catalog embedded in the system
           prompt (passed separately as skills_prompt; it is a substring of
           system_prompt, so identity_tokens = sys_tokens - skills_tokens).
-      Non-fixed (grows with the conversation):
+      Non-fixed (grows with the conversation) use COMPOSITION_CHARS_PER_TOKEN
+        (default 3.5; env HERMES_COMPOSITION_CHARS_PER_TOKEN) -- this content
+        packs denser (~3.5 chars/tok), and a slight over-estimate here is
+        intentional (context-pressure warning fires early):
         history_tokens, tool_result_tokens, tool_arg_tokens, framing_tokens
         - framing_tokens is a flat per-message wire-overhead estimate
           (PER_MESSAGE_FRAMING_TOKENS * message_count): role tokens, message
@@ -2071,19 +2119,27 @@ def compose_request_breakdown(
                 history_chars += _estimate_message_chars(msg)
 
     def _t(chars: int) -> int:
-        # Shared char->token rule (COMPOSITION_CHARS_PER_TOKEN, default 3.5),
-        # ceiling so short tool results never round to 0 and vanish.
+        # NON-FIXED char->token rule (COMPOSITION_CHARS_PER_TOKEN, default 3.5),
+        # ceiling so short tool results never round to 0 and vanish. Used for the
+        # volatile buckets (history/tool-results/tool-args) which pack denser.
         return _ceil_chars_to_tokens(chars)
 
-    sys_tokens = _t(sys_chars)
+    def _t_fixed(chars: int) -> int:
+        # FIXED char->token rule (COMPOSITION_CHARS_PER_TOKEN_FIXED, default 4.0).
+        # The stable request prefix (system prompt + tool schemas + skills index)
+        # was measured to pack looser (~4.0-4.35 chars/tok) than the non-fixed
+        # tail; using /4.0 here removes the ~17-24% over-count /3.5 caused on it.
+        return _ceil_chars_to_tokens_fixed(chars)
+
+    sys_tokens = _t_fixed(sys_chars)
     # Split the fixed system prompt into the skill-index catalog vs everything
     # else (identity/rules/guidance). skills_tokens is derived from the same
-    # char->token rule; identity is the remainder so the two always sum to
+    # FIXED char->token rule; identity is the remainder so the two always sum to
     # sys_tokens exactly (no double-count, invariant preserved).
-    skills_tokens = _t(skills_chars)
+    skills_tokens = _t_fixed(skills_chars)
     skills_tokens = min(skills_tokens, sys_tokens)
     identity_tokens = sys_tokens - skills_tokens
-    tool_schema_tokens = _t(tool_schema_chars)
+    tool_schema_tokens = _t_fixed(tool_schema_chars)
     # Per-message wire framing: flat constant * message count. Counts every
     # message on the wire (including the system message) since each carries
     # role/delimiter overhead. Scales with the conversation -> non-fixed.

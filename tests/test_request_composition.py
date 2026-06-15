@@ -245,6 +245,109 @@ def test_chars_per_token_divisor_out_of_range_falls_back_to_default(monkeypatch)
 
 
 # --------------------------------------------------------------------------- #
+# two-tier divisor: FIXED buckets /4.0, NON-FIXED buckets /3.5
+# --------------------------------------------------------------------------- #
+def test_fixed_buckets_use_divisor_4_nonfixed_use_3_5():
+    # System prompt of exactly 4000 chars -> 4000/4.0 = 1000 (NOT 4000/3.5=1143).
+    # sys_tokens is from a RAW string (no message wrapping) so it's exact.
+    # tool_result goes through _estimate_message_chars (adds small role/structure
+    # overhead), so assert it tracks /3.5 (not /4.0) within a tight tolerance.
+    import math
+    comp = compose_request_breakdown(
+        [{"role": "tool", "content": "r" * 3500, "tool_call_id": "1"}],
+        system_prompt="s" * 4000,
+    )
+    assert comp["sys_tokens"] == 1000, "fixed sys bucket must divide by 4.0"
+    # /3.5 ~= 1000+overhead; /4.0 would be ~875. Must be the 3.5 regime.
+    assert math.ceil(3500 / 3.5) <= comp["tool_result_tokens"] <= math.ceil(3600 / 3.5)
+    assert comp["tool_result_tokens"] > math.ceil(3600 / 4.0), "must NOT be /4.0"
+    assert comp["total_tokens"] == comp["fixed_tokens"] + comp["nonfixed_tokens"]
+
+
+def test_tool_schema_bucket_uses_fixed_divisor_4():
+    # tool_schema_chars = len(str(tools)); pick tools whose repr is a known length.
+    tools = [{"x": "a" * 3996}]  # str(tools) length is deterministic & > 4000
+    comp = compose_request_breakdown([], tools=tools)
+    chars = len(str(tools))
+    import math
+    assert comp["tool_schema_tokens"] == math.ceil(chars / 4.0)
+    # And strictly fewer than the old /3.5 would have given.
+    assert comp["tool_schema_tokens"] < math.ceil(chars / 3.5)
+
+
+def test_all_three_nonfixed_buckets_stay_on_3_5():
+    # Prove the negative: the most likely bug is moving a non-fixed bucket to /4.
+    # fixed+nonfixed==total does NOT catch mis-bucketing, so assert each /3.5.
+    # Message buckets carry a small role/structure overhead from
+    # _estimate_message_chars, so bound around /3.5 and prove != /4.0.
+    import math
+    msgs = [
+        {"role": "assistant", "content": "h" * 7000,
+         "tool_calls": [{"id": "1", "function": {"name": "t", "arguments": "a" * 7000}}]},
+        {"role": "tool", "content": "r" * 7000, "tool_call_id": "1"},
+    ]
+    comp = compose_request_breakdown(msgs)
+    lo, hi = math.ceil(7000 / 3.5), math.ceil(7100 / 3.5)   # 2000 .. ~2029
+    four = math.ceil(7100 / 4.0)                            # ~1775
+    for key in ("history_tokens", "tool_arg_tokens", "tool_result_tokens"):
+        assert lo <= comp[key] <= hi, f"{key}={comp[key]} not in /3.5 band [{lo},{hi}]"
+        assert comp[key] > four, f"{key} collapsed toward /4.0"
+
+
+def test_fixed_and_nonfixed_differ_for_identical_chars():
+    # Collapse guard: identical char count must yield DIFFERENT token counts
+    # across the two tiers (catches "both divisors accidentally equal").
+    import math
+    comp = compose_request_breakdown(
+        [{"role": "tool", "content": "r" * 7000, "tool_call_id": "1"}],
+        system_prompt="s" * 7000,
+    )
+    assert comp["sys_tokens"] == math.ceil(7000 / 4.0)           # 1750 exact (raw)
+    assert comp["tool_result_tokens"] >= math.ceil(7000 / 3.5)  # >= 2000 (3.5 regime)
+    assert comp["tool_result_tokens"] > comp["sys_tokens"], "tiers must differ"
+
+
+def test_identity_plus_skills_equals_sys_both_fixed():
+    # skills index is a substring of the system prompt; both use the FIXED rule,
+    # so identity + skills must sum to sys exactly (invariant preserved).
+    skills = "    - foo: a skill\n    - bar: another\n"
+    sysp = "IDENTITY RULES " * 50 + skills
+    comp = compose_request_breakdown([], system_prompt=sysp, skills_prompt=skills)
+    assert comp["identity_tokens"] + comp["skills_tokens"] == comp["sys_tokens"]
+    assert comp["skills_count"] == 2
+
+
+def test_fixed_divisor_env_override(monkeypatch):
+    # The advertised rollback knob must be the EXACT name the code comment uses.
+    import importlib
+    import agent.model_metadata as mm
+    n = 8000
+    # Override fixed back to 3.5 -> collapses fixed to old behavior.
+    monkeypatch.setenv("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", "3.5")
+    importlib.reload(mm)
+    try:
+        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 3.5
+        comp = mm.compose_request_breakdown([], system_prompt="s" * n)
+        import math
+        assert comp["sys_tokens"] == math.ceil(n / 3.5)  # old behavior restored
+    finally:
+        monkeypatch.delenv("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", raising=False)
+        importlib.reload(mm)
+
+
+def test_fixed_divisor_out_of_range_falls_back_to_4():
+    import importlib
+    import agent.model_metadata as mm
+    import os
+    for bad in ("0", "999", "-3", "notanumber", ""):
+        os.environ["HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED"] = bad
+        importlib.reload(mm)
+        assert mm.COMPOSITION_CHARS_PER_TOKEN_FIXED == 4.0, f"{bad!r} should fall back to 4.0"
+    os.environ.pop("HERMES_COMPOSITION_CHARS_PER_TOKEN_FIXED", None)
+    importlib.reload(mm)
+
+
+# --------------------------------------------------------------------------- #
 # blackbox store — comp_* persistence
 # --------------------------------------------------------------------------- #
 @pytest.fixture

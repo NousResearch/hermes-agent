@@ -103,7 +103,7 @@ Recent upstream contribution slice: [NousResearch/hermes-agent#36921](https://gi
 | **hermes-webui companion** | `scripts/windows/start-hermes-webui.ps1` bootstraps a sibling `hermes-webui` checkout (default `~/Desktop/hermes-webui`) with `config/hermes-webui.env.example`. WebUI reads raw `config.yaml`; `auto-free` displays as-is but resolves at agent runtime. |
 | **VRChat Neuro / autonomy harness** | `skills/gaming/neuro-vrchat/` + `tools/vrchat_*` + `scripts/vrchat_*` — Neuro API websocket bridge, observation queue, preflight, runtime doctor, private smoke, completion audit. Uses vendored `vendor/neuro-sdk` protocol reference. Profile safety gate blocks live OSC/audio until explicitly armed. |
 | **Quest 2 Windows doctor + OpenXR fix** | Read-only stack diagnosis: `scripts/windows/vrchat_quest2_controller_doctor.ps1`. HKLM/HKCU ActiveRuntime sync for Virtual Desktop: `scripts/windows/vrchat_quest2_openxr_fix.ps1` and UAC wrapper `scripts/windows/run-vrchat-openxr-fix-admin.ps1`. |
-| **Windows logon autostart** | `scripts/windows/register-hermes-autostart.ps1` registers Task Scheduler jobs for llama fallback + gateway (and optional legacy stack). Cleans stale HKCU Run entries. |
+| **Windows logon autostart** | `scripts/windows/register-hermes-autostart.ps1` registers the gateway Task Scheduler job by default. Local GGUF/llama autostart is opt-in for rollback/recovery checks via `-IncludeLlama`. Cleans stale HKCU Run entries. |
 | **Gateway hardening** | Discord stale slash-command cleanup before re-register (100-command limit). `DISCORD_ALLOWED_USERS=*` as explicit allow-all. Telegram 90s connect budget with optional fallback IP disable. |
 | **Windows terminal hardening** | Git Bash preferred over WSL `bash.exe` stubs; UTF-8 terminal output; `search_files` finds `rg` / Git Bash `grep` / `find`. |
 | **Dashboard operations pages** | Upstream admin/system/MCP/pairing/webhook pages are merged with the fork's auth expectations and Windows gateway workflow. |
@@ -265,7 +265,7 @@ Requires UAC elevation for HKLM `ActiveRuntime` sync.
 
 ## Windows Autostart
 
-Register logon tasks for llama fallback + gateway:
+Register the gateway logon task without reserving VRAM for a local GGUF/llama server:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\register-hermes-autostart.ps1
@@ -273,11 +273,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows\register-her
 
 Options:
 
-- `-GatewayOnly` — skip llama task
+- `-IncludeLlama` — also register the rollback/recovery llama task
+- `-GatewayOnly` — compatibility flag; gateway-only is now the default
 - `-Unregister` — remove tasks and stale Run keys
 - `-IncludeLegacyStack` — also register full stack launcher
 
-Gateway wrapper: `scripts/windows/start-hermes-gateway.ps1` (ensures llama if port 8080 is down).
+Gateway wrapper: `scripts/windows/start-hermes-gateway.ps1` skips llama by default. Use `-StartLlama` or `HERMES_GATEWAY_RECOVERY_START_LLAMA=1` only for rollback/recovery checks.
 
 **Companion WebUI:**
 

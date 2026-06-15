@@ -1,18 +1,19 @@
 # Register / unregister Hermes logon autostart via Task Scheduler.
 #
-# Default: llama.cpp RTX3060 fallback + Hermes Gateway (gateway script also
-# ensures llama if the dedicated task has not finished yet; both exit early
-# when port 8080 / gateway is already up).
+# Default: Hermes Gateway only. Local GGUF/llama servers reserve VRAM, so they
+# are opt-in for rollback/recovery checks via -IncludeLlama.
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/register-hermes-autostart.ps1
 #   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -Unregister
+#   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -IncludeLlama
 #   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -GatewayOnly
 #   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -IncludeLegacyStack
 
 [CmdletBinding()]
 param(
     [switch]$Unregister,
+    [switch]$IncludeLlama,
     [switch]$GatewayOnly,
     [switch]$IncludeLegacyStack,
     [string]$LlamaTaskName = "HermesLlamaFallbackRTX3060",
@@ -29,6 +30,10 @@ $GatewayScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-gateway.ps1")
 $StackScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-stack.ps1")
 
 $LogonAccount = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+if ($GatewayOnly -and $IncludeLlama) {
+    throw "-GatewayOnly and -IncludeLlama cannot be combined."
+}
 
 $StaleRunValueNames = @(
     "HermesLlamaFallbackRTX3060",
@@ -186,7 +191,7 @@ foreach ($staleTask in $StaleScheduledTaskNames) {
 
 $registered = @()
 
-if (-not $GatewayOnly) {
+if ($IncludeLlama) {
     $llamaEnv = @{}
     $dotEnv = Join-Path $env:USERPROFILE ".hermes\.env"
     if (Test-Path -LiteralPath $dotEnv) {
@@ -204,7 +209,7 @@ if (-not $GatewayOnly) {
 
     $registered += Register-HermesScheduledTask `
         -TaskName $LlamaTaskName `
-        -Description "Auto-start llama.cpp secretary (HF -hf, port 8080, 64K context) at logon" `
+        -Description "Rollback/recovery-only llama.cpp secretary (HF -hf, port 8080, 64K context) at logon" `
         -ScriptPath $LlamaScript `
         -Env $llamaEnv `
         -DelaySeconds 10
@@ -212,7 +217,7 @@ if (-not $GatewayOnly) {
 
 $registered += Register-HermesScheduledTask `
     -TaskName $GatewayTaskName `
-    -Description "Auto-start Hermes Gateway at logon (llama fallback first if needed)" `
+    -Description "Auto-start Hermes Gateway at logon without local GGUF/llama autostart" `
     -ScriptPath $GatewayScript `
     -Env @{
         HERMES_STARTUP_DELAY_SECONDS = "30"
@@ -236,6 +241,11 @@ Write-Host "Disable autostart:" -ForegroundColor Cyan
 Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" -Unregister"
 Write-Host ""
 Write-Host "Manual task control:" -ForegroundColor Cyan
-Write-Host "  Get-ScheduledTask -TaskName '$LlamaTaskName','$GatewayTaskName' | Format-Table TaskName,State"
+if ($IncludeLlama) {
+    Write-Host "  Get-ScheduledTask -TaskName '$LlamaTaskName','$GatewayTaskName' | Format-Table TaskName,State"
+} else {
+    Write-Host "  Get-ScheduledTask -TaskName '$GatewayTaskName' | Format-Table TaskName,State"
+    Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" -IncludeLlama"
+}
 Write-Host "  Disable-ScheduledTask -TaskName '$GatewayTaskName'"
 Write-Host "  Enable-ScheduledTask -TaskName '$GatewayTaskName'"

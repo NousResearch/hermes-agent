@@ -71,8 +71,20 @@ if ($DelaySeconds -gt 0) {
     Start-Sleep -Seconds $DelaySeconds
 }
 
-$startLlamaFromEnv = $env:HERMES_GATEWAY_START_LLAMA -and $env:HERMES_GATEWAY_START_LLAMA.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
-if ($StartLlama -or $startLlamaFromEnv) {
+function Test-TruthyEnv {
+    param([string]$Name)
+    $value = [Environment]::GetEnvironmentVariable($Name, "Process")
+    if (-not $value -or -not $value.Trim()) { return $false }
+    return $value.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
+}
+
+$startLlamaFromRecoveryEnv = Test-TruthyEnv -Name "HERMES_GATEWAY_RECOVERY_START_LLAMA"
+$legacyStartLlamaFromEnv = Test-TruthyEnv -Name "HERMES_GATEWAY_START_LLAMA"
+if ($legacyStartLlamaFromEnv -and -not $startLlamaFromRecoveryEnv -and -not $StartLlama) {
+    Write-Warning "Ignoring HERMES_GATEWAY_START_LLAMA; use -StartLlama or HERMES_GATEWAY_RECOVERY_START_LLAMA=1 for rollback/recovery checks."
+}
+
+if ($StartLlama -or $startLlamaFromRecoveryEnv) {
     $llamaScript = Join-Path $ScriptDir "start-llama-secretary.ps1"
     if (-not (Test-Path -LiteralPath $llamaScript)) {
         $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1"
@@ -88,7 +100,7 @@ if ($StartLlama -or $startLlamaFromEnv) {
         }
     }
 } else {
-    Write-Host "Skipping gateway llama fallback; set HERMES_GATEWAY_START_LLAMA=1 or pass -StartLlama for rollback/recovery checks."
+    Write-Host "Skipping gateway llama fallback; pass -StartLlama or set HERMES_GATEWAY_RECOVERY_START_LLAMA=1 only for rollback/recovery checks."
 }
 
 $env:PYTHONIOENCODING = "utf-8"

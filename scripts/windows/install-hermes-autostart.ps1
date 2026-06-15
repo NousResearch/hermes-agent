@@ -9,6 +9,7 @@
 param(
     [switch]$Unregister,
     [switch]$RefreshDesktopShortcuts,
+    [switch]$IncludeLlama,
     [switch]$GatewayOnly,
     [switch]$IncludeLegacyStack
 )
@@ -25,6 +26,7 @@ if (-not (Test-Path -LiteralPath $RegisterScript)) {
 
 $registerArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RegisterScript)
 if ($Unregister) { $registerArgs += "-Unregister" }
+if ($IncludeLlama) { $registerArgs += "-IncludeLlama" }
 if ($GatewayOnly) { $registerArgs += "-GatewayOnly" }
 if ($IncludeLegacyStack) { $registerArgs += "-IncludeLegacyStack" }
 

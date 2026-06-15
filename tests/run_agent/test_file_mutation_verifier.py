@@ -61,12 +61,7 @@ def _mock_tool_call(name: str, arguments: str, call_id: str = "call_patch"):
     )
 
 
-def _mock_response(
-    content: str = "",
-    *,
-    tool_calls=None,
-    finish_reason: str = "stop",
-):
+def _mock_response(content: str = "", *, tool_calls=None, finish_reason: str = "stop"):
     return SimpleNamespace(
         choices=[
             SimpleNamespace(
@@ -400,6 +395,7 @@ class TestFormatFooter:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+
 # ---------------------------------------------------------------------------
 # automatic remediation nudge before the final verifier footer
 # ---------------------------------------------------------------------------
@@ -442,6 +438,10 @@ class TestFileMutationAutoRemediation:
         agent = self._agent(budget_remaining=0)
         assert _should_remediate_file_mutation_failures(agent, api_call_count=2) is False
 
+    def test_no_remediation_at_max_iterations(self):
+        agent = self._agent(max_iterations=3)
+        assert _should_remediate_file_mutation_failures(agent, api_call_count=3) is False
+
     def test_remediation_prompt_tells_model_to_repair_not_report_done(self):
         failed = {
             "/tmp/a.md": {
@@ -456,22 +456,23 @@ class TestFileMutationAutoRemediation:
         assert "/tmp/a.md" in prompt
         assert "Could not find old_string" in prompt
 
-    def test_failed_patch_gets_followup_turn_before_footer_only_final(self):
+    def test_failed_patch_gets_followup_turn_before_footer_only_final(self, monkeypatch):
         """A failed patch must not be reported only as a final-answer footer.
 
         The loop should give the model one synthetic continuation turn with
         the unresolved failed edit evidence before falling back to the footer.
         """
+        import agent.redact as redact_mod
+
+        monkeypatch.setattr(redact_mod, "_REDACT_ENABLED", False)
+        dummy_api_key = "test-" "key-1234567890"
         with (
-            patch(
-                "run_agent.get_tool_definitions",
-                return_value=_make_tool_defs("patch"),
-            ),
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("patch")),
             patch("run_agent.check_toolset_requirements", return_value={}),
             patch("run_agent.OpenAI"),
         ):
             agent = AIAgent(
-                api_key="dummy",
+                api_key=dummy_api_key,
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -494,7 +495,7 @@ class TestFileMutationAutoRemediation:
                 ],
                 finish_reason="tool_calls",
             ),
-            _mock_response(content="I updated `/tmp/a.md` successfully."),
+            _mock_response(content="I updated `/tmp/a.md` with API_KEY=dummysecretvalue12345."),
             _mock_response(content="I could not repair `/tmp/a.md` after inspection."),
         ]
         api_messages: list[list[dict]] = []
@@ -521,17 +522,83 @@ class TestFileMutationAutoRemediation:
         assert "1 file(s) were NOT modified" in result["final_response"]
 
         followup_request = api_messages[2]
+        followup_payload = json.dumps(followup_request)
+        assert "API_KEY=dummysecretvalue12345" not in followup_payload
+        assert "_file_mutation_remediation_synthetic" not in followup_payload
         synthetic_followups = [
-            msg
-            for msg in followup_request
+            msg for msg in followup_request
             if "follow-up required before final answer" in str(msg.get("content", ""))
         ]
         assert synthetic_followups
-        assert (
-            "follow-up required before final answer"
-            in synthetic_followups[-1]["content"]
-        )
+        assert "follow-up required before final answer" in synthetic_followups[-1]["content"]
         assert "Could not find old_string" in synthetic_followups[-1]["content"]
+        assert getattr(agent, "_turn_file_mutation_remediation_retries") == 1
+
+    def test_successful_remediation_clears_failure_and_suppresses_footer(self):
+        """A successful remediation edit should clear verifier state.
+
+        This proves the automatic follow-up path does not leave a stale
+        "NOT modified" footer after the model repairs the failed edit.
+        """
+        dummy_api_key = "test-" "key-1234567890"
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("patch")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key=dummy_api_key,
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        patch_args = {
+            "mode": "replace",
+            "path": "/tmp/a.md",
+            "old_string": "missing",
+            "new_string": "fixed",
+        }
+        repair_args = {
+            "mode": "replace",
+            "path": "/tmp/a.md",
+            "old_string": "actual",
+            "new_string": "fixed",
+        }
+        responses = [
+            _mock_response(
+                tool_calls=[_mock_tool_call("patch", json.dumps(patch_args), "call_fail")],
+                finish_reason="tool_calls",
+            ),
+            _mock_response(content="I updated `/tmp/a.md` successfully."),
+            _mock_response(
+                tool_calls=[_mock_tool_call("patch", json.dumps(repair_args), "call_repair")],
+                finish_reason="tool_calls",
+            ),
+            _mock_response(content="I repaired `/tmp/a.md` successfully."),
+        ]
+
+        def _fake_api_call(api_kwargs):
+            return responses.pop(0)
+
+        agent.client = MagicMock()
+        setattr(agent, "_interruptible_api_call", _fake_api_call)
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        tool_results = [
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            json.dumps({"success": True, "diff": "--- a/tmp/a.md\n+++ b/tmp/a.md\n"}),
+        ]
+        with patch("run_agent.handle_function_call", side_effect=tool_results):
+            result = agent.run_conversation("Patch /tmp/a.md")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 4
+        assert "I repaired" in result["final_response"]
+        assert "were NOT modified" not in result["final_response"]
+        assert getattr(agent, "_turn_failed_file_mutations") == {}
         assert getattr(agent, "_turn_file_mutation_remediation_retries") == 1
 
 

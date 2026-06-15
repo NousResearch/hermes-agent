@@ -97,7 +97,7 @@ def _file_mutation_remediation_prompt(failed: Dict[str, Dict[str, Any]]) -> str:
         preview = (info.get("error_preview") or "failed").strip()
         if len(preview) > 240:
             preview = preview[:239].rstrip() + "…"
-        lines.append(f"- `{path}` — [{tool}] {preview}")
+        lines.append(f"- {path} — [{tool}] {preview}")
     return "\n".join(lines)
 
 
@@ -122,6 +122,7 @@ def _should_remediate_file_mutation_failures(agent: Any, api_call_count: int) ->
     if budget is not None and getattr(budget, "remaining", 1) <= 0 and not getattr(agent, "_budget_grace_call", False):
         return False
     return True
+
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -4371,8 +4372,8 @@ def run_conversation(
                 # If any file-edit tool call failed earlier in this turn and
                 # has not been superseded by a later successful edit to the
                 # same path, do not let the model finalize with a possibly
-                # over-claiming summary.  Inject one bounded continuation turn
-                # that forces inspection/repair first.  If the retry cannot
+                # over-claiming summary. Inject one bounded continuation turn
+                # that forces inspection/repair first. If the retry cannot
                 # clear the verifier state, the existing finalizer footer still
                 # reports the unresolved failure to the user.
                 if _should_remediate_file_mutation_failures(agent, api_call_count):
@@ -4391,14 +4392,17 @@ def run_conversation(
                         "⚠️ File edit verification failed — retrying with automatic remediation "
                         f"({agent._turn_file_mutation_remediation_retries}/{MAX_FILE_MUTATION_REMEDIATION_RETRIES})"
                     )
-                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
-                    interim_msg["content"] = final_response
-                    interim_msg["_file_mutation_remediation_synthetic"] = True
+                    from agent.redact import redact_sensitive_text
+
+                    interim_msg = {
+                        "role": "assistant",
+                        "content": redact_sensitive_text(final_response, force=True),
+                        "finish_reason": "incomplete",
+                    }
                     messages.append(interim_msg)
                     messages.append({
                         "role": "user",
                         "content": _file_mutation_remediation_prompt(failed_mutations),
-                        "_file_mutation_remediation_synthetic": True,
                     })
                     agent._session_messages = messages
                     continue

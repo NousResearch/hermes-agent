@@ -1273,12 +1273,21 @@ export const ja = defineLocale({
     copyPath: 'パスをコピー'
   },
 
+  workflow: {
+    title: 'ワークフロー',
+    loading: 'ワークフローを読み込み中...',
+    backendUnavailable: 'ワークフローのバックエンドが起動していません',
+    backendUnavailableDetail: url => `Langflow を起動してから、このビューを再読み込みしてください。対象: ${url}`,
+    openInBrowser: 'ブラウザーで開く'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
-      artifacts: 'アーティファクト'
+      artifacts: 'アーティファクト',
+      workflow: 'ワークフロー'
     },
     searchAria: 'セッションを検索',
     searchPlaceholder: 'セッションを検索…',

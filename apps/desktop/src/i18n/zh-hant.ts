@@ -1227,12 +1227,21 @@ export const zhHant = defineLocale({
     copyPath: '複製路徑'
   },
 
+  workflow: {
+    title: '工作流',
+    loading: '正在載入工作流…',
+    backendUnavailable: '工作流後端未啟動',
+    backendUnavailableDetail: url => `啟動 Langflow 後重新載入此視圖。目標: ${url}`,
+    openInBrowser: '在瀏覽器開啟'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新工作階段',
       skills: '技能與工具',
       messaging: '訊息平台',
-      artifacts: '成品'
+      artifacts: '成品',
+      workflow: '工作流'
     },
     searchAria: '搜尋工作階段',
     searchPlaceholder: '搜尋工作階段…',

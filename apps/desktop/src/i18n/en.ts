@@ -1133,12 +1133,21 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  workflow: {
+    title: 'Workflow',
+    loading: 'Loading workflow...',
+    backendUnavailable: 'Workflow backend is not running',
+    backendUnavailableDetail: url => `Start Langflow, then reload this view. Target: ${url}`,
+    openInBrowser: 'Open in browser'
+  },
+
   sidebar: {
     nav: {
       'new-session': 'New session',
       skills: 'Skills & Tools',
       messaging: 'Messaging',
-      artifacts: 'Artifacts'
+      artifacts: 'Artifacts',
+      workflow: 'Workflow'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',

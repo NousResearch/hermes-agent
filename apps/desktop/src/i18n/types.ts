@@ -868,6 +868,14 @@ export interface Translations {
     copyPath: string
   }
 
+  workflow: {
+    title: string
+    loading: string
+    backendUnavailable: string
+    backendUnavailableDetail: (url: string) => string
+    openInBrowser: string
+  }
+
   sidebar: {
     nav: Record<string, string>
     searchAria: string

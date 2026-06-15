@@ -1321,12 +1321,21 @@ export const zh: Translations = {
     copyPath: '复制路径'
   },
 
+  workflow: {
+    title: '工作流',
+    loading: '正在加载工作流…',
+    backendUnavailable: '工作流后端未启动',
+    backendUnavailableDetail: url => `启动 Langflow 后重新加载此视图。目标: ${url}`,
+    openInBrowser: '在浏览器打开'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
-      artifacts: '产物'
+      artifacts: '产物',
+      workflow: '工作流'
     },
     searchAria: '搜索会话',
     searchPlaceholder: '搜索会话…',

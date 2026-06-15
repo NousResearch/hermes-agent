@@ -109,6 +109,7 @@ def set_session_vars(
     session_id: str = "",
     message_id: str = "",
     cwd: str = "",
+    file_root: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -119,6 +120,7 @@ def set_session_vars(
     only for API compatibility.
 
     ``cwd`` pins the logical working directory for this context.
+    ``file_root`` pins the filesystem root enforced by file tools.
     """
     tokens = [
         _SESSION_PLATFORM.set(platform),
@@ -132,9 +134,10 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
     ]
     try:
-        from agent.runtime_cwd import set_session_cwd
+        from agent.runtime_cwd import set_session_cwd, set_session_file_root
 
         set_session_cwd(cwd)
+        set_session_file_root(file_root)
     except Exception:
         pass
     return tokens
@@ -164,9 +167,10 @@ def clear_session_vars(tokens: list) -> None:
     ):
         var.set("")
     try:
-        from agent.runtime_cwd import clear_session_cwd
+        from agent.runtime_cwd import clear_session_cwd, clear_session_file_root
 
         clear_session_cwd()
+        clear_session_file_root()
     except Exception:
         pass
 

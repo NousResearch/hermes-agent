@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import stat
 import threading
 from pathlib import Path
 
@@ -94,6 +95,10 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+
+class SessionRootPathError(ValueError):
+    """Raised when a file tool request escapes the request-scoped root."""
 
 
 def _configured_terminal_cwd() -> str | None:
@@ -196,13 +201,92 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
+def _session_file_root() -> Path | None:
+    try:
+        from agent.runtime_cwd import resolve_session_file_root
+
+        root = resolve_session_file_root()
+    except Exception:
+        return None
+    if root is None:
+        return None
+    try:
+        resolved = root.expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        raise SessionRootPathError("Configured session file root is invalid") from exc
+    if not resolved.is_dir():
+        raise SessionRootPathError("Configured session file root is not available")
+    return resolved
+
+
+def _ensure_under_session_root(path: Path, root: Path) -> Path:
+    try:
+        resolved = path.expanduser().resolve()
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise SessionRootPathError("Path escapes current session file root") from exc
+    except OSError as exc:
+        raise SessionRootPathError("Path cannot be resolved within current session file root") from exc
+    return resolved
+
+
+def _session_root_hardlink_error(path: Path) -> str | None:
+    if _session_file_root() is None:
+        return None
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "Path cannot be verified within current session file root"
+    if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+        return "Path has multiple filesystem links and is unsafe in this session file root"
+    return None
+
+
+def _session_root_tree_error(path: Path) -> str | None:
+    root = _session_file_root()
+    if root is None:
+        return None
+    hardlink_error = _session_root_hardlink_error(path)
+    if hardlink_error:
+        return hardlink_error
+    if not path.is_dir():
+        return None
+    for current, dirnames, filenames in os.walk(path, followlinks=False):
+        current_path = Path(current)
+        for name in list(dirnames):
+            candidate = current_path / name
+            if candidate.is_symlink():
+                try:
+                    _ensure_under_session_root(candidate, root)
+                except SessionRootPathError:
+                    return "Search path contains a symlink that escapes current session file root"
+        for name in filenames:
+            candidate = current_path / name
+            if candidate.is_symlink():
+                try:
+                    _ensure_under_session_root(candidate, root)
+                except SessionRootPathError:
+                    return "Search path contains a symlink that escapes current session file root"
+                continue
+            hardlink_error = _session_root_hardlink_error(candidate)
+            if hardlink_error:
+                return hardlink_error
+    return None
+
+
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
+    root = _session_file_root()
     p = Path(filepath).expanduser()
+    if root is not None:
+        candidate = p if p.is_absolute() else root / p
+        return _ensure_under_session_root(candidate, root)
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -316,6 +400,8 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     """Return an error message if the path targets a sensitive system location."""
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
+    except SessionRootPathError as exc:
+        return str(exc)
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(os.path.expanduser(filepath))
@@ -419,6 +505,8 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     # classified against the right base.
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
+    except SessionRootPathError as exc:
+        return str(exc)
     except (OSError, ValueError):
         resolved = filepath
 
@@ -759,6 +847,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+        if _is_blocked_device(str(_resolved)):
+            return json.dumps({
+                "error": (
+                    f"Cannot read '{path}': this is a device file that would "
+                    "block or produce infinite output."
+                ),
+            })
+        hardlink_error = _session_root_hardlink_error(_resolved)
+        if hardlink_error:
+            return json.dumps({"error": hardlink_error})
 
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
@@ -890,7 +988,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        file_ops_path = resolved_str if _session_file_root() is not None else path
+        result = file_ops.read_file(file_ops_path, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -1068,7 +1167,7 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     internally.
     """
     try:
-        resolved = str(_resolve_path(filepath))
+        resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
@@ -1167,6 +1266,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # check below still runs.
         try:
             _resolved = str(_resolve_path_for_task(path, task_id))
+        except SessionRootPathError as exc:
+            return tool_error(str(exc))
         except Exception:
             _resolved = None
 
@@ -1184,6 +1285,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # subagents can't interleave on the same file.  Different paths
         # remain fully parallel.
         with file_state.lock_path(_resolved):
+            hardlink_error = _session_root_hardlink_error(Path(_resolved))
+            if hardlink_error:
+                return tool_error(hardlink_error)
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
@@ -1217,6 +1321,34 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
+def _rewrite_v4a_patch_paths(patch_content: str, path_to_resolved: dict[str, str | None]) -> str:
+    """Rewrite V4A file headers to already-validated absolute paths."""
+    import re as _re
+
+    def _lookup(raw: str) -> str:
+        key = raw.strip()
+        return path_to_resolved.get(key) or key
+
+    def _file_repl(match) -> str:
+        return f"{match.group(1)}{_lookup(match.group(2))}"
+
+    def _move_repl(match) -> str:
+        return f"{match.group(1)}{_lookup(match.group(2))} -> {_lookup(match.group(3))}"
+
+    rewritten = _re.sub(
+        r"^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+?)\s*$",
+        _file_repl,
+        patch_content,
+        flags=_re.MULTILINE,
+    )
+    return _re.sub(
+        r"^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+?)\s*$",
+        _move_repl,
+        rewritten,
+        flags=_re.MULTILINE,
+    )
+
+
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default", cross_profile: bool = False) -> str:
@@ -1233,8 +1365,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
+
+        def _append_v4a_path(v4a_path: str) -> str | None:
+            v4a_path = v4a_path.strip()
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
@@ -1250,6 +1383,19 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
                 )
             _paths_to_check.append(v4a_path)
+            return None
+
+        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+            _err = _append_v4a_path(_m.group(1))
+            if _err:
+                return _err
+        for _m in _re.finditer(r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$', patch, _re.MULTILINE):
+            _err = _append_v4a_path(_m.group(1))
+            if _err:
+                return _err
+            _err = _append_v4a_path(_m.group(2))
+            if _err:
+                return _err
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
@@ -1267,6 +1413,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         for _p in _paths_to_check:
             try:
                 _r = str(_resolve_path_for_task(_p, task_id))
+            except SessionRootPathError as exc:
+                return tool_error(str(exc))
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1289,9 +1437,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             for _p in _paths_to_check:
                 try:
                     _r = str(_resolve_path_for_task(_p, task_id))
+                except SessionRootPathError as exc:
+                    return tool_error(str(exc))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
+                if _r:
+                    hardlink_error = _session_root_hardlink_error(Path(_r))
+                    if hardlink_error:
+                        return tool_error(hardlink_error)
                 _cross = file_state.check_stale(task_id, _r) if _r else None
                 _sw = _cross or _check_file_staleness(_p, task_id)
                 if not _sw and _r:
@@ -1318,7 +1472,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                patch_payload = (
+                    _rewrite_v4a_patch_paths(patch, _path_to_resolved)
+                    if _session_file_root() is not None
+                    else patch
+                )
+                result = file_ops.patch_v4a(patch_payload)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1430,9 +1589,15 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "already_searched": count,
             }, ensure_ascii=False)
 
+        resolved_path = _resolve_path_for_task(path, task_id)
+        tree_error = _session_root_tree_error(resolved_path)
+        if tree_error:
+            return tool_error(tree_error)
+
         file_ops = _get_file_ops(task_id)
+        file_ops_path = str(resolved_path) if _session_file_root() is not None else path
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=file_ops_path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         if hasattr(result, 'matches'):

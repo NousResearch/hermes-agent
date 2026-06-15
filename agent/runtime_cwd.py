@@ -18,6 +18,7 @@ from typing import Any
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+_SESSION_FILE_ROOT: ContextVar = ContextVar("HERMES_SESSION_FILE_ROOT", default=_UNSET)
 
 
 def set_session_cwd(cwd: str | None) -> Token:
@@ -29,11 +30,35 @@ def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
+def set_session_file_root(root: str | None) -> Token:
+    """Pin the filesystem root enforced by file tools for this context."""
+    return _SESSION_FILE_ROOT.set((root or "").strip())
+
+
+def clear_session_file_root() -> None:
+    _SESSION_FILE_ROOT.set("")
+
+
 def _session_cwd_override() -> str:
     value = _SESSION_CWD.get()
     if value is _UNSET:
         return ""
     return str(value).strip()
+
+
+def _session_file_root_override() -> str:
+    value = _SESSION_FILE_ROOT.get()
+    if value is _UNSET:
+        return ""
+    return str(value).strip()
+
+
+def resolve_session_file_root() -> Path | None:
+    """Return the request-scoped file-tool root, if one is enforced."""
+    override = _session_file_root_override()
+    if not override:
+        return None
+    return Path(override).expanduser()
 
 
 def resolve_agent_cwd() -> Path:

@@ -3510,3 +3510,64 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+            assert data["features"]["session_root_header"] == "X-Hermes-Session-Root"
+
+
+# ---------------------------------------------------------------------------
+# X-Hermes-Session-Root header (file-tool root enforcement)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionRootHeader:
+    @pytest.mark.asyncio
+    async def test_session_root_passed_to_agent_but_not_echoed(self, auth_adapter, tmp_path):
+        mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
+        root = tmp_path / "workspace"
+        root.mkdir()
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Root": str(root),
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+                )
+        assert resp.status == 200
+        assert "X-Hermes-Session-Root" not in resp.headers
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["session_root"] == str(root)
+
+    @pytest.mark.asyncio
+    async def test_session_root_rejected_without_api_key(self, adapter, tmp_path):
+        root = tmp_path / "workspace"
+        root.mkdir()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                headers={"X-Hermes-Session-Root": str(root)},
+                json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_session_root_rejects_control_chars(self, auth_adapter):
+        mock_request = MagicMock()
+        mock_request.headers = {"X-Hermes-Session-Root": "/workspace/root\rbad"}
+        root, err = auth_adapter._parse_session_root_header(mock_request)
+        assert root is None
+        assert err is not None
+        assert err.status == 400
+
+    @pytest.mark.asyncio
+    async def test_session_root_rejects_relative_paths(self, auth_adapter):
+        mock_request = MagicMock()
+        mock_request.headers = {"X-Hermes-Session-Root": "workspace/root"}
+        root, err = auth_adapter._parse_session_root_header(mock_request)
+        assert root is None
+        assert err is not None
+        assert err.status == 400

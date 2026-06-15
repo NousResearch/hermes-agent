@@ -189,8 +189,26 @@ def apply_wal_with_fallback(
         pass
 
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        return "wal"
+        # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
+        # resulting journal mode. Network filesystems that refuse WAL by
+        # *raising* SQLITE_PROTOCOL ("locking protocol") are handled in the
+        # except branch below. But macOS NFS — and SMB/CIFS, and the AgentFS
+        # NFS overlay — refuse the switch WITHOUT raising: the pragma simply
+        # returns the still-effective mode (e.g. ``delete``). Trust the
+        # returned row, not the mere absence of an exception; otherwise we
+        # report a false ``"wal"`` AND skip the fallback WARNING, leaving the
+        # DB silently in DELETE (reader-blocks-writer) with no signal.
+        row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
+        if mode == "wal":
+            return "wal"
+        _log_wal_fallback_once(
+            db_label,
+            sqlite3.OperationalError(
+                f"journal_mode=WAL refused without raising (still {mode!r})"
+            ),
+        )
+        return mode or "delete"
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()
         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):

@@ -55,6 +55,27 @@ def _open_blocking(path, reason="locking protocol", **kwargs):
     return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
 
 
+def _make_silent_noop_factory(returned_mode: str = "delete"):
+    """Return a ``sqlite3.Connection`` subclass whose ``PRAGMA journal_mode=WAL``
+    silently NO-OPs: it returns the still-effective journal mode (e.g.
+    ``delete``) WITHOUT raising — the way macOS NFS / SMB / the AgentFS NFS
+    overlay behave. NFS that *raises* SQLITE_PROTOCOL is covered by
+    :func:`_make_blocking_factory`; this is the other, quieter failure shape.
+    """
+
+    class _WalSilentNoOpConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+                # Refuse the WAL switch but DON'T raise; report the mode that is
+                # actually still in force, exactly as the NFS client does.
+                return super().execute(
+                    f"PRAGMA journal_mode={returned_mode}", *args, **kwargs
+                )
+            return super().execute(sql, *args, **kwargs)
+
+    return _WalSilentNoOpConnection
+
+
 @pytest.fixture(autouse=True)
 def _reset_last_init_error():
     """Reset the module-global last-error before and after each test."""
@@ -108,6 +129,33 @@ class TestApplyWalWithFallback:
         )
         mode = apply_wal_with_fallback(conn)
         assert mode == "delete"
+        conn.close()
+
+    def test_falls_back_when_wal_silently_refused(self, tmp_path, caplog):
+        """macOS NFS / SMB / AgentFS-NFS can REFUSE the WAL switch WITHOUT
+        raising: ``PRAGMA journal_mode=WAL`` returns the still-effective mode
+        ('delete') and no exception. The marker-exception path never fires, so
+        the function must detect the silent no-op from the PRAGMA's RETURN
+        value — otherwise it returns a false 'wal' and skips the WARNING.
+
+        Reproduced on a real AgentFS NFS overlay, where
+        ``PRAGMA journal_mode=WAL`` returned ('delete',) with no
+        OperationalError.
+        """
+        factory = _make_silent_noop_factory("delete")
+        conn = sqlite3.connect(
+            str(tmp_path / "macnfs.db"), factory=factory, isolation_level=None
+        )
+        with caplog.at_level("WARNING", logger="hermes_state"):
+            mode = apply_wal_with_fallback(conn, db_label="kanban.db")
+
+        assert mode == "delete", "must report the true mode, not a false 'wal'"
+        assert (
+            conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        )
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1, "silent no-op must still emit exactly one WARNING"
+        assert "kanban.db" in warnings[0].getMessage()
         conn.close()
 
     def test_reraises_on_disk_io_error(self, tmp_path):

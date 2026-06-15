@@ -1952,17 +1952,21 @@ class TestSilentDelivery:
         save_mock.assert_called_once_with("monitor-job", "# full output")
         deliver_mock.assert_not_called()
 
-    def test_whitespace_only_response_is_marked_failed_not_delivered(self):
-        """Whitespace-only final responses should behave like empty responses."""
+    def test_whitespace_only_response_is_marked_failed_and_delivers_failure(self):
+        """Whitespace-only final responses should be reported as failed runs."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "   \n\t  ", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run") as mark_mock:
+            deliver_mock.return_value = None
             from cron.scheduler import tick
             tick(verbose=False)
 
-        deliver_mock.assert_not_called()
+        deliver_mock.assert_called_once()
+        delivered_text = deliver_mock.call_args.args[1]
+        assert "Cron job 'monitor' failed" in delivered_text
+        assert "Agent completed but produced empty response" in delivered_text
         mark_mock.assert_called_once_with(
             "monitor-job",
             False,

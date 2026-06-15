@@ -6,11 +6,11 @@ on:
     paths-ignore:
       - "**/*.md"
       - "docs/**"
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
 
 permissions:
   contents: read

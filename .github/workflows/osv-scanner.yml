@@ -20,29 +20,23 @@ name: OSV-Scanner
 # vulnerabilities in pinned deps that we may need to patch deliberately.
 
 on:
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
   pull_request:
     branches: [main]
-    paths:
-      - 'uv.lock'
-      - 'pyproject.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'ui-tui/package.json'
-      - 'website/package.json'
-      - 'website/package-lock.json'
-      - '.github/workflows/osv-scanner.yml'
   push:
     branches: [main]
     paths:
-      - 'uv.lock'
-      - 'pyproject.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'website/package-lock.json'
+      - "uv.lock"
+      - "pyproject.toml"
+      - "package.json"
+      - "package-lock.json"
+      - "website/package-lock.json"
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
-    - cron: '0 9 * * 1'
+    - cron: "0 9 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -54,7 +48,7 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
       # the three sources of truth and skip vendored / test / worktree dirs.

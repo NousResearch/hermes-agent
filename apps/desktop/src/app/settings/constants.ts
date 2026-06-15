@@ -288,6 +288,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     maxTurns: 'Max Agent Steps',
     imageInputMode: 'Image Attachments',
     apiMaxRetries: 'API Retries',
+    rateLimitRetryBeforeFallback: 'Retry Primary on Rate Limit',
     serviceTier: 'Service Tier',
     toolUseEnforcement: 'Tool-Use Enforcement'
   },
@@ -620,6 +621,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'checkpoints.max_snapshots',
       'agent.max_turns',
       'agent.api_max_retries',
+      'agent.rate_limit_retry_before_fallback',
       'agent.service_tier',
       'agent.tool_use_enforcement',
       'delegation.model',

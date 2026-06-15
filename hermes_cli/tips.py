@@ -294,6 +294,7 @@ TIPS = [
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",
     "agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.",
     "agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the error — lower it for fast fallback.",
+    "agent.rate_limit_retry_before_fallback (default 0) retries the primary on a transient 429 before falling back — raise it for bursty rate limits.",
     "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.",
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",

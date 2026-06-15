@@ -101,7 +101,7 @@ fallback_providers:
 
 The fallback activates automatically when the primary model fails with:
 
-- **Rate limits** (HTTP 429) — after exhausting retry attempts
+- **Rate limits** (HTTP 429) — by default, immediately when the primary's credential pool can't recover (single-credential pools, account-level quotas). Set [`agent.rate_limit_retry_before_fallback`](/user-guide/configuration#agent) above `0` to retry the primary first on *transient* 429s (short `Retry-After` / reset window) before switching; quota-exhaustion 429s still fall back immediately.
 - **Server errors** (HTTP 500, 502, 503) — after exhausting retry attempts
 - **Auth failures** (HTTP 401, 403) — immediately (no point retrying)
 - **Not found** (HTTP 404) — immediately

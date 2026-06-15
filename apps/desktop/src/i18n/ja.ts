@@ -297,6 +297,7 @@ export const ja = defineLocale({
         maxTurns: '最大エージェントステップ',
         imageInputMode: '画像添付',
         apiMaxRetries: 'API 再試行回数',
+        rateLimitRetryBeforeFallback: 'レート制限時にプライマリを再試行',
         serviceTier: 'サービス階層',
         toolUseEnforcement: 'ツール使用の強制'
       },

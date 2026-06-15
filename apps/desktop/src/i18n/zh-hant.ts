@@ -287,6 +287,7 @@ export const zhHant = defineLocale({
         maxTurns: '最大代理步數',
         imageInputMode: '圖片附件',
         apiMaxRetries: 'API 重試次數',
+        rateLimitRetryBeforeFallback: '速率限制時重試主要供應商',
         serviceTier: '服務層級',
         toolUseEnforcement: '工具使用強制'
       },

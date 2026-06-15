@@ -621,6 +621,13 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
+
+  # When a fallback model is configured, a rate-limit (429) on the primary
+  # switches to the fallback immediately rather than consuming api_max_retries.
+  # Set this > 0 to retry the primary up to N times first, but ONLY for
+  # transient 429s (a short Retry-After / reset window). Quota-exhaustion 429s
+  # still fall back immediately. Default 0 = immediate fallback (unchanged).
+  # rate_limit_retry_before_fallback: 0
   
   # Enable verbose logging
   verbose: false

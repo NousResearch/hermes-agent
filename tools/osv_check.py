@@ -162,7 +162,13 @@ def _query_osv(
     )
 
     with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-        result = json.loads(resp.read())
+        raw = resp.read()
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("OSV API returned invalid JSON for %s/%s: %s", package, ecosystem, e)
+        return []
 
     vulns = result.get("vulns", [])
     # Only malware advisories — ignore regular CVEs

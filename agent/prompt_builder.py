@@ -15,6 +15,7 @@ from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.i18n import get_language, get_language_name
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -929,6 +930,15 @@ def build_environment_hints() -> str:
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+
+    # Language hint — tells the model what language the user configured for
+    # responses.  Falls back to English when nothing is configured.
+    _lang = get_language()
+    _lang_name = get_language_name(_lang)
+    hints.append(
+        f"Language: {_lang_name} ({_lang}). "
+        f"Respond in {_lang_name} unless the user explicitly asks otherwise."
+    )
 
     # Embedder-supplied environment description. Lets a host that wraps Hermes
     # (e.g. a sandbox runner / managed platform) explain the environment the

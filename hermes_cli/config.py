@@ -2766,6 +2766,11 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # When true, child tasks created from a triage decomposition inherit
+        # the root task's gateway notification subscriptions. Defaults to
+        # false so only the root task reports back unless the user opts into
+        # per-child notification fan-out.
+        "inherit_notify_subscriptions_to_children": False,
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The

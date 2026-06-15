@@ -250,6 +250,53 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     assert task.assignee == "fallback"
 
 
+def test_decompose_config_can_inherit_notification_subscriptions(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="weixin",
+            chat_id="chat-123",
+            notifier_profile="default",
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "build", "body": "code it", "assignee": "engineer", "parents": []},
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={
+                "kanban": {
+                    "orchestrator_profile": "orchestrator",
+                    "inherit_notify_subscriptions_to_children": True,
+                }
+            },
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 1
+    with kb.connect() as conn:
+        child_subs = kb.list_notify_subs(conn, outcome.child_ids[0])
+    assert len(child_subs) == 1
+    assert child_subs[0]["platform"] == "weixin"
+    assert child_subs[0]["chat_id"] == "chat-123"
+    assert child_subs[0]["notifier_profile"] == "default"
+
+
 def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)

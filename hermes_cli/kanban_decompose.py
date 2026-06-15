@@ -295,6 +295,9 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    inherit_notify_subscriptions = bool(
+        kanban_cfg.get("inherit_notify_subscriptions_to_children", False)
+    )
     roster, valid_names = _build_roster()
 
     try:
@@ -447,6 +450,7 @@ def decompose_task(
                 children=children,
                 author=audit_author,
                 auto_promote=auto_promote,
+                inherit_notify_subscriptions=inherit_notify_subscriptions,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

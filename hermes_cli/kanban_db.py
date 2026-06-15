@@ -5213,6 +5213,7 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    inherit_notify_subscriptions: bool = False,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5313,6 +5314,13 @@ def decompose_triage_task(
         # override with its own 'workspace_kind' / 'workspace_path'.
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
+        root_notify_subs = []
+        if inherit_notify_subscriptions:
+            root_notify_subs = conn.execute(
+                "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+                "FROM kanban_notify_subs WHERE task_id = ?",
+                (task_id,),
+            ).fetchall()
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -5356,6 +5364,24 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            for sub in root_notify_subs:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO kanban_notify_subs
+                        (task_id, platform, chat_id, thread_id, user_id,
+                         notifier_profile, created_at, last_event_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                    """,
+                    (
+                        new_id,
+                        sub["platform"],
+                        sub["chat_id"],
+                        sub["thread_id"] or "",
+                        sub["user_id"],
+                        sub["notifier_profile"],
+                        now,
+                    ),
+                )
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).

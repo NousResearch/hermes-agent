@@ -127,3 +127,33 @@ def apply_windows_utf8_bootstrap() -> bool:
 # the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
+
+
+def _patch_subprocess_no_window() -> None:
+    """Monkey-patch subprocess.Popen on Windows to always set CREATE_NO_WINDOW.
+
+    Prevents console window flashes when the gateway (running under pythonw.exe,
+    which has no console) spawns child processes (copilot CLI, git, rg, ffprobe,
+    etc.).  Without this flag every console-subsystem .exe briefly shows a black
+    window before hiding itself.
+
+    Only active on win32.  Uses the lowest-level hook point (the class __init__)
+    so it covers every caller — our code, third-party libs, asyncio subprocesses.
+    """
+    if not (hasattr(__import__("sys"), "platform") and __import__("sys").platform == "win32"):
+        return
+    import subprocess as _sp
+
+    _CREATE_NO_WINDOW = 0x08000000
+    _orig_popen_init = _sp.Popen.__init__
+
+    def _patched_popen_init(self, args, **kwargs):
+        flags = kwargs.get("creationflags", 0) or 0
+        if not (flags & _CREATE_NO_WINDOW):
+            kwargs["creationflags"] = flags | _CREATE_NO_WINDOW
+        _orig_popen_init(self, args, **kwargs)
+
+    _sp.Popen.__init__ = _patched_popen_init
+
+
+_patch_subprocess_no_window()

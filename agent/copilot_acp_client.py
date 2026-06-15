@@ -430,6 +430,14 @@ class CopilotACPClient:
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:
+            _extra: dict = {}
+            if sys.platform == "win32":
+                from hermes_cli._subprocess_compat import windows_hide_flags
+                _si = subprocess.STARTUPINFO()
+                _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                _si.wShowWindow = 0  # SW_HIDE
+                _extra["creationflags"] = windows_hide_flags()
+                _extra["startupinfo"] = _si
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
                 stdin=subprocess.PIPE,
@@ -439,6 +447,7 @@ class CopilotACPClient:
                 bufsize=1,
                 cwd=self._acp_cwd,
                 env=_build_subprocess_env(),
+                **_extra,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

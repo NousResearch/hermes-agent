@@ -35,6 +35,12 @@ import signal
 import subprocess
 import sys
 import time
+
+if sys.platform == "win32":
+    from hermes_cli._subprocess_compat import windows_hide_flags as _windows_hide_flags
+else:
+    def _windows_hide_flags() -> int:  # type: ignore[misc]
+        return 0
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -736,6 +742,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=(sys.platform != "win32"),
+            **({"creationflags": _windows_hide_flags()} if sys.platform == "win32" else {}),
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

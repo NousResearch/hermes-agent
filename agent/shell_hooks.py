@@ -390,6 +390,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
 
     t0 = time.monotonic()
     try:
+        _extra: dict = {}
+        if sys.platform == "win32":
+            from hermes_cli._subprocess_compat import windows_hide_flags
+            _extra["creationflags"] = windows_hide_flags()
         proc = subprocess.run(
             argv,
             input=stdin_json,
@@ -397,6 +401,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
             timeout=spec.timeout,
             text=True,
             shell=False,
+            **_extra,
         )
     except subprocess.TimeoutExpired:
         result["timed_out"] = True

@@ -1589,3 +1589,5 @@ registry.register(
     is_async=True,
     emoji="🎬",
 )
+# --- DISABLED (moved to vision-agent sub-agent) ---
+registry.deregister("vision_analyze")

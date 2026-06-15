@@ -3871,3 +3871,12 @@ registry.register(
     check_fn=check_browser_requirements,
     emoji="🖥️",
 )
+# --- DISABLED TOOLS (moved to browser-agent sub-agent) ---
+registry.deregister("browser_back")
+registry.deregister("browser_click")
+registry.deregister("browser_get_images")
+registry.deregister("browser_navigate")
+registry.deregister("browser_press")
+registry.deregister("browser_scroll")
+registry.deregister("browser_snapshot")
+registry.deregister("browser_type")

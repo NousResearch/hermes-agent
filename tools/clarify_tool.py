@@ -131,6 +131,12 @@ CLARIFY_SCHEMA = {
         "or types their own answer via a 5th 'Other' option.\n"
         "2. **Open-ended** — omit choices entirely. The user types a free-form "
         "response.\n\n"
+        "CRITICAL: when you are offering options, put each option ONLY in the "
+        "`choices` array — NEVER enumerate the options inside the `question` "
+        "text. The UI renders `choices` as selectable rows; options written "
+        "into the question string render as dead prose the user can't pick. "
+        "Right: question='Which deployment target?', choices=['staging', "
+        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
@@ -145,16 +151,22 @@ CLARIFY_SCHEMA = {
         "properties": {
             "question": {
                 "type": "string",
-                "description": "The question to present to the user.",
+                "description": (
+                    "The question itself, and ONLY the question (e.g. 'Which "
+                    "deployment target?'). Do NOT embed the answer options here "
+                    "— pass them as separate elements in `choices`."
+                ),
             },
             "choices": {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": MAX_CHOICES,
                 "description": (
-                    "Up to 4 answer choices. Omit this parameter entirely to "
-                    "ask an open-ended question. When provided, the UI "
-                    "automatically appends an 'Other (type your answer)' option."
+                    "REQUIRED whenever you are presenting selectable options: "
+                    "each distinct option is its own array element (up to 4). "
+                    "The UI renders these as pickable rows and auto-appends an "
+                    "'Other (type your answer)' option. Omit this parameter "
+                    "entirely ONLY for a genuinely open-ended free-text question."
                 ),
             },
         },

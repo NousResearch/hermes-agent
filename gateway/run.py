@@ -783,6 +783,7 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
 
 # ---- helpers: detect interrupted tool tails & auto-continue noise ----------
 
+
 def _is_interrupted_tool_result(content: Any) -> bool:
     """Return True if a tool result indicates the tool was interrupted."""
     if not isinstance(content, str):
@@ -821,17 +822,20 @@ def _strip_interrupted_tool_tails(
                 tool_results.append(agent_history[j])
                 j += 1
             if tool_results and any(
-                _is_interrupted_tool_result(m.get("content", ""))
-                for m in tool_results
+                _is_interrupted_tool_result(m.get("content", "")) for m in tool_results
             ):
                 logger.debug(
                     "Stripping interrupted assistant→tool replay block "
                     "(indices %d–%d, tool_results=%d)",
-                    i, j - 1, len(tool_results),
+                    i,
+                    j - 1,
+                    len(tool_results),
                 )
                 i = j
                 continue
-        if msg.get("role") == "tool" and _is_interrupted_tool_result(msg.get("content", "")):
+        if msg.get("role") == "tool" and _is_interrupted_tool_result(
+            msg.get("content", "")
+        ):
             logger.debug("Stripping orphan interrupted tool result from replay history")
             i += 1
             continue
@@ -850,9 +854,8 @@ def _is_auto_continue_noise(content: Any) -> bool:
     auto-continue note that should NOT be replayed as a real user turn."""
     if not isinstance(content, str):
         return False
-    return (
-        content.startswith(_AUTO_CONTINUE_NOTE_PREFIX)
-        or content.startswith(_AUTO_CONTINUE_FALLBACK_PREFIX)
+    return content.startswith(_AUTO_CONTINUE_NOTE_PREFIX) or content.startswith(
+        _AUTO_CONTINUE_FALLBACK_PREFIX
     )
 
 
@@ -873,6 +876,7 @@ def _strip_auto_continue_noise(content: Any) -> Any:
             return ""
         text = text[end + 1 :].lstrip()
     return text
+
 
 # Tools in this set return their deliverable artifact as a JSON payload with a
 # local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
@@ -1596,7 +1600,10 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
-        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+        elif (
+            mtype.startswith("video/")
+            or getattr(event, "message_type", None) == MessageType.VIDEO
+        ):
             parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
@@ -2006,7 +2013,41 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation":
+        # Reuse the shared rich formatter (self-contained task-source block).
+        from tools.process_registry import format_process_notification
+
+        return format_process_notification(evt)
+
     return None
+
+
+def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
+    """Drain gateway-owned watch events without spinning on requeued events.
+
+    Watch events are handled by the post-turn gateway drain. Process
+    completions are owned by their per-process watcher task, and async
+    delegation completions are owned by ``_async_delegation_watcher``.
+    Requeueing async events inside ``while not queue.empty()`` would make the
+    loop non-terminating, so detach the current batch first, then requeue any
+    events this drain does not own after the queue is empty.
+    """
+    watch_events: list[dict] = []
+    requeue: list[dict] = []
+    while not completion_queue.empty():
+        try:
+            evt = completion_queue.get_nowait()
+        except Exception:
+            break
+        evt_type = evt.get("type", "completion")
+        if evt_type in {"watch_match", "watch_disabled"}:
+            watch_events.append(evt)
+        elif evt_type == "async_delegation":
+            requeue.append(evt)
+        # else: process completion events are handled by the watcher task
+    for evt in requeue:
+        completion_queue.put(evt)
+    return watch_events
 
 
 # Module-level weak reference to the active GatewayRunner instance.
@@ -4911,7 +4952,11 @@ class GatewayRunner(
         try:
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
-            task = session_tasks.get(session_key) if isinstance(session_tasks, dict) else None
+            task = (
+                session_tasks.get(session_key)
+                if isinstance(session_tasks, dict)
+                else None
+            )
             if task is not None:
                 await asyncio.shield(task)
         finally:
@@ -4979,7 +5024,9 @@ class GatewayRunner(
         drained = await self._drain_startup_restore_queue()
         self._startup_restore_in_progress = False
         if drained:
-            logger.info("Drained %d inbound message(s) queued during startup restore", drained)
+            logger.info(
+                "Drained %d inbound message(s) queued during startup restore", drained
+            )
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
         """Auto-continue fresh restart-interrupted sessions after startup.
@@ -5192,10 +5239,13 @@ class GatewayRunner(
 
         # Warn if no user allowlists are configured and open access is not opted in
         _builtin_allowed_vars = (
-            "TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-            "WHATSAPP_ALLOWED_USERS", "WHATSAPP_CLOUD_ALLOWED_USERS",
+            "TELEGRAM_ALLOWED_USERS",
+            "DISCORD_ALLOWED_USERS",
+            "WHATSAPP_ALLOWED_USERS",
+            "WHATSAPP_CLOUD_ALLOWED_USERS",
             "SLACK_ALLOWED_USERS",
-            "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+            "SIGNAL_ALLOWED_USERS",
+            "SIGNAL_GROUP_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_USERS",
             "TELEGRAM_GROUP_ALLOWED_CHATS",
             "EMAIL_ALLOWED_USERS",
@@ -5213,12 +5263,17 @@ class GatewayRunner(
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
-            "TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
-            "WHATSAPP_ALLOW_ALL_USERS", "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+            "TELEGRAM_ALLOW_ALL_USERS",
+            "DISCORD_ALLOW_ALL_USERS",
+            "WHATSAPP_ALLOW_ALL_USERS",
+            "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
             "SLACK_ALLOW_ALL_USERS",
-            "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
-            "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-            "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+            "SIGNAL_ALLOW_ALL_USERS",
+            "EMAIL_ALLOW_ALL_USERS",
+            "SMS_ALLOW_ALL_USERS",
+            "MATTERMOST_ALLOW_ALL_USERS",
+            "MATRIX_ALLOW_ALL_USERS",
+            "DINGTALK_ALLOW_ALL_USERS",
             "FEISHU_ALLOW_ALL_USERS",
             "WECOM_ALLOW_ALL_USERS",
             "WECOM_CALLBACK_ALLOW_ALL_USERS",
@@ -5672,6 +5727,12 @@ class GatewayRunner(
         # destination platform's home channel, then forges a synthetic user
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
+
+        # Start background async-delegation watcher — drains completion events
+        # from delegate_task(background=true) subagents and injects each
+        # result back into its originating session as a new turn, covering the
+        # idle case where the subagent finishes with no agent turn running.
+        asyncio.create_task(self._async_delegation_watcher())
 
         logger.info("Press Ctrl+C to stop")
 
@@ -6356,6 +6417,18 @@ class GatewayRunner(
                 except Exception as _e:
                     logger.debug("process_registry.kill_all (%s) error: %s", phase, _e)
                 try:
+                    from tools.async_delegation import interrupt_all as _interrupt_async
+
+                    _async_n = _interrupt_async(reason=f"gateway shutdown ({phase})")
+                    if _async_n:
+                        logger.info(
+                            "Shutdown (%s): interrupted %d background delegation(s)",
+                            phase,
+                            _async_n,
+                        )
+                except Exception as _e:
+                    logger.debug("async interrupt_all (%s) error: %s", phase, _e)
+                try:
                     from tools.terminal_tool import cleanup_all_environments
 
                     cleanup_all_environments()
@@ -6826,13 +6899,14 @@ class GatewayRunner(
                 WhatsAppCloudAdapter,
                 check_whatsapp_cloud_requirements,
             )
+
             if not check_whatsapp_cloud_requirements():
                 logger.warning(
                     "WhatsApp Cloud: aiohttp/httpx missing — reinstall hermes-agent"
                 )
                 return None
             return WhatsAppCloudAdapter(config)
-        
+
         elif platform == Platform.SLACK:
             from gateway.platforms.slack import SlackAdapter, check_slack_requirements
 
@@ -7997,7 +8071,9 @@ class GatewayRunner(
                         adapter = self.adapters.get(source.platform)
                         if adapter:
                             _ack_meta = self._thread_metadata_for_source(source)
-                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                            await adapter.send(
+                                str(source.chat_id), _ack, metadata=_ack_meta
+                            )
                     except Exception:
                         logger.debug("blueprint ack send failed", exc_info=True)
                 try:
@@ -8449,7 +8525,10 @@ class GatewayRunner(
                     not in {MessageType.AUDIO, MessageType.DOCUMENT}
                 ):
                     audio_paths.append(path)
-                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                if (
+                    mtype.startswith("video/")
+                    or event.message_type == MessageType.VIDEO
+                ):
                     video_paths.append(path)
 
             if image_paths:
@@ -8564,12 +8643,15 @@ class GatewayRunner(
                 message_text = f"{_note}\n\n{message_text}"
 
         if video_paths:
-            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            from tools.credential_files import (
+                to_agent_visible_cache_path as _to_agent_path,
+            )
+
             for _vpath in video_paths:
                 _basename = os.path.basename(_vpath)
                 _parts = _basename.split("_", 2)
                 _display = _parts[2] if len(_parts) >= 3 else _basename
-                _display = re.sub(r'[^\w.\- ]', '_', _display)
+                _display = re.sub(r"[^\w.\- ]", "_", _display)
                 _agent_path = _to_agent_path(_vpath)
                 _note = (
                     f"[The user sent a video attachment: '{_display}'. "
@@ -8622,7 +8704,9 @@ class GatewayRunner(
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                context_note = _build_document_context_note(display_name, agent_path, mtype)
+                context_note = _build_document_context_note(
+                    display_name, agent_path, mtype
+                )
                 message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
@@ -9526,8 +9610,10 @@ class GatewayRunner(
             response = agent_result.get("final_response") or ""
             try:
                 from gateway.response_filters import is_intentional_silence_agent_result
+
                 _intentional_silence = is_intentional_silence_agent_result(
-                    agent_result, response,
+                    agent_result,
+                    response,
                 )
             except Exception:
                 _intentional_silence = False
@@ -9593,7 +9679,9 @@ class GatewayRunner(
             # the case where agent did work but returned no text. Fix for #18765.
             if not _intentional_silence:
                 response = _normalize_empty_agent_response(
-                    agent_result, response, history_len=len(history),
+                    agent_result,
+                    response,
+                    history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
 
@@ -9656,7 +9744,12 @@ class GatewayRunner(
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+            if (
+                _footer_line
+                and response
+                and not agent_result.get("already_sent")
+                and not _intentional_silence
+            ):
                 response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
@@ -9685,19 +9778,18 @@ class GatewayRunner(
                 logger.error("Process watcher setup error: %s", e)
 
             # Drain watch pattern notifications that arrived during the agent run.
-            # Watch events and completions share the same queue; completions are
-            # already handled by the per-process watcher task above, so we only
-            # inject watch-type events here.
+            # Watch events and completions share the same queue; process
+            # completions are already handled by the per-process watcher task
+            # above, so we only inject watch-type events here.
+            #
+            # Async-delegation completions ALSO ride this shared queue but are
+            # owned by the dedicated _async_delegation_watcher (started at
+            # boot), which covers both the idle and post-turn cases with a
+            # single consumer — so we leave them on the queue here.
             try:
                 from tools.process_registry import process_registry as _pr
 
-                _watch_events = []
-                while not _pr.completion_queue.empty():
-                    evt = _pr.completion_queue.get_nowait()
-                    evt_type = evt.get("type", "completion")
-                    if evt_type in {"watch_match", "watch_disabled"}:
-                        _watch_events.append(evt)
-                    # else: completion events are handled by the watcher task
+                _watch_events = _drain_gateway_watch_events(_pr.completion_queue)
                 for evt in _watch_events:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
@@ -9804,7 +9896,9 @@ class GatewayRunner(
                     # No-op on non-topic lanes.
                     session_entry = new_entry
                     self._sync_telegram_topic_binding(
-                        source, session_entry, reason="compression-exhausted-reset",
+                        source,
+                        session_entry,
+                        reason="compression-exhausted-reset",
                     )
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
@@ -10345,14 +10439,6 @@ class GatewayRunner(
                 return False
         return event.platform_update_id <= recorded_uid
 
-
-
-
-
-
-
-
-
     async def _handle_suggestions_command(self, event: MessageEvent) -> str:
         """Handle /suggestions in the gateway.
 
@@ -10364,7 +10450,9 @@ class GatewayRunner(
         source = event.source
         origin = None
         try:
-            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
+            platform = getattr(source.platform, "value", None) or str(
+                getattr(source, "platform", "") or ""
+            )
             chat_id = getattr(source, "chat_id", None)
             if platform and chat_id:
                 origin = {
@@ -10397,7 +10485,9 @@ class GatewayRunner(
         source = event.source
         origin = None
         try:
-            platform = getattr(source.platform, "value", None) or str(getattr(source, "platform", "") or "")
+            platform = getattr(source.platform, "value", None) or str(
+                getattr(source, "platform", "") or ""
+            )
             chat_id = getattr(source, "chat_id", None)
             if platform and chat_id:
                 origin = {
@@ -13227,6 +13317,75 @@ class GatewayRunner(
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
 
+    def _enrich_async_delegation_routing(self, evt: dict) -> None:
+        """Fill platform/chat_id/thread_id/chat_type on an async-delegation event.
+
+        Async-delegation completion events only carry ``session_key`` (the
+        daemon worker has no access to the per-message routing metadata the
+        terminal background watcher captures at spawn time). Parse the
+        session_key into the routing fields ``_build_process_event_source``
+        expects. Best-effort: a CLI-origin event (empty session_key) is left
+        as-is and simply won't route on the gateway.
+        """
+        if evt.get("platform"):
+            return  # already enriched
+        parsed = _parse_session_key(evt.get("session_key", "") or "")
+        if not parsed:
+            return
+        evt["platform"] = parsed.get("platform", "")
+        evt["chat_type"] = parsed.get("chat_type", "")
+        evt["chat_id"] = parsed.get("chat_id", "")
+        if parsed.get("thread_id"):
+            evt["thread_id"] = parsed["thread_id"]
+
+    async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
+        """Drain async-delegation completions and inject them as new turns.
+
+        Background subagents (``delegate_task(background=true)``) run on the
+        async-delegation daemon executor — they have no per-process watcher
+        task, so their completion events would only be seen by the post-turn
+        queue drain. This watcher covers the IDLE case: when a background
+        subagent finishes while no agent turn is running, its result still
+        re-enters the originating session promptly.
+
+        Mirrors the CLI's idle ``process_loop`` drain. Stays silent when the
+        queue has nothing for us; ignores non-async event types (those are
+        handled by ``_run_process_watcher`` / the post-turn drain).
+        """
+        await asyncio.sleep(3)  # let platforms finish connecting
+        from tools.process_registry import process_registry as _pr
+
+        while self._running:
+            try:
+                # Peek the queue for async-delegation events. We must NOT
+                # consume watch/completion events here (other drains own them),
+                # so requeue anything that isn't ours.
+                requeue = []
+                async_events = []
+                while not _pr.completion_queue.empty():
+                    try:
+                        evt = _pr.completion_queue.get_nowait()
+                    except Exception:
+                        break
+                    if evt.get("type") == "async_delegation":
+                        async_events.append(evt)
+                    else:
+                        requeue.append(evt)
+                for evt in requeue:
+                    _pr.completion_queue.put(evt)
+                for evt in async_events:
+                    self._enrich_async_delegation_routing(evt)
+                    synth_text = _format_gateway_process_notification(evt)
+                    if not synth_text:
+                        continue
+                    try:
+                        await self._inject_watch_notification(synth_text, evt)
+                    except Exception as e:
+                        logger.error("Async delegation injection error: %s", e)
+            except Exception as e:
+                logger.debug("Async delegation watcher error: %s", e)
+            await asyncio.sleep(interval)
+
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
         Periodically check a background process and push updates to the user.
@@ -13288,7 +13447,11 @@ class GatewayRunner(
             if session.exited:
                 # --- Agent-triggered completion: inject synthetic message ---
                 # Skip if the agent already consumed the result via wait/poll/log
-                from tools.process_registry import format_process_notification, process_registry as _pr_check
+                from tools.process_registry import (
+                    format_process_notification,
+                    process_registry as _pr_check,
+                )
+
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
 
@@ -13314,8 +13477,12 @@ class GatewayRunner(
                         "session_id": session_id,
                         "command": session.command,
                         "exit_code": session.exit_code,
-                        "completion_reason": getattr(session, "completion_reason", "exited"),
-                        "termination_source": getattr(session, "termination_source", ""),
+                        "completion_reason": getattr(
+                            session, "completion_reason", "exited"
+                        ),
+                        "termination_source": getattr(
+                            session, "termination_source", ""
+                        ),
                         "output": _out,
                     })
                     if not synth_text:
@@ -14763,13 +14930,13 @@ class GatewayRunner(
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
-                    preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                    preview = preview[: _cap - 3] + "..."
+                msg = f'{emoji} {tool_name}: "{preview}"'
                 last_was_terminal_block[0] = False
             else:
                 msg = f"{emoji} {tool_name}..."
                 last_was_terminal_block[0] = False
-            
+
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
             # code (same boilerplate imports → identical previews).
@@ -15515,10 +15682,16 @@ class GatewayRunner(
                                 "Agent cache invalidated for session %s: "
                                 "message_count changed (%s -> %s), "
                                 "possible cross-process write",
-                                session_key, _cached_mc, _current_msg_count,
+                                session_key,
+                                _cached_mc,
+                                _current_msg_count,
                             )
                             evicted = self._agent_cache.pop(session_key, None)
-                            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                            _ev_agent = (
+                                evicted[0]
+                                if isinstance(evicted, tuple) and evicted
+                                else None
+                            )
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
                                 self._cleanup_agent_resources(_ev_agent)
                         else:
@@ -15531,7 +15704,9 @@ class GatewayRunner(
                                 except KeyError:
                                     pass
                             self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                            logger.debug("Reusing cached agent for session %s", session_key)
+                            logger.debug(
+                                "Reusing cached agent for session %s", session_key
+                            )
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -15975,8 +16150,7 @@ class GatewayRunner(
                     f"Address the user's NEW message below FIRST. "
                     f"Do NOT re-execute old tool calls — skip any unfinished "
                     f"work from the conversation history and focus on what the "
-                    f"user is asking now.]\n\n"
-                    + message
+                    f"user is asking now.]\n\n" + message
                 )
             elif _has_fresh_tool_tail:
                 _persist_user_message_override = message
@@ -16045,7 +16219,9 @@ class GatewayRunner(
                     "task_id": session_id,
                 }
                 if _persist_user_message_override is not None:
-                    _conversation_kwargs["persist_user_message"] = _persist_user_message_override
+                    _conversation_kwargs["persist_user_message"] = (
+                        _persist_user_message_override
+                    )
                 elif observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
                 result = agent.run_conversation(
@@ -16096,12 +16272,15 @@ class GatewayRunner(
             # below must still point the gateway at the compressed child.
             agent = agent_holder[0]
             _session_was_split = False
-            agent_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+            agent_session_id = (
+                getattr(agent, "session_id", session_id) if agent else session_id
+            )
             if agent and session_key and agent_session_id != session_id:
                 _session_was_split = True
                 logger.info(
                     "Session split detected: %s → %s (compression)",
-                    session_id, agent_session_id,
+                    session_id,
+                    agent_session_id,
                 )
                 entry = self.session_store._entries.get(session_key)
                 if entry:
@@ -16122,8 +16301,10 @@ class GatewayRunner(
                     and self._session_db is not None
                 ):
                     try:
-                        _binding = self._session_db.get_telegram_topic_binding_by_session(
-                            session_id=agent_session_id,
+                        _binding = (
+                            self._session_db.get_telegram_topic_binding_by_session(
+                                session_id=agent_session_id,
+                            )
                         )
                         if _binding and _binding.get("thread_id"):
                             source.thread_id = str(_binding["thread_id"])
@@ -16140,7 +16321,9 @@ class GatewayRunner(
                         )
                 if entry:
                     self._sync_telegram_topic_binding(
-                        source, entry, reason="agent-run-compression",
+                        source,
+                        entry,
+                        reason="agent-run-compression",
                     )
 
             effective_session_id = agent_session_id
@@ -16274,7 +16457,6 @@ class GatewayRunner(
             # Reset to 0 so the gateway writes ALL compressed messages.
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
-            
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
@@ -17847,7 +18029,9 @@ async def start_gateway(
                 pass
         if hasattr(signal, "SIGUSR1"):
             try:
-                loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
+                loop.add_signal_handler(
+                    signal.SIGUSR1, restart_signal_handler
+                )  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
             except NotImplementedError:
                 pass
     else:

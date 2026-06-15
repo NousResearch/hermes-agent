@@ -1,6 +1,8 @@
 """Tests for webhook adapter dynamic route loading."""
 
 import json
+import os
+
 import pytest
 
 from gateway.config import PlatformConfig

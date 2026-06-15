@@ -566,9 +566,13 @@ class TestChannelAliases:
         assert names == ["general"]
 
     def test_apply_aliases_handles_malformed_map(self):
-        """Non-dict alias entries must not raise."""
+        """Non-dict alias maps and non-string aliases must not raise."""
         platforms = {"whatsapp": [{"id": "1@g.us", "name": "1", "type": "group"}]}
         with patch("gateway.channel_directory._load_channel_aliases",
-                   return_value={"whatsapp": "not-a-dict", "telegram": None}):
+                   return_value={
+                       "whatsapp": "not-a-dict",
+                       "telegram": None,
+                       "signal": {"+15551234567": 123},
+                   }):
             _apply_channel_aliases(platforms)  # should not raise
         assert platforms["whatsapp"][0]["name"] == "1"

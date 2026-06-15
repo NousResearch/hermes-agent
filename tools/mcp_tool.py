@@ -233,7 +233,7 @@ try:
     except ImportError:
         logger.debug("MCP notification types not available -- dynamic tool discovery disabled")
 except ImportError:
-    logger.debug("mcp package not installed -- MCP tool support disabled")
+    logger.warning("mcp package not installed -- MCP tool support disabled; install with: pip install mcp")
 
 
 def _check_message_handler_support() -> bool:
@@ -3678,7 +3678,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         List of all currently registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+        logger.warning("MCP SDK not installed -- skipping MCP registration; install with: pip install mcp")
         return []
 
     servers = _filter_suspicious_mcp_servers(servers)
@@ -3785,7 +3785,7 @@ def discover_mcp_tools() -> List[str]:
         List of all registered MCP tool names.
     """
     if not _MCP_AVAILABLE:
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        logger.warning("MCP SDK not installed -- skipping MCP tool discovery; install with: pip install mcp")
         return []
 
     servers = _load_mcp_config()

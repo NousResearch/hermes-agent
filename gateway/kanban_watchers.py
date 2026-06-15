@@ -178,6 +178,79 @@ class GatewayKanbanWatchersMixin:
                             "summary": _summary,
                         })
                     any_terminal = len(recent_events) > 0
+
+                    # ── Verification gate ─────────────────────────────
+                    # For each 'completed' task, check if it has a child
+                    # verification task (assignee=tester/reviewer). If not,
+                    # auto-create one. Skip epoch injection until all
+                    # completed tasks are verified.
+                    # This prevents "claimed done ≠ actually done" from
+                    # the Loop Engineering "做完了是声称，不是证明" principle.
+                    completed_task_ids = [
+                        r[1] for r in recent_event_rows if r[2] == "completed"
+                    ]
+                    unverified: list[tuple[str, str]] = []  # (task_id, assignee)
+                    newly_created_verifications = 0
+                    _VERIFY_MAP = {
+                        "coder": "tester", "dba": "tester", "ops": "tester",
+                        "researcher": "reviewer", "designer": "reviewer",
+                        "architect": "tester", "pm": "reviewer",
+                    }
+                    for _ctid in completed_task_ids:
+                        # Check if this task already has a verification child.
+                        child_rows = conn.execute(
+                            "SELECT id, assignee, status FROM tasks WHERE id IN "
+                            "(SELECT child_id FROM task_edges WHERE parent_id=?)",
+                            (_ctid,),
+                        ).fetchall()
+                        has_verification = any(
+                            row[1] in ("tester", "reviewer")
+                            for row in (child_rows or [])
+                        )
+                        if not has_verification:
+                            # Get the original task's assignee to pick verifier.
+                            orig_row = conn.execute(
+                                "SELECT assignee, title FROM tasks WHERE id=?",
+                                (_ctid,),
+                            ).fetchone()
+                            _orig_assignee = orig_row[0] if orig_row else "coder"
+                            _orig_title = orig_row[1] if orig_row else ""
+                            _verifier = _VERIFY_MAP.get(_orig_assignee, "tester")
+                            unverified.append((_ctid, _verifier))
+
+                    # Auto-create missing verification tasks.
+                    if unverified:
+                        for _ctid, _verifier in unverified:
+                            try:
+                                _kb.create_task(
+                                    conn,
+                                    title=f"验证 {_ctid} 产出",
+                                    assignee=_verifier,
+                                    body=(
+                                        f"验证对象: {_ctid}\n\n"
+                                        f"验证方法: 检查被验证任务的产出是否真实有效。\n"
+                                        f"1. 读取 {_ctid} 的 summary 和 metadata\n"
+                                        f"2. 验证声称的产出（文件/命令/数据）确实存在且正确\n"
+                                        f"3. 如有测试要求，执行测试\n\n"
+                                        f"通过标准: 产出真实存在且符合任务要求\n"
+                                        f"失败处理: kanban_block(reason='❌ 验证失败: <原因>')"
+                                    ),
+                                    parents=[_ctid],
+                                    initial_status="ready",
+                                )
+                                newly_created_verifications += 1
+                                logger.info(
+                                    "kanban epoch: auto-created verification task "
+                                    "for %s → @%s",
+                                    _ctid, _verifier,
+                                )
+                            except Exception as ct_exc:
+                                logger.warning(
+                                    "kanban epoch: failed to create verification "
+                                    "for %s: %s", _ctid, ct_exc,
+                                )
+                        conn.commit()
+
                     # Query blocked count here while conn is still open.
                     blocked_count = len(_kb.list_tasks(conn, status="blocked") or [])
                 finally:
@@ -186,6 +259,18 @@ class GatewayKanbanWatchersMixin:
                 logger.debug(
                     "kanban orchestrator callback: board %s check failed: %s",
                     slug, exc,
+                )
+                continue
+
+            # Verification gate: if we just created verification tasks,
+            # skip epoch injection this round. The verification tasks
+            # will trigger their own terminal events when done, which
+            # re-triggers the callback with verified results.
+            if newly_created_verifications > 0:
+                logger.info(
+                    "kanban epoch: board %s — created %d verification task(s), "
+                    "deferring epoch until verified",
+                    slug, newly_created_verifications,
                 )
                 continue
 

@@ -135,6 +135,7 @@ from gateway.platforms.qqbot.keyboards import (
     parse_interaction_event,
     parse_update_prompt_button_data,
 )
+from tools.approval import command_approval_summary
 
 
 def check_qq_requirements() -> bool:
@@ -2549,11 +2550,19 @@ class QQAdapter(BasePlatformAdapter):
         # QQ requires a msg_id on outbound messages to a user we've never
         # seen; the last inbound msg_id is the natural choice.
         msg_id = self._last_msg_id.get(chat_id)
+        summary = command_approval_summary(command, description)
 
         req = ApprovalRequest(
             session_key=session_key,
-            title=f"Execute this command?",
-            description=description,
+            title=summary["action"],
+            description=(
+                f"Mode: {summary['mode']}\n"
+                f"Target: {summary['target']}\n"
+                f"Category: {summary['category']}\n"
+                f"Need: {summary['need']}\n"
+                f"Reason: {summary['reason']}\n"
+                f"Risk: {summary['risk']}"
+            ),
             command_preview=command,
             timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
         )

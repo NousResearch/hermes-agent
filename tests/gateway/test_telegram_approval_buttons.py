@@ -107,6 +107,35 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_human_summary_precedes_raw_command(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        command = (
+            "bash -lc \"printf 'Public DNS\\n'; getent ahostsv4 "
+            "portal.re-evolution-world.com || true; curl -4 -I --max-time 8 "
+            "https://portal.re-evolution-world.com/api/admin/agent06 || true\""
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345",
+            command=command,
+            session_key="agent:main:telegram:dm:12345",
+            description="Security scan — raw IP address; insecure TLS flag",
+        )
+
+        text = adapter._bot.send_message.call_args[1]["text"]
+        summary_index = text.index("Approve this")
+        raw_index = text.index("Raw command:")
+        command_index = text.index("bash -lc")
+
+        assert summary_index < raw_index < command_index
+        assert "Mode: Appears read-only" in text
+        assert "Target: portal.re-evolution-world.com" in text
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

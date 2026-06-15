@@ -306,15 +306,17 @@ def build_approval_text(req: ApprovalRequest) -> str:
 
 def _build_exec_text(req: ApprovalRequest) -> str:
     lines: List[str] = ["🔐 **命令执行审批**", ""]
-    if req.command_preview:
-        preview = req.command_preview[:300]
-        lines.append(f"```\n{preview}\n```")
-    if req.cwd:
-        lines.append(f"📁 目录: {req.cwd}")
     if req.title and req.title != req.command_preview:
         lines.append(f"📋 {req.title}")
     if req.description:
         lines.append(f"📝 {req.description}")
+    if req.cwd:
+        lines.append(f"📁 目录: {req.cwd}")
+    if req.command_preview:
+        preview = req.command_preview[:300]
+        lines.append("")
+        lines.append("Raw command:")
+        lines.append(f"```\n{preview}\n```")
     lines.append("")
     lines.append(f"⏱️ 超时: {req.timeout_sec} 秒")
     return "\n".join(lines)

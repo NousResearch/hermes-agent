@@ -104,6 +104,7 @@ from gateway.platforms.base import (
     proxy_kwargs_for_aiohttp,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
+from tools.approval import command_approval_summary
 
 logger = logging.getLogger(__name__)
 
@@ -1241,10 +1242,19 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        summary = command_approval_summary(command, description)
         text = (
             "⚠️ **Dangerous command requires approval**\n"
+            f"**{summary['action']}**\n"
+            f"Mode: {summary['mode']}\n"
+            f"Target: {summary['target']}\n"
+            f"Category: {summary['category']}\n"
+            f"Need: {summary['need']}\n"
+            f"Reason: {summary['reason']}\n"
+            f"Risk: {summary['risk']}\n\n"
+            "Raw command:\n"
             f"```\n{cmd_preview}\n```\n"
-            f"Reason: {description}\n\n"
+            "\n"
             "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
             "`/approve always` to approve permanently, or `/deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"

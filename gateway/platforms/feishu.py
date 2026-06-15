@@ -141,6 +141,7 @@ from gateway.platforms.base import (
 )
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
+from tools.approval import command_approval_summary
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -1863,6 +1864,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             approval_id = next(self._approval_counter)
             cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
+            summary = command_approval_summary(command, description)
 
             def _btn(label: str, action_name: str, btn_type: str = "default") -> dict:
                 return {
@@ -1881,7 +1883,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": (
+                            f"**{summary['action']}**\n\n"
+                            f"**Mode:** {summary['mode']}\n"
+                            f"**Target:** {summary['target']}\n"
+                            f"**Category:** {summary['category']}\n"
+                            f"**Need:** {summary['need']}\n"
+                            f"**Reason:** {summary['reason']}\n"
+                            f"**Risk:** {summary['risk']}\n\n"
+                            f"**Raw command:**\n```\n{cmd_preview}\n```"
+                        ),
                     },
                     {
                         "tag": "action",

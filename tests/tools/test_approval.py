@@ -10,6 +10,7 @@ from tools.approval import (
     _get_approval_mode,
     _smart_approve,
     approve_session,
+    command_approval_summary,
     detect_dangerous_command,
     is_approved,
     load_permanent,
@@ -41,6 +42,34 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["task"] == "approval"
         assert mock_call.call_args.kwargs["temperature"] == 0
         assert mock_call.call_args.kwargs["max_tokens"] == 16
+
+
+class TestCommandApprovalSummary:
+    def test_network_check_gets_human_readable_summary(self):
+        command = (
+            "bash -lc \"printf 'Public DNS\\n'; getent ahostsv4 "
+            "portal.re-evolution-world.com || true; curl -4 -I --max-time 8 "
+            "https://portal.re-evolution-world.com/api/admin/agent06 || true\""
+        )
+
+        summary = command_approval_summary(
+            command,
+            "Security scan — raw IP address; insecure TLS flag",
+        )
+
+        assert summary["action"].startswith("Approve this")
+        assert "shell script" in summary["action"]
+        assert summary["mode"] == "Appears read-only"
+        assert "portal.re-evolution-world.com" in summary["target"]
+        assert "Security scan" in summary["reason"]
+
+    def test_mutating_command_is_not_described_as_read_only(self):
+        summary = command_approval_summary(
+            "git push origin master",
+            "git push can publish changes",
+        )
+
+        assert summary["mode"] == "May change system state"
 
 
 class TestDetectDangerousRm:

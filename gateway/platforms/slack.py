@@ -48,6 +48,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
 )
+from tools.approval import command_approval_summary
 
 
 logger = logging.getLogger(__name__)
@@ -2255,6 +2256,7 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
             thread_ts = self._resolve_thread_ts(None, metadata)
+            summary = command_approval_summary(command, description)
 
             blocks = [
                 {
@@ -2263,8 +2265,14 @@ class SlackAdapter(BasePlatformAdapter):
                         "type": "mrkdwn",
                         "text": (
                             f":warning: *Command Approval Required*\n"
-                            f"```{cmd_preview}```\n"
-                            f"Reason: {description}"
+                            f"*{summary['action']}*\n"
+                            f"*Mode:* {summary['mode']}\n"
+                            f"*Target:* {summary['target']}\n"
+                            f"*Category:* {summary['category']}\n"
+                            f"*Need:* {summary['need']}\n"
+                            f"*Reason:* {summary['reason']}\n"
+                            f"*Risk:* {summary['risk']}\n\n"
+                            f"*Raw command:*\n```{cmd_preview}```"
                         ),
                     },
                 },
@@ -2303,7 +2311,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             kwargs: Dict[str, Any] = {
                 "channel": chat_id,
-                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "text": f"⚠️ Command approval required: {summary['action']}",
                 "blocks": blocks,
             }
             if thread_ts:

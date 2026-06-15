@@ -16533,6 +16533,7 @@ class GatewayRunner:
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
             from tools.approval import (
+                command_approval_summary,
                 register_gateway_notify,
                 reset_current_session_key,
                 set_current_session_key,
@@ -16592,10 +16593,19 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                summary = command_approval_summary(cmd, desc)
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
+                    f"**{summary['action']}**\n"
+                    f"Mode: {summary['mode']}\n"
+                    f"Target: {summary['target']}\n"
+                    f"Category: {summary['category']}\n"
+                    f"Need: {summary['need']}\n"
+                    f"Reason: {summary['reason']}\n"
+                    f"Risk: {summary['risk']}\n\n"
+                    f"Raw command:\n"
                     f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
+                    f"\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "
                     f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
                 )

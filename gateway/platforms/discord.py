@@ -65,6 +65,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
+from tools.approval import command_approval_summary
 from tools.url_safety import is_safe_url
 
 
@@ -4033,12 +4034,19 @@ class DiscordAdapter(BasePlatformAdapter):
             # Discord embed description limit is 4096; show full command up to that
             max_desc = 4088
             cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+            summary = command_approval_summary(command, description)
             embed = discord.Embed(
                 title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
+                description=f"**{summary['action']}**",
                 color=discord.Color.orange(),
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            embed.add_field(name="Mode", value=summary["mode"], inline=True)
+            embed.add_field(name="Category", value=summary["category"], inline=True)
+            embed.add_field(name="Target", value=summary["target"], inline=False)
+            embed.add_field(name="Need", value=summary["need"], inline=False)
+            embed.add_field(name="Reason", value=summary["reason"], inline=False)
+            embed.add_field(name="Risk", value=summary["risk"], inline=False)
+            embed.add_field(name="Raw command", value=f"```\n{cmd_display}\n```", inline=False)
 
             view = ExecApprovalView(
                 session_key=session_key,

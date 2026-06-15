@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -694,6 +695,113 @@ def save_permanent_allowlist(patterns: set):
 # =========================================================================
 # Approval prompting + orchestration
 # =========================================================================
+
+_MUTATING_COMMAND_RE = re.compile(
+    r'\b('
+    r'rm|mv|cp|chmod|chown|chgrp|mkdir|rmdir|touch|tee|truncate|'
+    r'git\s+(?:commit|push|pull|merge|rebase|reset|checkout|switch|restore|clean|'
+    r'fetch|add|rm)|'
+    r'docker\s+(?:run|compose\s+(?:up|down|restart|build)|restart|stop|start|rm|rmi|'
+    r'exec|cp)|'
+    r'kubectl\s+(?:apply|delete|create|patch|rollout|scale)|'
+    r'curl\b.*\b(?:-X\s*(?:POST|PUT|PATCH|DELETE)|--request\s*(?:POST|PUT|PATCH|DELETE))|'
+    r'python[23]?\b.*\b(?:open\([^)]*,\s*[\'"][wa]|write\(|remove\(|unlink\(|rmtree\()'
+    r')\b',
+    re.IGNORECASE | re.DOTALL,
+)
+
+_READ_ONLY_HINT_RE = re.compile(
+    r'\b('
+    r'cat|less|head|tail|sed|awk|grep|rg|find|ls|pwd|printf|echo|'
+    r'git\s+(?:status|diff|log|show|rev-parse)|'
+    r'docker\s+(?:ps|logs|inspect)|'
+    r'curl|wget|getent|dig|nslookup|python[23]?\s+-c'
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _extract_approval_targets(command: str, limit: int = 3) -> list[str]:
+    """Return compact human-relevant targets from a shell command."""
+    targets: list[str] = []
+    for pattern in (
+        r'https?://[^\s\'"`<>]+',
+        r'(?<![\w.-])(?:/[\w.@%+=:,~/-]+)',
+        r'\b[\w.-]+\.[a-z]{2,}(?:/[^\s\'"`<>]*)?',
+    ):
+        for match in re.finditer(pattern, command, re.IGNORECASE):
+            value = match.group(0).rstrip(".,;)")
+            if len(value) > 80:
+                value = value[:77] + "..."
+            if value and value not in targets:
+                targets.append(value)
+            if len(targets) >= limit:
+                return targets
+    return targets
+
+
+def _command_category(command: str) -> str:
+    """Describe the command shape without requiring the user to parse it."""
+    try:
+        parts = shlex.split(command, posix=True)
+    except Exception:
+        parts = command.strip().split()
+
+    if not parts:
+        return "terminal command"
+
+    first = parts[0].split("/")[-1].lower()
+    joined = " ".join(parts[:4]).lower()
+
+    if first in {"bash", "sh", "zsh", "fish", "ksh"}:
+        return "shell script"
+    if first.startswith("python") or first in {"node", "ruby", "perl"}:
+        return "inline script"
+    if first == "ssh":
+        return "remote SSH inspection"
+    if first == "curl" or " curl " in f" {joined} ":
+        return "HTTP/network check"
+    if first == "git":
+        return "Git repository check"
+    if first == "docker":
+        return "Docker/service check"
+    if first in {"getent", "dig", "nslookup"}:
+        return "DNS/network check"
+    return f"{first} command"
+
+
+def command_approval_summary(command: str, description: str) -> dict[str, str]:
+    """Build human-first approval text for gateway/CLI prompts.
+
+    Raw commands are still shown for auditability, but the approval decision
+    must not require users to decode shell/Python syntax first.
+    """
+    category = _command_category(command)
+    targets = _extract_approval_targets(command)
+
+    if _MUTATING_COMMAND_RE.search(command):
+        mode = "May change system state"
+    elif _READ_ONLY_HINT_RE.search(command):
+        mode = "Appears read-only"
+    else:
+        mode = "Effect unclear; inspect raw command before approving"
+
+    target_text = f" targeting {', '.join(targets)}" if targets else ""
+    action = f"Approve this {category}{target_text}. It {mode.lower()}."
+    reason = description or "flagged by command approval policy"
+
+    return {
+        "action": action,
+        "mode": mode,
+        "target": ", ".join(targets) if targets else "not automatically identified",
+        "category": category,
+        "reason": reason,
+        "need": "Hermes needs your approval before it can run this flagged command.",
+        "risk": (
+            "Review the raw command below before choosing; approval can run code "
+            "with the agent's current permissions."
+        ),
+    }
 
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,

@@ -410,6 +410,16 @@ def _compute_tool_definitions(
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
 
+    # Compute the set of non-core tool names from the enabled toolsets.
+    # These are "platform-essential" tools (e.g. discord, discord_admin
+    # on Discord) that must never be deferred by tool_search even though
+    # they are not in _HERMES_CORE_TOOLS.  See issue #46400.
+    try:
+        from toolsets import _HERMES_CORE_TOOLS as _core_set
+        _protected_names = frozenset(tools_to_include - set(_core_set))
+    except Exception:
+        _protected_names = frozenset()
+
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
@@ -522,6 +532,7 @@ def _compute_tool_definitions(
                 filtered_tools,
                 context_length=context_length,
                 config=ts_cfg,
+                protected_tool_names=_protected_names,
             )
             if assembly.activated and not quiet_mode:
                 print(

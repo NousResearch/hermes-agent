@@ -186,12 +186,17 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    protected_tool_names: Optional[frozenset[str]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    every core tool, plus any tool we can't classify, plus any tool in
+    *protected_tool_names* (platform-specific tools from the active platform
+    toolset that should never be deferred). ``deferrable`` is the candidate
+    set for catalog entry.
     """
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
@@ -202,7 +207,9 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if protected_tool_names and name in protected_tool_names:
+            visible.append(td)
+        elif is_deferrable_tool_name(name):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -531,6 +538,7 @@ def assemble_tool_defs(
     *,
     context_length: Optional[int] = None,
     config: Optional[ToolSearchConfig] = None,
+    protected_tool_names: Optional[frozenset[str]] = None,
 ) -> AssemblyResult:
     """Return the tool-defs list the model should actually see.
 
@@ -538,6 +546,9 @@ def assemble_tool_defs(
     threshold), this is a passthrough. When active, MCP and plugin tools
     are stripped from the visible list and replaced with the three bridge
     tools. Core tools are *never* deferred regardless of config.
+
+    *protected_tool_names* are additional tool names (e.g. platform-specific
+    tools from the active platform toolset) that must never be deferred.
 
     Idempotent: calling with bridge tools already in the input is a no-op
     (they classify as non-core/non-deferrable but their names are reserved,
@@ -551,7 +562,7 @@ def assemble_tool_defs(
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, protected_tool_names=protected_tool_names)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 

@@ -345,11 +345,22 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "xai-oauth":
-        creds = auth_mod._xai_oauth_loopback_login(
-            timeout_seconds=getattr(args, "timeout", None) or 20.0,
-            open_browser=not getattr(args, "no_browser", False),
-            manual_paste=bool(getattr(args, "manual_paste", False)),
-        )
+        if bool(getattr(args, "device_code", False)):
+            # Headless device-code flow (RFC 8628): no loopback listener and
+            # no browser on this box. For SSH-only VPS where 127.0.0.1 on the
+            # remote isn't reachable from the operator's browser. Tokens land
+            # in the same xai-oauth singleton, so they seed the pool under the
+            # existing ``loopback_pkce`` source (refresh/runtime path unchanged).
+            creds = auth_mod._xai_oauth_device_code_login(
+                timeout_seconds=getattr(args, "timeout", None) or 20.0,
+                open_browser=not getattr(args, "no_browser", False),
+            )
+        else:
+            creds = auth_mod._xai_oauth_loopback_login(
+                timeout_seconds=getattr(args, "timeout", None) or 20.0,
+                open_browser=not getattr(args, "no_browser", False),
+                manual_paste=bool(getattr(args, "manual_paste", False)),
+            )
         auth_mod._save_xai_oauth_tokens(
             creds["tokens"],
             discovery=creds.get("discovery"),

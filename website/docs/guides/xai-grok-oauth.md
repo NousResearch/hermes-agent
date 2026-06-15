@@ -67,6 +67,22 @@ hermes auth add xai-oauth
 
 On servers, containers, or SSH sessions where no browser is available, Hermes detects the remote environment and prints the authorization URL instead of opening a browser.
 
+#### Device-code flow (recommended for headless servers)
+
+The simplest option for a headless / SSH-only box is the [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628) device-code flow. There is **no loopback listener and no browser needed on the server** — Hermes prints a short code and a URL, you open that URL on any device (your laptop, phone, ...), enter the code, and Hermes finishes the login by polling xAI's token endpoint:
+
+```bash
+hermes auth add xai-oauth --device-code
+# Or via the model picker:
+hermes model --device-code
+```
+
+This avoids the `ssh -L` port-forward entirely. It mirrors the device-code login already used by `openai-codex` and the Nous Portal, and matches the `xai-device-code` method in OpenClaw. (Requires that your xAI tenant exposes the `device_authorization_endpoint` in its OIDC discovery document; if it doesn't, Hermes falls back with a clear error and you can use the loopback or `--manual-paste` flow below.)
+
+`--device-code` and `--manual-paste` are mutually exclusive — the device-code flow has no callback URL to paste.
+
+#### Loopback flow over an SSH port-forward
+
 **Important:** the loopback listener still runs on the remote machine at `127.0.0.1:56121`. The xAI redirect needs to reach *that* listener, so opening the URL on your laptop will fail (`Could not establish connection. We couldn't reach your app.`) unless you forward the port:
 
 ```bash

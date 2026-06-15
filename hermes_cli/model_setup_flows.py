@@ -465,11 +465,13 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             print()
             try:
                 # Forward CLI flags from ``hermes model --manual-paste``
-                # / ``--no-browser`` / ``--timeout`` into the loopback
-                # login. Without this, browser-only remotes (#26923)
-                # can't reach the manual-paste path via ``hermes model``.
+                # / ``--device-code`` / ``--no-browser`` / ``--timeout``
+                # into the login. Without this, headless / browser-only
+                # remotes (#26923) can't reach the manual-paste or
+                # device-code paths via ``hermes model``.
                 mock_args = argparse.Namespace(
                     manual_paste=bool(getattr(args, "manual_paste", False)),
+                    device_code=bool(getattr(args, "device_code", False)),
                     no_browser=bool(getattr(args, "no_browser", False)),
                     timeout=getattr(args, "timeout", None),
                 )
@@ -492,6 +494,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         try:
             mock_args = argparse.Namespace(
                 manual_paste=bool(getattr(args, "manual_paste", False)),
+                device_code=bool(getattr(args, "device_code", False)),
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )

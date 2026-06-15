@@ -104,6 +104,14 @@ XAI_OAUTH_REDIRECT_HOST = "127.0.0.1"
 XAI_OAUTH_REDIRECT_PORT = 56121
 XAI_OAUTH_REDIRECT_PATH = "/callback"
 XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# RFC 8628 device-authorization grant. Used by the headless ``--device-code``
+# login path (no loopback listener, no browser on the box). Mirrors OpenClaw's
+# xAI device-code support (extensions/xai/xai-oauth.ts) and Hermes's own
+# OpenAI-Codex device-code login (``_codex_device_code_login``).
+XAI_DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
+XAI_DEVICE_CODE_DEFAULT_INTERVAL_SECONDS = 5  # poll cadence when server omits ``interval``
+XAI_DEVICE_CODE_MAX_WAIT_SECONDS = 15 * 60    # hard ceiling when server omits ``expires_in``
+XAI_DEVICE_CODE_SLOW_DOWN_INCREMENT_SECONDS = 5  # RFC 8628 §3.5 back-off step
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -4119,6 +4127,71 @@ def _xai_oauth_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
     }
 
 
+def _xai_oauth_device_discovery(timeout_seconds: float = 15.0) -> Dict[str, str]:
+    """Resolve the RFC 8628 device-authorization + token endpoints.
+
+    The device-code login path doesn't need an ``authorization_endpoint``
+    (there is no browser redirect on the box), but it does need the
+    ``device_authorization_endpoint``, which the PKCE-loopback discovery
+    above doesn't surface. Both endpoints are validated against the xAI
+    origin via :func:`_xai_validate_oauth_endpoint` for the same
+    cache-poisoning reason documented there.
+    """
+    try:
+        response = httpx.get(
+            XAI_OAUTH_DISCOVERY_URL,
+            headers={"Accept": "application/json"},
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"xAI OIDC discovery failed: {exc}",
+            provider="xai-oauth",
+            code="xai_discovery_failed",
+        ) from exc
+    if response.status_code != 200:
+        raise AuthError(
+            f"xAI OIDC discovery returned status {response.status_code}.",
+            provider="xai-oauth",
+            code="xai_discovery_failed",
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            f"xAI OIDC discovery returned invalid JSON: {exc}",
+            provider="xai-oauth",
+            code="xai_discovery_invalid_json",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AuthError(
+            "xAI OIDC discovery response was not a JSON object.",
+            provider="xai-oauth",
+            code="xai_discovery_incomplete",
+        )
+    device_authorization_endpoint = str(
+        payload.get("device_authorization_endpoint", "") or ""
+    ).strip()
+    token_endpoint = str(payload.get("token_endpoint", "") or "").strip()
+    if not device_authorization_endpoint or not token_endpoint:
+        raise AuthError(
+            "xAI OIDC discovery response was missing the device-code endpoints "
+            "(device_authorization_endpoint / token_endpoint). Your xAI tenant "
+            "may not have device-code OAuth enabled; use the loopback or "
+            "`--manual-paste` flow instead.",
+            provider="xai-oauth",
+            code="xai_device_discovery_incomplete",
+        )
+    _xai_validate_oauth_endpoint(
+        device_authorization_endpoint, field="device_authorization_endpoint"
+    )
+    _xai_validate_oauth_endpoint(token_endpoint, field="token_endpoint")
+    return {
+        "device_authorization_endpoint": device_authorization_endpoint,
+        "token_endpoint": token_endpoint,
+    }
+
+
 def refresh_xai_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -6611,12 +6684,31 @@ def _login_xai_oauth(
     if _is_remote_session():
         open_browser = False
     manual_paste = bool(getattr(args, "manual_paste", False))
+    device_code = bool(getattr(args, "device_code", False))
 
-    creds = _xai_oauth_loopback_login(
-        timeout_seconds=timeout_seconds,
-        open_browser=open_browser,
-        manual_paste=manual_paste,
-    )
+    if device_code and manual_paste:
+        raise AuthError(
+            "--device-code and --manual-paste are mutually exclusive: the "
+            "device-code flow has no loopback callback to paste. Pick one.",
+            provider="xai-oauth",
+            code="xai_login_flag_conflict",
+        )
+
+    if device_code:
+        # Headless device-code flow (RFC 8628): no loopback listener, no
+        # browser required on this box. Ideal for SSH-only VPS deployments
+        # where 127.0.0.1 on the remote isn't reachable from the operator's
+        # browser. Mutually exclusive with --manual-paste at the parser level.
+        creds = _xai_oauth_device_code_login(
+            timeout_seconds=timeout_seconds,
+            open_browser=open_browser,
+        )
+    else:
+        creds = _xai_oauth_loopback_login(
+            timeout_seconds=timeout_seconds,
+            open_browser=open_browser,
+            manual_paste=manual_paste,
+        )
     _save_xai_oauth_tokens(
         creds["tokens"],
         discovery=creds.get("discovery"),
@@ -6778,6 +6870,299 @@ def _xai_oauth_exchange_code_for_tokens(
             code="xai_token_exchange_invalid",
         )
     return payload
+
+
+def _xai_oauth_request_device_code(
+    *,
+    device_authorization_endpoint: str,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """POST to xAI's device-authorization endpoint (RFC 8628 §3.1/§3.2).
+
+    Returns the parsed payload containing ``device_code``, ``user_code``,
+    ``verification_uri`` (and optionally ``verification_uri_complete``),
+    ``expires_in`` and ``interval``. The device-code grant is a public-client
+    flow with no PKCE, so we only send ``client_id`` + ``scope`` — matching
+    OpenClaw's ``requestXaiDeviceCode`` (extensions/xai/xai-oauth.ts).
+    """
+    try:
+        response = httpx.post(
+            device_authorization_endpoint,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data={
+                "client_id": XAI_OAUTH_CLIENT_ID,
+                "scope": XAI_OAUTH_SCOPE,
+            },
+            timeout=max(20.0, timeout_seconds),
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"xAI device code request failed: {exc}",
+            provider="xai-oauth",
+            code="xai_device_code_request_failed",
+        ) from exc
+
+    if response.status_code != 200:
+        body = response.text.strip()
+        raise AuthError(
+            f"xAI device code request failed (HTTP {response.status_code})."
+            + (f" Response: {body}" if body else ""),
+            provider="xai-oauth",
+            code="xai_device_code_request_error",
+        )
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            f"xAI device code request returned invalid JSON: {exc}",
+            provider="xai-oauth",
+            code="xai_device_code_invalid_json",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AuthError(
+            "xAI device code response was not a JSON object.",
+            provider="xai-oauth",
+            code="xai_device_code_invalid",
+        )
+
+    device_code = str(payload.get("device_code", "") or "").strip()
+    user_code = str(payload.get("user_code", "") or "").strip()
+    verification_uri = str(payload.get("verification_uri", "") or "").strip()
+    if not device_code or not user_code or not verification_uri:
+        raise AuthError(
+            "xAI device code response is missing device_code, user_code, "
+            "or verification_uri.",
+            provider="xai-oauth",
+            code="xai_device_code_incomplete",
+        )
+    return payload
+
+
+def _xai_oauth_poll_device_token(
+    *,
+    token_endpoint: str,
+    device_code: str,
+    expires_in: int,
+    poll_interval: int,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    """Poll xAI's token endpoint until the device is authorized (RFC 8628 §3.4/§3.5).
+
+    Handles ``authorization_pending`` (keep waiting), ``slow_down`` (back off),
+    ``access_denied`` / ``expired_token`` (terminal). Mirrors OpenClaw's
+    ``pollXaiDeviceCodeToken`` and Hermes's nous ``_poll_for_token`` semantics.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + max(1, expires_in)
+    current_interval = max(1, poll_interval)
+
+    with httpx.Client(timeout=httpx.Timeout(max(20.0, timeout_seconds))) as client:
+        while _time.monotonic() < deadline:
+            _time.sleep(current_interval)
+            try:
+                response = client.post(
+                    token_endpoint,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                    },
+                    data={
+                        "grant_type": XAI_DEVICE_CODE_GRANT_TYPE,
+                        "client_id": XAI_OAUTH_CLIENT_ID,
+                        "device_code": device_code,
+                    },
+                )
+            except Exception as exc:
+                raise AuthError(
+                    f"xAI device token poll failed: {exc}",
+                    provider="xai-oauth",
+                    code="xai_device_poll_failed",
+                ) from exc
+
+            if response.status_code == 200:
+                try:
+                    payload = response.json()
+                except Exception as exc:
+                    raise AuthError(
+                        f"xAI device token response returned invalid JSON: {exc}",
+                        provider="xai-oauth",
+                        code="xai_device_token_invalid_json",
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise AuthError(
+                        "xAI device token response was not a JSON object.",
+                        provider="xai-oauth",
+                        code="xai_device_token_invalid",
+                    )
+                return payload
+
+            try:
+                error_payload = response.json()
+            except Exception:
+                error_payload = {}
+            error_code = ""
+            if isinstance(error_payload, dict):
+                error_code = str(error_payload.get("error", "") or "").strip()
+
+            if error_code == "authorization_pending":
+                continue
+            if error_code == "slow_down":
+                current_interval = min(
+                    current_interval + XAI_DEVICE_CODE_SLOW_DOWN_INCREMENT_SECONDS, 30
+                )
+                continue
+            if error_code in {"access_denied", "authorization_denied"}:
+                raise AuthError(
+                    "xAI device authorization was denied.",
+                    provider="xai-oauth",
+                    code="xai_device_access_denied",
+                )
+            if error_code == "expired_token":
+                raise AuthError(
+                    "xAI device code expired before authorization. Re-run the login.",
+                    provider="xai-oauth",
+                    code="xai_device_code_expired",
+                )
+
+            body = response.text.strip()
+            raise AuthError(
+                f"xAI device token exchange failed (HTTP {response.status_code})."
+                + (f" Response: {body}" if body else ""),
+                provider="xai-oauth",
+                code="xai_device_token_exchange_failed",
+            )
+
+    raise AuthError(
+        "xAI device authorization timed out waiting for approval.",
+        provider="xai-oauth",
+        code="xai_device_code_timeout",
+    )
+
+
+def _xai_oauth_device_code_login(
+    *,
+    timeout_seconds: float = 20.0,
+    open_browser: bool = True,
+) -> Dict[str, Any]:
+    """Run the xAI OAuth device-code flow and return a credentials dict.
+
+    Returns the same shape as :func:`_xai_oauth_loopback_login` so the
+    callers (``_login_xai_oauth`` and ``auth_commands``) persist tokens
+    identically. The device-code path needs no loopback listener and no
+    browser on the box — the user authorizes from any device — which is
+    why headless VPS deployments need it (the loopback flow binds
+    127.0.0.1 on the remote, unreachable from the operator's laptop;
+    same gap OpenClaw closed with ``xai-device-code`` in 2026.5.18).
+    """
+    discovery = _xai_oauth_device_discovery(timeout_seconds)
+    device_authorization_endpoint = discovery["device_authorization_endpoint"]
+    token_endpoint = discovery["token_endpoint"]
+
+    device_data = _xai_oauth_request_device_code(
+        device_authorization_endpoint=device_authorization_endpoint,
+        timeout_seconds=timeout_seconds,
+    )
+    user_code = str(device_data.get("user_code", "") or "").strip()
+    device_code = str(device_data.get("device_code", "") or "").strip()
+    verification_uri = str(device_data.get("verification_uri", "") or "").strip()
+    verification_uri_complete = str(
+        device_data.get("verification_uri_complete", "") or ""
+    ).strip()
+    expires_in = _coerce_ttl_seconds(device_data.get("expires_in", 0)) or (
+        XAI_DEVICE_CODE_MAX_WAIT_SECONDS
+    )
+    poll_interval = max(
+        1,
+        int(device_data.get("interval", XAI_DEVICE_CODE_DEFAULT_INTERVAL_SECONDS) or
+            XAI_DEVICE_CODE_DEFAULT_INTERVAL_SECONDS),
+    )
+
+    browser_url = verification_uri_complete or verification_uri
+    print("To continue, follow these steps:\n")
+    print("  1. Open this URL in your browser (any device):")
+    print(f"     \033[94m{verification_uri}\033[0m\n")
+    print("  2. Enter this code:")
+    print(f"     \033[94m{user_code}\033[0m\n")
+    print(
+        f"Code expires in ~{max(1, expires_in // 60)} minutes. Never share it."
+    )
+    print("Waiting for sign-in... (press Ctrl+C to cancel)")
+
+    # Best-effort browser open — only when this isn't a headless/remote
+    # session. On a remote VM the browser would open on the wrong machine,
+    # so we leave the URL printed above for the operator to open locally.
+    if (
+        open_browser
+        and verification_uri_complete
+        and not _is_remote_session()
+        and _can_open_graphical_browser()
+    ):
+        try:
+            webbrowser.open(browser_url)
+        except Exception:
+            pass
+
+    try:
+        payload = _xai_oauth_poll_device_token(
+            token_endpoint=token_endpoint,
+            device_code=device_code,
+            expires_in=expires_in,
+            poll_interval=poll_interval,
+            timeout_seconds=timeout_seconds,
+        )
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130)
+
+    access_token = str(payload.get("access_token", "") or "").strip()
+    refresh_token = str(payload.get("refresh_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "xAI device token exchange did not return an access_token.",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+    if not refresh_token:
+        raise AuthError(
+            "xAI device token exchange did not return a refresh_token. "
+            "Re-run the login; if this persists, the OAuth client did not "
+            "issue a refresh token (commonly because the offline_access "
+            "scope was rejected).",
+            provider="xai-oauth",
+            code="xai_token_exchange_invalid",
+        )
+
+    base_url = _xai_validate_inference_base_url(
+        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/"),
+        fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    # The token_endpoint is persisted in ``discovery`` so refreshes reuse the
+    # validated endpoint rather than re-running discovery; ``_save_xai_oauth_tokens``
+    # stores it under state["discovery"]. We carry both endpoints for parity
+    # with the loopback path's discovery dict.
+    return {
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": str(payload.get("id_token", "") or "").strip(),
+            "expires_in": payload.get("expires_in"),
+            "token_type": str(payload.get("token_type") or "Bearer").strip() or "Bearer",
+        },
+        "discovery": {
+            "token_endpoint": token_endpoint,
+            "device_authorization_endpoint": device_authorization_endpoint,
+        },
+        "redirect_uri": "",
+        "base_url": base_url,
+        "last_refresh": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "source": "device-code",
+    }
 
 
 def _xai_oauth_loopback_login(

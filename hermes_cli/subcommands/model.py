@@ -56,6 +56,16 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
         ),
     )
     model_parser.add_argument(
+        "--device-code",
+        action="store_true",
+        help=(
+            "For xai-oauth: use the RFC 8628 device-code flow — no callback "
+            "listener and no browser needed on this box. Authorize from any "
+            "device by visiting a URL and entering a short code. Ideal for "
+            "headless / SSH-only servers. Mutually exclusive with --manual-paste."
+        ),
+    )
+    model_parser.add_argument(
         "--timeout",
         type=float,
         default=15.0,

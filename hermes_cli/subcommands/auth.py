@@ -52,6 +52,18 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         ),
     )
     auth_add.add_argument(
+        "--device-code",
+        action="store_true",
+        help=(
+            "Use the RFC 8628 device-code flow instead of the loopback "
+            "callback. No listener and no browser are needed on this box — "
+            "you authorize from any device by visiting a URL and entering a "
+            "short code. Ideal for headless / SSH-only servers. Currently "
+            "supported for xai-oauth (and openai-codex / nous use device-code "
+            "by default). Mutually exclusive with --manual-paste."
+        ),
+    )
+    auth_add.add_argument(
         "--timeout", type=float, help="OAuth/network timeout in seconds"
     )
     auth_add.add_argument(

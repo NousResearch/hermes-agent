@@ -1229,8 +1229,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
 #   - footer: a niche cosmetic toggle (runtime-metadata footer) demoted to free
-#     the last slot for /debug, a higher-value maintenance command; reached via
-#     /hermes footer on Slack.
+#     the last slot for /debug, a higher-value maintenance command. The
+#     deep-agents additions pushed COMMAND_REGISTRY to 51 canonical commands,
+#     one over the 50-slash cap; demoting /footer keeps /debug native on Slack.
+#     Reached via /hermes footer on Slack.
 _SLACK_VIA_HERMES_ONLY = frozenset({"credits", "footer"})
 
 

@@ -4,6 +4,7 @@ Tests both the _handle_update_command handler (spawns update process) and
 the _send_update_notification startup hook (sends results after restart).
 """
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -35,6 +36,31 @@ def _make_runner():
     runner.adapters = {}
     runner._voice_mode = {}
     return runner
+
+
+def _configure_update_health_probe(runner, probe=None):
+    runner._update_post_health_check_enabled = True
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._service_tier = None
+    runner._get_proxy_url = MagicMock(return_value=None)
+    runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=(
+            "claude-fable-5",
+            {"provider": "anthropic", "api_key": "sk-test-secret-do-not-leak"},
+        )
+    )
+    runner._resolve_turn_agent_config = MagicMock(return_value={
+        "model": "claude-fable-5",
+        "runtime": {
+            "provider": "anthropic",
+            "api_key": "sk-test-secret-do-not-leak",
+        },
+        "request_overrides": {},
+    })
+    if probe is not None:
+        runner._run_in_executor_with_context = AsyncMock(return_value=probe)
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +774,114 @@ class TestSendUpdateNotification:
 
         sent_text = mock_adapter.send.call_args[0][1]
         assert "finished successfully" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_appends_model_health_warning_after_success(self, tmp_path):
+        """A failed post-update model check is surfaced via direct notification."""
+        runner = _make_runner()
+        _configure_update_health_probe(runner, {
+            "result": {
+                "final_response": "",
+                "failed": True,
+                "error": 'HTTP 400: "thinking.type.enabled" is not supported for this model',
+            },
+            "resolved_model": "claude-fable-5",
+            "provider": "anthropic",
+            "fallback_activated": False,
+        })
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "chat_type": "dm",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "finished successfully" in sent_text
+        assert "Post-update model check failed" in sent_text
+        assert "thinking.type.enabled" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_appends_model_health_timeout_after_success(self, tmp_path):
+        """A stalled provider cannot block the direct success notification."""
+        runner = _make_runner()
+        _configure_update_health_probe(runner)
+        runner._UPDATE_MODEL_HEALTH_TIMEOUT_SECONDS = 0.01
+
+        async def stall_probe(_run_sync):
+            await asyncio.Event().wait()
+
+        runner._run_in_executor_with_context = AsyncMock(side_effect=stall_probe)
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "chat_type": "dm",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "finished successfully" in sent_text
+        assert "Post-update model check timed out" in sent_text
+        assert "sk-test-secret-do-not-leak" not in sent_text
+
+    @pytest.mark.asyncio
+    async def test_appends_fallback_recovery_warning_after_success(self, tmp_path):
+        """A recovered fallback is disclosed by the direct notification."""
+        runner = _make_runner()
+        _configure_update_health_probe(runner, {
+            "result": {"final_response": "OK", "failed": False},
+            "resolved_model": "openai/gpt-5-mini",
+            "provider": "openrouter",
+            "fallback_activated": True,
+        })
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        pending = {
+            "platform": "telegram",
+            "chat_id": "111",
+            "chat_type": "dm",
+            "user_id": "222",
+            "session_key": "agent:main:telegram:dm:111",
+        }
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "finished successfully" in sent_text
+        assert "had to recover via fallback" in sent_text
+        assert "openai/gpt-5-mini via openrouter" in sent_text
 
     @pytest.mark.asyncio
     async def test_cleans_up_files_after_notification(self, tmp_path):

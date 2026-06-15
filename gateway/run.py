@@ -16123,6 +16123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
+    _UPDATE_MODEL_HEALTH_TIMEOUT_SECONDS = 30.0
 
 
 
@@ -16138,6 +16139,188 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except RuntimeError:
             logger.debug("Skipping update notification watcher: no running event loop")
+
+    def _session_source_from_update_pending(
+        self,
+        pending: dict[str, Any],
+    ) -> Optional[SessionSource]:
+        """Rebuild a minimal SessionSource from the persisted /update marker."""
+        platform_str = pending.get("platform")
+        chat_id = pending.get("chat_id")
+        if not platform_str or not chat_id:
+            return None
+        try:
+            platform = Platform(str(platform_str))
+        except Exception:
+            return None
+        return SessionSource(
+            platform=platform,
+            chat_id=str(chat_id),
+            chat_type=str(pending.get("chat_type") or "dm"),
+            user_id=str(pending["user_id"]) if pending.get("user_id") is not None else None,
+            thread_id=str(pending["thread_id"]) if pending.get("thread_id") is not None else None,
+            message_id=str(pending["message_id"]) if pending.get("message_id") is not None else None,
+        )
+
+    @staticmethod
+    def _summarize_update_model_health_error(error: Any) -> str:
+        """Collapse a provider/runtime error to a short user-safe summary."""
+        text = _redact_gateway_user_facing_secrets(str(error or "").strip())
+        text = " ".join(text.split())
+        if not text:
+            return "unknown provider/runtime error"
+        if len(text) > 280:
+            return text[:277] + "..."
+        return text
+
+    async def _post_update_model_health_warning(
+        self,
+        pending: dict[str, Any],
+    ) -> Optional[str]:
+        """Return an operator-facing warning when the post-update model is degraded."""
+        if not getattr(self, "_update_post_health_check_enabled", True):
+            return None
+        try:
+            if self._get_proxy_url():
+                return None
+        except Exception:
+            return None
+
+        source = self._session_source_from_update_pending(pending)
+        if source is None:
+            return None
+
+        session_key = pending.get("session_key")
+        if not hasattr(self, "_provider_routing"):
+            self._provider_routing = self._load_provider_routing()
+        if not hasattr(self, "_fallback_model"):
+            self._fallback_model = self._load_fallback_model()
+        if not hasattr(self, "_service_tier"):
+            self._service_tier = self._load_service_tier()
+
+        user_config = _load_gateway_config()
+        try:
+            model, runtime_kwargs = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=user_config,
+            )
+        except Exception as exc:
+            summary = self._summarize_update_model_health_error(exc)
+            logger.warning("Post-update model health resolution failed: %s", exc)
+            return (
+                "⚠️ Post-update model check failed before the first chat turn. "
+                f"Runtime resolution error: {summary}. "
+                "Chat replies may fail until you switch to a working model."
+            )
+
+        reasoning_config = self._resolve_session_reasoning_config(
+            source=source,
+            session_key=session_key,
+        )
+        prompt = "Reply with exactly OK."
+        turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+        requested_model = turn_route["model"] or "(no model configured)"
+        requested_provider = turn_route["runtime"].get("provider") or "unknown provider"
+        platform_key = _platform_config_key(source.platform)
+        provider_routing = getattr(self, "_provider_routing", {}) or {}
+        fallback_model = getattr(self, "_fallback_model", None)
+
+        def run_sync():
+            from run_agent import AIAgent
+
+            agent = None
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=1,
+                quiet_mode=True,
+                verbose_logging=False,
+                enabled_toolsets=[],
+                skip_context_files=True,
+                skip_memory=True,
+                reasoning_config=reasoning_config,
+                service_tier=getattr(self, "_service_tier", None),
+                request_overrides=turn_route.get("request_overrides"),
+                providers_allowed=provider_routing.get("only"),
+                providers_ignored=provider_routing.get("ignore"),
+                providers_order=provider_routing.get("order"),
+                provider_sort=provider_routing.get("sort"),
+                provider_require_parameters=provider_routing.get("require_parameters", False),
+                provider_data_collection=provider_routing.get("data_collection"),
+                session_id=f"update-health-{uuid.uuid4().hex}",
+                platform=platform_key,
+                user_id=source.user_id,
+                user_id_alt=source.user_id_alt,
+                user_name=source.user_name,
+                chat_id=source.chat_id,
+                chat_name=source.chat_name,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                session_db=None,
+                fallback_model=fallback_model,
+            )
+            try:
+                result = agent.run_conversation(user_message=prompt)
+                return {
+                    "result": result,
+                    "resolved_model": getattr(agent, "model", turn_route["model"]),
+                    "provider": getattr(agent, "provider", turn_route["runtime"].get("provider")),
+                    "fallback_activated": bool(getattr(agent, "_fallback_activated", False)),
+                }
+            finally:
+                self._cleanup_agent_resources(agent)
+
+        timeout_seconds = self._UPDATE_MODEL_HEALTH_TIMEOUT_SECONDS
+        try:
+            probe = await asyncio.wait_for(
+                self._run_in_executor_with_context(run_sync),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Post-update model health check timed out after %.1fs",
+                timeout_seconds,
+            )
+            return (
+                "⚠️ Post-update model check timed out. "
+                f"The configured model did not respond within {timeout_seconds:g} seconds. "
+                "The update succeeded, but chat health could not be confirmed; "
+                "replies may still fail until you switch to a working model."
+            )
+        except Exception as exc:
+            summary = self._summarize_update_model_health_error(exc)
+            logger.warning("Post-update model health check crashed: %s", exc)
+            return (
+                "⚠️ Post-update model check could not complete. "
+                f"Error: {summary}. "
+                "Chat replies may fail until you switch to a working model."
+            )
+
+        probe_result = probe.get("result") or {}
+        resolved_model = probe.get("resolved_model") or requested_model
+        resolved_provider = probe.get("provider") or requested_provider
+
+        if probe.get("fallback_activated"):
+            if not probe_result.get("failed") and probe_result.get("final_response"):
+                return (
+                    "⚠️ Post-update model check had to recover via fallback. "
+                    f"Primary model {requested_model} via {requested_provider} did not complete a request; "
+                    f"the gateway recovered with {resolved_model} via {resolved_provider}. "
+                    "Chat should stay up, but consider switching model.default or keeping fallback_providers configured."
+                )
+
+        if probe_result.get("failed") or not probe_result.get("final_response"):
+            summary = self._summarize_update_model_health_error(probe_result.get("error"))
+            return (
+                "⚠️ Post-update model check failed. "
+                f"Configured model {requested_model} via {requested_provider} could not complete a request: {summary}. "
+                "Chat replies may fail until you switch to a working model. "
+                "Fix on the host with `hermes config set model.default <known-good-model>` "
+                "or configure fallback_providers."
+            )
+
+        return None
 
     async def _watch_update_progress(
         self,
@@ -16167,6 +16350,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         chat_id = None
         session_key = None
         metadata = None
+        pending = {}
         for path in (claimed_path, pending_path):
             if path.exists():
                 try:
@@ -16263,10 +16447,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
+                    health_warning = None
                     if exit_code == 0:
+                        health_warning = await self._post_update_model_health_warning(pending)
+                    if exit_code == 0:
+                        message = "✅ Hermes update finished."
+                        if health_warning:
+                            message = f"{message}\n\n{health_warning}"
                         await adapter.send(
                             chat_id,
-                            "✅ Hermes update finished.",
+                            message,
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     else:
@@ -16455,6 +16645,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     reply_to_message_id=message_id,
                     adapter=adapter,
                 )
+                health_warning = None
+                if exit_code == 0:
+                    health_warning = await self._post_update_model_health_warning(pending)
                 # Strip ANSI escape codes for clean display
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
                 if output:
@@ -16468,6 +16661,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                if health_warning:
+                    msg = f"{msg}\n\n{health_warning}"
                 await adapter.send(
                     chat_id,
                     msg,

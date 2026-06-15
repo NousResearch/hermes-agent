@@ -55,6 +55,31 @@ def _make_runner(hermes_home=None):
     return runner
 
 
+def _configure_update_health_probe(runner, probe=None):
+    runner._update_post_health_check_enabled = True
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._service_tier = None
+    runner._get_proxy_url = MagicMock(return_value=None)
+    runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=(
+            "claude-fable-5",
+            {"provider": "anthropic", "api_key": "sk-test-secret-do-not-leak"},
+        )
+    )
+    runner._resolve_turn_agent_config = MagicMock(return_value={
+        "model": "claude-fable-5",
+        "runtime": {
+            "provider": "anthropic",
+            "api_key": "sk-test-secret-do-not-leak",
+        },
+        "request_overrides": {},
+    })
+    if probe is not None:
+        runner._run_in_executor_with_context = AsyncMock(return_value=probe)
+
+
 # ---------------------------------------------------------------------------
 # _gateway_prompt (file-based IPC in main.py)
 # ---------------------------------------------------------------------------
@@ -437,6 +462,75 @@ class TestWatchUpdateProgress:
 
         all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
         assert "failed" in all_sent.lower()
+
+    @pytest.mark.asyncio
+    async def test_success_exit_code_appends_model_health_timeout(self, tmp_path):
+        """A stalled provider cannot block the streaming success notification."""
+        runner = _make_runner()
+        _configure_update_health_probe(runner)
+        runner._UPDATE_MODEL_HEALTH_TIMEOUT_SECONDS = 0.01
+
+        async def stall_probe(_run_sync):
+            await asyncio.Event().wait()
+
+        runner._run_in_executor_with_context = AsyncMock(side_effect=stall_probe)
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done\n")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        final_text = mock_adapter.send.call_args_list[-1][0][1]
+        assert "Hermes update finished" in final_text
+        assert "Post-update model check timed out" in final_text
+        assert "sk-test-secret-do-not-leak" not in final_text
+
+    @pytest.mark.asyncio
+    async def test_success_exit_code_appends_fallback_recovery_warning(self, tmp_path):
+        """The streaming completion discloses a fallback-recovered probe."""
+        runner = _make_runner()
+        _configure_update_health_probe(runner, {
+            "result": {"final_response": "OK", "failed": False},
+            "resolved_model": "openai/gpt-5-mini",
+            "provider": "openrouter",
+            "fallback_activated": True,
+        })
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("done\n")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(
+                poll_interval=0.1,
+                stream_interval=0.2,
+                timeout=5.0,
+            )
+
+        final_text = mock_adapter.send.call_args_list[-1][0][1]
+        assert "Hermes update finished" in final_text
+        assert "had to recover via fallback" in final_text
+        assert "openai/gpt-5-mini via openrouter" in final_text
 
     @pytest.mark.asyncio
     async def test_falls_back_and_delivers_after_reconnect(self, tmp_path):

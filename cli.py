@@ -5062,8 +5062,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
-        from hermes_cli.skin_engine import get_active_skin
-        _prefix = get_active_skin().get_branding("status_prefix", "⚕ ")
+        from hermes_cli.skin_engine import get_active_status_prefix
+        _prefix = get_active_status_prefix()
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -5134,8 +5134,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
         try:
-            from hermes_cli.skin_engine import get_active_skin
-            _prefix = get_active_skin().get_branding("status_prefix", "⚕ ")
+            from hermes_cli.skin_engine import get_active_status_prefix
+            _prefix = get_active_status_prefix()
             snapshot = self._get_status_bar_snapshot()
             # Use prompt_toolkit's own terminal width when running inside the
             # TUI — shutil.get_terminal_size() can return stale or fallback
@@ -12998,8 +12998,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._agent_running:
             _working_icon = "⚕"
             try:
-                from hermes_cli.skin_engine import get_active_skin
-                _working_icon = get_active_skin().get_branding("status_prefix", "⚕").rstrip()
+                from hermes_cli.skin_engine import get_active_status_prefix
+                _working_icon = get_active_status_prefix().rstrip()
             except Exception:
                 pass
             return _state_fragment("class:prompt-working", _working_icon)

@@ -681,3 +681,110 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+class TestStatusPrefixSkinConfigurable:
+    """Tests for skin-configurable status_prefix."""
+
+    def test_get_active_status_prefix_default(self):
+        """Default skin returns ⚕ with trailing space."""
+        from hermes_cli.skin_engine import get_active_status_prefix, set_active_skin
+        set_active_skin("default")
+        prefix = get_active_status_prefix()
+        assert prefix == "⚕ "
+        assert prefix.endswith(" ")
+
+    def test_get_active_status_prefix_non_default_skin(self):
+        """Non-default skin (ares) returns ⚔ with trailing space."""
+        from hermes_cli.skin_engine import get_active_status_prefix, set_active_skin
+        set_active_skin("ares")
+        prefix = get_active_status_prefix()
+        assert prefix == "⚔ "
+        assert prefix.endswith(" ")
+
+    def test_get_active_status_prefix_fallback_on_import_error(self):
+        """Returns fallback when skin engine import fails."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import get_active_status_prefix
+        with patch(
+            "hermes_cli.skin_engine.get_active_skin",
+            side_effect=ImportError("no skin engine"),
+        ):
+            prefix = get_active_status_prefix()
+        assert prefix == "⚕ "
+
+    def test_get_active_status_prefix_empty_skin_value(self):
+        """Returns fallback when skin stores empty status_prefix."""
+        from unittest.mock import patch
+        from hermes_cli.skin_engine import get_active_status_prefix
+        fake_skin = MagicMock()
+        fake_skin.get_branding.return_value = ""
+        with patch(
+            "hermes_cli.skin_engine.get_active_skin", return_value=fake_skin
+        ):
+            prefix = get_active_status_prefix()
+        assert prefix == "⚕ "
+
+    def test_build_status_bar_text_uses_skin_prefix(self):
+        """_build_status_bar_text includes non-default prefix."""
+        from hermes_cli.skin_engine import set_active_skin
+        set_active_skin("ares")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=1_000,
+            completion_tokens=500,
+            total_tokens=1_500,
+            api_calls=1,
+            context_tokens=1_000,
+            context_length=32_000,
+        )
+        text = cli_obj._build_status_bar_text()
+        assert text.startswith("⚔ ")
+
+    def test_status_bar_fragments_use_skin_prefix(self):
+        """_get_status_bar_fragments includes non-default prefix."""
+        from unittest.mock import MagicMock, patch
+        from hermes_cli.skin_engine import set_active_skin
+        set_active_skin("ares")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=1_000,
+            completion_tokens=500,
+            total_tokens=1_500,
+            api_calls=1,
+            context_tokens=1_000,
+            context_length=32_000,
+        )
+        cli_obj._status_bar_visible = True
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=80)
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+        combined = "".join(text for _, text in frags)
+        assert "⚔ " in combined
+
+    def test_agent_running_prompt_icon_uses_skin_prefix(self):
+        """Agent-running state shows skin prefix (rstripped) instead of ⚕."""
+        from hermes_cli.skin_engine import set_active_skin
+        set_active_skin("charizard")
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=1_000,
+            completion_tokens=500,
+            total_tokens=1_500,
+            api_calls=1,
+            context_tokens=1_000,
+            context_length=32_000,
+        )
+        cli_obj._agent_running = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._sudo_state = False
+        cli_obj._secret_state = False
+        cli_obj._approval_state = False
+        cli_obj._clarify_state = False
+        cli_obj._clarify_freetext = False
+        cli_obj._command_running = False
+        cli_obj._voice_mode = False
+        frags = cli_obj._get_tui_prompt_fragments()
+        combined = "".join(text for _, text in frags)
+        assert "✦" in combined
+        assert "⚕" not in combined

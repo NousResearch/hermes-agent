@@ -835,6 +835,28 @@ def get_active_prompt_symbol(fallback: str = "❯") -> str:
 
 
 
+def get_active_status_prefix(fallback: str = "⚕ ") -> str:
+    """Return the status bar prefix with a guaranteed trailing space.
+
+    Skins store ``status_prefix`` with a trailing space by convention
+    (e.g. ``⚕ ``, ``✦ ``, ``⚔ ``).  This helper guarantees the trailing
+    space is always present so callers—such as
+    :meth:`_build_status_bar_text`, :meth:`_get_status_bar_fragments`,
+    and :meth:`_get_tui_prompt_fragments`—can compose the prefix into
+    rendered text or fragments without hand-rolling whitespace.
+
+    For the agent-running prompt icon (which already adds its own
+    spacing), strip the result: ``get_active_status_prefix().rstrip()``.
+    """
+    try:
+        raw = get_active_skin().get_branding("status_prefix", fallback)
+    except Exception:
+        raw = fallback
+    if not raw or not raw.strip():
+        return fallback
+    return f"{raw.rstrip()} "
+
+
 def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
     """Get the /help header from the active skin."""
     try:

@@ -464,3 +464,66 @@ def test_gateway_startup_recovery_smoke(tmp_path, monkeypatch):
     # Verify the stale row is now 'timeout'
     r = _row(db, "s_stale")
     assert r["status"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# 9. GC covers all runner-written terminal statuses (regression test for
+#    the GC enum mismatch bug — 'error', 'cancelled', 'timed_out' rows were
+#    previously omitted from the DELETE WHERE clause and leaked permanently)
+# ---------------------------------------------------------------------------
+
+def test_gc_deletes_old_error_rows(sdb):
+    """Rows with runner-written status='error' must be GC'd after retention."""
+    old_ts = time.time() - 25 * 3600
+    _insert_running(sdb, "e1", dispatched_at=old_ts)
+    sdb.update_shadow_clone_task("e1", status="error", completed_at=old_ts + 60)
+    deleted = sdb.gc_shadow_clone_tasks(retain_hours=24.0)
+    assert deleted == 1
+    assert _row(sdb, "e1") is None
+
+
+def test_gc_deletes_old_cancelled_rows(sdb):
+    """Rows with runner-written status='cancelled' must be GC'd after retention."""
+    old_ts = time.time() - 25 * 3600
+    _insert_running(sdb, "e2", dispatched_at=old_ts)
+    sdb.update_shadow_clone_task("e2", status="cancelled", completed_at=old_ts + 60)
+    deleted = sdb.gc_shadow_clone_tasks(retain_hours=24.0)
+    assert deleted == 1
+    assert _row(sdb, "e2") is None
+
+
+def test_gc_deletes_old_timed_out_rows(sdb):
+    """Rows with runner-written status='timed_out' must be GC'd after retention."""
+    old_ts = time.time() - 25 * 3600
+    _insert_running(sdb, "e3", dispatched_at=old_ts)
+    sdb.update_shadow_clone_task("e3", status="timed_out", completed_at=old_ts + 60)
+    deleted = sdb.gc_shadow_clone_tasks(retain_hours=24.0)
+    assert deleted == 1
+    assert _row(sdb, "e3") is None
+
+
+def test_gc_all_terminal_statuses_in_one_batch(sdb):
+    """GC must delete ALL six terminal statuses in a single pass, keeping only running rows."""
+    old_ts = time.time() - 25 * 3600
+    terminal_statuses = ["completed", "failed", "timeout", "error", "cancelled", "timed_out"]
+    for i, status in enumerate(terminal_statuses):
+        did = f"all_{i}"
+        _insert_running(sdb, did, dispatched_at=old_ts)
+        # 'timeout' is set by recovery, others by update_shadow_clone_task
+        if status == "timeout":
+            sdb._conn.execute(
+                "UPDATE shadow_clone_tasks SET status='timeout', completed_at=? WHERE delegation_id=?",
+                (old_ts + 60, did),
+            )
+            sdb._conn.commit()
+        else:
+            sdb.update_shadow_clone_task(did, status=status, completed_at=old_ts + 60)
+
+    # one still-running row must survive
+    _insert_running(sdb, "all_running")
+
+    deleted = sdb.gc_shadow_clone_tasks(retain_hours=24.0)
+    assert deleted == len(terminal_statuses)
+    for i in range(len(terminal_statuses)):
+        assert _row(sdb, f"all_{i}") is None
+    assert _row(sdb, "all_running") is not None

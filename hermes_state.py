@@ -5190,10 +5190,11 @@ class SessionDB:
             logger.warning("shadow_clone update_task failed for %s: %s", delegation_id, _e)
 
     def gc_shadow_clone_tasks(self, retain_hours: float = 24.0) -> int:
-        """Delete completed/failed rows older than *retain_hours*.
+        """Delete terminal rows older than *retain_hours*.
 
-        Should be called periodically (e.g. each gateway tick) to prevent
-        unbounded DB growth.  Running rows are never deleted.
+        Terminal statuses: completed, failed, timeout (recovery-set),
+        error, cancelled, timed_out (runner-set).
+        Running rows are never deleted.
         Returns the number of rows deleted.
         """
         cutoff = __import__("time").time() - retain_hours * 3600
@@ -5202,7 +5203,7 @@ class SessionDB:
         def _do(conn):
             cur = conn.execute(
                 "DELETE FROM shadow_clone_tasks "
-                "WHERE status IN ('completed', 'failed', 'timeout') "
+                "WHERE status IN ('completed', 'failed', 'timeout', 'error', 'cancelled', 'timed_out') "
                 "AND completed_at IS NOT NULL AND completed_at < ?",
                 (cutoff,),
             )

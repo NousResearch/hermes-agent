@@ -509,6 +509,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "signal":
+        stripped_target = target_ref.strip()
+        if stripped_target.startswith("group:"):
+            group_id = stripped_target[len("group:"):].strip()
+            if group_id:
+                return f"group:{group_id}", None, True
+            return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:

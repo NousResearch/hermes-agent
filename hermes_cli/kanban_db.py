@@ -6638,6 +6638,8 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
         return True
     try:
         for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
+            if any(part.startswith(".") for part in skill_md.relative_to(skills_root).parts):
+                continue
             if skill_md.is_file():
                 return True
     except OSError:

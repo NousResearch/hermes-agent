@@ -236,11 +236,13 @@ _CALLBACK_HTML = (
 )
 
 
-def capture_loopback_code(*, port: int = LOOPBACK_PORT, timeout: float = 300.0) -> tuple[str, str]:
-    """Run a one-shot loopback server and return ``(code, state)`` from the callback.
+def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
+    """Bind the one-shot callback server, returning it and its capture dict.
 
-    Serves a single ``/callback`` GET, replies with a close-this-tab page, then
-    stops. Raises ``TimeoutError`` if no callback arrives within ``timeout``.
+    Prefers :8765; if that's taken, falls back to an OS-assigned port. groudon's
+    redirect matcher relaxes the port for loopback hosts, so the fallback still
+    matches the seeded ``127.0.0.1`` redirect URI — the caller advertises the
+    actual bound port.
     """
     captured: dict[str, str] = {}
 
@@ -263,7 +265,21 @@ def capture_loopback_code(*, port: int = LOOPBACK_PORT, timeout: float = 300.0) 
         def log_message(self, *args):  # silence stdlib request logging
             return
 
-    server = HTTPServer((LOOPBACK_HOST, port), _Handler)
+    try:
+        server = HTTPServer((LOOPBACK_HOST, LOOPBACK_PORT), _Handler)
+    except OSError:
+        server = HTTPServer((LOOPBACK_HOST, 0), _Handler)  # OS-assigned fallback
+    return server, captured
+
+
+def capture_loopback_code(
+    server: HTTPServer, captured: dict[str, str], *, timeout: float = 300.0
+) -> tuple[str, str]:
+    """Serve a single ``/callback`` GET on ``server`` and return ``(code, state)``.
+
+    Replies with a close-this-tab page, then stops. Raises ``TimeoutError`` if no
+    callback arrives within ``timeout``.
+    """
     server.timeout = timeout
     try:
         # handle_request honors server.timeout; loop until our callback lands so a
@@ -297,10 +313,15 @@ def authorize_via_loopback(
     receives the authorize URL, so a CLI caller can also print it for
     browserless environments.
     """
+    # Bind first so the advertised redirect_uri carries the actual bound port
+    # (which may differ from :8765 if it was taken).
+    server, captured = _bind_loopback_server()
+    redirect_uri = f"http://{LOOPBACK_HOST}:{server.server_address[1]}/callback"
+
     endpoints = resolve_endpoints()
     path = config_path or resolve_config_path()
     authorize_url, state = begin_authorization(
-        endpoints, LOOPBACK_REDIRECT_URI, source=source, config_path=_display_config_path(path)
+        endpoints, redirect_uri, source=source, config_path=_display_config_path(path)
     )
 
     if open_url is None:
@@ -308,13 +329,12 @@ def authorize_via_loopback(
 
         open_url = webbrowser.open
 
-    # Open the browser only after the listener is up, so a fast redirect can't
-    # beat the socket; the listener starts inside capture, so kick the browser
-    # from a short-lived thread that fires once we begin serving.
+    # Browser opens from a short-lived thread; the socket is already bound, so a
+    # fast redirect can't beat it.
     opener = threading.Thread(target=lambda: open_url(authorize_url), daemon=True)
     opener.start()
 
-    code, returned_state = capture_loopback_code(timeout=timeout)
+    code, returned_state = capture_loopback_code(server, captured, timeout=timeout)
     if returned_state != state:
         raise ValueError("OAuth state mismatch — possible CSRF, aborting")
     return complete_authorization(

@@ -158,7 +158,7 @@ class ToolGuardrailDecision:
 
     @property
     def should_halt(self) -> bool:
-        return self.action in {"block", "halt"}
+        return self.action == "halt"
 
     def to_metadata(self) -> dict[str, Any]:
         data: dict[str, Any] = {

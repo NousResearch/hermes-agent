@@ -75,6 +75,10 @@ def _symlink_file_or_skip(link: Path, target: Path) -> None:
         pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
 
+def _profile_wrapper_path(wrapper_dir: Path, name: str) -> Path:
+    return wrapper_dir / (f"{name}.bat" if os.name == "nt" else name)
+
+
 # ---------------------------------------------------------------------------
 # _should_exclude tests
 # ---------------------------------------------------------------------------
@@ -1077,11 +1081,11 @@ class TestProfileRestoration:
         assert (hermes_home / "profiles" / "researcher" / "config.yaml").exists()
 
         # Wrapper scripts should be created
-        assert (wrapper_dir / "coder").exists()
-        assert (wrapper_dir / "researcher").exists()
+        assert _profile_wrapper_path(wrapper_dir, "coder").exists()
+        assert _profile_wrapper_path(wrapper_dir, "researcher").exists()
 
         # Wrappers should contain the right content
-        coder_wrapper = (wrapper_dir / "coder").read_text()
+        coder_wrapper = _profile_wrapper_path(wrapper_dir, "coder").read_text()
         assert "hermes -p coder" in coder_wrapper
 
     def test_import_skips_profile_dirs_without_config(self, tmp_path, monkeypatch):
@@ -1107,8 +1111,8 @@ class TestProfileRestoration:
         run_import(args)
 
         # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        assert _profile_wrapper_path(wrapper_dir, "valid").exists()
+        assert not _profile_wrapper_path(wrapper_dir, "empty").exists()
 
     def test_import_without_profiles_module(self, tmp_path, monkeypatch):
         """Import gracefully handles missing profiles module (fresh install)."""
@@ -1199,6 +1203,9 @@ class TestQuickSnapshot:
         (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
         (home / ".env").write_text("OPENROUTER_API_KEY=test-key-123\n")
         (home / "auth.json").write_text('{"providers": {}}\n')
+        (home / "channel_aliases.json").write_text(
+            '{"whatsapp": {"120363000000000000@g.us": "general"}}\n'
+        )
         (home / "cron").mkdir()
         (home / "cron" / "jobs.json").write_text('{"jobs": []}\n')
 
@@ -1240,6 +1247,13 @@ class TestQuickSnapshot:
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         assert (hermes_home / "state-snapshots" / snap_id / "cron" / "jobs.json").exists()
+
+    def test_copies_channel_aliases(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copied = hermes_home / "state-snapshots" / snap_id / "channel_aliases.json"
+        assert copied.exists()
+        assert "120363000000000000@g.us" in copied.read_text()
 
     def test_missing_files_skipped(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot

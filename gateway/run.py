@@ -15005,7 +15005,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
                     }
-                    if self._is_telegram_topic_lane(source):
+                    if self._is_telegram_renamable_thread(source):
                         maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
                             source,
                             effective_session_id,

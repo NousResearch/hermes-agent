@@ -757,11 +757,16 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
         return
-    _emit(
-        "status.update",
-        sid,
-        {"kind": kind if text is not None else "status", "text": body},
-    )
+    out_kind = kind if text is not None else "status"
+    # Auto-compaction reaches us as a generic "lifecycle" status. Re-tag it so
+    # drivers (desktop app) can show an explicit "Summarizing…" indicator —
+    # otherwise a mid-turn compaction looks like the transcript reset itself.
+    if out_kind == "lifecycle":
+        from agent.conversation_compression import COMPACTION_STATUS_MARKER
+
+        if COMPACTION_STATUS_MARKER in body:
+            out_kind = "compacting"
+    _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
 def _estimate_image_tokens(width: int, height: int) -> int:
@@ -1223,12 +1228,12 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
     _register_session_cwd(session)
-    db = _get_db()
-    if db is not None:
-        try:
-            db.update_session_cwd(session.get("session_key", ""), resolved)
-        except Exception:
-            logger.debug("failed to persist session cwd", exc_info=True)
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.update_session_cwd(session.get("session_key", ""), resolved)
+            except Exception:
+                logger.debug("failed to persist session cwd", exc_info=True)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -3423,7 +3428,15 @@ def _make_agent(
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+def _init_session(
+    sid: str,
+    key: str,
+    agent,
+    history: list,
+    cols: int = 80,
+    cwd: str | None = None,
+    session_db=None,
+):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -3438,7 +3451,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             "running": False,
             "attached_images": [],
             "image_counter": 0,
-            "cwd": _completion_cwd(),
+            "cwd": cwd or _completion_cwd(),
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -3453,7 +3466,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
-    db = _get_db()
+    db = session_db if session_db is not None else _get_db()
     if db is not None:
         row = db.get_session(key)
         if row and row.get("cwd"):
@@ -4066,6 +4079,10 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
+        profile_home
+    )
+
     def _reuse_live_payload(sid: str, session: dict) -> dict:
         payload = _live_session_payload(
             sid,
@@ -4113,7 +4130,7 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         messages = _history_to_messages(history)
-        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
         now = time.time()
         # A delegated child mid-run emits no native session events of its own —
         # report its liveness from the relay registry so the window paints a
@@ -4256,7 +4273,24 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
-            _init_session(sid, target, agent, history, cols=cols)
+            init_home_token = (
+                set_hermes_home_override(str(profile_home))
+                if profile_home is not None
+                else None
+            )
+            try:
+                _init_session(
+                    sid,
+                    target,
+                    agent,
+                    history,
+                    cols=cols,
+                    cwd=profile_resume_cwd,
+                    session_db=db,
+                )
+            finally:
+                if init_home_token is not None:
+                    reset_hermes_home_override(init_home_token)
             if sid in _sessions:
                 if stored_runtime_overrides.get("model_override") is not None:
                     _sessions[sid]["model_override"] = stored_runtime_overrides[

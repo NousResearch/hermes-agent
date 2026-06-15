@@ -542,11 +542,11 @@ wheels = [
 
 [[package]]
 name = "certifi"
-version = "2026.2.25"
+version = "2026.5.20"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/af/2d/7bf41579a8986e348fa033a31cdd0e4121114f6bce2457e8876010b092dd/certifi-2026.2.25.tar.gz", hash = "sha256:e887ab5cee78ea814d3472169153c2d12cd43b14bd03329a39a9c6e2e80bfba7", size = 155029, upload-time = "2026-02-25T02:54:17.342Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/ce/ee2ecad540810a79593028e88299baeae54d346cc7a0d94b6199988b89b1/certifi-2026.5.20.tar.gz", hash = "sha256:69dea482ab64caa7b9f6aba1c6bf48bb6a5448d1c0f1b17ab42ad8c763a5344d", size = 135422, upload-time = "2026-05-20T11:46:50.073Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/3c/c17fb3ca2d9c3acff52e30b309f538586f9f5b9c9cf454f3845fc9af4881/certifi-2026.2.25-py3-none-any.whl", hash = "sha256:027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa", size = 153684, upload-time = "2026-02-25T02:54:15.766Z" },
+    { url = "https://files.pythonhosted.org/packages/59/8c/57e832b7af6d7c5abe66eb3fbe3a3a32f4d11ea23a1aa7131371035be991/certifi-2026.5.20-py3-none-any.whl", hash = "sha256:3c52e209ba0a4ad7aebe60436a4ab349c39e1e602e8c134221e546902ad25897", size = 134134, upload-time = "2026-05-20T11:46:48.578Z" },
 ]
 
 [[package]]
@@ -1393,6 +1393,7 @@ name = "hermes-agent"
 version = "0.16.0"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "croniter" },
     { name = "fastapi" },
     { name = "fire" },
@@ -1597,6 +1598,7 @@ requires-dist = [
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
     { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.1" },
+    { name = "certifi", specifier = "==2026.5.20" },
     { name = "croniter", specifier = "==6.0.0" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
@@ -1652,7 +1654,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "packaging", specifier = "==26.0" },
-    { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.6.0" },
+    { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", specifier = "==1.1.1" },
     { name = "pillow", specifier = "==12.2.0" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
@@ -2688,7 +2690,7 @@ wheels = [
 
 [[package]]
 name = "parallel-web"
-version = "0.6.0"
+version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2698,9 +2700,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7f/81/101c961fe6665212df01fb39a70ebb379dc33529c7bc9210675c0f525139/parallel_web-0.6.0.tar.gz", hash = "sha256:f8aecd3f1958090090c4516881cefea4f55c40948ba3bb99217ca9a6d4263225", size = 173149, upload-time = "2026-05-06T19:13:09.782Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/50/fb9b28a679e01682006b5259abff96de3d16e114e9447a7793fec31715de/parallel_web-0.4.2.tar.gz", hash = "sha256:599b5a8f387dc35c7dc8c81e372eadf6958a40acacea58bf170dfc663c003da7", size = 140026, upload-time = "2026-03-09T22:24:35.448Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/7c/7e8b63a0e90efaf567a818fca86c6ad3a85711f8995d2657b51b0cae2351/parallel_web-0.6.0-py3-none-any.whl", hash = "sha256:dc5342ef7262bd2e9f85eb7eace32833bd3d7e3af0bf5fbd780d1ea8c8d9ceb0", size = 199217, upload-time = "2026-05-06T19:13:08.316Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/3e/2218fa29637781b8e7ac35a928108ff2614ddd40879389d3af2caa725af5/parallel_web-0.4.2-py3-none-any.whl", hash = "sha256:aa3a4a9aecc08972c5ce9303271d4917903373dff4dd277d9a3e30f9cff53346", size = 144012, upload-time = "2026-03-09T22:24:33.979Z" },
 ]
 
 [[package]]

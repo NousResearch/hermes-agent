@@ -77,6 +77,7 @@ class ServiceManager(Protocol):
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None: ...
     def unregister_profile_gateway(self, profile: str) -> None: ...
     def list_profile_gateways(self) -> list[str]: ...
@@ -86,7 +87,8 @@ def detect_service_manager() -> ServiceManagerKind:
     """Detect which service manager is available in this environment.
 
     Returns:
-        "s6" — inside a container when /init is s6-svscan (Phase 2+)
+        "s6" — s6-svscan is PID 1 (s6-overlay image; Docker, Podman, or a
+               Fly Firecracker microVM)
         "windows" — native Windows host
         "launchd" — macOS host
         "systemd" — Linux host with a working user/system bus
@@ -100,14 +102,20 @@ def detect_service_manager() -> ServiceManagerKind:
     # Imports deferred so importing this module doesn't drag in the
     # whole gateway dependency graph for callers that only need the
     # Protocol type or validate_profile_name().
-    from hermes_constants import is_container
     from hermes_cli.gateway import (
         is_macos,
         is_windows,
         supports_systemd_services,
     )
 
-    if is_container() and _s6_running():
+    # Gate on _s6_running() alone (PID 1 comm == s6-svscan AND /run/s6/basedir),
+    # NOT is_container(): the latter only detects Docker/Podman/lxc, so it is
+    # False on Fly's Firecracker microVMs even though s6-overlay is PID 1 there.
+    # That false negative made the whole s6 dispatch path inert on Fly, so
+    # `hermes gateway start/stop/restart` fell through to host code that spawns
+    # a foreground gateway competing with the supervised one. _s6_running() is
+    # already an s6-overlay-specific signal, so the container gate was redundant.
+    if _s6_running():
         return "s6"
     if is_windows():
         return "windows"
@@ -175,6 +183,7 @@ class _RegistrationUnsupportedMixin:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         raise NotImplementedError(
             f"{type(self).__name__} does not support runtime profile "
@@ -680,6 +689,15 @@ class S6ServiceManager:
             f': "${{HERMES_HOME:=/opt/data}}"\n'
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
             f'mkdir -p "$log_dir"\n'
+            # The gateways/ parent must be chowned too (non-recursively):
+            # `mkdir -p` creates it root-owned on a root-context boot, and a
+            # leaf-only chown leaves it that way — every profile registered
+            # later then runs its log service as hermes and crash-loops on
+            # `mkdir: Permission denied`. The parent chown runs on every
+            # root-context boot, so it also heals volumes already poisoned
+            # by older images. Non-recursive on purpose: sibling profile
+            # dirs are each managed by their own log/run. See #45258.
+            f'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
             f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
             # Skip the drop when already non-root (CAP_SETGID).
             f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
@@ -823,15 +841,15 @@ class S6ServiceManager:
         profile: str,
         *,
         extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
     ) -> None:
         """Create the s6 service directory for a profile gateway.
 
         Triggers ``s6-svscanctl -a`` so s6-svscan picks the new directory
-        up immediately. The service is created in the *up* state — to
-        register without auto-starting, follow up with ``stop(profile)``
-        (or pass the start flag via the future ``start_now=False`` arg,
-        which the Phase 4 reconciliation path uses via a ``down``
-        marker file written directly).
+        up immediately.  When *start_now* is ``True`` (the default) the
+        service starts immediately; when ``False`` a ``down`` marker file
+        is written so s6-supervise leaves the service stopped until the
+        user explicitly runs ``hermes -p <profile> gateway start``.
 
         Raises:
             ValueError: if the profile name is invalid or the service
@@ -878,6 +896,13 @@ class S6ServiceManager:
             # dirs. See ``_seed_supervise_skeleton`` for the full
             # rationale.
             _seed_supervise_skeleton(tmp_dir)
+
+            # When start_now is False, write a `down` marker so
+            # s6-supervise does not auto-start the service on rescan.
+            # Mirrors the same pattern in container_boot.py
+            # _register_gateway_slot when start=False.
+            if not start_now:
+                (tmp_dir / "down").touch()
 
             tmp_dir.rename(svc_dir)
         except Exception:

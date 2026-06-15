@@ -298,7 +298,7 @@ TIPS = [
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",
     "Stale git worktrees are auto-cleaned: 24-72h old with no unpushed commits get pruned on startup.",
-    "Each profile gets its own subprocess HOME at HERMES_HOME/home/ — isolated git, ssh, npm, gh configs.",
+    "Profiles scope Hermes state via HERMES_HOME; host tool subprocesses keep your real HOME unless terminal.home_mode is profile.",
     "HERMES_HOME_MODE env var (octal, e.g. 0701) sets custom directory permissions for web server traversal.",
     "Container mode: place .container-mode in HERMES_HOME and the host CLI auto-execs into the container.",
     "Ctrl+C has 5 priority tiers: cancel recording → cancel prompts → cancel picker → interrupt agent → exit.",

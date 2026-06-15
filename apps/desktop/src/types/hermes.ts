@@ -47,6 +47,8 @@ export interface OAuthProviderStatus {
 
 export interface OAuthProvider {
   cli_command: string
+  disconnect_hint?: null | string
+  disconnectable?: boolean
   docs_url: string
   flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string

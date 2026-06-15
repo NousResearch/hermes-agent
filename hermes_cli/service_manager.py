@@ -755,6 +755,7 @@ class S6ServiceManager:
             # dirs are each managed by their own log/run. See #45258.
             f'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
             f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
+            f'rm -f "$log_dir/lock"\n'
             # Skip the drop when already non-root (CAP_SETGID).
             f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
             f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'

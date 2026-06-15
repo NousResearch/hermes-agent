@@ -470,5 +470,66 @@ class TestStaleToolMediaLeak:
         )
 
 
+    def test_compression_fallback_dedupes_image_generate_json_paths(self):
+        """After context compression, image_generate JSON paths from earlier
+        turns must NOT be re-appended on the fallback scan path.
+
+        Regression test for #46627: the _history_media_paths collection code
+        only scanned for MEDIA: text patterns but missed image_generate JSON
+        payloads, so the fallback path (taken when compression shrinks the
+        message list below history_offset) re-appended the same images on
+        every subsequent message.
+        """
+        from gateway.run import _collect_auto_append_media_tags
+
+        # Simulate a compressed message list that includes an old
+        # image_generate result AND a new text-only turn. The list is
+        # shorter than history_offset, triggering the fallback path.
+        compressed_messages = [
+            # Old image_generate tool call + result (from previous turn)
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "old_img", "function": {"name": "image_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "old_img",
+                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
+            },
+            # New turn: text only, no media
+            {"role": "user", "content": "What time is it?"},
+            {"role": "assistant", "content": "It is 3 PM."},
+        ]
+        # history_offset > len(compressed_messages) triggers fallback
+        original_history_len = 20
+
+        # With the fix, _history_media_paths should contain the JSON path.
+        # Simulate that by passing it as the dedup set.
+        history_media_paths_with_fix = {"/tmp/gen/cat.png"}
+        tags, _ = _collect_auto_append_media_tags(
+            compressed_messages,
+            history_offset=original_history_len,
+            history_media_paths=history_media_paths_with_fix,
+        )
+        assert tags == [], (
+            "image_generate path already in history_media_paths must not be "
+            f"re-appended on the compression fallback path, got {tags}"
+        )
+
+        # Without the fix, _history_media_paths would be empty (JSON paths
+        # not collected), and the fallback would re-append the image.
+        history_media_paths_broken = set()
+        broken_tags, _ = _collect_auto_append_media_tags(
+            compressed_messages,
+            history_offset=original_history_len,
+            history_media_paths=history_media_paths_broken,
+        )
+        assert any("cat.png" in t for t in broken_tags), (
+            "Sanity: without JSON path in dedup set, fallback re-appends image"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

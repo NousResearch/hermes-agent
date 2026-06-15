@@ -14667,21 +14667,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
             _history_media_paths: set = set()
+            # Build call_id -> tool_name mapping so we can identify
+            # image_generate JSON results (which don't contain MEDIA: text).
+            _hist_call_id_to_name: Dict[str, str] = {}
+            for _hm in agent_history:
+                if _hm.get("role") == "assistant":
+                    for _tc in _hm.get("tool_calls") or []:
+                        _cid = _tc.get("id") or _tc.get("call_id")
+                        _fn = _tc.get("function") or {}
+                        _nm = str(_fn.get("name") or _tc.get("name") or "")
+                        if _cid and _nm:
+                            _hist_call_id_to_name[str(_cid)] = _nm
             for _hm in agent_history:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
                         for _match in _TOOL_MEDIA_RE.finditer(_hc):
-                            _p = _match.group(1).strip().rstrip('",}')
+                            _p = _match.group(1).strip().rstrip('\",}')
                             if _p:
                                 _history_media_paths.add(_p)
+                    # Also extract paths from image_generate JSON payloads,
+                    # which don't contain MEDIA: text but have file paths in
+                    # structured fields.  Without this, the fallback path in
+                    # _collect_auto_append_media_tags (taken after mid-run
+                    # context compression) would re-append these images on
+                    # every subsequent turn.  (Fixes #46627)
+                    _hcid = str(
+                        _hm.get("tool_call_id") or _hm.get("call_id") or ""
+                    )
+                    if _hist_call_id_to_name.get(_hcid) in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+                        try:
+                            _hp = json.loads(_hc)
+                        except Exception:
+                            _hp = None
+                        if isinstance(_hp, dict) and _hp.get("success"):
+                            for _fld in _JSON_MEDIA_TOOL_PATH_FIELDS:
+                                _hv = _hp.get(_fld)
+                                if (isinstance(_hv, str)
+                                        and _TOOL_MEDIA_RE.fullmatch(
+                                            f"MEDIA:{_hv}")):
+                                    _history_media_paths.add(_hv)
+                                    break
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).

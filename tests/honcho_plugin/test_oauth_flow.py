@@ -35,8 +35,11 @@ class _FakeAS(BaseHTTPRequestHandler):
         # The redirect must be the IP literal matching the bound host — a
         # `localhost` redirect can resolve to ::1 and miss the IPv4 listener.
         assert redirect.startswith("http://127.0.0.1:8765"), redirect
-        # The consent screen shows the actual file the grant lands in.
-        assert q["config_path"][0].endswith("honcho.json"), q.get("config_path")
+        # Consent shows a home-relative display path — never an absolute path
+        # that would leak the username / home layout off the machine.
+        cp = q["config_path"][0]
+        assert cp.endswith("honcho.json"), q.get("config_path")
+        assert not cp.startswith("/"), cp
         state = q["state"][0]
         location = f"{redirect}?code=test-auth-code&state={state}"
         self.send_response(302)
@@ -160,13 +163,20 @@ def test_source_tags_the_authorize_link(fake_as):
 
 def test_config_path_rides_the_authorize_link(fake_as):
     endpoints = oauth_flow.resolve_endpoints()
-    url, _ = oauth_flow.begin_authorization(
-        endpoints, config_path="/Users/x/.hermes/profiles/work/honcho.json"
-    )
+    url, _ = oauth_flow.begin_authorization(endpoints, config_path="~/.hermes/honcho.json")
     q = parse_qs(urlparse(url).query)
-    assert q["config_path"][0] == "/Users/x/.hermes/profiles/work/honcho.json"
+    assert q["config_path"][0] == "~/.hermes/honcho.json"
     bare, _ = oauth_flow.begin_authorization(endpoints)
     assert "config_path=" not in bare
+
+
+def test_display_config_path_never_leaks_absolute_path():
+    from pathlib import Path
+
+    # Under home → collapsed to ~/…; outside home → bare filename only.
+    under_home = Path.home() / ".hermes" / "profiles" / "work" / "honcho.json"
+    assert oauth_flow._display_config_path(under_home) == "~/.hermes/profiles/work/honcho.json"
+    assert oauth_flow._display_config_path("/var/folders/tmp/honcho.json") == "honcho.json"
 
 
 def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):

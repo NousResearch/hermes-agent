@@ -38,6 +38,22 @@ LOOPBACK_REDIRECT_URI = f"http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/callback"
 _PENDING_TTL_SECONDS = 600
 
 
+def _display_config_path(path: object) -> str:
+    """Home-relative display string for the consent screen.
+
+    The absolute path (username + home layout) never leaves the machine — it's
+    only shown to the user. Collapse ``$HOME`` to ``~``; for a path outside
+    home, send the bare filename rather than leak an arbitrary absolute path.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(str(path))
+    try:
+        return "~/" + str(p.relative_to(_Path.home()))
+    except ValueError:
+        return p.name
+
+
 @dataclass(frozen=True)
 class OAuthEndpoints:
     """Resolved authorization-server URLs and client identity."""
@@ -134,9 +150,9 @@ def begin_authorization(
 
     ``source`` tags the authorize link with the initiating surface
     (``hermes-desktop`` / ``hermes-cli``) so the consent side can attribute
-    connects and vary behavior per surface. ``config_path`` is the actual file
-    the grant will be written to, shown on the consent screen in place of the
-    manifest's default path (profile-scoped configs differ from it).
+    connects and vary behavior per surface. ``config_path`` is a home-relative
+    *display* string for the consent screen (never the absolute path); callers
+    pass the actual write path separately to ``complete_authorization``.
     """
     now = time.time() if now is None else now
     verifier, challenge = _pkce()
@@ -284,7 +300,7 @@ def authorize_via_loopback(
     endpoints = resolve_endpoints()
     path = config_path or resolve_config_path()
     authorize_url, state = begin_authorization(
-        endpoints, LOOPBACK_REDIRECT_URI, source=source, config_path=str(path)
+        endpoints, LOOPBACK_REDIRECT_URI, source=source, config_path=_display_config_path(path)
     )
 
     if open_url is None:

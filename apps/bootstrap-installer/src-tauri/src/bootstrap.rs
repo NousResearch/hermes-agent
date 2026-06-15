@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::events::{BootstrapEvent, Manifest, StageState};
+use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
@@ -179,9 +179,11 @@ pub async fn launch_hermes_desktop(
 
     tracing::info!(?exe_path, "launching Hermes desktop");
 
-    // Detach from us — the installer is about to exit.
-    let mut cmd = tokio::process::Command::new(&exe_path);
-    cmd.current_dir(exe_path.parent().unwrap_or(&install_root));
+    // Detach from us — the installer is about to exit. On macOS launch the
+    // bundle through LaunchServices instead of exec'ing Contents/MacOS/Hermes
+    // directly; this matches user double-click/open behavior and avoids cwd /
+    // quarantine oddities after a self-update rebuild.
+    let mut cmd = desktop_launch_command(&exe_path, &install_root);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -232,6 +234,24 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
     None
 }
 
+pub(crate) fn resolve_hermes_desktop_app(install_root: &std::path::Path) -> Option<PathBuf> {
+    let exe = resolve_hermes_desktop_exe(install_root)?;
+    #[cfg(target_os = "macos")]
+    {
+        // .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
+        let app = exe.parent()?.parent()?.parent()?.to_path_buf();
+        if app.extension().and_then(|e| e.to_str()) == Some("app") && app.is_dir() {
+            return Some(app);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Some(exe);
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 /// True when a prior install completed (bootstrap-complete marker present) AND a
 /// launchable desktop app exists on disk. Used by the installer's launcher fast
 /// path so a bare re-open just opens Hermes instead of re-running setup.
@@ -247,8 +267,7 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
     let exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "no built Hermes desktop app")
     })?;
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.current_dir(exe.parent().unwrap_or(install_root));
+    let mut cmd = desktop_launch_command_std(&exe, install_root);
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -259,6 +278,62 @@ pub(crate) fn spawn_installed_desktop(install_root: &std::path::Path) -> std::io
         cmd.creation_flags(0x0000_0008);
     }
     cmd.spawn().map(|_child| ())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn open_macos_app_detached(app_bundle: &std::path::Path) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new("/usr/bin/open");
+    cmd.arg(app_bundle);
+    cmd.current_dir(crate::paths::hermes_home());
+    cmd.spawn().map(|_child| ())
+}
+
+#[cfg(target_os = "macos")]
+fn app_bundle_for_exe(exe: &std::path::Path) -> Option<PathBuf> {
+    let app = exe.parent()?.parent()?.parent()?.to_path_buf();
+    if app.extension().and_then(|e| e.to_str()) == Some("app") && app.is_dir() {
+        Some(app)
+    } else {
+        None
+    }
+}
+
+fn desktop_launch_command(
+    exe_path: &std::path::Path,
+    install_root: &std::path::Path,
+) -> tokio::process::Command {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(app_bundle) = app_bundle_for_exe(exe_path) {
+            let mut cmd = tokio::process::Command::new("/usr/bin/open");
+            cmd.arg(app_bundle);
+            cmd.current_dir(crate::paths::hermes_home());
+            return cmd;
+        }
+    }
+
+    let mut cmd = tokio::process::Command::new(exe_path);
+    cmd.current_dir(exe_path.parent().unwrap_or(install_root));
+    cmd
+}
+
+fn desktop_launch_command_std(
+    exe_path: &std::path::Path,
+    install_root: &std::path::Path,
+) -> std::process::Command {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(app_bundle) = app_bundle_for_exe(exe_path) {
+            let mut cmd = std::process::Command::new("/usr/bin/open");
+            cmd.arg(app_bundle);
+            cmd.current_dir(crate::paths::hermes_home());
+            return cmd;
+        }
+    }
+
+    let mut cmd = std::process::Command::new(exe_path);
+    cmd.current_dir(exe_path.parent().unwrap_or(install_root));
+    cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +366,7 @@ async fn run_bootstrap(
             BootstrapEvent::Log {
                 stage: None,
                 line: line.to_string(),
+                stream: LogStream::Stdout,
             },
         );
         // Bump to info-level so the line shows in bootstrap-installer.log
@@ -625,6 +701,7 @@ async fn run_install_script(
                 BootstrapEvent::Log {
                     stage: stage_for_stdout.clone(),
                     line: line.to_string(),
+                    stream: LogStream::Stdout,
                 },
             );
             // Tee to the rolling installer log so we have a persistent
@@ -643,7 +720,8 @@ async fn run_install_script(
                 &app_for_stderr,
                 BootstrapEvent::Log {
                     stage: stage_for_stderr.clone(),
-                    line: format!("stderr: {line}"),
+                    line: line.to_string(),
+                    stream: LogStream::Stderr,
                 },
             );
             // stderr-level lines get warn! so they're visually distinct
@@ -737,5 +815,92 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::path::Path;
+
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    // Build a fake built-desktop release tree at the platform's expected path
+    // and return (install_root, expected_app_bundle_or_exe).
+    fn make_release_tree(install_root: &Path) -> PathBuf {
+        let release = install_root.join("apps").join("desktop").join("release");
+        if cfg!(target_os = "macos") {
+            let macos_dir = release
+                .join("mac-arm64")
+                .join("Hermes.app")
+                .join("Contents")
+                .join("MacOS");
+            std::fs::create_dir_all(&macos_dir).unwrap();
+            std::fs::write(macos_dir.join("Hermes"), b"#!/bin/sh\n").unwrap();
+            macos_dir.parent().unwrap().parent().unwrap().to_path_buf() // .../Hermes.app
+        } else if cfg!(target_os = "windows") {
+            let dir = release.join("win-unpacked");
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = dir.join("Hermes.exe");
+            std::fs::write(&exe, b"stub").unwrap();
+            exe
+        } else {
+            let dir = release.join("linux-unpacked");
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = dir.join("hermes");
+            std::fs::write(&exe, b"stub").unwrap();
+            exe
+        }
+    }
+
+    // The relaunch / install target is derived from the rebuilt desktop app.
+    // On macOS this MUST resolve to the .app bundle (what `open` relaunches and
+    // what the updater ditto's over /Applications/Hermes.app). A regression in
+    // this derivation breaks the post-update auto-relaunch, so guard it.
+    #[test]
+    fn resolve_hermes_desktop_app_finds_built_bundle() {
+        let root = unique_tmp_dir("app-ok");
+        let expected = make_release_tree(&root);
+
+        let resolved = resolve_hermes_desktop_app(&root)
+            .expect("should resolve the freshly-built desktop app");
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(resolved, expected, "must resolve to the .app bundle");
+            assert_eq!(
+                resolved.extension().and_then(|e| e.to_str()),
+                Some("app"),
+                "relaunch target must be a .app bundle on macOS"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(resolved, expected);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolve_hermes_desktop_app_is_none_without_a_build() {
+        let root = unique_tmp_dir("app-none");
+        // No release tree created.
+        assert!(
+            resolve_hermes_desktop_app(&root).is_none(),
+            "no resolved app when nothing has been built"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

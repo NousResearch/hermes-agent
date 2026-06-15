@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { translateNow } from '@/i18n'
+
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
 
 export interface NotificationAction {
@@ -52,28 +54,29 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
     summarize: msg => {
       const status = msg.match(/(?:error code|status(?:Code)?)[^\d]*(\d{3})/i)?.[1]
 
-      return `OpenAI rejected the API key${status ? ` (${status} invalid_api_key)` : ''}.`
+      return status
+        ? translateNow('notifications.errors.openaiRejectedApiKeyWithStatus', status)
+        : translateNow('notifications.errors.openaiRejectedApiKey')
     }
   },
   {
     test: msg => /neither voice_tools_openai_key nor openai_api_key is set/i.test(msg),
-    summarize: () => 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.'
+    summarize: () => translateNow('notifications.errors.openaiTtsNeedsKey')
   },
   {
     test: msg => /ELEVENLABS_API_KEY not set/i.test(msg) || /ElevenLabs STT API error \(HTTP 401\)/i.test(msg),
     summarize: msg =>
       /ELEVENLABS_API_KEY not set/i.test(msg)
-        ? 'ElevenLabs STT needs ELEVENLABS_API_KEY.'
-        : 'ElevenLabs rejected the API key (401).'
+        ? translateNow('notifications.errors.elevenLabsNeedsKey')
+        : translateNow('notifications.errors.elevenLabsRejectedKey')
   },
   {
     test: msg => /method not allowed/i.test(msg),
-    summarize: () =>
-      'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.'
+    summarize: () => translateNow('notifications.errors.methodNotAllowed')
   },
   {
     test: msg => /microphone permission/i.test(msg),
-    summarize: () => 'Microphone permission was denied.'
+    summarize: () => translateNow('notifications.errors.microphonePermission')
   }
 ]
 

@@ -18,8 +18,11 @@ payload rewriter.
 from __future__ import annotations
 
 import base64
+import sys
+from types import SimpleNamespace
 
 
+from agent.conversation_loop import _image_error_max_dimension
 from agent.error_classifier import FailoverReason, classify_api_error
 
 
@@ -79,6 +82,21 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="anthropic", model="claude-sonnet-4-6")
         assert result.reason == FailoverReason.context_overflow
 
+    def test_anthropic_many_image_dimension_limit(self):
+        """OpenRouter-wrapped Anthropic many-image limits recover via shrink."""
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                "messages.21.content.43.image.source.base64.data: At least one "
+                "of the image dimensions exceed max allowed size for many-image "
+                "requests: 2000 pixels"
+            ),
+        )
+        result = classify_api_error(err, provider="openrouter", model="anthropic/claude-opus-4.8")
+        assert result.reason == FailoverReason.image_too_large
+        assert result.retryable is True
+        assert _image_error_max_dimension(err) == 2000
+
 
 # ─── Shrink helper ───────────────────────────────────────────────────────────
 
@@ -88,6 +106,27 @@ def _big_png_data_url(size_kb: int) -> str:
     # Use real PNG header so MIME detection works; fill to target size.
     raw = b"\x89PNG\r\n\x1a\n" + b"X" * (size_kb * 1024)
     return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+
+
+def _install_fake_pillow(monkeypatch, size: tuple[int, int]) -> None:
+    """Install the tiny subset of Pillow used by the shrink preflight."""
+    class _FakeImage:
+        def __init__(self):
+            self.size = size
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _FakeImageModule:
+        @staticmethod
+        def open(_data):
+            return _FakeImage()
+
+    monkeypatch.setitem(sys.modules, "PIL", SimpleNamespace(Image=_FakeImageModule))
+    monkeypatch.setitem(sys.modules, "PIL.Image", _FakeImageModule)
 
 
 def _make_agent():
@@ -143,7 +182,7 @@ class TestShrinkImagePartsHelper:
         oversized_url = _big_png_data_url(5000)  # ~5 MB raw → ~6.7 MB b64
         shrunk = "data:image/jpeg;base64," + "A" * 1000  # small
 
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None):
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
             return shrunk
 
         monkeypatch.setattr(
@@ -162,6 +201,38 @@ class TestShrinkImagePartsHelper:
         changed = agent._try_shrink_image_parts_in_messages(msgs)
         assert changed is True
         assert msgs[0]["content"][1]["image_url"]["url"] == shrunk
+
+    def test_many_image_dimension_limit_rewritten(self, monkeypatch):
+        """A 2000px many-image rejection must shrink images below 8000px."""
+        agent = _make_agent()
+        _install_fake_pillow(monkeypatch, (2501, 100))
+        oversized_for_many = _big_png_data_url(100)
+        shrunk = "data:image/jpeg;base64," + "M" * 1000
+        seen = {}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None, max_dimension=None):
+            seen["max_dimension"] = max_dimension
+            return shrunk
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        msgs = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": oversized_for_many}},
+            ],
+        }]
+        changed = agent._try_shrink_image_parts_in_messages(
+            msgs,
+            max_dimension=2000,
+        )
+        assert changed is True
+        assert seen["max_dimension"] == 2000
+        assert msgs[0]["content"][0]["image_url"]["url"] == shrunk
 
     def test_oversized_input_image_string_shape_rewritten(self, monkeypatch):
         """OpenAI Responses shape: {type: input_image, image_url: "data:..."}."""

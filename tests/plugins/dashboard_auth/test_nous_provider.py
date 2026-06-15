@@ -494,11 +494,15 @@ class TestStartLogin:
         with pytest.raises(ProviderError, match="http"):
             provider.start_login(redirect_uri="ftp://x/auth/callback")
 
-    def test_rejects_http_with_non_localhost(self, provider):
-        with pytest.raises(ProviderError, match="localhost"):
-            provider.start_login(
-                redirect_uri="http://hermes.fly.dev/auth/callback"
-            )
+    def test_allows_http_with_arbitrary_host(self, provider):
+        # http:// is permitted for any host now, not just localhost — the
+        # Portal-side check is authoritative on which redirect_uris are
+        # accepted; this client-side fast-fail must not reject self-hosted
+        # dashboards reached over plain HTTP (LAN IPs, internal hostnames,
+        # TLS-terminating reverse proxies). Should not raise.
+        provider.start_login(redirect_uri="http://hermes.fly.dev/auth/callback")
+        provider.start_login(redirect_uri="http://192.168.1.50:8080/auth/callback")
+        provider.start_login(redirect_uri="http://my-internal-host/auth/callback")
 
     def test_allows_http_localhost(self, provider):
         # Should not raise.

@@ -106,17 +106,60 @@ def test_should_require_auth_truth_table(host, allow_public, expected):
 
 
 def _stub_uvicorn_run(monkeypatch):
-    """Replace uvicorn.run with a no-op recorder so start_server returns
-    immediately (rather than blocking on the event loop).  Returns the dict
-    that will capture the keyword args."""
+    """Replace uvicorn.Config/Server with no-op fakes so start_server
+    returns immediately (rather than blocking on the event loop). Returns the dict
+    that will capture the keyword args.
+    """
+    import asyncio
+    import contextlib
     import uvicorn
-    captured: dict = {}
+    captured: dict = {"kwargs": {}}
 
-    def _fake_run(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
+    class _FakeConfig:
+        loaded = True
+        host = "127.0.0.1"
+        port = 8000
 
-    monkeypatch.setattr(uvicorn, "run", _fake_run)
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+
+        def load(self):
+            pass
+
+        class lifespan_class:
+            should_exit = False
+            state: dict = {}
+
+            def __init__(self, *a, **kw):
+                pass
+
+            async def startup(self):
+                pass
+
+            async def shutdown(self):
+                pass
+
+    class _FakeServer:
+        should_exit = False
+        started = True
+        servers: list = []
+        lifespan = None
+
+        @staticmethod
+        def capture_signals():
+            return contextlib.nullcontext()
+
+        async def startup(self, sockets=None):
+            pass
+
+        async def main_loop(self):
+            pass
+
+        async def shutdown(self, sockets=None):
+            pass
+
+    monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
+    monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
     return captured
 
 

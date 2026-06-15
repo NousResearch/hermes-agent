@@ -588,52 +588,62 @@
       wsClosedRef.current = false;
       function openWs() {
         if (wsClosedRef.current) return;
-        const token = window.__HERMES_SESSION_TOKEN__ || "";
-        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const qsParams = {
-          since: String(cursorRef.current || 0),
-          token: token,
-        };
+        // Build the WS URL via the host SDK so the correct auth param is used
+        // in BOTH modes: single-use ?ticket= in gated OAuth mode, ?token= in
+        // loopback. Reading window.__HERMES_SESSION_TOKEN__ directly (the old
+        // path) sends an empty token and is rejected in gated mode. buildWsUrl
+        // also applies the dashboard base-path prefix for reverse-proxied
+        // deployments, which the old inline URL did not. It's async (gated
+        // mode mints a fresh ticket per connect), so resolve then open.
+        const wsParams = { since: String(cursorRef.current || 0) };
         // Pin the WS stream to the currently-selected board so events
         // from other boards don't bleed in. Includes "default" so the
         // dashboard's own board pin always wins over the server-side
         // ``current`` file — same rationale as ``withBoard()`` above.
         // Regression: #20879.
-        if (board) qsParams.board = board;
-        const qs = new URLSearchParams(qsParams);
-        const url = `${proto}//${window.location.host}${API}/events?${qs}`;
-        let ws;
-        try { ws = new WebSocket(url); } catch (_e) { return; }
-        wsRef.current = ws;
-        ws.onopen = function () { wsBackoffRef.current = 1000; };
-        ws.onmessage = function (ev) {
-          try {
-            const msg = JSON.parse(ev.data);
-            if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
-              cursorRef.current = msg.cursor || cursorRef.current;
-              // Stamp per-task signal so the TaskDrawer can reload itself.
-              setTaskEventTick(function (prev) {
-                const next = Object.assign({}, prev);
-                for (const e of msg.events) {
-                  if (e && e.task_id) next[e.task_id] = (next[e.task_id] || 0) + 1;
-                }
-                return next;
-              });
-              scheduleReload();
-            }
-          } catch (_e) { /* ignore */ }
-        };
-        ws.onclose = function (ev) {
+        if (board) wsParams.board = board;
+        SDK.buildWsUrl(`${API}/events`, wsParams).then(function (url) {
           if (wsClosedRef.current) return;
-          if (ev && ev.code === 1008) {
-            setError(tx(t, "wsAuthFailed",
-              "WebSocket auth failed — reload the page to refresh the session token."));
-            return;
-          }
+          let ws;
+          try { ws = new WebSocket(url); } catch (_e) { return; }
+          wsRef.current = ws;
+          ws.onopen = function () { wsBackoffRef.current = 1000; };
+          ws.onmessage = function (ev) {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
+                cursorRef.current = msg.cursor || cursorRef.current;
+                // Stamp per-task signal so the TaskDrawer can reload itself.
+                setTaskEventTick(function (prev) {
+                  const next = Object.assign({}, prev);
+                  for (const e of msg.events) {
+                    if (e && e.task_id) next[e.task_id] = (next[e.task_id] || 0) + 1;
+                  }
+                  return next;
+                });
+                scheduleReload();
+              }
+            } catch (_e) { /* ignore */ }
+          };
+          ws.onclose = function (ev) {
+            if (wsClosedRef.current) return;
+            if (ev && ev.code === 1008) {
+              setError(tx(t, "wsAuthFailed",
+                "WebSocket auth failed — reload the page to refresh the session token."));
+              return;
+            }
+            const delay = Math.min(wsBackoffRef.current, 30000);
+            wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
+            setTimeout(openWs, delay);
+          };
+        }).catch(function () {
+          // Ticket mint / URL build failed (e.g. session expired). Back off
+          // and retry; a hard auth failure surfaces via the 1008 close path.
+          if (wsClosedRef.current) return;
           const delay = Math.min(wsBackoffRef.current, 30000);
           wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
           setTimeout(openWs, delay);
-        };
+        });
       }
       openWs();
       return function () {
@@ -1644,6 +1654,8 @@
             ),
             h("div", { className: "text-[10px] text-muted-foreground" },
               "Resolved: " + (settings.resolved_orchestrator_profile || "default")),
+            h("div", { className: "text-[10px] text-muted-foreground" },
+              "Owns the root task after fan-out (wakes back up to judge completion). Does not drive how tasks split — configure the decomposer model under auxiliary.kanban_decomposer."),
           ),
           h("div", { className: "flex flex-col gap-1" },
             h(Label, { className: "text-xs text-muted-foreground" },
@@ -1685,7 +1697,7 @@
           h(Label, { className: "text-xs text-muted-foreground" },
             "Profile descriptions"),
           h("div", { className: "text-[10px] text-muted-foreground pb-2" },
-            "Descriptions guide the orchestrator's routing. Click ⚗ to auto-generate, or edit and save."),
+            "Descriptions guide the decomposer's routing. Click ⚗ to auto-generate, or edit and save."),
           profiles.length === 0
             ? h("div", { className: "text-xs text-muted-foreground" }, "No profiles installed.")
             : h("div", { className: "flex flex-col gap-2" },
@@ -2837,8 +2849,6 @@
       if (!files.length) return;
       setUploadBusy(true);
       setUploadErr(null);
-      const token = window.__HERMES_SESSION_TOKEN__ || "";
-      const headers = token ? { Authorization: "Bearer " + token } : {};
       const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
       // Upload sequentially so a partial failure leaves a clear state.
       let chain = Promise.resolve();
@@ -2846,7 +2856,11 @@
         chain = chain.then(function () {
           const fd = new FormData();
           fd.append("file", f, f.name);
-          return fetch(url, { method: "POST", headers: headers, credentials: "same-origin", body: fd })
+          // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+          // gated cookie) and applies the dashboard base-path prefix. The old
+          // hand-rolled Authorization:Bearer + credentials:'same-origin' sent
+          // an empty token and 401'd in gated mode.
+          return SDK.authedFetch(url, { method: "POST", body: fd })
             .then(function (resp) {
               if (!resp.ok) {
                 return resp.text().then(function (txt) {
@@ -3073,15 +3087,16 @@
     const fileRef = useRef(null);
     const [dlErr, setDlErr] = useState(null);
     // Download via authenticated fetch → blob → synthetic anchor click.
-    // A plain <a href> can't carry the session header/bearer the dashboard
-    // auth middleware requires in loopback mode, so fetch with the token
-    // and hand the browser a blob URL instead.
+    // A plain <a href> can't carry the auth the dashboard middleware requires,
+    // so fetch authenticated and hand the browser a blob URL instead.
     function downloadAttachment(a) {
-      const token = window.__HERMES_SESSION_TOKEN__ || "";
-      const headers = token ? { Authorization: "Bearer " + token } : {};
+      // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+      // gated cookie) and applies the dashboard base-path prefix. The old
+      // hand-rolled Authorization:Bearer + credentials:'same-origin' sent an
+      // empty token and 401'd in gated mode.
       const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
       setDlErr(null);
-      fetch(url, { headers: headers, credentials: "same-origin" })
+      SDK.authedFetch(url)
         .then(function (resp) {
           if (!resp.ok) {
             return resp.text().then(function (txt) {
@@ -3731,9 +3746,9 @@
         }, specifyBusy ? "Specifying…" : "✨ Specify")
       : null;
 
-    // "Decompose" is the orchestrator-driven fan-out. Like Specify, only
+    // "Decompose" is the built-in decomposer fan-out. Like Specify, only
     // makes sense on triage-column tasks — elsewhere the backend short-
-    // circuits with ok:false. When the orchestrator returns fanout:false
+    // circuits with ok:false. When the decomposer returns fanout:false
     // we render the same single-task message as Specify; when it fans
     // out we report the child count for quick at-a-glance verification.
     const decomposeButton = (task.status === "triage" && props.onDecompose)

@@ -6,18 +6,39 @@ export interface TriggerState {
   tokenLength: number
 }
 
-const TRIGGER_RE = /(?:^|[\s])([@/])([^\s@/]*)$/
+// `@` triggers stop at the first whitespace — `@file:path` and `@diff` are
+// single tokens. `/` triggers keep going so the popover stays live while the
+// user types args (`/personality alic` → arg completer suggests `alice`).
+// Restricting the slash command name to `[a-zA-Z][\w-]*` avoids matching file
+// paths like `src/foo/bar`.
+const AT_TRIGGER_RE = /(?:^|[\s])(@)([^\s@/]*)$/
+const SLASH_TRIGGER_RE = /(?:^|[\s])(\/)((?:[a-zA-Z][\w-]*(?:\s+\S*)*)?)$/
+
+/** Stable key for paste dedupe — `items` and `files` often mirror the same image as different objects. */
+export function blobDedupeKey(blob: Blob): string {
+  if (blob instanceof File) {
+    return `file:${blob.name}:${blob.size}:${blob.type}:${blob.lastModified}`
+  }
+
+  return `blob:${blob.size}:${blob.type}`
+}
 
 export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
   const blobs: Blob[] = []
-  const seen = new Set<Blob>()
+  const seen = new Set<string>()
 
   const push = (blob: Blob | null) => {
-    if (!blob || blob.size === 0 || seen.has(blob)) {
+    if (!blob || blob.size === 0) {
       return
     }
 
-    seen.add(blob)
+    const key = blobDedupeKey(blob)
+
+    if (seen.has(key)) {
+      return
+    }
+
+    seen.add(key)
     blobs.push(blob)
   }
 
@@ -29,7 +50,8 @@ export function extractClipboardImageBlobs(clipboard: DataTransfer): Blob[] {
     }
   }
 
-  if (clipboard.files?.length) {
+  // Chromium/Electron expose the same pasted image on both `items` and `files`.
+  if (blobs.length === 0 && clipboard.files?.length) {
     for (let i = 0; i < clipboard.files.length; i += 1) {
       const file = clipboard.files.item(i)
 
@@ -81,11 +103,17 @@ export function textBeforeCaret(editor: HTMLDivElement): string | null {
 }
 
 export function detectTrigger(textBefore: string): TriggerState | null {
-  const match = TRIGGER_RE.exec(textBefore)
+  const slash = SLASH_TRIGGER_RE.exec(textBefore)
 
-  if (!match) {
-    return null
+  if (slash) {
+    return { kind: '/', query: slash[2], tokenLength: 1 + slash[2].length }
   }
 
-  return { kind: match[1] as '@' | '/', query: match[2], tokenLength: 1 + match[2].length }
+  const at = AT_TRIGGER_RE.exec(textBefore)
+
+  if (at) {
+    return { kind: '@', query: at[2], tokenLength: 1 + at[2].length }
+  }
+
+  return null
 }

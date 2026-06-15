@@ -327,6 +327,305 @@ def test_anthropic_pkce_branch_still_works():
     assert "claude.ai" in body["auth_url"]
 
 
+def test_xai_oauth_listed_as_loopback_flow():
+    """xAI Grok OAuth must surface in the catalog as a first-class loopback flow."""
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+    assert "xai-oauth" in providers
+    assert providers["xai-oauth"]["flow"] == "loopback"
+    assert "grok" in providers["xai-oauth"]["name"].lower()
+
+
+def test_oauth_catalog_marks_external_providers_not_disconnectable():
+    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    assert providers["qwen-oauth"]["flow"] == "external"
+    assert providers["qwen-oauth"]["disconnectable"] is False
+    assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
+
+    assert providers["claude-code"]["flow"] == "external"
+    assert providers["claude-code"]["disconnectable"] is False
+    assert "provider's CLI" in providers["claude-code"]["disconnect_hint"]
+
+
+def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
+    """DELETE must not pretend to remove credentials owned by another CLI."""
+    from hermes_cli import auth as auth_mod
+
+    def fail_clear_provider_auth(provider_id=None):
+        raise AssertionError("external providers must not reach clear_provider_auth")
+
+    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear_provider_auth)
+
+    resp = client.delete("/api/providers/oauth/qwen-oauth", headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert "cannot be disconnected automatically" in resp.text
+    assert "provider's CLI" in resp.text
+
+
+def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
+    """An env/.env-backed Anthropic API key is removed from Keys, not OAuth Accounts."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    assert providers["anthropic"]["status"]["source"] == "env_var"
+    assert providers["anthropic"]["disconnectable"] is False
+    assert providers["anthropic"]["disconnect_hint"] == "Remove the API key from Settings → Keys instead."
+
+    delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
+    assert delete_resp.status_code == 400, delete_resp.text
+    assert "Settings" in delete_resp.text
+
+
+def test_xai_loopback_start_returns_authorize_url(monkeypatch):
+    """Start MUST bind the loopback listener and hand back an xAI authorize URL."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    class _FakeServer:
+        def shutdown(self):
+            pass
+
+        def server_close(self):
+            pass
+
+    class _FakeThread:
+        def join(self, timeout=None):
+            pass
+
+    redirect_uri = (
+        f"http://{auth_mod.XAI_OAUTH_REDIRECT_HOST}:{auth_mod.XAI_OAUTH_REDIRECT_PORT}"
+        f"{auth_mod.XAI_OAUTH_REDIRECT_PATH}"
+    )
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_oauth_discovery",
+        lambda *a, **k: {
+            "authorization_endpoint": "https://auth.x.ai/oauth2/auth",
+            "token_endpoint": "https://auth.x.ai/oauth2/token",
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_start_callback_server",
+        lambda *a, **k: (_FakeServer(), _FakeThread(), {"code": None, "error": None}, redirect_uri),
+    )
+    # Don't let the background worker run a real callback wait/exchange.
+    monkeypatch.setattr(ws, "_xai_loopback_worker", lambda sid: None)
+
+    resp = client.post("/api/providers/oauth/xai-oauth/start", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    try:
+        assert body["flow"] == "loopback"
+        assert "user_code" not in body  # loopback has nothing to paste/show
+        assert body["auth_url"].startswith("https://auth.x.ai/oauth2/auth?")
+        assert "code_challenge" in body["auth_url"]
+        sess = ws._oauth_sessions[body["session_id"]]
+        assert sess["provider"] == "xai-oauth"
+        assert sess["flow"] == "loopback"
+    finally:
+        ws._oauth_sessions.pop(body["session_id"], None)
+
+
+def test_xai_loopback_worker_persists_tokens_on_success(monkeypatch):
+    """The worker exchanges the callback code and marks the session approved."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    saved = {}
+    session_id = "xai-loopback-success-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "server": object(),
+        "thread": object(),
+        "callback_result": {"code": "auth-code", "state": "st"},
+        "redirect_uri": "http://127.0.0.1:56121/callback",
+        "verifier": "verifier",
+        "challenge": "challenge",
+        "state": "st",
+        "token_endpoint": "https://auth.x.ai/oauth2/token",
+        "discovery": {"token_endpoint": "https://auth.x.ai/oauth2/token"},
+    }
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_wait_for_callback",
+        lambda *a, **k: {"code": "auth-code", "state": "st"},
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_oauth_exchange_code_for_tokens",
+        lambda **k: {
+            "access_token": "xai-access",
+            "refresh_token": "xai-refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_save_xai_oauth_tokens",
+        lambda tokens, **k: saved.update(tokens),
+    )
+    monkeypatch.setattr(ws, "_add_xai_oauth_pool_entry", lambda *a, **k: None)
+
+    try:
+        ws._xai_loopback_worker(session_id)
+        assert ws._oauth_sessions[session_id]["status"] == "approved"
+        assert saved["access_token"] == "xai-access"
+        assert saved["refresh_token"] == "xai-refresh"
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
+def test_xai_loopback_worker_fails_on_state_mismatch(monkeypatch):
+    """A mismatched OAuth state must fail the session, not persist tokens."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    session_id = "xai-loopback-state-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "server": object(),
+        "thread": object(),
+        "callback_result": {},
+        "redirect_uri": "http://127.0.0.1:56121/callback",
+        "verifier": "verifier",
+        "challenge": "challenge",
+        "state": "expected-state",
+        "token_endpoint": "https://auth.x.ai/oauth2/token",
+        "discovery": {},
+    }
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_xai_wait_for_callback",
+        lambda *a, **k: {"code": "auth-code", "state": "ATTACKER-state"},
+    )
+
+    def _boom(**kwargs):
+        raise AssertionError("token exchange must not run on state mismatch")
+
+    monkeypatch.setattr(auth_mod, "_xai_oauth_exchange_code_for_tokens", _boom)
+
+    try:
+        ws._xai_loopback_worker(session_id)
+        sess = ws._oauth_sessions[session_id]
+        assert sess["status"] == "error"
+        assert "state mismatch" in sess["error_message"].lower()
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
+def test_xai_loopback_worker_skips_persist_when_cancelled(monkeypatch):
+    """If the session is cancelled while waiting, the worker must not persist."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    session_id = "xai-loopback-cancel-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "server": object(),
+        "thread": object(),
+        "callback_result": {},
+        "redirect_uri": "http://127.0.0.1:56121/callback",
+        "verifier": "verifier",
+        "challenge": "challenge",
+        "state": "st",
+        "token_endpoint": "https://auth.x.ai/oauth2/token",
+        "discovery": {},
+    }
+
+    def _wait_then_cancel(*args, **kwargs):
+        # Simulate the user cancelling (DELETE /sessions/{id}) while we were
+        # blocked on the callback: the session vanishes, then a valid code
+        # arrives. The worker must notice and bail before persisting.
+        ws._oauth_sessions.pop(session_id, None)
+        return {"code": "auth-code", "state": "st"}
+
+    monkeypatch.setattr(auth_mod, "_xai_wait_for_callback", _wait_then_cancel)
+
+    def _must_not_persist(*args, **kwargs):
+        raise AssertionError("tokens must not be persisted for a cancelled session")
+
+    monkeypatch.setattr(auth_mod, "_save_xai_oauth_tokens", _must_not_persist)
+    monkeypatch.setattr(ws, "_add_xai_oauth_pool_entry", _must_not_persist)
+
+    # Should return cleanly without raising and without persisting.
+    ws._xai_loopback_worker(session_id)
+    assert session_id not in ws._oauth_sessions
+
+
+def test_cancel_loopback_session_shuts_down_callback_server():
+    """Cancelling a loopback session must free the bound callback port now."""
+    from hermes_cli import web_server as ws
+
+    shutdown_calls = {"shutdown": 0, "close": 0, "join": 0}
+
+    class _FakeServer:
+        def shutdown(self):
+            shutdown_calls["shutdown"] += 1
+
+        def server_close(self):
+            shutdown_calls["close"] += 1
+
+    class _FakeThread:
+        def join(self, timeout=None):
+            shutdown_calls["join"] += 1
+
+    # callback_result is the dict the worker's _xai_wait_for_callback polls.
+    callback_result = {"code": None, "error": None}
+    session_id = "xai-loopback-cancel-shutdown-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "xai-oauth",
+        "flow": "loopback",
+        "created_at": time.time(),
+        "status": "pending",
+        "server": _FakeServer(),
+        "thread": _FakeThread(),
+        "callback_result": callback_result,
+    }
+
+    try:
+        resp = client.delete(
+            f"/api/providers/oauth/sessions/{session_id}", headers=HEADERS
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["ok"] is True
+        assert shutdown_calls == {"shutdown": 1, "close": 1, "join": 1}
+        # The waiting worker must be signalled so it returns promptly instead
+        # of spinning until the timeout.
+        assert callback_result["error"] == "cancelled"
+        assert session_id not in ws._oauth_sessions
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 def test_unknown_pkce_provider_rejected_cleanly():
     """A future PKCE provider without an explicit branch must NOT silently route to Anthropic.
 

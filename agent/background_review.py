@@ -449,6 +449,17 @@ def _run_review_in_thread(
             # if a future code path bypasses the cache.
             review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            # Never let the review fork compress. It shares the parent's
+            # session_id, so if it won a compression race it would rotate the
+            # parent into a NEW child that the gateway never adopts (the fork
+            # is single-lifecycle and dies right after this run_conversation).
+            # The foreground turn would then start from the stale parent and
+            # compress it again, leaving the same parent with two sibling
+            # children (issue #38727). Review also needs full context to
+            # produce a good memory/skill summary — compressing would strip
+            # detail. Both compression triggers in conversation_loop.py gate on
+            # agent.compression_enabled, so this short-circuits both paths.
+            review_agent.compression_enabled = False
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (

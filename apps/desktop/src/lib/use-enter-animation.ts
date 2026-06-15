@@ -81,10 +81,10 @@ export function useEnterAnimation(enabled: boolean, animationKey?: string): (el:
 
     el.animate(
       [
-        { opacity: 0, transform: 'translateY(0.5rem)' },
+        { opacity: 0, transform: 'translateY(0.375rem)' },
         { opacity: 1, transform: 'translateY(0)' }
       ],
-      { duration: 220, easing: 'linear', fill: 'both' }
+      { duration: 180, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', fill: 'both' }
     )
 
     if (key) {

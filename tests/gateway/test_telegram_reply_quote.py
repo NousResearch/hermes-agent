@@ -9,8 +9,9 @@ actionable-looking text the user did not quote (#22619).
 """
 
 import sys
+import asyncio
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import PlatformConfig
 
@@ -44,6 +45,7 @@ def _make_message(
     text="follow-up",
     reply_to_text=None,
     reply_to_caption=None,
+    reply_to_voice=None,
     reply_to_id=42,
     quote_text=None,
 ):
@@ -51,11 +53,16 @@ def _make_message(
     user = SimpleNamespace(id=42, full_name="Alice")
 
     reply_to_message = None
-    if reply_to_text is not None or reply_to_caption is not None:
+    if reply_to_text is not None or reply_to_caption is not None or reply_to_voice is not None:
         reply_to_message = SimpleNamespace(
             message_id=reply_to_id,
             text=reply_to_text,
             caption=reply_to_caption,
+            voice=reply_to_voice,
+            audio=None,
+            photo=None,
+            video=None,
+            document=None,
         )
 
     quote = None
@@ -142,3 +149,40 @@ def test_empty_quote_text_falls_back_to_full_reply():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Prior message body"
+
+
+def test_replied_to_voice_is_cached_as_audio_context():
+    """Replying to a Telegram voice note should feed the normal STT path."""
+    from gateway.platforms.base import CachedMedia, MessageType
+
+    async def _run():
+        adapter = _make_adapter()
+        voice = SimpleNamespace(file_size=128, get_file=AsyncMock())
+        voice.get_file.return_value = SimpleNamespace(
+            file_path="voice.ogg",
+            download_as_bytearray=AsyncMock(return_value=bytearray(b"fake ogg")),
+        )
+        msg = _make_message(
+            text="@hermes_bot o que tem nesse audio?",
+            reply_to_voice=voice,
+            quote_text=None,
+        )
+        event = adapter._build_message_event(msg, MessageType.TEXT)
+
+        with patch(
+            "gateway.platforms.base.cache_media_bytes",
+            return_value=CachedMedia(
+                path="/home/dev/.hermes/audio_cache/audio_reply.ogg",
+                media_type="audio/ogg",
+                kind="audio",
+                display_name="voice.ogg",
+            ),
+        ) as cache_media:
+            await adapter._cache_replied_media(msg, event)
+
+        cache_media.assert_called_once()
+        assert "[Replied-to audio 'voice.ogg' saved at: /home/dev/.hermes/audio_cache/audio_reply.ogg]" in event.text
+        assert event.media_urls == ["/home/dev/.hermes/audio_cache/audio_reply.ogg"]
+        assert event.media_types == ["audio/ogg"]
+
+    asyncio.run(_run())

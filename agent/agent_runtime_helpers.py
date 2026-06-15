@@ -2162,6 +2162,135 @@ def looks_like_codex_intermediate_ack(
 
 
 
+def looks_like_post_tool_progress_only(
+    agent,
+    assistant_content: str,
+    messages: List[Dict[str, Any]],
+) -> bool:
+    """Detect status/progress text that should not close a post-tool turn.
+
+    Some weaker/tool-shaky models answer after tool results with text like
+    "정보수집중" / "찾은 내용 분석중" / "I'm analyzing the results" and no
+    tool call. Treating that as final leaves Slack threads with a progress
+    notice instead of a closeout. Keep this deliberately narrow: it only
+    applies when recent tool results exist and the visible text is short,
+    status-shaped, and lacks final-answer markers.
+    """
+    if not any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in messages[-8:]):
+        return False
+
+    visible = agent._strip_think_blocks(assistant_content or "").strip()
+    if not visible:
+        return False
+    if len(visible) > 500:
+        return False
+
+    lowered = re.sub(r"\s+", " ", visible.lower()).strip()
+    compact = re.sub(r"\s+", "", visible.lower())
+
+    final_markers = (
+        "작업한 일",
+        "검증 근거",
+        "남은 일",
+        "보안/주의",
+        "결론",
+        "최종",
+        "완료했습니다",
+        "완료됨",
+        "완료:",
+        "done:",
+        "completed",
+        "final answer",
+        "here is",
+        "here's",
+        "result:",
+        "results:",
+        "summary:",
+        "verified",
+    )
+    if any(marker in lowered for marker in final_markers):
+        return False
+
+    # Avoid substring matches: a real final answer may legitimately contain
+    # phrases such as "자료 수집 중 발견한 핵심" or "확인 중 오류를 발견".
+    # Treat the response as progress-only only when every visible clause is a
+    # bare status/update phrase and contains no result payload.
+    payload_markers = (
+        "발견",
+        "확인했습니다",
+        "확인했",
+        "확인됨",
+        "원인",
+        "오류",
+        "문제",
+        "핵심",
+        "결과:",
+        "중간 결과",
+        "수정",
+        "적용",
+        "found ",
+        "discovered",
+        "because",
+        "root cause",
+    )
+    if any(marker in lowered for marker in payload_markers):
+        return False
+
+    status_clause_patterns = (
+        r"(?:정보|자료|데이터|소스)?\s*(?:수집|검색)\s*중(?:입니다|이에요|입니다요|요)?",
+        r"찾은\s*내용\s*분석\s*중(?:입니다|이에요|요)?",
+        r"(?:조사|분석|정리|검토|확인|처리|진행)\s*중(?:입니다|이에요|요)?",
+        r"작업\s*(?:진행\s*)?중(?:입니다|이에요|요)?",
+        r"잠시만(?:요)?",
+        r"곧\s*(?:정리|보고)(?:하겠습니다|할게요|합니다)?",
+        r"마저\s*(?:확인|분석|정리)(?:하겠습니다|할게요|합니다)?",
+        r"working on it",
+        r"still (?:checking|analyzing|analysing|researching|working)",
+        r"i(?:'|’)m (?:checking|analyzing|analysing|researching|working)",
+        r"i am (?:checking|analyzing|analysing|researching|working)",
+        r"looking into (?:it|this)",
+        r"gathering (?:info|information|data|sources)",
+        r"analy[sz]ing (?:the )?(?:results|findings|data|sources)",
+        r"i(?:'|’)ll (?:check|analy[sz]e|review|summari[sz]e|report back)",
+        r"i will (?:check|analy[sz]e|review|summari[sz]e|report back)",
+    )
+    clauses = [
+        clause.strip(" \t\r\n.!?。．…·-–—:：")
+        for clause in re.split(r"[\n.!?。．…]+", visible)
+    ]
+    clauses = [clause for clause in clauses if clause]
+    if clauses and all(
+        any(re.fullmatch(pattern, clause, re.IGNORECASE) for pattern in status_clause_patterns)
+        for clause in clauses
+    ):
+        return True
+
+    # Catch compact Korean status strings without spaces/punctuation, e.g.
+    # "정보수집중찾은내용분석중", but still require the entire response to be
+    # made only of status units.
+    compact_units = (
+        "정보수집중",
+        "자료수집중",
+        "데이터수집중",
+        "소스수집중",
+        "검색중",
+        "찾은내용분석중",
+        "분석중",
+        "조사중",
+        "정리중",
+        "검토중",
+        "확인중",
+        "처리중",
+        "작업중",
+        "작업진행중",
+        "진행중",
+        "잠시만",
+        "잠시만요",
+    )
+    compact_status_re = "(?:" + "|".join(re.escape(unit) for unit in compact_units) + ")+"
+    return bool(re.fullmatch(compact_status_re, compact))
+
+
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Copy provider-facing reasoning fields onto an API replay message."""
@@ -2597,6 +2726,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "looks_like_post_tool_progress_only",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

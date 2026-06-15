@@ -206,6 +206,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("shell", "Execute a shell command directly (CLI only)",
+               "Tools & Skills", cli_only=True, args_hint="<command>"),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

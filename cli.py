@@ -7649,6 +7649,39 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_voice_command(cmd_original)
         elif canonical == "busy":
             self._handle_busy_command(cmd_original)
+        elif canonical == "shell":
+            # Execute shell command directly (CLI-only, no LLM involvement)
+            import subprocess
+            parts = cmd_original.split(maxsplit=1)
+            if len(parts) > 1:
+                shell_cmd = parts[1].strip()
+                if shell_cmd:
+                    try:
+                        result = subprocess.run(
+                            shell_cmd,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            stdin=subprocess.DEVNULL,
+                        )
+                        output = (
+                            (result.stdout or "")
+                            + ("\n" if result.stdout and result.stderr else "")
+                            + (result.stderr or "")
+                        ).strip()
+                        if output:
+                            self._console_print(_rich_text_from_ansi(output))
+                        else:
+                            self._console_print("[dim]Command returned no output[/]")
+                    except subprocess.TimeoutExpired:
+                        self._console_print("[bold red]Shell command timed out (30s)[/]")
+                    except Exception as e:
+                        self._console_print(f"[bold red]Shell command error: {e}[/]")
+                else:
+                    self._console_print("  Usage: /shell <command>")
+            else:
+                self._console_print("  Usage: /shell <command>")
         else:
             # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]

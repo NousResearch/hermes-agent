@@ -111,7 +111,7 @@ class TestResolveMaxTextLength:
 
     def test_all_documented_providers_have_defaults(self):
         expected = {"edge", "openai", "xai", "minimax", "mistral",
-                    "gemini", "elevenlabs", "neutts", "kittentts"}
+                    "gemini", "yandex", "elevenlabs", "neutts", "kittentts"}
         assert expected.issubset(PROVIDER_MAX_TEXT_LENGTH.keys())
 
 

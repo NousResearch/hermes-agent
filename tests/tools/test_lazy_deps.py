@@ -103,6 +103,9 @@ class TestAllowlist:
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
 
+    def test_yandex_tts_lazy_dep_is_allowlisted(self):
+        assert ld.LAZY_DEPS["tts.yandex"] == ("yandex-ai-studio-sdk==0.20.1",)
+
 
 # ---------------------------------------------------------------------------
 # allow_lazy_installs gating

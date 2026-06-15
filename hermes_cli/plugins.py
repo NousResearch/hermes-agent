@@ -145,6 +145,12 @@ VALID_HOOKS: Set[str] = {
     "on_session_reset",
     "subagent_start",
     "subagent_stop",
+    # CLI slash-command lifecycle hooks. Fired inside process_command() before
+    # and after the command handler runs. Plugins receive the canonical command
+    # name, raw args, session_id, and a reference to the HermesCLI instance.
+    # Useful for pre-exit titling, usage tracking, or modifying command behavior.
+    "pre_command",
+    "post_command",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

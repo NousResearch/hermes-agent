@@ -7476,6 +7476,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
 
+        # Plugin hook: pre_command — fires before any slash command handler.
+        # Plugins receive the canonical name, raw text, session_id, and CLI ref.
+        # The hook is fire-and-forget: exceptions are caught and logged.
+        try:
+            from hermes_cli.plugins import invoke_hook as _pre_cmd_hook
+            _pre_cmd_hook(
+                "pre_command",
+                command=canonical,
+                raw=cmd_original,
+                session_id=self.session_id,
+                cli=self,
+            )
+        except Exception:
+            pass
+
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)
         # disarms it so a later number isn't swallowed as a stale selection.
@@ -7494,6 +7509,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
                 return True
+            # Plugin hook: post_command — fires before CLI exits so plugins
+            # can auto-title, compress conversation, or save state.
+            try:
+                from hermes_cli.plugins import invoke_hook as _post_cmd_hook
+                _post_cmd_hook(
+                    "post_command",
+                    command="quit",
+                    raw=cmd_original,
+                    session_id=self.session_id,
+                    cli=self,
+                )
+            except Exception:
+                pass
             return False
         elif canonical == "help":
             self.show_help()

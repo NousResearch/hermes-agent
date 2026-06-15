@@ -2370,11 +2370,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
-                    if normalized in {"kimi-coding", "kimi-coding-cn"}:
-                        curated = list(_PROVIDER_MODELS.get(normalized, []))
-                        merged = list(curated)
-                        merged_lower = {m.lower() for m in curated}
-                        for m in live:
+                    # Merge live API results with static curated list so
+                    # models that the live endpoint omits (stale cache,
+                    # partial rollout) still appear in the picker.
+                    # Live entries come first (provider's preferred order),
+                    # then curated-only entries are appended.  (#46850)
+                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    if curated:
+                        merged = list(live)
+                        merged_lower = {m.lower() for m in live}
+                        for m in curated:
                             if m.lower() not in merged_lower:
                                 merged.append(m)
                                 merged_lower.add(m.lower())

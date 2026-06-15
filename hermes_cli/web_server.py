@@ -1686,6 +1686,42 @@ async def get_status():
     return status
 
 
+def _dashboard_auth_bootstrap_shape() -> Dict[str, Any]:
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    auth_providers: list[str] = []
+    try:
+        from hermes_cli.dashboard_auth import list_providers as _list_providers
+        auth_providers = [p.name for p in _list_providers()]
+    except Exception:
+        pass
+
+    return {
+        "server_version": __version__,
+        "api_version": 1,
+        "auth_required": auth_required,
+        "auth_providers": auth_providers,
+        "features": {
+            "dashboard_status": True,
+            "desktop_gateway_ws": True,
+            "pty_chat": _DASHBOARD_EMBEDDED_CHAT_ENABLED,
+            "ws_ticket_auth": auth_required,
+            "device_pairing": False,
+            "hosted_relay": False,
+        },
+    }
+
+
+@app.get("/api/mobile/bootstrap")
+async def get_mobile_bootstrap():
+    """Read-only discovery contract for first-class remote clients.
+
+    Keep this shape intentionally coarse. The route is public so mobile apps
+    can identify a Hermes dashboard host before choosing an auth flow; it must
+    not expose host paths, PIDs, session data, tokens, user ids, or config.
+    """
+    return _dashboard_auth_bootstrap_shape()
+
+
 _WINDOWS_11_MIN_BUILD = 22000
 
 

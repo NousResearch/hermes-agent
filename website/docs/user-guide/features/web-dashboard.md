@@ -179,6 +179,27 @@ curl -s http://VM_IP:9119/api/status | jq '.auth_required, .auth_providers'
 
 If `/api/status` shows the gate is on with the `"basic"` provider and Desktop *still* fails to connect after signing in, the issue is past basic setup — grab a fresh `desktop.log` (Settings → Gateway → Open logs) plus the dashboard's logs from the same retry window and look for the `/api/ws` close code (4403 = chat WS rejected by the request guard, e.g. Host/peer mismatch; 4401 = the WS ticket didn't authenticate).
 
+### Mobile and remote-client bootstrap
+
+The dashboard also exposes a small read-only discovery endpoint for future
+first-class mobile and remote clients:
+
+```bash
+curl -s http://VM_IP:9119/api/mobile/bootstrap | jq
+```
+
+It returns the Hermes server version, a mobile bootstrap API version, whether
+dashboard auth is required, the advertised auth providers, and coarse feature
+flags such as WebSocket chat support. It does **not** return tokens, session
+lists, profile names, host paths, config, memory, logs, or API keys.
+
+Use this endpoint only to identify a Hermes dashboard host and choose the next
+auth step. All live chat, session, config, and management calls still go
+through the existing authenticated dashboard APIs and WebSocket-ticket flow.
+Pairing and QR/device registration are planned follow-up work; there is no
+hosted relay in this contract. See `docs/design/mobile-remote-access.md` in the
+repository for the design notes.
+
 ### Config
 
 A form-based editor for `config.yaml`. All 150+ configuration fields are auto-discovered from `DEFAULT_CONFIG` and organized into tabbed categories:

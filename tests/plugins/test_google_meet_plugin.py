@@ -501,6 +501,29 @@ def test_bot_state_drops_unresolved_caption_rows_that_are_only_ui_chrome(tmp_pat
     assert not transcript_path.exists()
 
 
+def test_bot_state_drops_resolved_caption_settings_chrome_row(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "s"
+    state = _BotState(out_dir=out, meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+
+    state.record_caption(
+        "Alex Rivera",
+        "language English format_size Font size circle Font colour settings Open caption settings",
+        speaker_source="captionRow",
+    )
+    state.record_caption("Alex Rivera", "actual caption text", speaker_source="captionRow")
+
+    transcript = (out / "transcript.txt").read_text()
+    assert "Open caption settings" not in transcript
+    assert "actual caption text" in transcript
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 1
+    assert status["captionUiNoiseDrops"] == 1
+
+
 def test_bot_state_revises_unresolved_caption_rows_when_caption_id_is_stable(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 

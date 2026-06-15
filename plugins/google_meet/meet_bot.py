@@ -148,6 +148,7 @@ class _BotState:
         self.leave_reason: Optional[str] = None
         self.unresolved_caption_drops = 0
         self.unresolved_caption_lines = 0
+        self.caption_ui_noise_drops = 0
         self.last_unresolved_caption_at: Optional[float] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
@@ -443,13 +444,16 @@ class _BotState:
                 }
                 with self.caption_debug_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(debug_line, ensure_ascii=True) + "\n")
+        if _caption_text_is_ui_noise(text):
+            self.caption_ui_noise_drops += 1
+            if unresolved_speaker:
+                self.unresolved_caption_drops += 1
+                self.last_unresolved_caption_at = time.time()
+            self._flush()
+            return
         if unresolved_speaker:
             now = time.time()
             self.last_unresolved_caption_at = now
-            if _caption_text_is_ui_noise(text):
-                self.unresolved_caption_drops += 1
-                self._flush()
-                return
             self.unresolved_caption_lines += 1
             speaker = "Unresolved speaker"
 
@@ -514,6 +518,7 @@ class _BotState:
             "leaveReason": self.leave_reason,
             "unresolvedCaptionDrops": self.unresolved_caption_drops,
             "unresolvedCaptionLines": self.unresolved_caption_lines,
+            "captionUiNoiseDrops": self.caption_ui_noise_drops,
             "lastUnresolvedCaptionAt": self.last_unresolved_caption_at,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
@@ -578,6 +583,16 @@ _CAPTION_UI_NOISE_PATTERNS = (
 def _caption_text_is_ui_noise(text: str) -> bool:
     normalized = " ".join((text or "").split()).strip().lower()
     if not normalized:
+        return True
+    if (
+        "open caption settings" in normalized
+        and (
+            "font size" in normalized
+            or "font colour settings" in normalized
+            or "font color settings" in normalized
+            or "format_size" in normalized
+        )
+    ):
         return True
     return normalized in _CAPTION_UI_NOISE_PATTERNS
 

@@ -219,7 +219,8 @@ MEET_TRANSCRIPT_SCHEMA: Dict[str, Any] = {
                 "type": "boolean",
                 "description": (
                     "Default false. Set true to explicitly read the most recent "
-                    "finished meeting transcript when no meeting is active."
+                    "finished meeting transcript owned by the current Hermes "
+                    "session when no meeting is active."
                 ),
             },
             "node": {"type": "string"},
@@ -366,11 +367,19 @@ def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.transcript(last=last_i, include_finished=include_finished)
+            res = client.transcript(
+                last=last_i,
+                include_finished=include_finished,
+                session_id=_context_session_id(_kw),
+            )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node transcript failed: {e}", node=node_name)
-    res = pm.transcript(last=last_i, include_finished=include_finished)
+    res = pm.transcript(
+        last=last_i,
+        include_finished=include_finished,
+        session_id=_context_session_id(_kw),
+    )
     return _json({"success": bool(res.get("ok")), **res})
 
 

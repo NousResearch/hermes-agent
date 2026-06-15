@@ -21,6 +21,8 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -870,20 +872,57 @@ def test_transcript_can_explicitly_read_finished_meeting_after_status_clears_dea
         "out_dir": str(out_dir),
         "url": "https://meet.google.com/abc-defg-hij",
         "started_at": 0,
+        "session_id": "session-a",
     })
 
     with patch.object(pm, "_pid_alive", return_value=False):
         status = pm.status()
-    transcript = pm.transcript(include_finished=True)
+    transcript = pm.transcript(include_finished=True, session_id="session-a")
 
     assert status["ok"] is False
     assert transcript["ok"] is True
     assert transcript["active"] is False
     assert transcript["fromLast"] is True
     assert transcript["stale"] is True
+    assert transcript["sessionId"] == "session-a"
     assert transcript["leaveReason"] == "duration_expired"
     assert transcript["total"] == 2
     assert transcript["lines"][-1].endswith("Morgan Lee: two")
+
+
+def test_transcript_finished_meeting_requires_matching_session_id(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = tmp_path / "abc-defg-hij"
+    out_dir.mkdir()
+    (out_dir / "status.json").write_text(json.dumps({
+        "meetingId": "abc-defg-hij",
+        "exited": True,
+        "leaveReason": "duration_expired",
+    }))
+    (out_dir / "transcript.txt").write_text(
+        "[10:00:00] Alex Rivera: one\n",
+        encoding="utf-8",
+    )
+    pm._write_active({
+        "pid": 11111,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+        "session_id": "session-a",
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=False):
+        pm.status()
+
+    no_session = pm.transcript(include_finished=True)
+    other_session = pm.transcript(include_finished=True, session_id="session-b")
+
+    assert no_session["ok"] is False
+    assert "session id" in no_session["reason"]
+    assert other_session["ok"] is False
+    assert "no finished meeting" in other_session["reason"]
 
 
 def test_transcript_reads_last_n_lines(tmp_path):
@@ -1004,6 +1043,20 @@ def test_meet_status_and_transcript_no_active():
 
     assert json.loads(handle_meet_status({}))["success"] is False
     assert json.loads(handle_meet_transcript({}))["success"] is False
+
+
+def test_meet_transcript_passes_session_id_to_process_manager():
+    from plugins.google_meet.tools import handle_meet_transcript
+
+    with patch(
+        "plugins.google_meet.tools.pm.transcript",
+        return_value={"ok": True, "lines": [], "total": 0},
+    ) as transcript_mock:
+        out = json.loads(handle_meet_transcript({"include_finished": True}, session_id="session-a"))
+
+    assert out["success"] is True
+    assert transcript_mock.call_args.kwargs["include_finished"] is True
+    assert transcript_mock.call_args.kwargs["session_id"] == "session-a"
 
 
 def test_meet_leave_no_active():
@@ -1133,14 +1186,42 @@ def test_on_session_finalize_does_not_stop_other_session_remote_node_bot():
     stop_mock.assert_not_called()
 
 
-def test_on_session_finalize_stops_duration_limited_bot_by_default():
+def test_on_session_finalize_stops_duration_limited_bot_owned_by_ending_session():
     from plugins.google_meet import _on_session_finalize
     from plugins.google_meet import pm
 
-    with patch.object(pm, "status", return_value={"ok": True, "alive": True, "duration": "20m"}), \
+    with patch.object(
+        pm,
+        "status",
+        return_value={
+            "ok": True,
+            "alive": True,
+            "duration": "20m",
+            "sessionId": "session-a",
+        },
+    ), \
+         patch.object(pm, "stop") as stop_mock:
+        _on_session_finalize(session_id="session-a")
+    stop_mock.assert_called_once_with(reason="session ended")
+
+
+def test_on_session_finalize_does_not_stop_bot_when_session_id_is_missing():
+    from plugins.google_meet import _on_session_finalize
+    from plugins.google_meet import pm
+
+    with patch.object(
+        pm,
+        "status",
+        return_value={
+            "ok": True,
+            "alive": True,
+            "duration": "20m",
+            "sessionId": "session-a",
+        },
+    ), \
          patch.object(pm, "stop") as stop_mock:
         _on_session_finalize()
-    stop_mock.assert_called_once_with(reason="session ended")
+    stop_mock.assert_not_called()
 
 
 def test_on_session_finalize_keeps_explicitly_detached_bot_running():
@@ -1233,17 +1314,73 @@ def test_enqueue_say_rejects_transcribe_mode(tmp_path):
     assert "transcribe mode" in res["reason"]
 
 
+def test_enqueue_say_rejects_dead_realtime_bot(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": True,
+    }))
+    pm._write_active({
+        "pid": 12345, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "realtime",
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=False):
+        res = pm.enqueue_say("hello everyone")
+
+    assert res["ok"] is False
+    assert "no active meeting" in res["reason"]
+    assert not (out_dir / "say_queue.jsonl").exists()
+
+
+def test_enqueue_say_rejects_realtime_before_bot_is_ready(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": False,
+    }))
+    pm._write_active({
+        "pid": 12345, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "realtime",
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=True):
+        res = pm.enqueue_say("hello everyone")
+
+    assert res["ok"] is False
+    assert "realtime is not ready" in res["reason"]
+    assert not (out_dir / "say_queue.jsonl").exists()
+
+
 def test_enqueue_say_writes_jsonl_in_realtime_mode():
     from plugins.google_meet import process_manager as pm
 
     out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
     out_dir.mkdir(parents=True)
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": True,
+        "error": None,
+        "exited": False,
+    }))
     pm._write_active({
-        "pid": 0, "meeting_id": "abc-defg-hij",
+        "pid": 12345, "meeting_id": "abc-defg-hij",
         "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
         "started_at": 0, "mode": "realtime",
     })
-    res = pm.enqueue_say("hello everyone")
+    with patch.object(pm, "_pid_alive", return_value=True):
+        res = pm.enqueue_say("hello everyone")
     assert res["ok"] is True
     assert "enqueued_id" in res
 
@@ -1252,6 +1389,63 @@ def test_enqueue_say_writes_jsonl_in_realtime_mode():
     lines = [json.loads(ln) for ln in queue.read_text().splitlines() if ln.strip()]
     assert len(lines) == 1
     assert lines[0]["text"] == "hello everyone"
+
+
+def test_realtime_queue_preserves_append_during_consumer_rewrite(tmp_path):
+    from plugins.google_meet import process_manager as pm
+    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    queue_path = out_dir / "say_queue.jsonl"
+    queue_path.write_text(json.dumps({"id": "first", "text": "first"}) + "\n")
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": True,
+    }))
+    pm._write_active({
+        "pid": 12345, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "realtime",
+    })
+
+    stop = {"value": False}
+    rewrite_started = threading.Event()
+    original_write_text = Path.write_text
+
+    class _Session:
+        def speak(self, _text):
+            stop["value"] = True
+            return {"ok": True, "bytes_written": 0, "duration_ms": 0.0}
+
+    def _slow_queue_write(path, text, *args, **kwargs):
+        if path == queue_path and text == "":
+            rewrite_started.set()
+            time.sleep(0.2)
+        return original_write_text(path, text, *args, **kwargs)
+
+    speaker = RealtimeSpeaker(session=_Session(), queue_path=queue_path)
+    with patch.object(Path, "write_text", _slow_queue_write), \
+         patch.object(pm, "_pid_alive", return_value=True):
+        consumer = threading.Thread(
+            target=speaker.run_until_stopped,
+            args=(lambda: stop["value"],),
+            kwargs={"poll_interval": 0.01},
+        )
+        consumer.start()
+        assert rewrite_started.wait(timeout=2)
+        res = pm.enqueue_say("second")
+        consumer.join(timeout=2)
+
+    assert res["ok"] is True
+    assert not consumer.is_alive()
+    remaining = [
+        json.loads(line)
+        for line in queue_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert remaining == [{"id": res["enqueued_id"], "text": "second"}]
 
 
 def test_start_passes_mode_into_active_record():
@@ -1512,8 +1706,13 @@ def test_node_server_say_uses_realtime_queue(tmp_path):
 
     out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
     out_dir.mkdir(parents=True)
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": True,
+    }))
     pm._write_active({
-        "pid": 0,
+        "pid": 12345,
         "meeting_id": "abc-defg-hij",
         "out_dir": str(out_dir),
         "url": "https://meet.google.com/abc-defg-hij",
@@ -1523,9 +1722,10 @@ def test_node_server_say_uses_realtime_queue(tmp_path):
     server = NodeServer(token_path=tmp_path / "node_token.json")
     server._token = "tok"
 
-    response = asyncio.run(server._handle_request(
-        proto.make_request("say", "tok", {"text": "hello"})
-    ))
+    with patch.object(pm, "_pid_alive", return_value=True):
+        response = asyncio.run(server._handle_request(
+            proto.make_request("say", "tok", {"text": "hello"})
+        ))
 
     assert response["type"] == "response"
     assert response["payload"]["ok"] is True
@@ -2511,6 +2711,137 @@ def test_start_realtime_speaker_linux_streams_pcm_to_paplay_stdin(tmp_path):
     assert str(tmp_path / SAY_PCM_FILENAME) not in proc.argv
     assert proc.kwargs["stdin"] == subprocess.PIPE
     assert "pcm_pump_thread" in rt
+
+
+def test_start_realtime_speaker_darwin_streams_pcm_to_ffmpeg_stdin(tmp_path):
+    from plugins.google_meet.meet_bot import (
+        SAY_PCM_FILENAME,
+        _BotState,
+        _start_realtime_speaker,
+    )
+
+    popen_calls = []
+
+    class _FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def connect(self):
+            return None
+
+    class _FakeSpeaker:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_until_stopped(self, _stop_fn):
+            return None
+
+    class _FakeProc:
+        def __init__(self, argv, **kwargs):
+            self.argv = list(argv)
+            self.kwargs = kwargs
+            self.stdin = io.BytesIO()
+            popen_calls.append(self)
+
+        def poll(self):
+            return None
+
+    state = _BotState(
+        out_dir=tmp_path,
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    rt = {}
+    stop_flag = {"stop": True}
+
+    with patch("plugins.google_meet.realtime.openai_client.RealtimeSession", _FakeSession), \
+         patch("plugins.google_meet.realtime.openai_client.RealtimeSpeaker", _FakeSpeaker), \
+         patch("shutil.which", return_value="/usr/local/bin/ffmpeg"), \
+         patch("plugins.google_meet.meet_bot._mac_audio_device_index", return_value="7"), \
+         patch("subprocess.Popen", _FakeProc):
+        _start_realtime_speaker(
+            rt=rt,
+            out_dir=tmp_path,
+            bridge_info={"platform": "darwin", "write_target": "BlackHole 2ch"},
+            api_key="sk-test",
+            model="gpt-test",
+            voice="alloy",
+            instructions="Test",
+            stop_flag=stop_flag,
+            state=state,
+        )
+
+    assert popen_calls
+    proc = popen_calls[0]
+    assert str(tmp_path / SAY_PCM_FILENAME) not in proc.argv
+    assert "pipe:0" in proc.argv
+    assert proc.kwargs["stdin"] == subprocess.PIPE
+    assert "pcm_pump_thread" in rt
+
+
+def test_run_bot_tears_down_realtime_resources_on_navigation_failure(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from plugins.google_meet import audio_bridge
+    from plugins.google_meet.meet_bot import run_bot
+
+    closed = {"context": False, "browser": False, "bridge": False}
+
+    class _FakeBridge:
+        def setup(self):
+            return {
+                "platform": "linux",
+                "device_name": "hermes_meet_src",
+                "write_target": "hermes_meet_sink",
+            }
+
+        def teardown(self):
+            closed["bridge"] = True
+
+    class _FakePage:
+        def goto(self, *_args, **_kwargs):
+            raise RuntimeError("navigation failed")
+
+    class _FakeContext:
+        def new_page(self):
+            return _FakePage()
+
+        def close(self):
+            closed["context"] = True
+
+    class _FakeBrowser:
+        def new_context(self, **_kwargs):
+            return _FakeContext()
+
+        def close(self):
+            closed["browser"] = True
+
+    class _FakePlaywright:
+        chromium = type("_Chromium", (), {
+            "launch": staticmethod(lambda **_kwargs: _FakeBrowser())
+        })()
+
+    class _FakeSyncPlaywright:
+        def __enter__(self):
+            return _FakePlaywright()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setitem(
+        sys.modules,
+        "playwright.sync_api",
+        types.SimpleNamespace(sync_playwright=lambda: _FakeSyncPlaywright()),
+    )
+    monkeypatch.setattr(audio_bridge, "AudioBridge", _FakeBridge)
+    monkeypatch.setenv("HERMES_MEET_URL", "https://meet.google.com/abc-defg-hij")
+    monkeypatch.setenv("HERMES_MEET_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("HERMES_MEET_MODE", "realtime")
+    monkeypatch.setenv("HERMES_MEET_REALTIME_KEY", "sk-test")
+
+    assert run_bot() == 4
+    assert closed == {"context": True, "browser": True, "bridge": True}
 
 
 # ---------------------------------------------------------------------------

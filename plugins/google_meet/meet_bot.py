@@ -1226,6 +1226,94 @@ def _compute_meet_phase(
     return "starting", None
 
 
+def _start_pcm_file_pump(
+    *,
+    rt: dict,
+    pcm_path: Path,
+    proc,
+    stop_flag: dict,
+    state: "_BotState",
+    error_prefix: str,
+) -> None:
+    """Stream newly appended PCM bytes into a subprocess stdin."""
+
+    def _pcm_pump_loop():
+        offset = 0
+        try:
+            while not stop_flag.get("stop", False):
+                if proc.poll() is not None:
+                    break
+                try:
+                    with pcm_path.open("rb") as fh:
+                        fh.seek(offset)
+                        chunk = fh.read()
+                except FileNotFoundError:
+                    chunk = b""
+                if chunk:
+                    offset += len(chunk)
+                    if proc.stdin is None:
+                        break
+                    try:
+                        proc.stdin.write(chunk)
+                        proc.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        break
+                else:
+                    time.sleep(0.05)
+        except Exception as e:
+            state.set(error=f"{error_prefix} pcm pump crashed: {e}")
+        finally:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except Exception:
+                pass
+
+    t_pump = threading.Thread(
+        target=_pcm_pump_loop,
+        name="meet-pcm-pump",
+        daemon=True,
+    )
+    t_pump.start()
+    rt["pcm_pump_thread"] = t_pump
+
+
+def _teardown_realtime(rt: dict) -> None:
+    """Best-effort cleanup for realtime session, pump, and audio bridge."""
+    if rt.get("speaker_stop"):
+        try:
+            rt["speaker_stop"]()
+        except Exception:
+            pass
+    if rt.get("pcm_pump_thread") is not None:
+        try:
+            rt["pcm_pump_thread"].join(timeout=3.0)
+        except Exception:
+            pass
+    if rt.get("pcm_pump"):
+        try:
+            if rt["pcm_pump"].poll() is None:
+                rt["pcm_pump"].terminate()
+            rt["pcm_pump"].wait(timeout=3)
+        except Exception:
+            pass
+    if rt.get("speaker_thread") is not None:
+        try:
+            rt["speaker_thread"].join(timeout=5.0)
+        except Exception:
+            pass
+    if rt.get("session"):
+        try:
+            rt["session"].close()
+        except Exception:
+            pass
+    if rt.get("bridge"):
+        try:
+            rt["bridge"].teardown()
+        except Exception:
+            pass
+
+
 def _start_realtime_speaker(
     *,
     rt: dict,
@@ -1326,46 +1414,14 @@ def _start_realtime_speaker(
                 stderr=_sp.DEVNULL,
             )
             rt["pcm_pump"] = proc
-
-            def _linux_pcm_pump_loop():
-                offset = 0
-                try:
-                    while not stop_flag.get("stop", False):
-                        if proc.poll() is not None:
-                            break
-                        try:
-                            with pcm_path.open("rb") as fh:
-                                fh.seek(offset)
-                                chunk = fh.read()
-                        except FileNotFoundError:
-                            chunk = b""
-                        if chunk:
-                            offset += len(chunk)
-                            if proc.stdin is None:
-                                break
-                            try:
-                                proc.stdin.write(chunk)
-                                proc.stdin.flush()
-                            except (BrokenPipeError, OSError):
-                                break
-                        else:
-                            time.sleep(0.05)
-                except Exception as e:
-                    state.set(error=f"linux pcm pump crashed: {e}")
-                finally:
-                    try:
-                        if proc.stdin is not None:
-                            proc.stdin.close()
-                    except Exception:
-                        pass
-
-            t_pump = threading.Thread(
-                target=_linux_pcm_pump_loop,
-                name="meet-pcm-pump",
-                daemon=True,
+            _start_pcm_file_pump(
+                rt=rt,
+                pcm_path=pcm_path,
+                proc=proc,
+                stop_flag=stop_flag,
+                state=state,
+                error_prefix="linux",
             )
-            t_pump.start()
-            rt["pcm_pump_thread"] = t_pump
         except FileNotFoundError:
             state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
     elif platform_tag == "darwin":
@@ -1381,31 +1437,29 @@ def _start_realtime_speaker(
         device_name = (bridge_info or {}).get("write_target") or "BlackHole 2ch"
         if _shutil.which("ffmpeg"):
             try:
-                # -re: read input at native frame rate.
-                # -f avfoundation -i: speaker path as raw PCM.
-                # -f s16le -ar 24000 -ac 1 -i <pcm>: interpret the file.
-                # -f audiotoolbox -audio_device_index: write to BlackHole.
-                # Simpler: output as raw via coreaudio using "-f audiotoolbox".
-                # ffmpeg's audiotoolbox output picks the current default
-                # output device, which isn't what we want. Instead we use
-                # -f avfoundation with the named device as OUTPUT via
-                # -vn and the device name.
                 proc = _sp.Popen(
                     [
                         "ffmpeg",
-                        "-nostdin", "-hide_banner", "-loglevel", "error",
-                        "-re",
+                        "-hide_banner", "-loglevel", "error",
                         "-f", "s16le", "-ar", "24000", "-ac", "1",
-                        "-i", str(pcm_path),
+                        "-i", "pipe:0",
                         "-f", "audiotoolbox",
                         "-audio_device_index", _mac_audio_device_index(device_name),
                         "-",
                     ],
-                    stdin=_sp.DEVNULL,
+                    stdin=_sp.PIPE,
                     stdout=_sp.DEVNULL,
                     stderr=_sp.DEVNULL,
                 )
                 rt["pcm_pump"] = proc
+                _start_pcm_file_pump(
+                    rt=rt,
+                    pcm_path=pcm_path,
+                    proc=proc,
+                    stop_flag=stop_flag,
+                    state=state,
+                    error_prefix="macOS",
+                )
             except FileNotFoundError:
                 state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
             except Exception as e:
@@ -1542,8 +1596,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             "google_meet bot: playwright is not installed. Run "
             "`pip install playwright && python -m playwright install chromium`\n"
         )
-        if rt["bridge"]:
-            rt["bridge"].teardown()
+        _teardown_realtime(rt)
         return 3
 
     # Chrome env: if realtime is live on Linux, point PULSE_SOURCE at the
@@ -1552,6 +1605,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     chrome_args, permissions = _build_browser_launch_config(realtime_enabled=rt["enabled"])
     if rt["enabled"] and rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
         chrome_env["PULSE_SOURCE"] = rt["bridge_info"].get("device_name", "")
+
+    browser = None
+    context = None
+    page = None
 
     try:
         with sync_playwright() as pw:
@@ -1750,47 +1807,24 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             except Exception:
                 pass
 
-            context.close()
-            browser.close()
-            # v2: teardown PCM pump, speaker thread, and audio bridge.
-            if rt["speaker_stop"]:
-                try:
-                    rt["speaker_stop"]()
-                except Exception:
-                    pass
-            if rt.get("pcm_pump_thread") is not None:
-                try:
-                    rt["pcm_pump_thread"].join(timeout=3.0)
-                except Exception:
-                    pass
-            if rt.get("pcm_pump"):
-                try:
-                    if rt["pcm_pump"].poll() is None:
-                        rt["pcm_pump"].terminate()
-                    rt["pcm_pump"].wait(timeout=3)
-                except Exception:
-                    pass
-            if rt["speaker_thread"] is not None:
-                try:
-                    rt["speaker_thread"].join(timeout=5.0)
-                except Exception:
-                    pass
-            if rt["session"]:
-                try:
-                    rt["session"].close()
-                except Exception:
-                    pass
-            if rt["bridge"]:
-                try:
-                    rt["bridge"].teardown()
-                except Exception:
-                    pass
             state.set(in_call=False, captioning=False, exited=True, phase="exited")
             return 0
 
     except Exception as e:
         state.set(error=f"unhandled: {e}", exited=True, phase="exited")
         return 1
+    finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        _teardown_realtime(rt)
 
 
 def _try_guest_name(page, guest_name: str) -> None:

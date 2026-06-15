@@ -144,6 +144,7 @@ class NodeServer:
                 result = pm.transcript(
                     last=last,
                     include_finished=bool(payload.get("include_finished", False)),
+                    session_id=payload.get("session_id"),
                 )
                 return _proto.make_response(req_id, result)
             if t == "say":

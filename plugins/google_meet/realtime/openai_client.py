@@ -16,9 +16,10 @@ from __future__ import annotations
 import base64
 import json
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from plugins.google_meet.queue_io import read_jsonl, remove_jsonl_entry, write_jsonl
 
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
@@ -259,33 +260,13 @@ class RealtimeSpeaker:
     # ── helpers ──────────────────────────────────────────────────────────
 
     def _read_queue(self) -> list[dict]:
-        if not self.queue_path.exists():
-            return []
-        out: list[dict] = []
-        for line in self.queue_path.read_text().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if "id" not in entry:
-                entry["id"] = str(uuid.uuid4())
-            out.append(entry)
-        return out
+        return read_jsonl(self.queue_path)
 
     def _rewrite_queue(self, remaining: list[dict]) -> None:
-        if not remaining:
-            # Keep the file but empty — consumers may be watching for
-            # new writes via mtime, and delete-then-recreate is a race.
-            self.queue_path.write_text("")
-            return
-        self.queue_path.write_text(
-            "\n".join(json.dumps(e) for e in remaining) + "\n"
-        )
+        write_jsonl(self.queue_path, remaining)
+
+    def _remove_processed(self, entry: dict) -> None:
+        remove_jsonl_entry(self.queue_path, str(entry.get("id") or ""))
 
     def _append_processed(self, entry: dict, result: dict) -> None:
         if self.processed_path is None:
@@ -320,13 +301,4 @@ class RealtimeSpeaker:
                 result = {"ok": True, "bytes_written": 0, "duration_ms": 0.0}
             self._append_processed(head, result)
 
-            # Re-read the queue from disk in case it was appended to
-            # while we were speaking, then drop the head.
-            latest = self._read_queue()
-            if latest and latest[0].get("id") == head.get("id"):
-                self._rewrite_queue(latest[1:])
-            else:
-                # Fallback: drop-by-id anywhere in the queue.
-                self._rewrite_queue(
-                    [e for e in latest if e.get("id") != head.get("id")]
-                )
+            self._remove_processed(head)

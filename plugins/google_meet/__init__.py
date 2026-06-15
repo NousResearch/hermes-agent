@@ -61,9 +61,9 @@ def _should_stop_owned_bot(status: dict, ending_session_id: str) -> bool:
     if status.get("persistAfterSession"):
         return False
     active_session_id = str(status.get("sessionId") or "").strip()
-    if ending_session_id and active_session_id and ending_session_id != active_session_id:
+    if not ending_session_id or not active_session_id:
         return False
-    return True
+    return ending_session_id == active_session_id
 
 
 def _on_session_finalize(**kwargs) -> None:

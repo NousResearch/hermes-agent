@@ -4024,11 +4024,27 @@ def run_conversation(
                     # _reset_stream_state, which clears _stream_started and
                     # _stream_box_opened — without this flag the CLI thinks
                     # nothing was streamed and renders the response again.
-                    # IMPORTANT: This must stay inside the stream_delta_callback
-                    # check — gateway platforms (Telegram, Discord, etc.) do NOT
-                    # set stream_delta_callback, so setting this flag would
-                    # cause the gateway to suppress the final response delivery.
-                    agent._response_was_previewed = True
+                    #
+                    # We must only set this flag when visible content was
+                    # actually streamed.  If the callback was configured but
+                    # the response produced no visible text (e.g. only a
+                    # <think> block, or content the partial-tag detector
+                    # swallowed and never recovered), setting
+                    # _response_was_previewed=True would tell the CLI to
+                    # skip the final render — silently hiding
+                    # the assistant's reply.  The CLI exposes
+                    # `_stream_flushed_chars` on the callback's bound
+                    # instance for exactly this gate; non-CLI callbacks
+                    # (gateway platforms) don't set stream_delta_callback
+                    # at all, so the outer `if` already protects them.
+                    _streamed_visible = False
+                    _cb_self = getattr(agent.stream_delta_callback, "__self__", None)
+                    if _cb_self is not None:
+                        _streamed_visible = bool(
+                            getattr(_cb_self, "_stream_flushed_chars", 0)
+                        )
+                    if _streamed_visible:
+                        agent._response_was_previewed = True
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

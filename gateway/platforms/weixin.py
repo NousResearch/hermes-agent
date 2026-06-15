@@ -1868,12 +1868,46 @@ class WeixinAdapter(BasePlatformAdapter):
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(
-                    chat_id=chat_id,
-                    chunk=chunk,
-                    context_token=context_token,
-                    client_id=client_id,
-                )
+                has_more_chunks = idx < len(chunks) - 1
+                try:
+                    await self._send_text_chunk(
+                        chat_id=chat_id,
+                        chunk=chunk,
+                        context_token=context_token,
+                        client_id=client_id,
+                    )
+                except RuntimeError as exc:
+                    # Rate-limit circuit breaker tripped mid-send with more
+                    # chunks to deliver.  Wait for the cooldown to expire,
+                    # reset the breaker, and continue delivering the remaining
+                    # chunks so the user sees the full reply rather than a
+                    # silently truncated one.
+                    if "rate limited" in str(exc).lower() and has_more_chunks:
+                        wait = self._rate_limit_cooldown_remaining()
+                        if wait > 0:
+                            logger.info(
+                                "[%s] rate limit hit mid-send to %s after %d/%d "
+                                "chunks; waiting %.1fs for cooldown",
+                                self.name, _safe_id(chat_id),
+                                idx + 1, len(chunks), wait,
+                            )
+                            await asyncio.sleep(wait)
+                        self._reset_rate_limit_circuit()
+                        try:
+                            await self._send_text_chunk(
+                                chat_id=chat_id,
+                                chunk=chunk,
+                                context_token=context_token,
+                                client_id=client_id,
+                            )
+                        except Exception as retry_exc:
+                            logger.warning(
+                                "[%s] chunk %d/%d retry after cooldown failed: %s",
+                                self.name, idx + 1, len(chunks), retry_exc,
+                            )
+                            break  # give up on remaining chunks
+                    else:
+                        raise
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)

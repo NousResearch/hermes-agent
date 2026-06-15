@@ -3036,6 +3036,94 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
 
 
+def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):
+    seen = {"build": 0, "wait": 0, "requested": []}
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+
+    def fake_runtime_provider(*, requested=None, target_model=None, **_kwargs):
+        seen["requested"].append((requested, target_model))
+        if requested is None:
+            raise RuntimeError("broken default provider should not be initialized")
+        if requested == "anthropic":
+            return {
+                "api_key": "sk-anthropic",
+                "api_mode": "anthropic_messages",
+                "base_url": "https://api.anthropic.com",
+            }
+        raise RuntimeError(f"unexpected provider {requested}")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
+
+        assert resp["result"]["value"] == "claude-sonnet-4-6"
+        assert seen["build"] == 0
+        assert seen["wait"] == 0
+        assert seen["requested"] == [("anthropic", "claude-sonnet-4.6")]
+        assert session["model_override"]["provider"] == "anthropic"
+        assert session["model_override"]["model"] == "claude-sonnet-4-6"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(monkeypatch):
+    seen = {"build": 0, "wait": 0}
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+
+    def fake_runtime_provider(*, requested=None, **_kwargs):
+        if requested is None:
+            raise RuntimeError("broken default provider should not be initialized")
+        if requested == "anthropic":
+            raise RuntimeError("missing anthropic API key")
+        raise RuntimeError(f"unexpected provider {requested}")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 5001
+        assert "anthropic" in resp["error"]["message"].lower()
+        assert "missing anthropic api key" in resp["error"]["message"].lower()
+        assert seen["build"] == 0
+        assert seen["wait"] == 0
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     """A /model switch must NOT mutate process-global env vars. The desktop /
     dashboard tui_gateway backend hosts every same-profile session in one

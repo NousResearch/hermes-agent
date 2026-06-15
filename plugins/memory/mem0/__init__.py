@@ -7,6 +7,8 @@ Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
 
 Config via environment variables:
   MEM0_API_KEY       — Mem0 Platform API key (required)
+  MEM0_HOST          — Self-hosted OSS server URL (direct REST mode)
+  MEM0_ADMIN_API_KEY — Self-hosted OSS server admin API key
   MEM0_USER_ID       — User identifier (default: hermes-user)
   MEM0_AGENT_ID      — Agent identifier (default: hermes)
 
@@ -20,7 +22,10 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, List
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
@@ -70,6 +75,8 @@ def _load_config() -> dict:
 
     config = {
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
+        "admin_api_key": os.environ.get("MEM0_ADMIN_API_KEY", ""),
         "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "rerank": True,
@@ -86,6 +93,125 @@ def _load_config() -> dict:
             pass
 
     return config
+
+
+class _DirectRestMem0Client:
+    """Small stdlib client for the self-hosted OSS Mem0 server."""
+
+    def __init__(self, host: str, admin_api_key: str, agent_id: str, user_id: str = ""):
+        self._host = (host or "").strip().rstrip("/")
+        self._admin_api_key = (admin_api_key or "").strip()
+        self._agent_id = (agent_id or "").strip()
+        self._user_id = (user_id or "").strip()
+
+    def _scope(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Inject the client's configured user_id AND agent_id as scope defaults.
+
+        Defense-in-depth on a multi-agent shared store: a caller that omits a scope
+        must still be constrained to this client's user_id/agent_id, never querying
+        or writing across the whole store (B3/B4).
+        """
+        scope = dict(filters or {})
+        if self._user_id and not scope.get("user_id"):
+            scope["user_id"] = self._user_id
+        if self._agent_id and not scope.get("agent_id"):
+            scope["agent_id"] = self._agent_id
+        return {k: v for k, v in scope.items() if v is not None and v != ""}
+
+    def _request(self, method: str, path: str, *, body: Optional[dict] = None,
+                 params: Optional[dict] = None) -> Any:
+        clean_params = {k: v for k, v in (params or {}).items()
+                        if v is not None and v != ""}
+        query = urllib.parse.urlencode(clean_params)
+        url = f"{self._host}{path}"
+        if query:
+            url = f"{url}?{query}"
+
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method=method)
+        req.add_header("Accept", "application/json")
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        if self._admin_api_key:
+            req.add_header("X-API-Key", self._admin_api_key)
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(
+                f"Mem0 self-host REST {method} {path} failed: HTTP {e.code} {e.reason}{suffix}"
+            ) from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(
+                f"Mem0 self-host REST {method} {path} failed: {e.reason}"
+            ) from e
+
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except ValueError as e:
+            raise RuntimeError(
+                f"Mem0 self-host REST {method} {path} returned invalid JSON"
+            ) from e
+
+    def add(self, messages, **kwargs):
+        body = {"messages": messages}
+        # scope user_id/agent_id via _scope so an add with no explicit scope still
+        # lands under this client's user/agent, never globally on the shared store (B4).
+        scoped = self._scope({"user_id": kwargs.get("user_id"), "agent_id": kwargs.get("agent_id")})
+        body.update(scoped)
+        for key in ("metadata", "infer", "run_id"):
+            if key in kwargs and kwargs[key] is not None:
+                body[key] = kwargs[key]
+        return self._request("POST", "/memories", body=body)
+
+    def search(self, query=None, filters=None, rerank=False, top_k=10, **kwargs):
+        body = {"query": query or "", **self._scope(filters)}
+        response = self._request("POST", "/search", body=body)
+        try:
+            limit = int(top_k)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            if isinstance(response, dict) and isinstance(response.get("results"), list):
+                response = dict(response)
+                response["results"] = response["results"][:limit]
+            elif isinstance(response, list):
+                response = response[:limit]
+        return response
+
+    def get_all(self, filters=None, **kwargs):
+        return self._request("GET", "/memories", params=self._scope(filters))
+
+    def get(self, memory_id):
+        mid = urllib.parse.quote(str(memory_id), safe="")
+        return self._request("GET", f"/memories/{mid}")
+
+    def update(self, memory_id, text=None, metadata=None, timestamp=None, **kwargs):
+        mid = urllib.parse.quote(str(memory_id), safe="")
+        body = {}
+        if text is not None:
+            body["text"] = text
+        if metadata is not None:
+            body["metadata"] = metadata
+        return self._request("PUT", f"/memories/{mid}", body=body)
+
+    def delete(self, memory_id, delete_linked=False):
+        mid = urllib.parse.quote(str(memory_id), safe="")
+        return self._request("DELETE", f"/memories/{mid}")
+
+    def history(self, memory_id):
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +321,8 @@ class Mem0MemoryProvider(MemoryProvider):
         self._client = None
         self._client_lock = threading.Lock()
         self._api_key = ""
+        self._host = ""
+        self._admin_api_key = ""
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
@@ -218,6 +346,9 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def is_available(self) -> bool:
         cfg = _load_config()
+        host = str(cfg.get("host", "") or "").strip()
+        if host:
+            return bool(str(cfg.get("admin_api_key", "") or "").strip())
         return bool(cfg.get("api_key"))
 
     def save_config(self, values, hermes_home):
@@ -238,6 +369,8 @@ class Mem0MemoryProvider(MemoryProvider):
     def get_config_schema(self):
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": True, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Self-hosted Mem0 OSS server URL (direct REST mode)", "default": "", "env_var": "MEM0_HOST"},
+            {"key": "admin_api_key", "description": "Self-hosted Mem0 OSS server admin API key", "secret": True, "required": False, "env_var": "MEM0_ADMIN_API_KEY"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -249,6 +382,11 @@ class Mem0MemoryProvider(MemoryProvider):
         """Thread-safe client accessor with lazy initialization."""
         with self._client_lock:
             if self._client is not None:
+                return self._client
+            if self._host:
+                self._client = _DirectRestMem0Client(
+                    self._host, self._admin_api_key, self._agent_id, self._user_id
+                )
                 return self._client
             try:
                 from mem0 import MemoryClient
@@ -283,6 +421,8 @@ class Mem0MemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._api_key = self._config.get("api_key", "")
+        self._host = str(self._config.get("host", "") or "").strip().rstrip("/")
+        self._admin_api_key = str(self._config.get("admin_api_key", "") or "").strip()
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to config/env default for CLI (single-user) sessions.
         self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")

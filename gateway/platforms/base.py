@@ -93,6 +93,8 @@ _HISTORY_MEDIA_LOOKUP_TIMEOUT_SECONDS = 5.0
 # can't exhaust the shared executor.
 _HISTORY_MEDIA_LOOKUP_MAX_WORKERS = 2
 _HISTORY_MEDIA_LOOKUP_ADMISSION = threading.BoundedSemaphore(_HISTORY_MEDIA_LOOKUP_MAX_WORKERS)
+_UPLOAD_FEEDBACK_THRESHOLD_BYTES = 1 * 1024 * 1024
+_UPLOAD_FAILURE_NOTICE_MAX_CHARS = 300
 
 
 def _platform_name(platform) -> str:
@@ -3026,10 +3028,34 @@ class BasePlatformAdapter(ABC):
                     chat_id=chat_id, **url_kw, caption=alt_text or None, metadata=metadata)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    from urllib.parse import unquote as _unquote
+                    failed_path = (
+                        _unquote(image_url[7:])
+                        if image_url.startswith("file://")
+                        else image_url
+                    )
+                    await self._send_upload_failure_notice(
+                        chat_id=chat_id,
+                        file_path=failed_path,
+                        error=img_result.error,
+                        metadata=metadata,
+                    )
                 else:
                     delivered = True
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                from urllib.parse import unquote as _unquote
+                failed_path = (
+                    _unquote(image_url[7:])
+                    if image_url.startswith("file://")
+                    else image_url
+                )
+                await self._send_upload_failure_notice(
+                    chat_id=chat_id,
+                    file_path=failed_path,
+                    error=img_err,
+                    metadata=metadata,
+                )
         if not images:
             return SendResult(success=False, error="no images to send")
         return SendResult(
@@ -4322,6 +4348,14 @@ class BasePlatformAdapter(ABC):
         _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
+            _reply_anchor = _reply_anchor_for_event(event)
+            for image_path in _image_paths:
+                await self._send_upload_started_notice(
+                    chat_id=event.source.chat_id,
+                    file_path=image_path,
+                    reply_to=_reply_anchor,
+                    metadata=metadata,
+                )
             await self._send_image_batch(
                 event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
                 record_delivery)
@@ -4342,7 +4376,20 @@ class BasePlatformAdapter(ABC):
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
-                await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+                # Audio/video keep the localized #66797 notice; file/image uploads get
+                # the detailed per-file notice (name + error) the upload-feedback work
+                # introduced. Both are best-effort and chat-visible.
+                if (is_voice or ext in _VIDEO_EXTS
+                        or should_send_media_as_audio(self.platform, ext, is_voice=is_voice)):
+                    await self._notify_media_delivery_failure(chat_id, path, is_voice=is_voice, metadata=metadata)
+                else:
+                    await self._send_upload_failure_notice(
+                        chat_id=chat_id,
+                        file_path=path,
+                        error=result.error,
+                        reply_to=_reply_anchor_for_event(event),
+                        metadata=metadata,
+                    )
             return result
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
@@ -4352,9 +4399,22 @@ class BasePlatformAdapter(ABC):
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
+                await self._send_upload_started_notice(
+                    chat_id=chat_id,
+                    file_path=path,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=metadata,
+                )
                 record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
             except Exception as err:
                 record_delivery(SendResult(success=False, error=str(err)))
+                await self._send_upload_failure_notice(
+                    chat_id=chat_id,
+                    file_path=path,
+                    error=err,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=metadata,
+                )
                 if media_tag:
                     logger.warning("[%s] Error sending media: %s", self.name, err)
                 else:
@@ -4372,6 +4432,17 @@ class BasePlatformAdapter(ABC):
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))
+            if images:
+                from urllib.request import url2pathname
+                first_url = images[0][0]
+                first_path = url2pathname(first_url[7:]) if first_url.startswith("file://") else first_url
+                await self._send_upload_failure_notice(
+                    chat_id=event.source.chat_id,
+                    file_path=first_path,
+                    error=batch_err,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=metadata,
+                )
             return
         record_delivery(result)
 
@@ -4558,6 +4629,78 @@ class BasePlatformAdapter(ABC):
                 self._spawn_drain_task(late_pending, session_key)
         elif current_task is not None and self._session_tasks.get(session_key) is current_task:
             self._cleanup_finished_session_task(session_key, interrupt_event)
+
+    @staticmethod
+    def _format_upload_size(size_bytes: int) -> str:
+        """Return a compact human-readable upload size."""
+        units = ("B", "KB", "MB", "GB")
+        value = float(max(size_bytes, 0))
+        unit = units[0]
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                break
+            value /= 1024
+        if unit == "B":
+            return f"{int(value)} {unit}"
+        return f"{value:.1f} {unit}"
+
+    @classmethod
+    def _upload_notice_for_file(cls, file_path: str) -> Optional[str]:
+        """Build an upload-start notice for large local attachments."""
+        try:
+            size_bytes = os.path.getsize(file_path)
+        except OSError:
+            return None
+        if size_bytes < _UPLOAD_FEEDBACK_THRESHOLD_BYTES:
+            return None
+        name = Path(file_path).name or "attachment"
+        return f"Uploading attachment: {name} ({cls._format_upload_size(size_bytes)})..."
+
+    async def _send_upload_started_notice(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort visible feedback before a large attachment upload."""
+        notice = self._upload_notice_for_file(file_path)
+        if not notice:
+            return
+        try:
+            await self.send(
+                chat_id=chat_id,
+                content=notice,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.debug("[%s] Could not send upload-start notice: %s", self.name, e)
+
+    async def _send_upload_failure_notice(
+        self,
+        *,
+        chat_id: str,
+        file_path: str,
+        error: Any,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Best-effort visible error when an attachment upload fails."""
+        name = Path(file_path).name or "attachment"
+        detail = _LOG_UNSAFE_CHARS.sub("?", str(error or "unknown error"))
+        if len(detail) > _UPLOAD_FAILURE_NOTICE_MAX_CHARS:
+            detail = detail[:_UPLOAD_FAILURE_NOTICE_MAX_CHARS].rstrip() + "..."
+        try:
+            await self.send(
+                chat_id=chat_id,
+                content=f"Attachment upload failed: {name}: {detail}",
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+        except Exception as e:
+            logger.debug("[%s] Could not send upload-failure notice: %s", self.name, e)
 
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""

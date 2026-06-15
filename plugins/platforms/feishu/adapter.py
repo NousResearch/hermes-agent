@@ -136,9 +136,41 @@ _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
+_FEISHU_IMAGE_UPLOAD_LIMIT_BYTES = 10 * 1024 * 1024
+_FEISHU_DOCUMENT_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+_FEISHU_VIDEO_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
 _FEISHU_DOC_UPLOAD_TYPES = {
     ".pdf": "pdf", ".doc": "doc", ".docx": "doc", ".xls": "xls", ".xlsx": "xls", ".ppt": "ppt", ".pptx": "ppt",
 }
+
+
+def _format_upload_size(size_bytes: int) -> str:
+    units = ("B", "KB", "MB", "GB")
+    value = float(max(size_bytes, 0))
+    unit = units[0]
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            break
+        value /= 1024
+    if unit == "B":
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
+
+
+def _feishu_upload_limit_error(file_path: str, *, limit_bytes: int, label: str) -> Optional[str]:
+    try:
+        size_bytes = os.path.getsize(file_path)
+    except OSError:
+        return None
+    if size_bytes <= limit_bytes:
+        return None
+    name = os.path.basename(file_path) or "attachment"
+    return (
+        f"File too large: {name} is {_format_upload_size(size_bytes)} and "
+        f"exceeds Feishu {label} limit ({_format_upload_size(limit_bytes)})"
+    )
+
+
 # --- Connection, retry and batching tuning ---
 _MAX_TEXT_INJECT_BYTES = 100 * 1024
 _FEISHU_CONNECT_ATTEMPTS = 3
@@ -1915,6 +1947,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         if not os.path.exists(image_path):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
+        size_error = _feishu_upload_limit_error(
+            image_path,
+            limit_bytes=_FEISHU_IMAGE_UPLOAD_LIMIT_BYTES,
+            label="image",
+        )
+        if size_error:
+            return SendResult(success=False, error=size_error)
+
         try:
             import io as _io
             with open(image_path, "rb") as f:
@@ -3666,6 +3706,19 @@ class FeishuAdapter(BasePlatformAdapter):
         upload_file_type, resolved_message_type = self._resolve_outbound_file_routing(
             file_path=display_name, requested_message_type=outbound_message_type,
         )
+        limit_label = "video" if resolved_message_type == "media" else "file"
+        limit_bytes = (
+            _FEISHU_VIDEO_UPLOAD_LIMIT_BYTES
+            if resolved_message_type == "media"
+            else _FEISHU_DOCUMENT_UPLOAD_LIMIT_BYTES
+        )
+        size_error = _feishu_upload_limit_error(
+            file_path,
+            limit_bytes=limit_bytes,
+            label=limit_label,
+        )
+        if size_error:
+            return SendResult(success=False, error=size_error)
         try:
             duration_ms = self._get_audio_duration_ms(file_path) if upload_file_type == "opus" else 0
             with open(file_path, "rb") as file_obj:
@@ -4327,6 +4380,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             if not os.path.exists(media_path):
                 return send_error(f"Media file not found: {media_path}")
             ext = os.path.splitext(media_path)[1].lower()
+            await adapter._send_upload_started_notice(
+                chat_id=chat_id,
+                file_path=media_path,
+                metadata=metadata,
+            )
             if ext in _MIGRATION_IMAGE_EXTS:
                 sender = adapter.send_image_file
             elif ext in _MIGRATION_VIDEO_EXTS:
@@ -4337,6 +4395,12 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 sender = adapter.send_document
             last_result = await sender(chat_id, media_path, metadata=metadata)
             if not last_result.success:
+                await adapter._send_upload_failure_notice(
+                    chat_id=chat_id,
+                    file_path=media_path,
+                    error=last_result.error,
+                    metadata=metadata,
+                )
                 return send_error(f"Feishu media send failed: {last_result.error}")
         if last_result is None:
             return send_error("No deliverable text or media remained after processing MEDIA tags")

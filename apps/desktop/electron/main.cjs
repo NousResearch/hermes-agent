@@ -39,6 +39,7 @@ const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
+const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
@@ -242,6 +243,16 @@ if (INSTALL_STAMP) {
 function resolveHermesHome() {
   if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+  if (IS_WINDOWS) {
+    // A GUI app launched from Explorer inherits the environment block captured
+    // at login, so a HERMES_HOME set via `setx` AFTER login is invisible in
+    // process.env even though the CLI (a fresh shell) sees it. Without this the
+    // backend silently falls back to %LOCALAPPDATA%\hermes and reports "No
+    // inference provider configured" despite a valid configured home (#45471).
+    // Consult the live User-scoped registry value before the default below.
+    const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
+    if (fromRegistry) return normalizeHermesHomeRoot(fromRegistry)
+  }
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
     const legacy = path.join(app.getPath('home'), '.hermes')

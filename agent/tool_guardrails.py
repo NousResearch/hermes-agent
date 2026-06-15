@@ -257,7 +257,6 @@ class ToolCallGuardrailController:
                 count=exact_count,
                 signature=signature,
             )
-            self._halt_decision = decision
             return decision
 
         if self._is_idempotent(tool_name):
@@ -277,7 +276,6 @@ class ToolCallGuardrailController:
                         count=repeat_count,
                         signature=signature,
                     )
-                    self._halt_decision = decision
                     return decision
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)

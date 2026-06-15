@@ -226,6 +226,43 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     blocked = controller.before_call("read_file", args)
     assert blocked.action == "block"
     assert blocked.code == "idempotent_no_progress_block"
+    assert blocked.should_halt is False
+
+
+def test_halt_decision_is_limited_to_halt_actions():
+    block_controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"path": "/tmp/same.txt"}
+
+    block_controller.after_call("read_file", args, "same file contents", failed=False)
+    block_controller.after_call("read_file", args, "same file contents", failed=False)
+    blocked = block_controller.before_call("read_file", args)
+
+    assert blocked.action == "block"
+    assert blocked.should_halt is False
+    assert block_controller.halt_decision is None
+
+    halt_controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=99,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+
+    halt_controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
+    halt_controller.after_call("terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True)
+    halted = halt_controller.after_call("terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True)
+
+    assert halted.action == "halt"
+    assert halted.should_halt is True
+    assert halt_controller.halt_decision is halted
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():

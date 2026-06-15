@@ -268,7 +268,7 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
 
 
-def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
+def test_config_enabled_hard_stop_blocks_repeated_exact_call_then_allows_model_recovery():
     agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}
     responses = [
@@ -277,8 +277,9 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
             finish_reason="tool_calls",
             tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
         )
-        for i in range(1, 10)
+        for i in range(1, 4)
     ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
     agent.client.chat.completions.create.side_effect = responses
 
     with (
@@ -290,14 +291,16 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         result = agent.run_conversation("search repeatedly")
 
     assert mock_hfc.call_count == 2
-    assert result["api_calls"] == 3
     assert result["api_calls"] < agent.max_iterations
-    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["turn_exit_reason"].startswith("text_response")
     assert "error" not in result
     assert result["completed"] is True
-    assert "stopped retrying" in result["final_response"]
-    assert result["guardrail"]["code"] == "repeated_exact_failure_block"
-    assert result["guardrail"]["tool_name"] == "web_search"
+    assert "guardrail" not in result
+    assert result["final_response"] == "done"
+    assert agent._tool_guardrail_halt_decision is None
+
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("repeated_exact_failure_block" in content for content in tool_contents)
 
     assistant_tool_calls = [m for m in result["messages"] if m.get("role") == "assistant" and m.get("tool_calls")]
     for assistant_msg in assistant_tool_calls:
@@ -307,22 +310,22 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
 
 
 def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
-    """Regression for #30770: when the guardrail halts the loop, the
-    synthesized halt message must be pushed through ``stream_delta_callback``
-    so SSE/TUI clients see why the agent stopped instead of a silent stream
-    close.  Without this the chat-completions SSE writer drains an empty
-    queue and emits a finish chunk with zero content (indistinguishable
-    from a crash for Open WebUI and similar clients).
-    """
-    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
-    same_args = {"query": "same"}
+    """Guardrail halts must stream their synthesized final response."""
+    config = _hard_stop_config(
+        hard_stop_after={
+            "exact_failure": 99,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 99,
+        }
+    )
+    agent = _make_agent("terminal", max_iterations=10, config=config)
     responses = [
         _mock_response(
             content="",
             finish_reason="tool_calls",
-            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+            tool_calls=[_mock_tool_call("terminal", json.dumps({"command": f"cmd-{i}"}), f"c{i}")],
         )
-        for i in range(1, 10)
+        for i in range(1, 4)
     ]
     agent.client.chat.completions.create.side_effect = responses
 
@@ -335,7 +338,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     agent._disable_streaming = True
 
     with (
-        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch("run_agent.handle_function_call", return_value=json.dumps({"exit_code": 1})),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),

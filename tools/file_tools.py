@@ -96,6 +96,23 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 
 
+def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
+    """Normalize a cwd candidate to an absolute, sentinel-free anchor.
+
+    Returns the expanded path only when *raw* is non-empty, not a sentinel (see
+    ``_TERMINAL_CWD_SENTINELS``), and absolute. A relative anchor is meaningless
+    without knowing which cwd it is relative to — exactly the ambiguity that
+    misroutes worktree edits — so relative/sentinel/empty values yield ``None``.
+    """
+    raw = str(raw or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
 def _configured_terminal_cwd() -> str | None:
     """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
 
@@ -104,13 +121,7 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
-    if raw.lower() in _TERMINAL_CWD_SENTINELS:
-        return None
-    expanded = os.path.expanduser(raw)
-    if not os.path.isabs(expanded):
-        return None
-    return expanded
+    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -129,13 +140,7 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     except Exception:
         return None
 
-    raw_cwd = str(overrides.get("cwd") or "").strip()
-    if raw_cwd.lower() in _TERMINAL_CWD_SENTINELS:
-        return None
-    expanded = os.path.expanduser(raw_cwd)
-    if not os.path.isabs(expanded):
-        return None
-    return expanded
+    return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:

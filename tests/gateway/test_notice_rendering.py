@@ -146,6 +146,9 @@ class TestDeliverNoticeLine:
         assert args[0] == "555"
         # Delivered verbatim — the policy's single glyph, not a doubled one.
         assert args[1] == "⚠ Credits 90% used · $20.00 cap"
+        # Operational notices should not use Telegram rich messages; they are
+        # tiny status lines where client compatibility matters more than rich markup.
+        assert kwargs["metadata"] == {"thread": "t", "force_legacy": True}
 
     @pytest.mark.asyncio
     async def test_private_delivery_prefers_private_notice(self):
@@ -162,6 +165,8 @@ class TestDeliverNoticeLine:
         await runner._deliver_platform_notice(source, line)
 
         adapter.send_private_notice.assert_awaited_once()
+        _, kwargs = adapter.send_private_notice.call_args
+        assert kwargs["metadata"] == {"thread": "t", "force_legacy": True}
         adapter.send.assert_not_awaited()
 
     @pytest.mark.asyncio

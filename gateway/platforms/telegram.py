@@ -982,10 +982,12 @@ class TelegramAdapter(BasePlatformAdapter):
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
+        metadata = metadata or {}
         return bool(
             getattr(self, "_rich_messages_enabled", False)
             and not getattr(self, "_rich_send_disabled", False)
-            and not (metadata or {}).get("expect_edits")
+            and not metadata.get("expect_edits")
+            and not metadata.get("force_legacy")
             and content
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
@@ -1207,11 +1209,15 @@ class TelegramAdapter(BasePlatformAdapter):
             message_id=str(message_id) if message_id is not None else None,
         )
 
-    def _should_attempt_rich_draft(self, content: str) -> bool:
+    def _should_attempt_rich_draft(
+        self, content: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        metadata = metadata or {}
         return bool(
             getattr(self, "_rich_messages_enabled", False)
             and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
+            and not metadata.get("force_legacy")
             and content
             and content.strip()
             and not self._has_telegram_desktop_details_math_crash_shape(content)
@@ -1240,8 +1246,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "rich_message": self._rich_message_payload(content),
         }
         thread_id = self._metadata_thread_id(metadata)
-        if thread_id is not None:
-            payload["message_thread_id"] = int(thread_id)
+        message_thread_id = self._message_thread_id_for_send(thread_id)
+        if message_thread_id is not None:
+            payload["message_thread_id"] = message_thread_id
         try:
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
             return bool(ok)
@@ -2942,7 +2949,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # streaming preview with the same raw markdown the final
         # sendRichMessage will persist, so the animated draft matches the final
         # message. Any failure degrades to the legacy plain-text draft below.
-        if self._should_attempt_rich_draft(content):
+        if self._should_attempt_rich_draft(content, metadata=metadata):
             if await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
                 # Drafts have no message_id; report success without one.
                 return SendResult(success=True, message_id=None)
@@ -2956,6 +2963,7 @@ class TelegramAdapter(BasePlatformAdapter):
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
         thread_id = self._metadata_thread_id(metadata)
+        message_thread_id = self._message_thread_id_for_send(thread_id)
 
         # Apply the same MarkdownV2 conversion the regular ``send`` path uses
         # so the animated draft preview renders with identical formatting to
@@ -2974,8 +2982,8 @@ class TelegramAdapter(BasePlatformAdapter):
             }
             if use_markdown:
                 kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
-            if thread_id is not None:
-                kwargs["message_thread_id"] = thread_id
+            if message_thread_id is not None:
+                kwargs["message_thread_id"] = message_thread_id
 
             try:
                 ok = await self._bot.send_message_draft(**kwargs)

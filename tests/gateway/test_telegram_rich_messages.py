@@ -184,6 +184,23 @@ async def test_rich_messages_opt_out_accepts_string_false():
 
 
 @pytest.mark.asyncio
+async def test_force_legacy_metadata_skips_rich_send_path():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        "💾 Self-improvement review: User profile updated",
+        metadata={"force_legacy": True},
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_rich_messages_default_is_disabled():
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = TelegramAdapter(config)
@@ -481,6 +498,51 @@ async def test_rich_draft_happy_path_sends_raw_markdown():
     assert api_kwargs["rich_message"]["markdown"] == RICH_CONTENT
     # Legacy plain-text draft must not run when rich draft succeeds.
     adapter._bot.send_message_draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_general_topic_omits_message_thread_id():
+    """Telegram rejects General-topic id 1 on rich draft sends; omit it."""
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft(
+        "-100123",
+        draft_id=7,
+        content=RICH_CONTENT,
+        metadata={"thread_id": "1"},
+    )
+
+    assert result.success is True
+    bot.do_api_request.assert_awaited_once()
+    call = bot.do_api_request.call_args
+    assert call.args[0] == "sendRichMessageDraft"
+    api_kwargs = call.kwargs["api_kwargs"]
+    assert "message_thread_id" not in api_kwargs
+    bot.send_message_draft.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_draft_general_topic_omits_message_thread_id():
+    """The sendMessageDraft fallback has the same General-topic routing rule."""
+    adapter = _make_adapter()
+    bot = adapter._bot
+    assert bot is not None
+
+    result = await adapter.send_draft(
+        "-100123",
+        draft_id=7,
+        content=RICH_CONTENT,
+        metadata={"thread_id": "1", "force_legacy": True},
+    )
+
+    assert result.success is True
+    bot.do_api_request.assert_not_called()
+    bot.send_message_draft.assert_awaited_once()
+    kwargs = bot.send_message_draft.call_args.kwargs
+    assert "message_thread_id" not in kwargs
 
 
 @pytest.mark.asyncio

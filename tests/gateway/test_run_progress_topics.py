@@ -1031,6 +1031,17 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
     assert adapter.sent == []
 
 
+def test_background_review_legacy_metadata_preserves_thread_targeting():
+    gateway_run = importlib.import_module("gateway.run")
+
+    metadata = gateway_run._force_legacy_send_metadata(
+        {"thread_id": "17585"},
+        "telegram",
+    )
+
+    assert metadata == {"thread_id": "17585", "force_legacy": True}
+
+
 @pytest.mark.asyncio
 async def test_base_processing_releases_post_delivery_callback_after_main_send():
     """Post-delivery callbacks on the adapter fire after the main response."""

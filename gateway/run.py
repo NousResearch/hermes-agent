@@ -136,6 +136,24 @@ _GATEWAY_SECRET_PATTERNS = (
 )
 
 
+def _force_legacy_send_metadata(
+    metadata: Optional[Dict[str, Any]],
+    platform: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Return metadata that tells Telegram's rich path to use legacy send.
+
+    Short auxiliary status notices (for example the self-improvement review
+    summary) should stay on the conservative send path. Telegram rich messages
+    are useful for main replies, but tiny post-delivery status notices can
+    otherwise surface as unsupported-message placeholders on some clients.
+    """
+    forced = dict(metadata or {})
+    platform_value = getattr(platform, "value", platform)
+    if str(platform_value or "").lower() == "telegram":
+        forced["force_legacy"] = True
+    return forced
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -6571,7 +6589,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if config and hasattr(config, "get_notice_delivery"):
             notice_delivery = config.get_notice_delivery(source.platform)
 
-        metadata = self._thread_metadata_for_source(source)
+        metadata = _force_legacy_send_metadata(
+            self._thread_metadata_for_source(source),
+            source.platform,
+        )
         if notice_delivery == "private" and getattr(source, "user_id", None):
             try:
                 result = await adapter.send_private_notice(
@@ -14523,7 +14544,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _status_adapter.send(
                         _status_chat_id,
                         message,
-                        metadata=_status_thread_metadata,
+                        metadata=_force_legacy_send_metadata(
+                            _status_thread_metadata,
+                            source.platform,
+                        ),
                     ),
                     _loop_for_step,
                     logger=logger,

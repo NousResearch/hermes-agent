@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from plugins.blackbox.record import TurnRecord, tools_summary
+from plugins.blackbox.record import TurnRecord, tools_summary, turn_output_split
 
 
 _PT = ZoneInfo("America/Los_Angeles")
@@ -96,6 +96,32 @@ def _context_line(record: TurnRecord) -> str:
     )
 
 
+def _tokens_out_line(record: TurnRecord) -> str:
+    """Output side of the Tokens line — split finished/unfinished when known.
+
+    finished = last API call's output (the answer the user got); unfinished =
+    earlier calls' output (tool orchestration). Reasoning is folded into the
+    total (no longer broken out). Falls back to the bare billed total when the
+    per-call split is unknown (old/NULL/blackbox-off blob).
+    """
+    import json as _json
+    out = int(record.output_tokens or 0)
+    raw = getattr(record, "comp_calls_json", None)
+    calls = None
+    if raw:
+        try:
+            calls = _json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            calls = None
+    finished, unfinished = turn_output_split(calls if isinstance(calls, list) else None, out)
+    if finished is not None:
+        return (
+            f"{humanize_tokens(out)} out "
+            f"({humanize_tokens(finished)} finished + {humanize_tokens(unfinished)} unfinished)"
+        )
+    return f"{humanize_tokens(out)} out"
+
+
 def _prompt_total(record: TurnRecord) -> int:
     """Total input billed for the turn.
 
@@ -141,7 +167,7 @@ def render_card(record: TurnRecord, threshold_usd: float) -> str:
             f"• Threshold: {_money(threshold_usd)}",
             f"• API Calls: {record.api_calls}",
             f"• Tool Calls: {len(record.tools)} ({tools_summary(record.tools)})",
-            f"• Tokens: {humanize_tokens(_prompt_total(record))} in + {humanize_tokens(record.output_tokens)} out",
+            f"• Tokens: {humanize_tokens(_prompt_total(record))} in + {_tokens_out_line(record)}",
             f"• Context: {_context_line(record)}",
             f"• Cached: {_cache_line(record)}",
             f"• Agent: {record.profile}",

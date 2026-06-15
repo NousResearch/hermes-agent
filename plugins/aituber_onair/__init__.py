@@ -21,6 +21,12 @@ _TOOLS = (
     ("aituber_onair_speak", core.SPEAK_SCHEMA, core.handle_speak, "A"),
     ("aituber_onair_say", core.SAY_SCHEMA, core.handle_say, "A"),
     ("aituber_onair_smoke", core.SMOKE_SCHEMA, core.handle_smoke, "A"),
+    (
+        "aituber_onair_youtube_ready",
+        core.YOUTUBE_READY_SCHEMA,
+        core.handle_youtube_ready,
+        "A",
+    ),
 )
 
 
@@ -41,7 +47,7 @@ def register(ctx) -> None:
         "aituber",
         handler=core.handle_slash,
         description="Run AITuber OnAir avatar streaming and Hakua Codex character chat.",
-        args_hint="[status|configure|prepare|start --avatar vroid|stop|say|smoke]",
+        args_hint="[status|configure|prepare|start --avatar vroid|stop|say|smoke|youtube-ready]",
     )
     ctx.register_cli_command(
         name="aituber-onair",

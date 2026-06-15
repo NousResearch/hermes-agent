@@ -31,25 +31,21 @@ def _fake_repo(tmp_path: Path) -> Path:
         parents=True
     )
     (repo / "packages" / "chat" / "dist" / "cjs").mkdir(parents=True)
-    (repo / "packages" / "core" / "examples" / "react-fbx-app").mkdir(
-        parents=True
-    )
-    (repo / "packages" / "core" / "examples" / "react-vrm-app").mkdir(
-        parents=True
-    )
+    (repo / "packages" / "core" / "examples" / "react-fbx-app").mkdir(parents=True)
+    (repo / "packages" / "core" / "examples" / "react-vrm-app").mkdir(parents=True)
     (repo / "package.json").write_text('{"name":"aituber-onair"}', encoding="utf-8")
-    (repo / "packages" / "chat" / "examples" / "codex-character-chat" / "index.js").write_text(
-        "console.log('ok')\n", encoding="utf-8"
-    )
+    (
+        repo / "packages" / "chat" / "examples" / "codex-character-chat" / "index.js"
+    ).write_text("console.log('ok')\n", encoding="utf-8")
     (repo / "packages" / "chat" / "dist" / "cjs" / "agent.js").write_text(
         "exports.createAgentChatService = () => ({})\n", encoding="utf-8"
     )
-    (repo / "packages" / "core" / "examples" / "react-fbx-app" / "package.json").write_text(
-        '{"name":"react-fbx-app"}', encoding="utf-8"
-    )
-    (repo / "packages" / "core" / "examples" / "react-vrm-app" / "package.json").write_text(
-        '{"name":"react-vrm-app"}', encoding="utf-8"
-    )
+    (
+        repo / "packages" / "core" / "examples" / "react-fbx-app" / "package.json"
+    ).write_text('{"name":"react-fbx-app"}', encoding="utf-8")
+    (
+        repo / "packages" / "core" / "examples" / "react-vrm-app" / "package.json"
+    ).write_text('{"name":"react-vrm-app"}', encoding="utf-8")
     return repo
 
 
@@ -62,6 +58,7 @@ def test_registers_tools_slash_and_cli_command():
     assert "aituber_onair_tts_status" in names
     assert "aituber_onair_speak" in names
     assert "aituber_onair_say" in names
+    assert "aituber_onair_youtube_ready" in names
     assert all(tool["toolset"] == "aituber-onair" for tool in ctx.tools)
     assert "aituber" in ctx.commands
     assert "aituber-onair" in ctx.cli_commands
@@ -163,7 +160,9 @@ def test_irodori_speech_uses_configured_hakua_voice(monkeypatch, tmp_path):
 
     seen = {}
 
-    monkeypatch.setattr(core, "_plugin_config", lambda: {"tts_voice": "hakua", "tts_speed": 1.06})
+    monkeypatch.setattr(
+        core, "_plugin_config", lambda: {"tts_voice": "hakua", "tts_speed": 1.06}
+    )
     monkeypatch.setattr(
         irodori_core,
         "synthesize_text",
@@ -171,7 +170,9 @@ def test_irodori_speech_uses_configured_hakua_voice(monkeypatch, tmp_path):
         or {"ok": True, "provider": "irodori", "file_path": str(kwargs["output_path"])},
     )
 
-    result = core._synthesize_irodori({"text": "hello", "output_path": str(tmp_path / "voice.wav")})
+    result = core._synthesize_irodori(
+        {"text": "hello", "output_path": str(tmp_path / "voice.wav")}
+    )
 
     assert result["ok"] is True
     assert seen["voice"] == "hakua"
@@ -235,7 +236,9 @@ def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
         "_codex_sdk_installed",
         lambda _repo: {"ok": True, "installed": True},
     )
-    monkeypatch.setattr(core, "_codex_cli_auth_status", lambda: {"has_access_token": True})
+    monkeypatch.setattr(
+        core, "_codex_cli_auth_status", lambda: {"has_access_token": True}
+    )
     monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
     monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
     monkeypatch.setattr(core, "_plugin_working_directory", lambda _repo: str(repo))
@@ -286,7 +289,9 @@ def test_run_hakua_once_rejects_empty_provider_failure(monkeypatch, tmp_path):
         "_codex_sdk_installed",
         lambda _repo: {"ok": True, "installed": True},
     )
-    monkeypatch.setattr(core, "_codex_cli_auth_status", lambda: {"has_access_token": True})
+    monkeypatch.setattr(
+        core, "_codex_cli_auth_status", lambda: {"has_access_token": True}
+    )
     monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
     monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
     monkeypatch.setattr(core, "_plugin_working_directory", lambda _repo: str(repo))
@@ -486,3 +491,59 @@ def test_run_command_uses_sanitized_default_env(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert "OPENAI_API_KEY" not in captured["env"]
+
+
+def test_youtube_ready_reports_missing_obs(monkeypatch):
+    monkeypatch.setattr(
+        core,
+        "status",
+        lambda: {
+            "ok": True,
+            "config": {"url": "http://127.0.0.1:5175/"},
+            "active": {"alive": True, "url_ready": True},
+            "tts": {"ready": True},
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "_obs_status",
+        lambda: {"installed": False, "candidates": [], "expected_paths": []},
+    )
+
+    result = core.youtube_ready({})
+
+    assert result["ok"] is False
+    assert result["readiness"]["avatar_app_running"] is True
+    assert result["readiness"]["obs_available"] is False
+    assert "OBS Studio was not found." in result["blockers"]
+
+
+def test_youtube_ready_passes_with_running_avatar_and_obs(monkeypatch):
+    monkeypatch.setattr(
+        core,
+        "status",
+        lambda: {
+            "ok": True,
+            "config": {"url": "http://127.0.0.1:5175/"},
+            "active": {"alive": True, "url_ready": True},
+            "tts": {"ready": False},
+            "recommended_actions": [],
+        },
+    )
+    monkeypatch.setattr(
+        core,
+        "_obs_status",
+        lambda: {
+            "installed": True,
+            "candidates": ["C:/Program Files/obs-studio/bin/64bit/obs64.exe"],
+            "expected_paths": [],
+        },
+    )
+
+    result = core.youtube_ready({})
+
+    assert result["ok"] is True
+    assert result["avatar_url"] == "http://127.0.0.1:5175/"
+    assert result["obs_browser_source"]["recommended_source_type"] == "Browser Source"
+    assert "stream_key" in result["youtube_encoder"]

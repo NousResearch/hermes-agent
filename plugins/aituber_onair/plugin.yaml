@@ -18,5 +18,6 @@ provides_tools:
   - aituber_onair_speak
   - aituber_onair_say
   - aituber_onair_smoke
+  - aituber_onair_youtube_ready
 provides_cli:
   - aituber-onair

@@ -19,6 +19,7 @@ from typing import Any
 try:
     from hermes_constants import get_hermes_home
 except Exception:  # pragma: no cover - early import safety
+
     def get_hermes_home() -> Path:
         return Path.home() / ".hermes"
 
@@ -266,6 +267,24 @@ SMOKE_SCHEMA = {
     },
 }
 
+YOUTUBE_READY_SCHEMA = {
+    "name": "aituber_onair_youtube_ready",
+    "description": "Check whether Hakua's AITuber OnAir VRM app is ready to send to YouTube through OBS.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "require_obs": {
+                "type": "boolean",
+                "description": "Treat missing OBS Studio as a readiness failure. Default: true.",
+            },
+            "require_tts_ready": {
+                "type": "boolean",
+                "description": "Treat a stopped TTS backend as a readiness failure. Default: false.",
+            },
+        },
+    },
+}
+
 TTS_STATUS_SCHEMA = {
     "name": "aituber_onair_tts_status",
     "description": "Show local irodoriTTS and VOICEVOX readiness for Hakua voice output.",
@@ -418,9 +437,10 @@ def _is_aituber_repo(path: Path) -> bool:
         data = json.loads(package_json.read_text(encoding="utf-8"))
     except Exception:
         return False
-    return data.get("name") == "aituber-onair" or (
-        path / "packages" / "core" / "package.json"
-    ).is_file()
+    return (
+        data.get("name") == "aituber-onair"
+        or (path / "packages" / "core" / "package.json").is_file()
+    )
 
 
 def _default_repo_candidates() -> list[Path]:
@@ -458,7 +478,9 @@ def resolve_repo_root(explicit: str | None = None) -> Path | None:
     return None
 
 
-def _resolve_required_repo(explicit: str | None = None) -> tuple[Path | None, dict[str, Any] | None]:
+def _resolve_required_repo(
+    explicit: str | None = None,
+) -> tuple[Path | None, dict[str, Any] | None]:
     repo = resolve_repo_root(explicit)
     if repo is None:
         return None, {
@@ -517,7 +539,14 @@ def _codex_chat_script(repo_root: Path) -> Path:
         if not path.is_absolute():
             path = repo_root / path
         return path
-    return repo_root / "packages" / "chat" / "examples" / "codex-character-chat" / "index.js"
+    return (
+        repo_root
+        / "packages"
+        / "chat"
+        / "examples"
+        / "codex-character-chat"
+        / "index.js"
+    )
 
 
 def _chat_agent_dist(repo_root: Path) -> Path:
@@ -618,7 +647,9 @@ def _plugin_tts_provider(explicit: Any = None) -> str:
 def _plugin_voicevox_url(explicit: Any = None) -> str:
     cfg = _plugin_config()
     raw = explicit if explicit is not None else cfg.get("voicevox_url")
-    return (_path_text(raw) or os.environ.get("VOICEVOX_URL") or DEFAULT_VOICEVOX_URL).rstrip("/")
+    return (
+        _path_text(raw) or os.environ.get("VOICEVOX_URL") or DEFAULT_VOICEVOX_URL
+    ).rstrip("/")
 
 
 def _plugin_voicevox_speaker(explicit: Any = None) -> int:
@@ -660,7 +691,11 @@ def _plugin_tts_speed(explicit: Any = None) -> float | None:
 
 def _coerce_tts_format(value: Any = None) -> str:
     fmt = _path_text(value).lower().lstrip(".")
-    return fmt if fmt in {"wav", "mp3", "flac", "opus", "aac", "pcm"} else DEFAULT_TTS_FORMAT
+    return (
+        fmt
+        if fmt in {"wav", "mp3", "flac", "opus", "aac", "pcm"}
+        else DEFAULT_TTS_FORMAT
+    )
 
 
 def _bounded(text: str, limit: int = 16000) -> str:
@@ -976,7 +1011,12 @@ def _start_voicevox_tts(values: dict[str, Any]) -> dict[str, Any]:
     url = _plugin_voicevox_url(values.get("voicevox_url"))
     status_before = _voicevox_engine_status(url)
     if status_before.get("reachable"):
-        return {"ok": True, "provider": "voicevox", "already_running": True, "status": status_before}
+        return {
+            "ok": True,
+            "provider": "voicevox",
+            "already_running": True,
+            "status": status_before,
+        }
 
     engines = _voicevox_engine_candidates()
     if not engines:
@@ -1004,10 +1044,9 @@ def _start_voicevox_tts(values: dict[str, Any]) -> dict[str, Any]:
         "close_fds": True,
     }
     if os.name == "nt":
-        kwargs["creationflags"] = (
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        )
+        kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        ) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     else:
         kwargs["start_new_session"] = True
     try:
@@ -1081,16 +1120,33 @@ def _start_irodori_tts(values: dict[str, Any]) -> dict[str, Any]:
 
     before = _irodori_status()
     if before.get("usable"):
-        return {"ok": True, "provider": "irodori", "already_running": True, "status": before}
+        return {
+            "ok": True,
+            "provider": "irodori",
+            "already_running": True,
+            "status": before,
+        }
 
     cfg = irodori_core.settings()
     ps = irodori_core.powershell_path()
     if not ps:
-        return {"ok": False, "provider": "irodori", "error": "PowerShell was not found."}
+        return {
+            "ok": False,
+            "provider": "irodori",
+            "error": "PowerShell was not found.",
+        }
     if not cfg.start_script.is_file():
-        return {"ok": False, "provider": "irodori", "error": f"start script not found: {cfg.start_script}"}
+        return {
+            "ok": False,
+            "provider": "irodori",
+            "error": f"start script not found: {cfg.start_script}",
+        }
     if not cfg.repo_dir.exists():
-        return {"ok": False, "provider": "irodori", "error": f"repo not found: {cfg.repo_dir}"}
+        return {
+            "ok": False,
+            "provider": "irodori",
+            "error": f"repo not found: {cfg.repo_dir}",
+        }
 
     timeout = int(values.get("timeout_seconds") or 120)
     result = _run_command(
@@ -1133,13 +1189,12 @@ def tts_status() -> dict[str, Any]:
     irodori = _irodori_status()
     voicevox = _voicevox_engine_status()
     selected = _select_tts_provider(requested)
-    ready = (
-        (selected == "irodori" and bool(irodori.get("usable")))
-        or (selected == "voicevox" and bool(voicevox.get("reachable")))
+    ready = (selected == "irodori" and bool(irodori.get("usable"))) or (
+        selected == "voicevox" and bool(voicevox.get("reachable"))
     )
-    available = (
-        (selected == "irodori" and bool(irodori.get("available")))
-        or (selected == "voicevox" and bool(voicevox.get("installed") or voicevox.get("reachable")))
+    available = (selected == "irodori" and bool(irodori.get("available"))) or (
+        selected == "voicevox"
+        and bool(voicevox.get("installed") or voicevox.get("reachable"))
     )
     return {
         "ok": available,
@@ -1160,10 +1215,16 @@ def start_tts(values: dict[str, Any]) -> dict[str, Any]:
         return _start_irodori_tts(values)
     if provider == "voicevox":
         return _start_voicevox_tts(values)
-    return {"ok": False, "provider": provider, "error": "No local TTS backend was found."}
+    return {
+        "ok": False,
+        "provider": provider,
+        "error": "No local TTS backend was found.",
+    }
 
 
-def _tts_output_path(provider: str, output_path: Any = None, output_format: Any = None) -> Path:
+def _tts_output_path(
+    provider: str, output_path: Any = None, output_format: Any = None
+) -> Path:
     fmt = _coerce_tts_format(output_format)
     if provider == "voicevox":
         fmt = "wav"
@@ -1191,16 +1252,23 @@ def _synthesize_voicevox(values: dict[str, Any]) -> dict[str, Any]:
 
     speaker = _plugin_voicevox_speaker(values.get("voicevox_speaker"))
     output_path = _tts_output_path("voicevox", values.get("output_path"), "wav")
-    query_url = (
-        f"{url}/audio_query?"
-        + urllib.parse.urlencode({"speaker": speaker, "text": text})
+    query_url = f"{url}/audio_query?" + urllib.parse.urlencode(
+        {"speaker": speaker, "text": text}
     )
     try:
-        status_code, query_raw = _http_request(query_url, method="POST", timeout_seconds=15.0)
+        status_code, query_raw = _http_request(
+            query_url, method="POST", timeout_seconds=15.0
+        )
         if not 200 <= status_code < 300:
-            return {"ok": False, "provider": "voicevox", "error": f"audio_query HTTP {status_code}"}
+            return {
+                "ok": False,
+                "provider": "voicevox",
+                "error": f"audio_query HTTP {status_code}",
+            }
         query = json.loads(query_raw.decode("utf-8", errors="replace"))
-        synthesis_url = f"{url}/synthesis?" + urllib.parse.urlencode({"speaker": speaker})
+        synthesis_url = f"{url}/synthesis?" + urllib.parse.urlencode(
+            {"speaker": speaker}
+        )
         status_code, wav_bytes = _http_request(
             synthesis_url,
             method="POST",
@@ -1208,7 +1276,11 @@ def _synthesize_voicevox(values: dict[str, Any]) -> dict[str, Any]:
             timeout_seconds=60.0,
         )
         if not 200 <= status_code < 300:
-            return {"ok": False, "provider": "voicevox", "error": f"synthesis HTTP {status_code}"}
+            return {
+                "ok": False,
+                "provider": "voicevox",
+                "error": f"synthesis HTTP {status_code}",
+            }
         output_path.write_bytes(wav_bytes)
     except Exception as exc:
         return {"ok": False, "provider": "voicevox", "error": str(exc)}
@@ -1253,14 +1325,19 @@ def _synthesize_irodori(values: dict[str, Any]) -> dict[str, Any]:
 
 def _play_wav_file(path: Path) -> dict[str, Any]:
     if path.suffix.lower() != ".wav":
-        return {"ok": False, "error": "local playback currently supports wav output only."}
+        return {
+            "ok": False,
+            "error": "local playback currently supports wav output only.",
+        }
     try:
         if os.name == "nt":
             import winsound
 
             winsound.PlaySound(str(path), winsound.SND_FILENAME)
             return {"ok": True, "backend": "winsound"}
-        player = shutil.which("afplay") or shutil.which("paplay") or shutil.which("aplay")
+        player = (
+            shutil.which("afplay") or shutil.which("paplay") or shutil.which("aplay")
+        )
         if not player:
             return {"ok": False, "error": "No local wav player was found."}
         subprocess.run(
@@ -1280,7 +1357,161 @@ def synthesize_speech(values: dict[str, Any]) -> dict[str, Any]:
         return _synthesize_irodori(values)
     if provider == "voicevox":
         return _synthesize_voicevox(values)
-    return {"ok": False, "provider": provider, "error": "No local TTS backend was found."}
+    return {
+        "ok": False,
+        "provider": provider,
+        "error": "No local TTS backend was found.",
+    }
+
+
+def _obs_exe_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    for exe in ("obs64.exe", "obs.exe"):
+        found = shutil.which(exe)
+        if found:
+            candidates.append(Path(found))
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.append(
+            Path(local_appdata)
+            / "Programs"
+            / "obs-studio"
+            / "bin"
+            / "64bit"
+            / "obs64.exe"
+        )
+    candidates.extend(
+        [
+            Path("C:/Program Files/obs-studio/bin/64bit/obs64.exe"),
+            Path("C:/Program Files (x86)/obs-studio/bin/64bit/obs64.exe"),
+        ]
+    )
+
+    seen: set[str] = set()
+    found_candidates: list[Path] = []
+    for path in candidates:
+        key = str(path).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file():
+            found_candidates.append(path)
+    return found_candidates
+
+
+def _obs_status() -> dict[str, Any]:
+    candidates = _obs_exe_candidates()
+    return {
+        "installed": bool(candidates),
+        "candidates": [str(path) for path in candidates],
+        "expected_paths": [
+            "C:/Program Files/obs-studio/bin/64bit/obs64.exe",
+            "C:/Program Files (x86)/obs-studio/bin/64bit/obs64.exe",
+        ],
+    }
+
+
+def youtube_ready(values: dict[str, Any] | None = None) -> dict[str, Any]:
+    values = values or {}
+    require_obs = values.get("require_obs")
+    if require_obs is None:
+        require_obs = True
+    require_tts_ready = bool(values.get("require_tts_ready"))
+
+    payload = status()
+    active = payload.get("active") if isinstance(payload.get("active"), dict) else {}
+    tts = payload.get("tts") if isinstance(payload.get("tts"), dict) else {}
+    obs = _obs_status()
+    avatar_url = str(payload.get("config", {}).get("url") or "")
+    avatar_running = bool(active.get("alive") and active.get("url_ready"))
+    tts_ready = bool(tts.get("ready"))
+    obs_ready = bool(obs.get("installed")) or not require_obs
+    ready = bool(payload.get("ok") and avatar_running and obs_ready)
+    if require_tts_ready:
+        ready = ready and tts_ready
+
+    blockers: list[str] = []
+    if not payload.get("ok"):
+        blockers.append("Hermes AITuber OnAir plugin readiness is incomplete.")
+    if not avatar_running:
+        blockers.append("Hakua VRM app is not running or not reachable.")
+    if require_obs and not obs.get("installed"):
+        blockers.append("OBS Studio was not found.")
+    if require_tts_ready and not tts_ready:
+        blockers.append("The selected Hakua TTS backend is not ready.")
+
+    return {
+        "ok": ready,
+        "checked_at": _now_utc(),
+        "avatar_url": avatar_url,
+        "obs_browser_source": {
+            "url": avatar_url,
+            "width": 1920,
+            "height": 1080,
+            "recommended_source_type": "Browser Source",
+        },
+        "youtube_encoder": {
+            "server_url": "rtmps://a.rtmps.youtube.com/live2",
+            "stream_key": "Paste manually in OBS; Hermes never reads or stores it.",
+            "first_time_live_enablement": "Verify the channel in YouTube Studio first; first-time live access can take up to 24 hours.",
+        },
+        "manual_youtube_steps": [
+            "Open YouTube Studio, choose Create, then Go live.",
+            "Create or select a stream on the Stream tab.",
+            "Copy the stream URL and stream key into OBS stream settings.",
+            "Add the Hakua local URL as an OBS Browser Source.",
+            "Start streaming from OBS and confirm the preview in YouTube Live Control Room.",
+            "Click Go live in YouTube Live Control Room when the preview is correct.",
+        ],
+        "readiness": {
+            "plugin": bool(payload.get("ok")),
+            "avatar_app_running": avatar_running,
+            "obs_available": bool(obs.get("installed")),
+            "tts_ready": tts_ready,
+            "youtube_studio_stream_created": "manual_check_required",
+            "stream_key_configured_in_obs": "manual_check_required",
+        },
+        "obs": obs,
+        "blockers": blockers,
+        "recommended_actions": _youtube_recommended_actions(
+            payload,
+            avatar_running=avatar_running,
+            obs_ready=bool(obs.get("installed")),
+            tts_ready=tts_ready,
+            require_obs=bool(require_obs),
+            require_tts_ready=require_tts_ready,
+        ),
+        "status": payload,
+    }
+
+
+def _youtube_recommended_actions(
+    payload: dict[str, Any],
+    *,
+    avatar_running: bool,
+    obs_ready: bool,
+    tts_ready: bool,
+    require_obs: bool,
+    require_tts_ready: bool,
+) -> list[str]:
+    actions = list(payload.get("recommended_actions") or [])
+    if not avatar_running:
+        actions.append("hermes aituber-onair start --avatar vrm --force")
+    if require_obs and not obs_ready:
+        actions.append(
+            "Install OBS Studio, then add the Hakua URL as a Browser Source."
+        )
+    if require_tts_ready and not tts_ready:
+        actions.append("hermes aituber-onair start-tts")
+    actions.append(
+        "Create a YouTube Studio stream and paste its RTMPS URL/key into OBS manually."
+    )
+    return actions
+
+
+def handle_youtube_ready(args: dict[str, Any] | None = None) -> str:
+    return _json(youtube_ready(args or {}))
 
 
 def status() -> dict[str, Any]:
@@ -1295,7 +1526,9 @@ def status() -> dict[str, Any]:
     port = _plugin_avatar_port(avatar_kind)
     url = f"http://127.0.0.1:{port}/"
     active = _active_status()
-    active["url_ready"] = _url_ready(str(active.get("url") or url)) if active.get("alive") else False
+    active["url_ready"] = (
+        _url_ready(str(active.get("url") or url)) if active.get("alive") else False
+    )
     tts = tts_status()
     readiness = {
         "repo_root": bool(repo),
@@ -1308,18 +1541,24 @@ def status() -> dict[str, Any]:
         "chat_dist": bool(repo and _chat_agent_dist(repo).is_file()),
         "tts_backend": bool(tts.get("ok")),
     }
-    codex_sdk = _codex_sdk_installed(repo) if repo and _npm_exe() else {"installed": False}
+    codex_sdk = (
+        _codex_sdk_installed(repo) if repo and _npm_exe() else {"installed": False}
+    )
     readiness["codex_sdk"] = bool(codex_sdk.get("installed"))
     ok = all(readiness.values())
     recommended: list[str] = []
     if not readiness["repo_root"]:
-        recommended.append("hermes aituber-onair configure --repo-root <path-to-aituber-onair>")
+        recommended.append(
+            "hermes aituber-onair configure --repo-root <path-to-aituber-onair>"
+        )
     if not readiness["chat_dist"] or not readiness["codex_sdk"]:
         recommended.append("hermes aituber-onair prepare")
     if not readiness["codex_cli_auth"]:
         recommended.append("Authenticate Codex locally, then rerun status.")
     if not readiness["tts_backend"]:
-        recommended.append("Install or configure irodoriTTS or VOICEVOX, then run hermes aituber-onair tts-status.")
+        recommended.append(
+            "Install or configure irodoriTTS or VOICEVOX, then run hermes aituber-onair tts-status."
+        )
     elif not tts.get("ready"):
         recommended.append("hermes aituber-onair start-tts")
     return {
@@ -1392,14 +1631,12 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
     entry["character_name"] = "はくあ"
     entry["codex_provider"] = "codex-sdk"
     entry["codex_auth_source"] = "local-codex-cli"
-    entry["response_length"] = str(values.get("response_length") or DEFAULT_RESPONSE_LENGTH)
+    entry["response_length"] = str(
+        values.get("response_length") or DEFAULT_RESPONSE_LENGTH
+    )
     entry["skip_git_repo_check"] = True
-    entry["fbx_app_dir"] = str(
-        Path("packages") / "core" / "examples" / "react-fbx-app"
-    )
-    entry["vrm_app_dir"] = str(
-        Path("packages") / "core" / "examples" / "react-vrm-app"
-    )
+    entry["fbx_app_dir"] = str(Path("packages") / "core" / "examples" / "react-fbx-app")
+    entry["vrm_app_dir"] = str(Path("packages") / "core" / "examples" / "react-vrm-app")
     entry["avatar_kind"] = _coerce_avatar_kind(values.get("avatar_kind"))
     entry["fbx_port"] = _plugin_fbx_port(values.get("fbx_port"))
     entry["vrm_port"] = _plugin_vrm_port(values.get("vrm_port"))
@@ -1521,7 +1758,9 @@ def prepare(values: dict[str, Any]) -> dict[str, Any]:
                     )
 
     if build_chat:
-        steps.append({"name": "build_chat", **_build_chat_for_codex(repo, npm, timeout)})
+        steps.append(
+            {"name": "build_chat", **_build_chat_for_codex(repo, npm, timeout)}
+        )
 
     if build_fbx_app:
         app_dir = _fbx_app_dir(repo)
@@ -1632,7 +1871,10 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
     app_dir = _avatar_app_dir(repo, avatar_kind)
     display_name = _avatar_display_name(avatar_kind)
     if not (app_dir / "package.json").is_file():
-        return {"ok": False, "error": f"{display_name} app package.json was not found: {app_dir}"}
+        return {
+            "ok": False,
+            "error": f"{display_name} app package.json was not found: {app_dir}",
+        }
     npm = _npm_exe()
     if not npm:
         return {"ok": False, "error": "npm was not found on PATH."}
@@ -1650,7 +1892,9 @@ def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
     if existing.get("alive") and values.get("force"):
         stop_fbx_app({"force": True})
 
-    explicit_port = values.get("vrm_port") if avatar_kind == "vrm" else values.get("fbx_port")
+    explicit_port = (
+        values.get("vrm_port") if avatar_kind == "vrm" else values.get("fbx_port")
+    )
     port = _plugin_avatar_port(avatar_kind, explicit_port)
     url = f"http://127.0.0.1:{port}/"
     log_path = _log_file(f"{avatar_kind}-vite.log")
@@ -1746,7 +1990,11 @@ def stop_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
         time.sleep(0.2)
 
     if values.get("force"):
-        return {"ok": False, "error": "process still appears alive after force stop", "pid": pid}
+        return {
+            "ok": False,
+            "error": "process still appears alive after force stop",
+            "pid": pid,
+        }
     return {
         "ok": False,
         "error": "process still appears alive; retry with force=true",
@@ -1802,7 +2050,10 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "node was not found on PATH."}
     script = _codex_chat_script(repo)
     if not script.is_file():
-        return {"ok": False, "error": f"Codex character chat script was not found: {script}"}
+        return {
+            "ok": False,
+            "error": f"Codex character chat script was not found: {script}",
+        }
     if not _chat_agent_dist(repo).is_file():
         return {
             "ok": False,
@@ -1828,7 +2079,9 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     model = _plugin_model(values.get("model"))
     response_length = _plugin_response_length(values.get("response_length"))
     timeout = int(values.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
-    prompt_path = _workspace_root() / "prompts" / f"hakua-once-{int(time.time() * 1000)}.txt"
+    prompt_path = (
+        _workspace_root() / "prompts" / f"hakua-once-{int(time.time() * 1000)}.txt"
+    )
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt, encoding="utf-8")
     cmd = [
@@ -1858,7 +2111,10 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     reply = _extract_character_reply(stdout, character_name)
-    provider_failed = "codex-sdk provider failed" in stderr.lower() or "original error:" in stderr.lower()
+    provider_failed = (
+        "codex-sdk provider failed" in stderr.lower()
+        or "original error:" in stderr.lower()
+    )
     ok = result.get("ok") is True and bool(reply) and not provider_failed
     payload = {
         "ok": ok,
@@ -1919,6 +2175,7 @@ HELP = """aituber commands:
   /aituber say <prompt>
   /aituber say --speak <prompt>
   /aituber smoke
+  /aituber youtube-ready
 """
 
 
@@ -1953,7 +2210,11 @@ def handle_slash(raw_args: str) -> str:
         return handle_speak({"text": prompt, "play": "--play" in argv})
     if command == "smoke":
         return handle_smoke({})
+    if command in {"youtube-ready", "youtube", "onair-ready"}:
+        return handle_youtube_ready({})
     if command == "say":
         prompt = " ".join(arg for arg in argv[1:] if not arg.startswith("--"))
-        return handle_say({"prompt": prompt, "speak": "--speak" in argv, "play": "--play" in argv})
+        return handle_say(
+            {"prompt": prompt, "speak": "--speak" in argv, "play": "--play" in argv}
+        )
     return HELP

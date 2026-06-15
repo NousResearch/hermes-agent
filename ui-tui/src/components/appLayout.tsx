@@ -26,7 +26,7 @@ import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
-import { PetSprite } from './petSprite.js'
+import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
@@ -35,15 +35,16 @@ import { TextInput, type TextInputMouseApi } from './textInput.js'
 // nothing unless a pet is installed + enabled (`hermes pets select <slug>`),
 // so it's a no-op for everyone else.
 const PetPane = memo(function PetPane() {
-  const { enabled, grid } = usePet()
+  const { enabled, grid, kitty } = usePet()
 
-  if (!enabled || !grid) {
+  if (!enabled || (!grid && !kitty)) {
     return null
   }
 
   return (
-    <NoSelect alignItems="flex-end" flexShrink={0} paddingX={1} width="100%">
-      <PetSprite grid={grid} />
+    <NoSelect flexShrink={0} justifyContent="flex-end" paddingX={1} width="100%">
+      {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
+      {!kitty && grid ? <PetSprite grid={grid} /> : null}
     </NoSelect>
   )
 })

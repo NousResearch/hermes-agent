@@ -176,9 +176,11 @@ _LONG_HANDLERS = frozenset(
     {
         "browser.manage",
         "cli.exec",
-        # Pet RPCs hit the network (manifest fetch / spritesheet download): inline
-        # they serialize on the reader thread, so picker previews trickle in one at
-        # a time. On the pool they fetch concurrently and stop blocking other RPCs.
+        # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
+        # per-frame PNG decode/encode (pet.cells): inline they serialize on the
+        # reader thread, so picker previews trickle in one at a time and the
+        # animation poll stutters. On the pool they run concurrently.
+        "pet.cells",
         "pet.gallery",
         "pet.select",
         "pet.thumb",
@@ -4880,7 +4882,7 @@ def _(rid, params: dict) -> dict:
     Fail-open: ``enabled=False`` on any problem.
     """
     try:
-        from agent.pet import constants, store
+        from agent.pet import constants, render, store
         from agent.pet.render import PetRenderer
 
         try:
@@ -4901,11 +4903,47 @@ def _(rid, params: dict) -> dict:
 
         state = str(params.get("state") or constants.PetState.IDLE.value)
         cols = int(params.get("cols") or pet_cfg.get("unicode_cols", 18) or 18)
+        scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+
+        # Graphics path: when the TUI is attached to a real TTY (``graphics``)
+        # and the terminal speaks the kitty protocol, return a Unicode-
+        # placeholder payload for a crisp image instead of half-blocks. Env
+        # detection (KITTY_WINDOW_ID / TERM / TERM_PROGRAM) is shared with the
+        # Ink process since it spawns us; the dashboard PTY (xterm.js) has no
+        # such env, so it falls through to half-blocks automatically. Only
+        # kitty is grid-safe in Ink — iTerm/sixel stay on the fallback.
+        if params.get("graphics"):
+            configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+            gmode = render.detect_terminal_graphics() if configured in ("", "auto") else configured
+            if gmode == "kitty":
+                image_id = render.kitty_image_id(pet.slug)
+                payload = PetRenderer(
+                    str(pet.spritesheet), mode="kitty", scale=scale, unicode_cols=cols
+                ).kitty_payload(state, cols=cols, image_id=image_id)
+                if payload:
+                    kcount = len(payload["frames"]) or 1
+                    return _ok(
+                        rid,
+                        {
+                            "enabled": True,
+                            "slug": pet.slug,
+                            "displayName": pet.display_name,
+                            "state": state,
+                            "graphics": "kitty",
+                            "imageId": image_id,
+                            "color": render.kitty_color_hex(image_id),
+                            "cols": payload["cols"],
+                            "rows": payload["rows"],
+                            "placeholder": payload["placeholder"],
+                            "frames": payload["frames"],
+                            "frameMs": constants.LOOP_MS / max(1, kcount),
+                        },
+                    )
 
         renderer = PetRenderer(
             str(pet.spritesheet),
             mode="unicode",
-            scale=float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE),
+            scale=scale,
             unicode_cols=cols,
         )
         count = renderer.frame_count(state) or 1

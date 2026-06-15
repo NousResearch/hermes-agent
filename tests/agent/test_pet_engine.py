@@ -147,6 +147,66 @@ def test_cells_grid_shape(boba_like):
     assert render.PetRenderer(str(sprite.parent / "missing.webp"), mode="unicode").cells("idle", 0) == []
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# render — kitty Unicode placeholders (TUI graphics path)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_kitty_image_id_stable_bounded_nonzero():
+    # Deterministic per slug so re-renders reuse the same terminal-side image,
+    # and always a valid 24-bit-encodable, non-zero id.
+    a = render.kitty_image_id("boba")
+    assert a == render.kitty_image_id("boba")
+    assert 1 <= a <= 0x7FFF
+
+
+def test_kitty_color_hex_decodes_to_id():
+    # The placeholder's foreground color IS the image id (24-bit). The terminal
+    # reconstructs id = (r<<16)|(g<<8)|b, so the hex must round-trip.
+    for slug in ("boba", "clawd", "pixel-fox"):
+        image_id = render.kitty_image_id(slug)
+        h = render.kitty_color_hex(image_id)
+        assert h.startswith("#") and len(h) == 7
+        assert int(h[1:], 16) == image_id
+
+
+def test_kitty_placeholder_rows_grid_contract():
+    cols, rows = 18, 10
+    grid = render.kitty_placeholder_rows(cols, rows)
+    assert len(grid) == rows
+    placeholder = "\U0010eeee"
+    for r, row in enumerate(grid):
+        # Each line is exactly `cols` placeholder cells (combining diacritics
+        # are zero-width, so this is the rendered width Ink must measure).
+        assert row.count(placeholder) == cols
+        # First cell carries this row's diacritic; the rest inherit row + col.
+        assert row.startswith(placeholder + chr(render._ROWCOL_DIACRITICS[r]))
+
+
+def test_kitty_payload_structure(boba_like):
+    sprite = store.load_pet("boba").spritesheet
+    image_id = render.kitty_image_id("boba")
+    r = render.PetRenderer(str(sprite), mode="kitty", scale=0.4, unicode_cols=18)
+    payload = r.kitty_payload("run", cols=18, image_id=image_id)
+    assert payload is not None
+    assert payload["cols"] == 18
+    assert payload["rows"] == r.kitty_cell_rows(18) >= 1
+    # placeholder grid matches the requested geometry
+    assert len(payload["placeholder"]) == payload["rows"]
+    # one transmit escape per animation frame, each a kitty virtual placement
+    assert len(payload["frames"]) == r.frame_count("run")
+    for esc in payload["frames"]:
+        assert esc.startswith("\x1b_G")
+        assert esc.endswith("\x1b\\")
+        assert f"i={image_id}" in esc
+        assert "a=T" in esc and "U=1" in esc
+        assert f"c={payload['cols']}" in esc and f"r={payload['rows']}" in esc
+
+
+def test_kitty_payload_none_when_no_frames(tmp_path):
+    r = render.PetRenderer(str(tmp_path / "missing.webp"), mode="kitty")
+    assert r.kitty_payload("idle", cols=18, image_id=1) is None
+
+
 def test_off_mode_and_missing_sheet_degrade(tmp_path):
     # off mode never emits
     r_off = render.PetRenderer(str(tmp_path / "nope.webp"), mode="off")

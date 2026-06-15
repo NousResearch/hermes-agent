@@ -60,7 +60,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
-from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer
+from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl, ConditionalContainer, WindowAlign
 from prompt_toolkit.layout.processors import Processor, Transformation, PasswordProcessor, ConditionalProcessor
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.layout.dimension import Dimension
@@ -3567,6 +3567,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
         self._command_status = ""
+        # Petdex mascot (opt-in via display.pet). The base CLI mirrors the TUI's
+        # PetPane: a half-block sprite above the prompt that reacts to agent
+        # activity. Lazily resolved; an invalidate timer drives the animation.
+        self._pet_renderer = None  # agent.pet.render.PetRenderer | None
+        self._pet_slug: str = ""
+        self._pet_enabled: bool = False
+        self._pet_cols: int = 18
+        self._pet_scale: float = 0.7
+        self._pet_frames_cache: dict = {}  # state -> list[grid]
+        self._pet_frame_idx: int = 0
+        self._pet_lock = threading.Lock()
+        self._pet_cfg_checked: float = 0.0
+        self._pet_anim_running: bool = False
+        self._pet_anim_thread = None
         self._attached_images: list[Path] = []
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
@@ -4106,6 +4120,173 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 elapsed_str = f"{elapsed:5.1f}s"
             return f"  {txt}  ({elapsed_str})"
         return f"  {txt}"
+
+    # ── Petdex mascot (base-CLI pet pane) ───────────────────────────────
+    #
+    # Parity with the TUI: a half-block sprite rendered as a prompt_toolkit
+    # window above the prompt, reacting to agent state and animated by a timer
+    # that calls ``app.invalidate()``. Half-blocks only — the crisp Kitty image
+    # protocol can't coexist with prompt_toolkit's patch_stdout output layer
+    # (raw image escapes get swallowed/mangled), so we use truecolor styled
+    # text, which prompt_toolkit renders natively in any 24-bit terminal.
+
+    _PET_FRAME_INTERVAL = 0.16
+    _PET_CFG_INTERVAL = 2.5
+
+    def _pet_resolve_config(self) -> None:
+        """(Re)resolve the active pet from config — picks up live enable/disable/
+
+        switch made via ``/pet`` or ``hermes pets`` without a restart, mirroring
+        the TUI's steady poll. Cheap and fail-open: any problem disables the pet.
+        """
+        try:
+            from agent.pet import constants, store
+            from agent.pet.render import PetRenderer
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+
+            enabled = bool(pet_cfg.get("enabled"))
+            slug = str(pet_cfg.get("slug", "") or "")
+            cols = int(pet_cfg.get("unicode_cols", 18) or 18)
+            scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+
+            if not enabled:
+                with self._pet_lock:
+                    self._pet_enabled = False
+                    self._pet_renderer = None
+                    self._pet_frames_cache.clear()
+                return
+
+            pet = store.resolve_active_pet(slug)
+            if pet is None or not pet.exists:
+                with self._pet_lock:
+                    self._pet_enabled = False
+                    self._pet_renderer = None
+                    self._pet_frames_cache.clear()
+                return
+
+            with self._pet_lock:
+                # Rebuild only when the resolved pet or geometry changes.
+                if (
+                    self._pet_renderer is None
+                    or self._pet_slug != pet.slug
+                    or self._pet_cols != cols
+                    or self._pet_scale != scale
+                ):
+                    self._pet_renderer = PetRenderer(
+                        str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols
+                    )
+                    self._pet_slug = pet.slug
+                    self._pet_cols = cols
+                    self._pet_scale = scale
+                    self._pet_frames_cache.clear()
+                    self._pet_frame_idx = 0
+                self._pet_enabled = True
+        except Exception:
+            with self._pet_lock:
+                self._pet_enabled = False
+                self._pet_renderer = None
+
+    def _derive_pet_state(self) -> str:
+        """Map current CLI activity to a pet animation state (mirrors the TUI)."""
+        if getattr(self, "_agent_running", False):
+            return "run"
+        return "idle"
+
+    def _pet_frames_for(self, state: str) -> list:
+        """Return (and cache) the half-block grids for one state."""
+        cached = self._pet_frames_cache.get(state)
+        if cached is not None:
+            return cached
+        renderer = self._pet_renderer
+        if renderer is None:
+            return []
+        try:
+            count = renderer.frame_count(state) or 1
+            grids = [renderer.cells(state, i, cols=self._pet_cols) for i in range(count)]
+        except Exception:
+            grids = []
+        self._pet_frames_cache[state] = grids
+        return grids
+
+    def _pet_fragments(self):
+        """Return prompt_toolkit FormattedText for the current pet frame, or []."""
+        with self._pet_lock:
+            if not self._pet_enabled or self._pet_renderer is None:
+                return []
+            state = self._derive_pet_state()
+            grids = self._pet_frames_for(state)
+            if not grids:
+                return []
+            grid = grids[self._pet_frame_idx % len(grids)]
+
+        frags = []
+        for y, row in enumerate(grid):
+            if y:
+                frags.append(("", "\n"))
+            for top, bottom in row:
+                tr, tg, tb, ta = top
+                br, bg, bb, ba = bottom
+                top_op = ta >= 32
+                bot_op = ba >= 32
+                if not top_op and not bot_op:
+                    frags.append(("", " "))
+                elif top_op and bot_op:
+                    frags.append((f"fg:#{tr:02x}{tg:02x}{tb:02x} bg:#{br:02x}{bg:02x}{bb:02x}", "▀"))
+                elif top_op:
+                    # Upper half only — leave the lower half the terminal's bg
+                    # instead of painting it black (cleaner on light themes).
+                    frags.append((f"fg:#{tr:02x}{tg:02x}{tb:02x}", "▀"))
+                else:
+                    frags.append((f"fg:#{br:02x}{bg:02x}{bb:02x}", "▄"))
+        return frags
+
+    def _pet_widget_height(self) -> int:
+        """Visible rows for the pet window — 0 collapses it when no pet shows."""
+        with self._pet_lock:
+            if not self._pet_enabled or self._pet_renderer is None:
+                return 0
+            grids = self._pet_frames_for(self._derive_pet_state())
+            if not grids or not grids[0]:
+                return 0
+            return len(grids[0])
+
+    def _pet_anim_loop(self) -> None:
+        """Advance the frame + invalidate on a timer while a pet is enabled."""
+        while self._pet_anim_running:
+            time.sleep(self._PET_FRAME_INTERVAL)
+            now = time.monotonic()
+            if now - self._pet_cfg_checked >= self._PET_CFG_INTERVAL:
+                self._pet_cfg_checked = now
+                self._pet_resolve_config()
+            if not self._pet_enabled:
+                continue
+            with self._pet_lock:
+                self._pet_frame_idx += 1
+            app = getattr(self, "_app", None)
+            if app is not None:
+                try:
+                    app.invalidate()
+                except Exception:
+                    pass
+
+    def _pet_start_anim(self) -> None:
+        if self._pet_anim_running:
+            return
+        self._pet_resolve_config()
+        self._pet_anim_running = True
+        self._pet_anim_thread = threading.Thread(target=self._pet_anim_loop, daemon=True)
+        self._pet_anim_thread.start()
+
+    def _pet_stop_anim(self) -> None:
+        self._pet_anim_running = False
+        thread = self._pet_anim_thread
+        if thread is not None:
+            thread.join(timeout=0.3)
+        self._pet_anim_thread = None
 
     def _voice_record_key_label(self) -> str:
         """Return the configured voice push-to-talk key formatted for UI.
@@ -10917,6 +11098,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
+                getattr(self, "_pet_widget", None),
                 status_bar,
                 input_rule_top,
                 image_bar,
@@ -12258,6 +12440,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             wrap_lines=True,
         )
 
+        # Petdex mascot — right-aligned half-block sprite above the prompt,
+        # mirroring the TUI's PetPane. Collapses to height 0 when no pet is
+        # enabled, so it's a no-op for everyone else. The _pet_anim_loop thread
+        # advances frames + invalidates; align=RIGHT pins it to the edge.
+        self._pet_widget = Window(
+            content=FormattedTextControl(self._pet_fragments),
+            height=self._pet_widget_height,
+            align=WindowAlign.RIGHT,
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -13270,6 +13462,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # The app enables focus reporting + mouse tracking; record that
                 # so _run_cleanup resets them on exit (#36823).
                 _mark_tui_input_modes_active()
+                # Drive the petdex mascot animation (no-op when no pet enabled).
+                self._pet_start_anim()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
@@ -13296,6 +13490,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 raise
         finally:
             self._should_exit = True
+            self._pet_stop_anim()
             # Interrupt the agent immediately so its daemon thread stops making
             # API calls and exits promptly (agent_thread is daemon, so the
             # process will exit once the main thread finishes, but interrupting

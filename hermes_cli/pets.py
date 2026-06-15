@@ -176,13 +176,19 @@ def _cmd_show(args) -> int:
     is_unicode = renderer.mode == "unicode"
     frame_delay = max(0.05, (LOOP_MS / 1000.0) / max(1, renderer.frame_count(states[0]) or 1))
 
-    # Right-align the half-block sprite against the terminal's right edge.
+    # Right-align the sprite against the terminal's right edge — half-blocks by
+    # indenting each row, graphics protocols by padding the cursor to the right
+    # column before the image draws (kitty/iTerm/sixel all render at the cursor).
     import shutil
 
+    term_cols = shutil.get_terminal_size((80, 24)).columns
     indent = ""
+    g_indent = ""
     if is_unicode:
-        term_cols = shutil.get_terminal_size((80, 24)).columns
         indent = " " * max(0, term_cols - cols - 1)
+    else:
+        cell_cols = max(1, int(renderer.frame_w * renderer.scale) // 8)
+        g_indent = " " * max(0, term_cols - cell_cols - 1)
 
     out = sys.stdout
     out.write("\x1b[?25l")  # hide cursor
@@ -209,6 +215,8 @@ def _cmd_show(args) -> int:
                     else:
                         out.write("\x1b[2J\x1b[3J\x1b[H")  # clear for image protocols
                         out.write(f"{pet.display_name} [{state}]\n")
+                        if g_indent:
+                            out.write(g_indent)
                         out.write(encoded)
                         out.write("\n")
                     out.flush()

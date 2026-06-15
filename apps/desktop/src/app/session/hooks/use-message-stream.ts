@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
+import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -15,6 +16,7 @@ import {
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
+import { playCompletionSound } from '@/lib/completion-sound'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import {
   dedupeGeneratedImageEchoesInParts,
@@ -25,8 +27,10 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
 import { setClarifyRequest } from '@/store/clarify'
+import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
+import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -330,6 +334,8 @@ export function useMessageStream({
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
+  // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
+  const compactedTurnRef = useRef<Set<string>>(new Set())
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -636,18 +642,22 @@ export function useMessageStream({
 
       void refreshSessions().catch(() => undefined)
 
+      if (compactedTurnRef.current.delete(sessionId)) {
+        shouldHydrate = false
+      }
+
       if (shouldHydrate) {
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
 
-      if (document.hidden && sessionId === activeSessionIdRef.current) {
-        void window.hermesDesktop?.notify({
-          title: 'Hermes finished',
-          body: text.slice(0, 140) || 'The response is ready.'
-        })
-      }
+      dispatchNativeNotification({
+        body: text.slice(0, 140) || translateNow('notifications.native.turnDoneBody'),
+        kind: 'turnDone',
+        sessionId,
+        title: translateNow('notifications.native.turnDoneTitle')
+      })
     },
-    [activeSessionIdRef, hydrateFromStoredSession, refreshSessions, updateSessionState]
+    [hydrateFromStoredSession, refreshSessions, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(
@@ -822,6 +832,8 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
+        setSessionCompacting(sessionId, false)
+        compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
 
         if (isActiveEvent) {
@@ -867,12 +879,11 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
+        setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
 
-        if (isActiveEvent) {
-          triggerHaptic('streamDone')
-        }
+        playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
@@ -903,10 +914,7 @@ export function useMessageStream({
 
           // terminal/process tool calls are the only things that spawn or reap
           // background processes — sync the composer status stack right after.
-          if (
-            !sessionInterrupted(sessionId) &&
-            (payload?.name === 'terminal' || payload?.name === 'process')
-          ) {
+          if (!sessionInterrupted(sessionId) && (payload?.name === 'terminal' || payload?.name === 'process')) {
             void refreshBackgroundProcesses(sessionId)
           }
         }
@@ -958,6 +966,13 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+
+          dispatchNativeNotification({
+            body: question,
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
         }
       } else if (event.type === 'approval.request') {
         // Dangerous-command / execute_code approval. The Python side is blocked
@@ -966,17 +981,31 @@ export function useMessageStream({
         // Park it per-session (like clarify) so a *background* profile's turn can
         // raise it and wait — the sidebar flags "needs input" and the inline bar
         // surfaces once the user focuses that chat.
+        const command = typeof payload?.command === 'string' ? payload.command : ''
+        const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
+
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
-          command: typeof payload?.command === 'string' ? payload.command : '',
-          description: typeof payload?.description === 'string' ? payload.description : 'dangerous command',
+          command,
+          description,
           sessionId: sessionId ?? null
         })
 
         if (sessionId) {
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
         }
+
+        dispatchNativeNotification({
+          actions: [
+            { id: 'approve', text: translateNow('notifications.native.approveAction') },
+            { id: 'reject', text: translateNow('notifications.native.rejectAction') }
+          ],
+          body: command || description,
+          kind: 'approval',
+          sessionId,
+          title: translateNow('notifications.native.approvalTitle')
+        })
       } else if (event.type === 'sudo.request') {
         // Sudo password capture (tools/terminal_tool.py). Blocked on
         // sudo.respond {request_id, password}.
@@ -988,6 +1017,13 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+
+          dispatchNativeNotification({
+            body: translateNow('notifications.native.inputBody'),
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
         }
       } else if (event.type === 'secret.request') {
         // Skill credential capture (tools/skills_tool.py). Blocked on
@@ -995,16 +1031,26 @@ export function useMessageStream({
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
         if (requestId) {
+          const envVar = typeof payload?.env_var === 'string' ? payload.env_var : ''
+          const promptText = typeof payload?.prompt === 'string' ? payload.prompt : ''
+
           setSecretRequest({
             requestId,
-            envVar: typeof payload?.env_var === 'string' ? payload.env_var : '',
-            prompt: typeof payload?.prompt === 'string' ? payload.prompt : '',
+            envVar,
+            prompt: promptText,
             sessionId: sessionId ?? null
           })
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+
+          dispatchNativeNotification({
+            body: promptText || envVar || translateNow('notifications.native.inputBody'),
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
         }
       } else if (event.type === 'terminal.read.request') {
         // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -1022,9 +1068,12 @@ export function useMessageStream({
           })
         }
       } else if (event.type === 'status.update') {
-        // The gateway's notification poller announces background process
-        // completions / watch matches here — re-sync the status stack.
-        if (sessionId && payload?.kind === 'process') {
+        if (sessionId && payload?.kind === 'compacting') {
+          setSessionCompacting(sessionId, true)
+          compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'process') {
+          // The gateway's notification poller announces background process
+          // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
         }
       } else if (event.type === 'error') {
@@ -1036,7 +1085,16 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         }
+
+        dispatchNativeNotification({
+          body: errorMessage,
+          kind: 'turnError',
+          sessionId,
+          title: translateNow('notifications.native.turnErrorTitle')
+        })
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)

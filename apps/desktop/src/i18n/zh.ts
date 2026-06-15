@@ -2,8 +2,6 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import type { Translations } from './types'
 
-const REBUILD_NEEDED = '源代码已更改 — 重建以应用本地更改。'
-
 export const zh: Translations = {
   common: {
     apply: '应用',
@@ -60,7 +58,6 @@ export const zh: Translations = {
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewaySignInRequired: '需要登录网关',
-      gatewayUnreachable: '无法连接到网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
     failure: {
@@ -333,7 +330,11 @@ export const zh: Translations = {
         backend: '执行后端',
         timeout: '命令超时',
         persistentShell: '持久化 Shell',
-        envPassthrough: '环境变量透传'
+        envPassthrough: '环境变量透传',
+        dockerImage: 'Docker 镜像',
+        singularityImage: 'Singularity 镜像',
+        modalImage: 'Modal 镜像',
+        daytonaImage: 'Daytona 镜像'
       },
       fileReadMaxChars: '文件读取上限',
       toolOutput: {
@@ -374,6 +375,15 @@ export const zh: Translations = {
           model: '本地转写模型',
           language: '转写语言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 语言',
@@ -393,6 +403,33 @@ export const zh: Translations = {
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 语音',
+          language: 'xAI 语言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 语音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 语音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 语音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 设备'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 语音'
+        },
+        piper: {
+          voice: 'Piper 语音'
         }
       },
       memory: {
@@ -494,9 +531,7 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
-      rebuildNeeded: REBUILD_NEEDED,
-      rebuildNow: '立即重建',
-      lastChecked: age => `上次检查 ${age}`,
+      lastChecked: age => `上次检查:${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
       automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
@@ -720,15 +755,15 @@ export const zh: Translations = {
       ready: '就绪',
       nousIncluded: '包含在 Nous 订阅中；登录 Nous Portal 即可激活。',
       noApiKeyRequired: '不需要 API 密钥。',
-      postSetupHint: step => `此提供方需要额外设置步骤 (${step})。暂时请在 CLI 中运行 hermes tools。`,
+      postSetupHint: step => `此后端需要一次性安装 (${step})。将在此机器上执行，可能需要几分钟。`,
       postSetupRun: '运行设置',
-      postSetupRunning: '正在运行设置…',
-      postSetupStarting: '正在开始设置…',
+      postSetupRunning: '安装中…',
+      postSetupStarting: '启动中…',
       postSetupCompleteTitle: '设置完成',
-      postSetupCompleteMessage: (step: string) => `设置步骤 "${step}" 已成功完成。`,
-      postSetupErrorTitle: '设置失败',
-      postSetupErrorMessage: (step: string) => `设置步骤 "${step}" 失败。`,
-      postSetupFailed: (step: string) => `设置步骤 "${step}" 失败。暂时请在 CLI 中运行 hermes tools。`
+      postSetupCompleteMessage: step => `已安装 ${step}。`,
+      postSetupErrorTitle: '设置完成但有错误',
+      postSetupErrorMessage: step => `请检查 ${step} 日志。`,
+      postSetupFailed: step => `运行 ${step} 设置失败`
     }
   },
 
@@ -1082,8 +1117,6 @@ export const zh: Translations = {
   cron: {
     close: '关闭定时任务',
     search: '搜索定时任务…',
-    refresh: '刷新定时任务',
-    refreshing: '正在刷新定时任务',
     loading: '正在加载定时任务…',
     states: {
       enabled: '已启用',
@@ -1136,20 +1169,18 @@ export const zh: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每个整点',
     everyHourAt: minute => `每小时的 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 个启用`,
     newCron: '新建定时任务',
-    createFirst: '创建第一个定时任务',
     emptyDescNew: '按 cron 表达式排程一个提示词。Hermes 会运行它，并把结果发送到你选择的目的地。',
     emptyDescSearch: '尝试更宽泛的搜索词。',
     emptyTitleNew: '暂无排程任务',
-    emptyTitleSearch: '无结果',
-    last: '上一次：',
+    emptyTitleSearch: '无匹配项',
+    last: '上次：',
     next: '下次：',
-    noRuns: '暂无运行记录',
+    noRuns: '尚无运行',
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',
-    runHistory: '运行历史',
+    runHistory: '运行记录',
     actionsFor: title => `${title} 的操作`,
     actionsTitle: '定时任务操作',
     resume: '恢复定时任务',
@@ -1243,20 +1274,10 @@ export const zh: Translations = {
     pinned: '已置顶',
     sessions: '会话',
     cronJobs: '定时任务',
-    liveElsewhere: '其他设备上的会话',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',
     groupTitleGrouped: '取消分组',
     groupTitleUngrouped: '按工作区分组',
-    archiveAllTitle: '归档所有会话',
-    archiveAllAria: '归档所有未置顶的会话',
-    archiveAllDialogTitle: '归档所有会话',
-    archiveAllDialogDesc: '从侧边栏归档未置顶的会话。已置顶的对话、当前对话和正在运行的会话仍会显示。',
-    archiveAllConfirm: '全部归档',
-    archiveAllCancel: '取消',
-    archiveAllSubmitting: '正在归档…',
-    archiveAllChecked: count => `将归档 ${count} 个可见会话。`,
-    archiveAllNone: '没有可归档的会话。',
     cloudChannelsTitle: '云端频道',
     cloudChannelsDesc: '接受邀请并查看此云端账户可用的频道。',
     cloudInviteTokenAria: '云端邀请令牌',
@@ -1286,7 +1307,7 @@ export const zh: Translations = {
     cloudHostOffline: '主机离线',
     cloudParticipantLabel: (device, count) => `${device} x${count}`,
     allPinned: '这里的全部已置顶。取消置顶某个对话即可在最近中显示。',
-    shiftClickHint: '将对话拖到此处以置顶',
+    shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
     noWorkspace: '无工作区',
     newSessionIn: label => `在 ${label} 中新建会话`,
     reorderWorkspace: label => `重新排序工作区 ${label}`,
@@ -1294,49 +1315,6 @@ export const zh: Translations = {
     loading: '加载中…',
     loadMore: '加载更多',
     loadCount: step => `再加载 ${step} 个`,
-    archived: '已归档',
-    archivedEmpty: '没有已归档的会话',
-    bulk: {
-      selectedCount: count => `已选择 ${count} 个`,
-      pin: '置顶',
-      unpin: '取消置顶',
-      prompt: '发送',
-      steer: '引导',
-      halt: '停止',
-      archive: '归档',
-      restore: '恢复',
-      delete: '删除',
-      promptCount: count => `发送到 ${count} 个`,
-      steerCount: count => `引导 ${count} 个`,
-      haltCount: count => `停止 ${count} 个`,
-      archiveCount: count => `归档 ${count} 个`,
-      restoreCount: count => `恢复 ${count} 个`,
-      deleteCount: count => `删除 ${count} 个`,
-      promptDialogTitle: count => `发送到 ${count} 个会话`,
-      promptDialogDesc: '将同一条消息发送到所有选中的会话。',
-      promptPlaceholder: '要发送的消息…',
-      promptSubmit: '发送提示词',
-      steerDialogTitle: count => `引导 ${count} 个会话`,
-      steerDialogDesc: '将补充指令发送到所有选中且正在运行的会话。',
-      steerPlaceholder: '引导备注…',
-      steerSubmit: '引导',
-      clearSelection: '清除选择',
-      deleteDialogTitle: count => `删除 ${count} 个会话？`,
-      deleteDialogDesc: '删除的会话将被永久移除，无法撤销。',
-      deleteConfirm: '删除',
-      promptedToast: count => `已发送到 ${count} 个会话`,
-      steeredToast: count => `已引导 ${count} 个会话`,
-      haltedToast: count => `已停止 ${count} 个会话`,
-      archivedToast: count => `已归档 ${count} 个会话`,
-      restoredToast: count => `已恢复 ${count} 个会话`,
-      deletedToast: count => `已删除 ${count} 个会话`,
-      promptFailed: count => `${count} 个会话发送失败`,
-      steerFailed: count => `${count} 个会话引导失败`,
-      haltFailed: count => `${count} 个会话停止失败`,
-      archiveFailed: count => `${count} 个会话归档失败`,
-      restoreFailed: count => `${count} 个会话恢复失败`,
-      deleteFailed: count => `${count} 个会话删除失败`
-    },
     row: {
       pin: '置顶',
       unpin: '取消置顶',
@@ -1349,16 +1327,11 @@ export const zh: Translations = {
       deleteCloudChannel: '删除云端频道',
       rename: '重命名',
       archive: '归档',
-      restore: '恢复',
-      select: '选择',
       newWindow: '新窗口',
       copyIdFailed: '无法复制会话 ID',
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
-      sessionStarting: '正在启动',
-      nextAction: '下一步',
-      waitingForNextAction: '正在等待下一步操作',
       needsInput: '需要你输入',
       waitingForAnswer: '正在等待你的回答',
       handoffOrigin: platform => `从 ${platform} 转接`,
@@ -1375,8 +1348,7 @@ export const zh: Translations = {
       cloudMembersEmpty: '还没有受邀成员。',
       cloudMembersRefresh: '刷新',
       cloudMembersPermissionLabel: '云端成员权限',
-      cloudMembersPermission: permission =>
-        ({ admin: '管理员', post: '可发言', read: '只读' })[permission] || permission,
+      cloudMembersPermission: permission => ({ admin: '管理员', post: '可发言', read: '只读' })[permission] || permission,
       cloudMembersRevoke: '撤销',
       cloudMembersRevokeConfirm: member => `撤销 ${member} 的云端访问权限？`,
       cloudMembersSaving: '正在保存...',
@@ -1451,14 +1423,14 @@ export const zh: Translations = {
       '/quit': '退出 hermes'
     },
     hotkeyDescs: {
-      '@': '引用文件、文件夹、URL、git',
-      '/': '斜杠命令面板',
-      '?': '此快速帮助 (删除以关闭)',
-      Enter: '发送 · Shift+Enter 换行',
-      'Cmd/Ctrl+K': '发送下一条排队的回合',
-      'Cmd/Ctrl+L': '重绘',
-      Esc: '关闭弹窗 · 取消运行',
-      '↑ / ↓': '循环弹窗 / 历史'
+      'composer.mention': '引用文件、文件夹、URL、git',
+      'composer.slash': '斜杠命令面板',
+      'composer.help': '此快速帮助 (删除以关闭)',
+      'composer.sendNewline': '发送 · Shift+Enter 换行',
+      'composer.sendQueued': '发送下一条排队的回合',
+      'keybinds.openPanel': '所有键盘快捷键',
+      'composer.cancel': '关闭弹窗 · 取消运行',
+      'composer.history': '循环弹窗 / 历史'
     },
     attachUrlTitle: '附加 URL',
     attachUrlDesc: 'Hermes 将抓取该页面并作为本回合的上下文。',
@@ -1471,10 +1443,10 @@ export const zh: Translations = {
     attachments: count => `${count} 个附件`,
     editingInComposer: '正在输入框中编辑',
     editingQueuedInComposer: '正在输入框中编辑排队回合',
-    editQueued: '编辑排队回合',
-    sendQueuedNext: '下一个发送排队回合',
-    sendQueuedNow: '立即发送排队回合',
-    deleteQueued: '删除排队回合',
+    queueEdit: '编辑',
+    queueSendNext: '下一个',
+    queueSend: '发送',
+    queueDelete: '删除',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,
@@ -1519,6 +1491,17 @@ export const zh: Translations = {
     }
   },
 
+  statusStack: {
+    agents: '代理',
+    background: count => `${count} 个后台任务`,
+    subagents: count => `${count} 个子代理`,
+    todos: (done, total) => `任务 ${done}/${total}`,
+    running: '运行中',
+    stop: '停止',
+    dismiss: '关闭',
+    exit: code => `退出码 ${code}`
+  },
+
   updates: {
     stages: {
       idle: '准备中…',
@@ -1537,14 +1520,13 @@ export const zh: Translations = {
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
     latestBody: '你正在运行最新版本。',
+    latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
-    availableBody: '新版本 Hermes 已准备好安装。',
+    availableBody: '新版 Hermes 已可安装。',
     availableTitleBackend: '后端有可用更新',
-    availableBodyBackend: '新版本 Hermes 后端已准备就绪。',
-    availableBodyNoChangelog: '后端已更新 — 详情不可用。',
-    rebuildTitle: '源代码已更改',
-    rebuildBody: 'Hermes 源代码自上次构建以来已更改。重建以应用本地更改。',
+    availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
+    availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -1555,19 +1537,18 @@ export const zh: Translations = {
     copied: '已复制',
     done: '完成',
     applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后重新打开 Hermes。',
+    applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不更新',
-    latestBodyBackend: '后端正在运行最新版本。',
-    applyingBodyBackend: '远程后端正在应用更新并即将重启。恢复后 Hermes 会自动重新连接。',
+    notNow: '暂不',
     applyStatus: {
-      preparing: '正在准备更新…',
-      pulling: '正在下载更新…',
-      restarting: '正在重启…',
-      notAvailable: '更新不可用',
-      failed: '更新失败',
-      noReturn: '更新进程无响应'
+      preparing: '正在更新后端…',
+      pulling: '后端更新中…',
+      restarting: '后端正在重启以加载更新…',
+      notAvailable: '此后端无法更新。',
+      failed: '后端更新失败。',
+      noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
     }
   },
 
@@ -1637,6 +1618,7 @@ export const zh: Translations = {
     getKey: '获取密钥',
     replaceCurrent: '替换当前值',
     pasteApiKey: '粘贴 API 密钥',
+    localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
     couldNotSave: '无法保存凭据。',
     connecting: '连接中',
     update: '更新',
@@ -1747,13 +1729,12 @@ export const zh: Translations = {
       update: '更新',
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
-      rebuildNeeded: REBUILD_NEEDED,
       desktopVersion: version => `Hermes Desktop v${version}`,
-      commit: sha => `提交 ${sha}`,
-      branch: branch => `分支 ${branch}`,
       backendVersion: version => `后端 v${version}`,
       clientLabel: version => `客户端 v${version}`,
       backendLabel: version => `后端 v${version}`,
+      commit: sha => `提交 ${sha}`,
+      branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
       openCommandCenter: '打开命令中心',
       showTerminal: '显示终端',
@@ -1778,8 +1759,8 @@ export const zh: Translations = {
       contextUsage: '上下文用量',
       session: '会话',
       runtimeSessionElapsed: '运行时会话已用时间',
-      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。',
-      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。',
+      yoloOn: 'YOLO 已开启 - 自动批准危险命令。点击关闭。Shift+点击可全局切换。',
+      yoloOff: 'YOLO 已关闭 - 点击自动批准危险命令。Shift+点击可全局切换。',
       modelNone: '无',
       noModel: '无模型',
       switchModel: '切换模型',
@@ -1796,6 +1777,9 @@ export const zh: Translations = {
     terminal: '终端',
     noFolderSelected: '未选择文件夹',
     changeCwdTitle: '更改工作目录',
+    remotePickerTitle: '选择远程文件夹',
+    remotePickerDescription: '浏览已连接后端上的文件夹。',
+    remotePickerSelect: '选择文件夹',
     folderTip: cwd => `${cwd} — 点击更改文件夹`,
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',
@@ -1912,9 +1896,12 @@ export const zh: Translations = {
       readAloud: '朗读',
       editMessage: '编辑消息',
       stop: '停止',
-      editableCheckpoint: '可编辑检查点',
       restorePrevious: '恢复上一个检查点',
       restoreCheckpoint: '恢复检查点',
+      restoreFromHere: '恢复检查点 — 从此提示重新运行',
+      restoreTitle: '恢复到此检查点？',
+      restoreBody: '此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。',
+      restoreConfirm: '恢复并重新运行',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
@@ -1940,7 +1927,7 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcut: '⌘/Ctrl + Enter 发送',
+      shortcutSuffix: ' 发送',
       back: '返回',
       skip: '跳过',
       send: '发送'
@@ -2040,7 +2027,14 @@ export const zh: Translations = {
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
-    dropFiles: '拖放文件'
+    dropFiles: '拖放文件',
+    handoff: {
+      pickPlatform: '选择目标平台',
+      success: platform => `已移交到 ${platform}。随时可在此处恢复。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
+      failed: error => `移交失败：${error}`,
+      timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
+    }
   },
 
   errors: {

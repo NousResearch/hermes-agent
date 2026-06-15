@@ -58,7 +58,6 @@ export const ja = defineLocale({
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
-      gatewayUnreachable: 'ゲートウェイに接続できません',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
     failure: {
@@ -252,7 +251,11 @@ export const ja = defineLocale({
         backend: '実行バックエンド',
         timeout: 'コマンドタイムアウト',
         persistentShell: '永続シェル',
-        envPassthrough: '環境変数の引き継ぎ'
+        envPassthrough: '環境変数の引き継ぎ',
+        dockerImage: 'Docker イメージ',
+        singularityImage: 'Singularity イメージ',
+        modalImage: 'Modal イメージ',
+        daytonaImage: 'Daytona イメージ'
       },
       fileReadMaxChars: 'ファイル読み取り上限',
       toolOutput: {
@@ -293,6 +296,15 @@ export const ja = defineLocale({
           model: 'ローカル文字起こしモデル',
           language: '文字起こし言語'
         },
+        openai: {
+          model: 'OpenAI STT モデル'
+        },
+        groq: {
+          model: 'Groq STT モデル'
+        },
+        mistral: {
+          model: 'Mistral STT モデル'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT モデル',
           languageCode: 'ElevenLabs 言語',
@@ -312,6 +324,33 @@ export const ja = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 音声',
           modelId: 'ElevenLabs モデル'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 音声',
+          language: 'xAI 言語'
+        },
+        minimax: {
+          model: 'MiniMax TTS モデル',
+          voiceId: 'MiniMax 音声'
+        },
+        mistral: {
+          model: 'Mistral TTS モデル',
+          voiceId: 'Mistral 音声'
+        },
+        gemini: {
+          model: 'Gemini TTS モデル',
+          voice: 'Gemini 音声'
+        },
+        neutts: {
+          model: 'NeuTTS モデル',
+          device: 'NeuTTS デバイス'
+        },
+        kittentts: {
+          model: 'KittenTTS モデル',
+          voice: 'KittenTTS 音声'
+        },
+        piper: {
+          voice: 'Piper 音声'
         }
       },
       memory: {
@@ -654,8 +693,15 @@ export const ja = defineLocale({
       nousIncluded: 'Nous サブスクリプションに含まれています。有効にするには Nous Portal にサインインしてください。',
       noApiKeyRequired: 'API キーは不要です。',
       postSetupHint: step =>
-        `このプロバイダーは追加のセットアップ手順 (${step}) が必要です。今は CLI で hermes tools を実行してください。`,
-      postSetupRun: 'セットアップを実行'
+        `このバックエンドは一度だけインストールが必要です (${step})。このマシン上で実行され、数分かかる場合があります。`,
+      postSetupRun: 'セットアップを実行',
+      postSetupRunning: 'インストール中…',
+      postSetupStarting: '開始中…',
+      postSetupCompleteTitle: 'セットアップ完了',
+      postSetupCompleteMessage: step => `${step} をインストールしました。`,
+      postSetupErrorTitle: 'セットアップはエラーで終了しました',
+      postSetupErrorMessage: step => `${step} のログを確認してください。`,
+      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`
     }
   },
 
@@ -1020,8 +1066,6 @@ export const ja = defineLocale({
   cron: {
     close: 'Cron を閉じる',
     search: 'Cron ジョブを検索...',
-    refresh: 'Cron ジョブを更新',
-    refreshing: 'Cron ジョブを更新中',
     loading: 'Cron ジョブを読み込み中...',
     states: {
       enabled: '有効',
@@ -1074,9 +1118,7 @@ export const ja = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `毎月 ${dayOfMonth} 日 ${time} に`,
     topOfHour: '毎時 0 分',
     everyHourAt: minute => `毎時 :${minute} に`,
-    active: (enabled, total) => `${enabled}/${total} 有効`,
     newCron: '新しい Cron',
-    createFirst: '最初の Cron を作成',
     emptyDescNew:
       'Cron 式でプロンプトを実行するスケジュールを設定します。Hermes が実行して、選択した宛先に結果を送信します。',
     emptyDescSearch: '検索キーワードを広げてください。',
@@ -1084,6 +1126,11 @@ export const ja = defineLocale({
     emptyTitleSearch: '一致なし',
     last: '前回',
     next: '次回',
+    noRuns: 'まだ実行されていません',
+    manage: '管理',
+    showRuns: '実行履歴を表示',
+    hideRuns: '実行履歴を隠す',
+    runHistory: '実行履歴',
     actionsFor: title => `${title} のアクション`,
     actionsTitle: 'Cron ジョブのアクション',
     resume: '再開',
@@ -1177,22 +1224,11 @@ export const ja = defineLocale({
     results: '結果',
     pinned: 'ピン留め',
     sessions: 'セッション',
-    cronJobs: 'cronジョブ',
-    liveElsewhere: '他のデバイスのセッション',
+    cronJobs: 'Cronジョブ',
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     groupTitleGrouped: 'セッションのグループ化を解除',
     groupTitleUngrouped: 'ワークスペースでグループ化',
-    archiveAllTitle: 'すべてのセッションをアーカイブ',
-    archiveAllAria: '固定されていないすべてのセッションをアーカイブ',
-    archiveAllDialogTitle: 'すべてのセッションをアーカイブ',
-    archiveAllDialogDesc:
-      'サイドバーから固定されていないセッションをアーカイブします。固定中のチャット、現在のチャット、実行中のセッションは表示されたままです。',
-    archiveAllConfirm: 'すべてアーカイブ',
-    archiveAllCancel: 'キャンセル',
-    archiveAllSubmitting: 'アーカイブ中…',
-    archiveAllChecked: count => `表示中の ${count} 件のセッションが対象になります。`,
-    archiveAllNone: 'アーカイブするセッションはありません。',
     cloudChannelsTitle: 'クラウドチャンネル',
     cloudChannelsDesc: '招待を受け入れ、このクラウドアカウントで使えるチャンネルを確認します。',
     cloudInviteTokenAria: 'クラウド招待トークン',
@@ -1222,7 +1258,7 @@ export const ja = defineLocale({
     cloudHostOffline: 'ホストオフライン',
     cloudParticipantLabel: (device, count) => `${device} x${count}`,
     allPinned: 'ここにあるものはすべてピン留めされています。チャットのピン留めを解除すると最近のものに表示されます。',
-    shiftClickHint: 'チャットをここにドラッグしてピン留め',
+    shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
     noWorkspace: 'ワークスペースなし',
     newSessionIn: label => `${label} で新しいセッション`,
     reorderWorkspace: label => `ワークスペース ${label} を並べ替え`,
@@ -1230,49 +1266,6 @@ export const ja = defineLocale({
     loading: '読み込み中…',
     loadMore: 'さらに読み込む',
     loadCount: step => `さらに ${step} 件を読み込む`,
-    archived: 'アーカイブ済み',
-    archivedEmpty: 'アーカイブされたセッションはありません',
-    bulk: {
-      selectedCount: count => `${count} 件を選択中`,
-      pin: 'ピン留め',
-      unpin: 'ピン留めを解除',
-      prompt: '送信',
-      steer: '誘導',
-      halt: '停止',
-      archive: 'アーカイブ',
-      restore: '復元',
-      delete: '削除',
-      promptCount: count => `${count} 件に送信`,
-      steerCount: count => `${count} 件を誘導`,
-      haltCount: count => `${count} 件を停止`,
-      archiveCount: count => `${count} 件をアーカイブ`,
-      restoreCount: count => `${count} 件を復元`,
-      deleteCount: count => `${count} 件を削除`,
-      promptDialogTitle: count => `${count} 件のセッションに送信`,
-      promptDialogDesc: '選択したすべてのセッションに同じメッセージを送信します。',
-      promptPlaceholder: '送信するメッセージ…',
-      promptSubmit: 'プロンプトを送信',
-      steerDialogTitle: count => `${count} 件のセッションを誘導`,
-      steerDialogDesc: '選択したすべての実行中セッションに補足指示を送ります。',
-      steerPlaceholder: '誘導メモ…',
-      steerSubmit: '誘導',
-      clearSelection: '選択を解除',
-      deleteDialogTitle: count => `${count} 件のセッションを削除しますか？`,
-      deleteDialogDesc: '削除したセッションは完全に削除され、元に戻せません。',
-      deleteConfirm: '削除',
-      promptedToast: count => `${count} 件のセッションに送信しました`,
-      steeredToast: count => `${count} 件のセッションを誘導しました`,
-      haltedToast: count => `${count} 件のセッションを停止しました`,
-      archivedToast: count => `${count} 件のセッションをアーカイブしました`,
-      restoredToast: count => `${count} 件のセッションを復元しました`,
-      deletedToast: count => `${count} 件のセッションを削除しました`,
-      promptFailed: count => `${count} 件のセッションに送信できませんでした`,
-      steerFailed: count => `${count} 件のセッションを誘導できませんでした`,
-      haltFailed: count => `${count} 件のセッションを停止できませんでした`,
-      archiveFailed: count => `${count} 件のセッションをアーカイブできませんでした`,
-      restoreFailed: count => `${count} 件のセッションを復元できませんでした`,
-      deleteFailed: count => `${count} 件のセッションを削除できませんでした`
-    },
     row: {
       pin: 'ピン留め',
       unpin: 'ピン留めを解除',
@@ -1285,16 +1278,11 @@ export const ja = defineLocale({
       deleteCloudChannel: 'クラウドチャンネルを削除',
       rename: '名前を変更',
       archive: 'アーカイブ',
-      restore: '復元',
-      select: '選択',
       newWindow: '新しいウィンドウ',
       copyIdFailed: 'セッション ID をコピーできませんでした',
       actionsFor: title => `${title} のアクション`,
       sessionActions: 'セッションアクション',
       sessionRunning: 'セッション実行中',
-      sessionStarting: '起動中',
-      nextAction: '次へ',
-      waitingForNextAction: '次のアクションを待っています',
       needsInput: '入力が必要です',
       waitingForAnswer: '回答を待っています',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
@@ -1311,8 +1299,7 @@ export const ja = defineLocale({
       cloudMembersEmpty: '招待済みメンバーはまだいません。',
       cloudMembersRefresh: '更新',
       cloudMembersPermissionLabel: 'クラウドメンバー権限',
-      cloudMembersPermission: permission =>
-        ({ admin: '管理者', post: '投稿可', read: '読み取り' })[permission] || permission,
+      cloudMembersPermission: permission => ({ admin: '管理者', post: '投稿可', read: '読み取り' })[permission] || permission,
       cloudMembersRevoke: '取り消し',
       cloudMembersRevokeConfirm: member => `${member} のクラウドアクセスを取り消しますか？`,
       cloudMembersSaving: '保存中...',
@@ -1387,14 +1374,14 @@ export const ja = defineLocale({
       '/quit': 'hermes を終了'
     },
     hotkeyDescs: {
-      '@': 'ファイル、フォルダー、URL、Git を参照',
-      '/': 'スラッシュコマンドパレット',
-      '?': 'クイックヘルプ（削除で閉じる）',
-      Enter: '送信 · 改行は Shift+Enter',
-      'Cmd/Ctrl+K': '次のキュー済みターンを送信',
-      'Cmd/Ctrl+L': '再描画',
-      Esc: 'ポップオーバーを閉じる · 実行をキャンセル',
-      '↑ / ↓': 'ポップオーバー / 履歴を切り替え'
+      'composer.mention': 'ファイル、フォルダー、URL、Git を参照',
+      'composer.slash': 'スラッシュコマンドパレット',
+      'composer.help': 'クイックヘルプ（削除で閉じる）',
+      'composer.sendNewline': '送信 · 改行は Shift+Enter',
+      'composer.sendQueued': '次のキュー済みターンを送信',
+      'keybinds.openPanel': 'すべてのキーボードショートカット',
+      'composer.cancel': 'ポップオーバーを閉じる · 実行をキャンセル',
+      'composer.history': 'ポップオーバー / 履歴を切り替え'
     },
     attachUrlTitle: 'URL を添付',
     attachUrlDesc: 'Hermes がページを取得し、このターンのコンテキストとして含めます。',
@@ -1407,9 +1394,10 @@ export const ja = defineLocale({
     attachments: count => `${count} 件の添付`,
     editingInComposer: 'コンポーザーで編集中',
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
-    editQueued: 'キュー済みターンを編集',
-    sendQueuedNow: 'キュー済みターンを今すぐ送信',
-    deleteQueued: 'キュー済みターンを削除',
+    queueEdit: '編集',
+    queueSendNext: '次に送信',
+    queueSend: '送信',
+    queueDelete: '削除',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1452,6 +1440,17 @@ export const ja = defineLocale({
         text: 'これがどのように機能するか説明し、主要なファイルを教えてください。'
       }
     }
+  },
+
+  statusStack: {
+    agents: 'エージェント',
+    background: count => `バックグラウンド ${count} 件`,
+    subagents: count => `サブエージェント ${count} 件`,
+    todos: (done, total) => `タスク ${done}/${total}`,
+    running: '実行中',
+    stop: '停止',
+    dismiss: '閉じる',
+    exit: code => `終了コード ${code}`
   },
 
   updates: {
@@ -1720,8 +1719,8 @@ export const ja = defineLocale({
       contextUsage: 'コンテキスト使用状況',
       session: 'セッション',
       runtimeSessionElapsed: 'ランタイムセッション経過時間',
-      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。',
-      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。',
+      yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。クリックでオフに。Shift+クリックで全体に切り替え。',
+      yoloOff: 'YOLO オフ — クリックで危険なコマンドを自動承認。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
       noModel: 'モデルなし',
       switchModel: 'モデルを切り替え',
@@ -1738,6 +1737,9 @@ export const ja = defineLocale({
     terminal: 'ターミナル',
     noFolderSelected: 'フォルダーが選択されていません',
     changeCwdTitle: '作業ディレクトリを変更',
+    remotePickerTitle: 'リモートフォルダーを選択',
+    remotePickerDescription: '接続中のバックエンド上のフォルダーを参照します。',
+    remotePickerSelect: 'フォルダーを選択',
     folderTip: cwd => `${cwd} — クリックしてフォルダーを変更`,
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',
@@ -1856,9 +1858,12 @@ export const ja = defineLocale({
       readAloud: '読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
-      editableCheckpoint: '編集可能なチェックポイント',
       restorePrevious: '前のチェックポイントに戻す',
       restoreCheckpoint: 'チェックポイントを復元',
+      restoreFromHere: 'チェックポイントを復元 — このプロンプトから再実行',
+      restoreTitle: 'このチェックポイントに復元しますか？',
+      restoreBody: 'このプロンプト以降のメッセージは会話から削除され、ここからプロンプトが再実行されます。',
+      restoreConfirm: '復元して再実行',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
       sendEdited: '編集済みメッセージを送信',
@@ -1884,7 +1889,7 @@ export const ja = defineLocale({
       loadingQuestion: '質問を読み込み中…',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
-      shortcut: '⌘/Ctrl + Enter で送信',
+      shortcutSuffix: ' で送信',
       back: '戻る',
       skip: 'スキップ',
       send: '送信'
@@ -1987,7 +1992,14 @@ export const ja = defineLocale({
     clipboard: 'クリップボード',
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
-    dropFiles: 'ファイルをドロップ'
+    dropFiles: 'ファイルをドロップ',
+    handoff: {
+      pickPlatform: '送信先を選択',
+      success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,
+      systemNote: platform => `↻ ${platform} に引き継ぎました — いつでもここで再開できます。`,
+      failed: error => `引き継ぎに失敗しました: ${error}`,
+      timedOut: 'ゲートウェイの待機がタイムアウトしました。`hermes gateway` は起動していますか？'
+    }
   },
 
   errors: {

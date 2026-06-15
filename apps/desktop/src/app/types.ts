@@ -13,6 +13,13 @@ export interface ImageAttachResponse {
   path?: string
   text?: string
   message?: string
+  // Returned by the byte-upload variant (image.attach_bytes) used in remote mode.
+  count?: number
+  bytes?: number
+  name?: string
+  width?: number
+  height?: number
+  token_estimate?: number
 }
 
 export interface ImageDetachResponse {
@@ -52,6 +59,26 @@ export interface SessionTitleResponse {
   // to be applied on the first turn (see tui_gateway session.title handler).
   pending?: boolean
   session_key?: string
+}
+
+export interface HandoffRequestResponse {
+  queued?: boolean
+  session_key?: string
+  platform?: string
+  // Human-readable home channel name for the destination platform.
+  home_name?: string
+}
+
+export interface HandoffStateResponse {
+  // '' | 'pending' | 'running' | 'completed' | 'failed'
+  state?: string
+  platform?: string
+  error?: string
+}
+
+export interface HandoffFailResponse {
+  failed?: boolean
+  state?: string
 }
 
 export interface ExecCommandDispatchResponse {
@@ -101,15 +128,15 @@ export interface SidebarNavItem {
 export interface ClientSessionState {
   storedSessionId: string | null
   messages: ChatMessage[]
-  model?: string
-  provider?: string
-  reasoningEffort?: string
-  serviceTier?: string
-  fastMode?: boolean
-  yoloActive?: boolean
-  personality?: string
   branch: string
   cwd: string
+  model: string
+  provider: string
+  reasoningEffort: string
+  serviceTier: string
+  fast: boolean
+  yolo: boolean
+  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null

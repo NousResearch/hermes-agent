@@ -1,4 +1,4 @@
-import { copyTextWithFeedback } from '@/components/ui/copy-button'
+import { writeClipboardText } from '@/components/ui/copy-button'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -8,7 +8,7 @@ interface CloudShareResult {
   pushed_seq: number
 }
 
-export interface CloudStatusResult {
+interface CloudStatusResult {
   channel_id?: string
   configured: boolean
   shared: boolean
@@ -130,6 +130,58 @@ interface CloudDeleteResult {
   stopped?: boolean
 }
 
+function showCloudSetupNotice(): void {
+  notify({
+    durationMs: 7_000,
+    kind: 'info',
+    title: "Cloud sharing isn't set up",
+    message: 'Add HERMES_CLOUD_TOKEN where the gateway runs, then try again.'
+  })
+}
+
+export async function ensureCloudActionReady(
+  sessionId: string,
+  options: { requireShared?: boolean; title: string }
+): Promise<CloudStatusResult | null> {
+  const gateway = activeGateway()
+
+  if (!gateway) {
+    notify({ kind: 'error', title: options.title, message: 'Not connected yet — try again in a moment.' })
+
+    return null
+  }
+
+  try {
+    const result = await gateway.request<CloudStatusResult>('session.cloud_status', { session_id: sessionId })
+
+    if (!result.configured) {
+      showCloudSetupNotice()
+
+      return null
+    }
+
+    if (options.requireShared && (!result.shared || !result.channel_id)) {
+      notify({ kind: 'warning', title: options.title, message: 'Share this chat to the cloud first.' })
+
+      return null
+    }
+
+    return result
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    if (/not configured/i.test(message)) {
+      showCloudSetupNotice()
+
+      return null
+    }
+
+    notifyError(err, options.title)
+
+    return null
+  }
+}
+
 // "Share to cloud" (channels slice 4.0): promote the session to a cloud
 // channel and start the gateway's background pusher. Self-contained like
 // exportSession so the actions menu can call it without threading a handler
@@ -157,11 +209,7 @@ export async function shareSessionToCloud(sessionId: string): Promise<void> {
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return
     }
@@ -183,11 +231,7 @@ export async function copyCloudChannelId(sessionId: string): Promise<void> {
     const result = await gateway.request<CloudStatusResult>('session.cloud_status', { session_id: sessionId })
 
     if (!result.configured) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return
     }
@@ -202,44 +246,10 @@ export async function copyCloudChannelId(sessionId: string): Promise<void> {
       return
     }
 
-    await copyTextWithFeedback(result.channel_id, {
-      errorMessage: 'Could not copy the cloud channel ID',
-      notifyFailure: false,
-      successMessage: result.channel_id,
-      successTitle: 'Copied cloud ID'
-    })
+    await writeClipboardText(result.channel_id)
+    notify({ kind: 'success', title: 'Copied cloud ID', message: result.channel_id })
   } catch (err) {
     notifyError(err, 'Could not copy the cloud channel ID')
-  }
-}
-
-export async function loadSessionCloudStatus(
-  sessionId: string,
-  options: { quiet?: boolean } = {}
-): Promise<CloudStatusResult | null> {
-  const gateway = activeGateway()
-  const trimmed = sessionId.trim()
-
-  if (!gateway) {
-    if (!options.quiet) {
-      notify({ kind: 'error', title: 'Cloud channel', message: 'Not connected yet — try again in a moment.' })
-    }
-
-    return null
-  }
-
-  if (!trimmed) {
-    return null
-  }
-
-  try {
-    return await gateway.request<CloudStatusResult>('session.cloud_status', { session_id: trimmed })
-  } catch (err) {
-    if (!options.quiet) {
-      notifyError(err, 'Could not load cloud channel status')
-    }
-
-    return null
   }
 }
 
@@ -267,33 +277,21 @@ export async function inviteCloudChannelMember(sessionId: string, email: string)
     })
 
     if (result.accept_token) {
-      try {
-        await copyTextWithFeedback(result.accept_token, {
-          errorMessage: 'Could not copy the cloud invite token',
-          successMessage: `Invite ready for ${result.email || trimmed}.`,
-          successTitle: 'Invite token copied'
-        })
-      } catch {
-        return false
-      }
-    } else {
-      notify({
-        kind: 'success',
-        title: 'Cloud invite created',
-        message: `Invite ready for ${result.email || trimmed}.`
-      })
+      await writeClipboardText(result.accept_token)
     }
+
+    notify({
+      kind: 'success',
+      title: result.accept_token ? 'Invite token copied' : 'Cloud invite created',
+      message: `Invite ready for ${result.email || trimmed}.`
+    })
 
     return true
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return false
     }
@@ -325,11 +323,7 @@ export async function loadCloudChannelMembers(sessionId: string): Promise<CloudM
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return null
     }
@@ -442,11 +436,7 @@ export async function deleteCloudChannel(sessionId: string): Promise<boolean> {
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return false
     }
@@ -480,11 +470,7 @@ export async function loadCloudChannels(): Promise<CloudChannel[] | null> {
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return null
     }
@@ -524,11 +510,7 @@ export async function loadCloudChannelMessages(
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return null
     }
@@ -571,11 +553,7 @@ export async function loadCloudChannelParticipants(
 
     if (/not configured/i.test(message)) {
       if (!options.quiet) {
-        notify({
-          kind: 'error',
-          title: "Cloud sharing isn't set up",
-          message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-        })
+        showCloudSetupNotice()
       }
 
       return null
@@ -659,11 +637,7 @@ export async function acceptCloudChannelInvite(token: string): Promise<CloudAcce
     const message = err instanceof Error ? err.message : String(err)
 
     if (/not configured/i.test(message)) {
-      notify({
-        kind: 'error',
-        title: "Cloud sharing isn't set up",
-        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
-      })
+      showCloudSetupNotice()
 
       return null
     }

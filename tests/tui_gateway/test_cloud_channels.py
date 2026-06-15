@@ -336,3 +336,31 @@ def test_cloud_token_prefers_process_env_over_launchctl(monkeypatch):
     )
 
     assert cloud_channels.cloud_token() == "mb_process"
+
+
+def test_session_participants_payload_dedupes_devices_and_counts_clients():
+    from tui_gateway.server import _session_participants_payload
+
+    session = {
+        "participants": {
+            1: "ko-mac",
+            2: "ko-mac",
+            3: " taro ",
+            4: "",
+            5: None,
+        }
+    }
+
+    assert _session_participants_payload(session) == [
+        {"device": "ko-mac", "count": 2},
+        {"device": "taro", "count": 1},
+    ]
+
+
+def test_session_participants_payload_initializes_missing_map():
+    from tui_gateway.server import _session_participants_payload
+
+    session = {}
+
+    assert _session_participants_payload(session) == []
+    assert session["participants"] == {}

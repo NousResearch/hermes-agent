@@ -58,7 +58,6 @@ export const zhHant = defineLocale({
       backendStopped: '後端已停止',
       desktopBootFailed: '桌面啟動失敗',
       gatewaySignInRequired: '需要閘道登入',
-      gatewayUnreachable: '無法連線到閘道',
       ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
     },
     failure: {
@@ -244,7 +243,11 @@ export const zhHant = defineLocale({
         backend: '執行後端',
         timeout: '指令逾時',
         persistentShell: '持久化 Shell',
-        envPassthrough: '環境變數傳遞'
+        envPassthrough: '環境變數傳遞',
+        dockerImage: 'Docker 映像',
+        singularityImage: 'Singularity 映像',
+        modalImage: 'Modal 映像',
+        daytonaImage: 'Daytona 映像'
       },
       fileReadMaxChars: '檔案讀取上限',
       toolOutput: {
@@ -285,6 +288,15 @@ export const zhHant = defineLocale({
           model: '本機轉寫模型',
           language: '轉寫語言'
         },
+        openai: {
+          model: 'OpenAI STT 模型'
+        },
+        groq: {
+          model: 'Groq STT 模型'
+        },
+        mistral: {
+          model: 'Mistral STT 模型'
+        },
         elevenlabs: {
           modelId: 'ElevenLabs STT 模型',
           languageCode: 'ElevenLabs 語言',
@@ -304,6 +316,33 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        xai: {
+          voiceId: 'xAI (Grok) 語音',
+          language: 'xAI 語言'
+        },
+        minimax: {
+          model: 'MiniMax TTS 模型',
+          voiceId: 'MiniMax 語音'
+        },
+        mistral: {
+          model: 'Mistral TTS 模型',
+          voiceId: 'Mistral 語音'
+        },
+        gemini: {
+          model: 'Gemini TTS 模型',
+          voice: 'Gemini 語音'
+        },
+        neutts: {
+          model: 'NeuTTS 模型',
+          device: 'NeuTTS 裝置'
+        },
+        kittentts: {
+          model: 'KittenTTS 模型',
+          voice: 'KittenTTS 語音'
+        },
+        piper: {
+          voice: 'Piper 語音'
         }
       },
       memory: {
@@ -629,8 +668,15 @@ export const zhHant = defineLocale({
       ready: '就緒',
       nousIncluded: '包含在 Nous 訂閱中；登入 Nous Portal 即可啟用。',
       noApiKeyRequired: '不需要 API 金鑰。',
-      postSetupHint: step => `此提供方需要額外設定步驟 (${step})。暫時請在 CLI 中執行 hermes tools。`,
-      postSetupRun: '執行設定'
+      postSetupHint: step => `此後端需要一次性安裝 (${step})。將在此機器上執行，可能需要幾分鐘。`,
+      postSetupRun: '執行設定',
+      postSetupRunning: '安裝中…',
+      postSetupStarting: '啟動中…',
+      postSetupCompleteTitle: '設定完成',
+      postSetupCompleteMessage: step => `已安裝 ${step}。`,
+      postSetupErrorTitle: '設定完成但有錯誤',
+      postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
+      postSetupFailed: step => `執行 ${step} 設定失敗`
     }
   },
 
@@ -978,8 +1024,6 @@ export const zhHant = defineLocale({
   cron: {
     close: '關閉排程',
     search: '搜尋排程工作…',
-    refresh: '重新整理排程工作',
-    refreshing: '正在重新整理排程工作',
     loading: '正在載入排程工作…',
     states: {
       enabled: '已啟用',
@@ -1032,15 +1076,18 @@ export const zhHant = defineLocale({
     monthlyOnDayAt: (dayOfMonth, time) => `每月 ${dayOfMonth} 日 ${time}`,
     topOfHour: '每個整點',
     everyHourAt: minute => `每小時的 :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} 個啟用`,
     newCron: '新排程工作',
-    createFirst: '建立第一個排程工作',
     emptyDescNew: '按 cron 表達式排程一個提示詞。Hermes 會執行它，並將結果傳送至您選擇的目的地。',
     emptyDescSearch: '請嘗試更廣泛的搜尋詞。',
     emptyTitleNew: '暫無排程工作',
     emptyTitleSearch: '無相符項目',
     last: '上次：',
     next: '下次：',
+    noRuns: '尚無執行',
+    manage: '管理',
+    showRuns: '顯示執行記錄',
+    hideRuns: '隱藏執行記錄',
+    runHistory: '執行記錄',
     actionsFor: title => `${title} 的動作`,
     actionsTitle: '排程工作動作',
     resume: '繼續',
@@ -1133,21 +1180,11 @@ export const zhHant = defineLocale({
     results: '結果',
     pinned: '已釘選',
     sessions: '工作階段',
-    cronJobs: '排程作業',
-    liveElsewhere: '其他裝置上的工作階段',
+    cronJobs: '排程任務',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',
     groupTitleUngrouped: '依工作區分組',
-    archiveAllTitle: '封存所有工作階段',
-    archiveAllAria: '封存所有未釘選的工作階段',
-    archiveAllDialogTitle: '封存所有工作階段',
-    archiveAllDialogDesc: '從側邊欄封存未釘選的工作階段。已釘選的對話、目前對話與執行中的工作階段仍會顯示。',
-    archiveAllConfirm: '全部封存',
-    archiveAllCancel: '取消',
-    archiveAllSubmitting: '封存中…',
-    archiveAllChecked: count => `將封存 ${count} 個顯示中的工作階段。`,
-    archiveAllNone: '沒有可封存的工作階段。',
     cloudChannelsTitle: '雲端頻道',
     cloudChannelsDesc: '接受邀請並查看此雲端帳戶可用的頻道。',
     cloudInviteTokenAria: '雲端邀請權杖',
@@ -1177,7 +1214,7 @@ export const zhHant = defineLocale({
     cloudHostOffline: '主機離線',
     cloudParticipantLabel: (device, count) => `${device} x${count}`,
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
-    shiftClickHint: '將聊天拖曳到此處以釘選',
+    shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',
     newSessionIn: label => `在 ${label} 中新建工作階段`,
     reorderWorkspace: label => `重新排序工作區 ${label}`,
@@ -1185,49 +1222,6 @@ export const zhHant = defineLocale({
     loading: '載入中…',
     loadMore: '載入更多',
     loadCount: step => `再載入 ${step} 個`,
-    archived: '已封存',
-    archivedEmpty: '沒有已封存的工作階段',
-    bulk: {
-      selectedCount: count => `已選取 ${count} 個`,
-      pin: '釘選',
-      unpin: '取消釘選',
-      prompt: '傳送',
-      steer: '引導',
-      halt: '停止',
-      archive: '封存',
-      restore: '還原',
-      delete: '刪除',
-      promptCount: count => `傳送到 ${count} 個`,
-      steerCount: count => `引導 ${count} 個`,
-      haltCount: count => `停止 ${count} 個`,
-      archiveCount: count => `封存 ${count} 個`,
-      restoreCount: count => `還原 ${count} 個`,
-      deleteCount: count => `刪除 ${count} 個`,
-      promptDialogTitle: count => `傳送到 ${count} 個工作階段`,
-      promptDialogDesc: '將同一則訊息傳送到所有選取的工作階段。',
-      promptPlaceholder: '要傳送的訊息…',
-      promptSubmit: '傳送提示詞',
-      steerDialogTitle: count => `引導 ${count} 個工作階段`,
-      steerDialogDesc: '將補充指示送到所有選取且正在執行的工作階段。',
-      steerPlaceholder: '引導備註…',
-      steerSubmit: '引導',
-      clearSelection: '清除選取',
-      deleteDialogTitle: count => `刪除 ${count} 個工作階段？`,
-      deleteDialogDesc: '刪除的工作階段將被永久移除，無法復原。',
-      deleteConfirm: '刪除',
-      promptedToast: count => `已傳送到 ${count} 個工作階段`,
-      steeredToast: count => `已引導 ${count} 個工作階段`,
-      haltedToast: count => `已停止 ${count} 個工作階段`,
-      archivedToast: count => `已封存 ${count} 個工作階段`,
-      restoredToast: count => `已還原 ${count} 個工作階段`,
-      deletedToast: count => `已刪除 ${count} 個工作階段`,
-      promptFailed: count => `${count} 個工作階段傳送失敗`,
-      steerFailed: count => `${count} 個工作階段引導失敗`,
-      haltFailed: count => `${count} 個工作階段停止失敗`,
-      archiveFailed: count => `${count} 個工作階段封存失敗`,
-      restoreFailed: count => `${count} 個工作階段還原失敗`,
-      deleteFailed: count => `${count} 個工作階段刪除失敗`
-    },
     row: {
       pin: '釘選',
       unpin: '取消釘選',
@@ -1240,16 +1234,11 @@ export const zhHant = defineLocale({
       deleteCloudChannel: '刪除雲端頻道',
       rename: '重新命名',
       archive: '封存',
-      restore: '還原',
-      select: '選取',
       newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
       sessionRunning: '工作階段執行中',
-      sessionStarting: '正在啟動',
-      nextAction: '下一步',
-      waitingForNextAction: '正在等待下一步動作',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',
       handoffOrigin: platform => `從 ${platform} 轉接`,
@@ -1266,8 +1255,7 @@ export const zhHant = defineLocale({
       cloudMembersEmpty: '尚無受邀成員。',
       cloudMembersRefresh: '重新整理',
       cloudMembersPermissionLabel: '雲端成員權限',
-      cloudMembersPermission: permission =>
-        ({ admin: '管理員', post: '可發言', read: '唯讀' })[permission] || permission,
+      cloudMembersPermission: permission => ({ admin: '管理員', post: '可發言', read: '唯讀' })[permission] || permission,
       cloudMembersRevoke: '撤銷',
       cloudMembersRevokeConfirm: member => `撤銷 ${member} 的雲端存取權？`,
       cloudMembersSaving: '正在儲存...',
@@ -1341,14 +1329,14 @@ export const zhHant = defineLocale({
       '/quit': '結束 hermes'
     },
     hotkeyDescs: {
-      '@': '參照檔案、資料夾、URL、git',
-      '/': '斜線指令面板',
-      '?': '此快速說明（刪除以關閉）',
-      Enter: '傳送 · Shift+Enter 換行',
-      'Cmd/Ctrl+K': '傳送下一個排隊的回合',
-      'Cmd/Ctrl+L': '重繪',
-      Esc: '關閉彈出視窗 · 取消執行',
-      '↑ / ↓': '循環彈出視窗 / 歷史記錄'
+      'composer.mention': '參照檔案、資料夾、URL、git',
+      'composer.slash': '斜線指令面板',
+      'composer.help': '此快速說明（刪除以關閉）',
+      'composer.sendNewline': '傳送 · Shift+Enter 換行',
+      'composer.sendQueued': '傳送下一個排隊的回合',
+      'keybinds.openPanel': '所有鍵盤快捷鍵',
+      'composer.cancel': '關閉彈出視窗 · 取消執行',
+      'composer.history': '循環彈出視窗 / 歷史記錄'
     },
     attachUrlTitle: '附加 URL',
     attachUrlDesc: 'Hermes 將擷取該頁面並作為此回合的脈絡。',
@@ -1361,9 +1349,10 @@ export const zhHant = defineLocale({
     attachments: count => `${count} 個附件`,
     editingInComposer: '在輸入框中編輯',
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
-    editQueued: '編輯排隊回合',
-    sendQueuedNow: '立即傳送排隊回合',
-    deleteQueued: '刪除排隊回合',
+    queueEdit: '編輯',
+    queueSendNext: '下一個',
+    queueSend: '傳送',
+    queueDelete: '刪除',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,
@@ -1406,6 +1395,17 @@ export const zhHant = defineLocale({
         text: '請解釋這是如何運作的，並告訴我關鍵檔案在哪裡。'
       }
     }
+  },
+
+  statusStack: {
+    agents: '代理',
+    background: count => `${count} 個背景任務`,
+    subagents: count => `${count} 個子代理`,
+    todos: (done, total) => `任務 ${done}/${total}`,
+    running: '執行中',
+    stop: '停止',
+    dismiss: '關閉',
+    exit: code => `結束碼 ${code}`
   },
 
   updates: {
@@ -1664,8 +1664,8 @@ export const zhHant = defineLocale({
       contextUsage: '上下文使用量',
       session: '工作階段',
       runtimeSessionElapsed: '執行時工作階段已用時間',
-      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。',
-      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。',
+      yoloOn: 'YOLO 已開啟 — 自動核准危險指令。點擊關閉。Shift+點擊可全域切換。',
+      yoloOff: 'YOLO 已關閉 — 點擊自動核准危險指令。Shift+點擊可全域切換。',
       modelNone: '無',
       noModel: '無模型',
       switchModel: '切換模型',
@@ -1682,6 +1682,9 @@ export const zhHant = defineLocale({
     terminal: '終端機',
     noFolderSelected: '未選擇資料夾',
     changeCwdTitle: '變更工作目錄',
+    remotePickerTitle: '選擇遠端資料夾',
+    remotePickerDescription: '瀏覽已連線後端上的資料夾。',
+    remotePickerSelect: '選擇資料夾',
     folderTip: cwd => `${cwd} — 點擊以變更資料夾`,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
@@ -1798,9 +1801,12 @@ export const zhHant = defineLocale({
       readAloud: '朗讀',
       editMessage: '編輯訊息',
       stop: '停止',
-      editableCheckpoint: '可編輯的檢查點',
       restorePrevious: '還原至上一個檢查點',
       restoreCheckpoint: '還原檢查點',
+      restoreFromHere: '還原檢查點 — 從此提示重新執行',
+      restoreTitle: '還原至此檢查點？',
+      restoreBody: '此提示之後的所有訊息將從對話中移除，並從此處重新執行該提示。',
+      restoreConfirm: '還原並重新執行',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
       sendEdited: '傳送編輯後的訊息',
@@ -1826,7 +1832,7 @@ export const zhHant = defineLocale({
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
-      shortcut: '⌘/Ctrl + Enter 傳送',
+      shortcutSuffix: ' 傳送',
       back: '返回',
       skip: '略過',
       send: '傳送'
@@ -1926,7 +1932,14 @@ export const zhHant = defineLocale({
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
-    dropFiles: '拖曳檔案'
+    dropFiles: '拖曳檔案',
+    handoff: {
+      pickPlatform: '選擇目標平台',
+      success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
+      failed: error => `移交失敗：${error}`,
+      timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
+    }
   },
 
   errors: {

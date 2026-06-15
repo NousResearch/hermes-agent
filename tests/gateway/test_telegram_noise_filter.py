@@ -6,6 +6,7 @@ from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
+    _sanitize_gateway_interim_assistant_text,
 )
 
 # Every human-facing chat surface that must receive noise-filtered,
@@ -232,3 +233,36 @@ def test_chat_gateways_redact_all_issue_23810_credential_shapes(platform, shape_
     # Prose around the secret is preserved — redaction is surgical.
     assert "here is the token you asked me to echo" in sanitized
     assert sanitized.endswith("done.")
+
+
+def test_non_telegram_final_response_strips_dsml_tool_call_markup():
+    """Weixin/QQ should not receive provider text-encoded tool calls."""
+    raw = (
+        "Master 说得对，我会重建页面。\n"
+        "<｜DSML｜tool_calls> <｜DSML｜invoke name=\"write_file\">"
+        "<｜DSML｜parameter name=\"arguments\">{\"content\":\"internal\"}"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.WEIXIN, raw)
+
+    assert sanitized == "Master 说得对，我会重建页面。"
+    assert "DSML" not in sanitized
+    assert "write_file" not in sanitized
+
+
+def test_interim_assistant_text_strips_dsml_tool_call_markup():
+    """Direct interim commentary sends should not leak DSML tool calls."""
+    raw = (
+        "Let me check specific posts to see which have fabricated URLs.\n"
+        "<｜DSML｜tool_calls>\n"
+        "<｜DSML｜invoke name=\"terminal\">\n"
+        "<｜DSML｜parameter name=\"arguments\" string=\"false\">"
+        "{\"command\":\"curl https://example.test\"}"
+    )
+
+    sanitized = _sanitize_gateway_interim_assistant_text(raw)
+
+    assert sanitized == "Let me check specific posts to see which have fabricated URLs."
+    assert "DSML" not in sanitized
+    assert "terminal" not in sanitized
+    assert "curl" not in sanitized

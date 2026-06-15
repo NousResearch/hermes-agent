@@ -55,6 +55,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from agent.tool_call_scrubber import strip_tool_call_markup
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -423,10 +424,23 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    text = strip_tool_call_markup(str(text)).strip()
+    if not text:
+        return (
+            "⚠️ The model produced an internal tool call as plain text instead "
+            "of a user-visible reply. I suppressed it to avoid leaking tool "
+            "arguments into chat. Please try again."
+        )
+
+    redacted = _redact_gateway_user_facing_secrets(text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
+
+
+def _sanitize_gateway_interim_assistant_text(text: Any) -> str:
+    """Sanitize completed interim assistant commentary before platform send."""
+    return strip_tool_call_markup(str(text or "")).strip()
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -16268,13 +16282,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
+                text = _sanitize_gateway_interim_assistant_text(text)
+                if not text:
+                    return
                 if _stream_consumer is not None:
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
                         _stream_consumer.on_commentary(text)
                     return
-                if already_streamed or not _status_adapter or not str(text or "").strip():
+                if already_streamed or not _status_adapter:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(

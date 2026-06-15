@@ -42,6 +42,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
+from agent.tool_call_scrubber import StreamingToolCallScrubber
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -608,6 +609,10 @@ def init_agent(
     # erased delta1, so downstream state machines never learned a
     # block was open and leaked delta2 as content).
     agent._stream_think_scrubber = StreamingThinkScrubber()
+    # Stateful scrubber for provider-native text tool-call markup (for
+    # example DeepSeek-style DSML) that can otherwise leak to chat when an
+    # upstream parser fails to convert it into structured tool_calls.
+    agent._stream_tool_call_scrubber = StreamingToolCallScrubber()
     # Visible assistant text already delivered through live token callbacks
     # during the current model response. Used to avoid re-sending the same
     # commentary when the provider later returns it as a completed interim

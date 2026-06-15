@@ -211,6 +211,26 @@ class TestPairingEndpoints:
         )
         assert r.status_code == 404
 
+    def test_approve_pending_request_id(self):
+        from gateway.pairing import PairingStore
+
+        store = PairingStore()
+        bot_code = store.generate_code("telegram", "user1", "Alice")
+        data = self.client.get("/api/pairing").json()
+        request_id = data["pending"][0]["request_id"]
+
+        assert request_id
+        assert request_id != bot_code
+
+        r = self.client.post(
+            "/api/pairing/approve",
+            json={"platform": "telegram", "request_id": request_id},
+        )
+
+        assert r.status_code == 200
+        assert r.json()["user"]["user_id"] == "user1"
+        assert self.client.get("/api/pairing").json()["pending"] == []
+
 
 class TestWebhookEndpoints:
     @pytest.fixture(autouse=True)

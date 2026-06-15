@@ -11400,7 +11400,8 @@ _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.lo
 
 class PairingApprove(BaseModel):
     platform: str
-    code: str
+    code: str = ""
+    request_id: str = ""
 
 
 class PairingRevoke(BaseModel):
@@ -11427,11 +11428,19 @@ async def list_pairing():
 async def approve_pairing(body: PairingApprove):
     store = _pairing_store()
     platform = (body.platform or "").lower().strip()
-    code = (body.code or "").upper().strip()
-    if not platform or not code:
-        raise HTTPException(status_code=400, detail="platform and code are required")
+    code = (body.code or "").strip()
+    request_id = (body.request_id or "").strip()
+    if not platform or not (request_id or code):
+        raise HTTPException(status_code=400, detail="platform and request_id or code are required")
 
-    result = store.approve_code(platform, code)
+    is_request_id = len(code) == 16 and all(c in "0123456789abcdefABCDEF" for c in code)
+    result = (
+        store.approve_request(platform, request_id)
+        if request_id
+        else store.approve_request(platform, code)
+        if is_request_id
+        else store.approve_code(platform, code)
+    )
     if result:
         return {"ok": True, "user": result}
     if store._is_locked_out(platform):
@@ -11441,7 +11450,7 @@ async def approve_pairing(body: PairingApprove):
         )
     raise HTTPException(
         status_code=404,
-        detail=f"Code '{code}' not found or expired for platform '{platform}'.",
+        detail=f"Pairing request or code not found or expired for platform '{platform}'.",
     )
 
 

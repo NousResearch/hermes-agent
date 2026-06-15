@@ -510,6 +510,7 @@ _QUICK_STATE_FILES = (
     "cron/jobs.json",
     "gateway_state.json",
     "channel_directory.json",
+    "channel_aliases.json",
     "processes.json",
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)

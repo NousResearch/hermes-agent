@@ -102,15 +102,39 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
-from tools.url_safety import is_safe_url, normalize_url_for_request
+from tools.url_safety import (
+    _DNS_RESOLUTION_TIMEOUT_SECONDS as _URL_SAFETY_DNS_TIMEOUT_SECONDS,
+    async_is_safe_url as _bounded_async_is_safe_url,
+    is_safe_url as _url_safety_is_safe_url,
+    normalize_url_for_request,
+)
 import sys
 
 logger = logging.getLogger(__name__)
 
+# Public compatibility name: tests and provider shims monkeypatch
+# ``tools.web_tools.is_safe_url`` directly.
+is_safe_url = _url_safety_is_safe_url
+
 
 async def async_is_safe_url(url: str) -> bool:
-    """Async wrapper around the module-level URL-safety oracle."""
-    return await asyncio.to_thread(is_safe_url, url)
+    """Async wrapper around the bounded URL-safety oracle."""
+    if is_safe_url is not _url_safety_is_safe_url:
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(is_safe_url, url),
+                timeout=_URL_SAFETY_DNS_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Blocked request - web URL safety check timed out: %s",
+                url,
+            )
+            return False
+        except Exception as exc:
+            logger.warning("Blocked request - web URL safety check error for %s: %s", url, exc)
+            return False
+    return await _bounded_async_is_safe_url(url)
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────

@@ -263,6 +263,20 @@ def get_read_block_error(path: str) -> Optional[str]:
         except Exception:
             continue
 
+    # Sibling profiles under <root>/profiles/ have their own credential
+    # stores. A session in one profile must not be able to read another
+    # profile's auth.json, OAuth cache, webhook secrets, or MCP tokens.
+    try:
+        profiles_dir = _hermes_root_path().resolve() / "profiles"
+        if profiles_dir.is_dir():
+            for child in profiles_dir.iterdir():
+                if child.is_dir():
+                    real = child.resolve()
+                    if real not in hermes_dirs:
+                        hermes_dirs.append(real)
+    except Exception:
+        pass
+
     # Skills .hub: prompt-injection carriers.
     for hd in hermes_dirs:
         blocked_dirs = [

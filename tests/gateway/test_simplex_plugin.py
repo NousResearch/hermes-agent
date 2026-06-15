@@ -354,7 +354,11 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
 
     result = await _standalone_send(pconfig, "contact-42", "hi")
     assert result == {"success": True, "platform": "simplex", "chat_id": "contact-42"}
-    assert sent_payloads[0]["cmd"] == "@contact-42 hi"
+    assert sent_payloads[0]["cmd"].startswith("/_send @contact-42 json ")
+    msg_content = json.loads(
+        sent_payloads[0]["cmd"].split(" json ", 1)[1]
+    )[0]["msgContent"]
+    assert msg_content == {"type": "text", "text": "hi"}
 
 
 @pytest.mark.asyncio

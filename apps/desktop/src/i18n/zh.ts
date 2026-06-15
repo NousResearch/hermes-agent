@@ -1827,6 +1827,8 @@ export const zh: Translations = {
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
     source: '源码',
     renderedPreview: '预览',
+    expand: '放大预览',
+    diagramError: '图表错误',
     unknownSize: '大小未知',
     binaryTitle: '这看起来像二进制文件',
     binaryBody: label => `预览 ${label} 可能会显示不可读文本。`,

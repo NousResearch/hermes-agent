@@ -1646,6 +1646,8 @@ export const en: Translations = {
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',
+    expand: 'Expand preview',
+    diagramError: 'Diagram error',
     unknownSize: 'unknown size',
     binaryTitle: 'This looks like a binary file',
     binaryBody: label => `Previewing ${label} may show unreadable text.`,

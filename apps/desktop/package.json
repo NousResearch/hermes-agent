@@ -59,6 +59,7 @@
     "@nous-research/ui": "^0.13.0",
     "@radix-ui/react-slot": "^1.2.4",
     "@streamdown/code": "^1.1.1",
+    "@streamdown/mermaid": "^1.0.2",
     "@tabler/icons-react": "^3.41.1",
     "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.2.4",

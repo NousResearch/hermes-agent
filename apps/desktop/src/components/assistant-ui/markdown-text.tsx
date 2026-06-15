@@ -19,6 +19,8 @@ import {
   useState
 } from 'react'
 
+import { HtmlPreview } from '@/components/chat/html-preview'
+import { MermaidDiagram } from '@/components/chat/mermaid-diagram'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -459,8 +461,23 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by
-  // `SyntaxHighlighter` below when `isStreaming` is true.
+  // `SyntaxHighlighter` below when `isStreaming` is true. Note: streamdown's
+  // mermaid *plugin* would be dead code here — our `SyntaxHighlighter`
+  // override replaces the built-in code dispatcher that consults it — so
+  // ```mermaid is handled via `componentsByLanguage` below instead.
   const plugins = useMemo(() => ({ math: mathPlugin, code }), [])
+
+  const componentsByLanguage = useMemo(
+    () => ({
+      mermaid: {
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => <MermaidDiagram {...props} defer={isStreaming} />
+      },
+      html: {
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => <HtmlPreview {...props} defer={isStreaming} />
+      }
+    }),
+    [isStreaming]
+  )
 
   const components = useMemo(
     () =>
@@ -536,6 +553,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
   return (
     <StreamdownTextPrimitive
       components={components}
+      componentsByLanguage={componentsByLanguage}
       containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
       containerProps={containerProps}
       lineNumbers={false}

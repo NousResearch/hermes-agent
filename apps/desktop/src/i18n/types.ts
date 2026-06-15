@@ -1290,6 +1290,8 @@ export interface Translations {
     sourceLineTitle: string
     source: string
     renderedPreview: string
+    expand: string
+    diagramError: string
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string

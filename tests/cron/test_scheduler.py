@@ -398,6 +398,63 @@ class TestResolveDeliveryTarget:
         assert _resolve_delivery_targets({"deliver": []}) == []
 
 
+
+class TestCronScriptTimeout:
+    def test_job_level_timeout_wins_over_global_and_env(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "300")
+        monkeypatch.setattr(scheduler, "_SCRIPT_TIMEOUT", 120)
+        monkeypatch.setattr(
+            scheduler,
+            "load_config",
+            lambda: {"cron": {"script_timeout_seconds": 240}},
+        )
+
+        assert scheduler._get_script_timeout({"script_timeout_seconds": 900}) == 900
+
+    def test_invalid_job_timeout_falls_back_to_env(self, monkeypatch):
+        import cron.scheduler as scheduler
+
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "450")
+        monkeypatch.setattr(scheduler, "_SCRIPT_TIMEOUT", 120)
+        monkeypatch.setattr(
+            scheduler,
+            "load_config",
+            lambda: {"cron": {"script_timeout_seconds": 240}},
+        )
+
+        assert scheduler._get_script_timeout({"script_timeout_seconds": "oops"}) == 450
+
+    def test_run_job_script_uses_job_timeout_in_subprocess(self, tmp_path, monkeypatch):
+        import cron.scheduler as scheduler
+        from types import SimpleNamespace
+
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        script = scripts_dir / "echo.py"
+        script.write_text("print('ok')\n")
+
+        monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr(scheduler, "_SCRIPT_TIMEOUT", 120)
+        monkeypatch.delenv("HERMES_CRON_SCRIPT_TIMEOUT", raising=False)
+        monkeypatch.setattr(scheduler, "load_config", lambda: {})
+
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["timeout"] = kwargs.get("timeout")
+            return SimpleNamespace(stdout="ok\n", stderr="", returncode=0)
+
+        monkeypatch.setattr(scheduler.subprocess, "run", fake_run)
+
+        ok, output = scheduler._run_job_script("echo.py", {"script_timeout_seconds": 777})
+
+        assert ok is True
+        assert output == "ok"
+        assert captured["timeout"] == 777
+
+
 class TestRoutingIntents:
     """``all`` routing intent expands at fire time."""
 
@@ -2162,7 +2219,7 @@ class TestRunJobWakeGate:
         import cron.scheduler as scheduler
 
         call_count = 0
-        def _script_stub(path):
+        def _script_stub(path, job=None):
             nonlocal call_count
             call_count += 1
             return (True, "regular output")

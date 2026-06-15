@@ -31,6 +31,11 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.handoff_telemetry import (
+    build_handoff_telemetry_event,
+    new_trace_id,
+    record_handoff_telemetry,
+)
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -219,6 +224,62 @@ def list_active_subagents() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "agent"}
             for r in _active_subagents.values()
         ]
+
+
+def _record_child_handoff_telemetry(
+    *,
+    child: Any,
+    parent_agent: Any,
+    task_index: int,
+    status: str,
+    exit_reason: Optional[str],
+    api_calls: Any,
+    duration_seconds: Any,
+    parent_task_id: Optional[str],
+    result: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append one durable telemetry record for a subagent/handoff run."""
+    try:
+        cost_usd = getattr(child, "session_estimated_cost_usd", None)
+        event = build_handoff_telemetry_event(
+            trace_id=getattr(child, "_handoff_trace_id", None) or new_trace_id(),
+            subagent_id=getattr(child, "_subagent_id", None),
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_task_id=parent_task_id,
+            parent_subagent_id=getattr(child, "_parent_subagent_id", None),
+            task_index=task_index,
+            status=status,
+            exit_reason=exit_reason,
+            model=getattr(child, "model", None),
+            provider=getattr(child, "provider", None),
+            api_mode=getattr(child, "api_mode", None),
+            api_calls=api_calls,
+            duration_seconds=duration_seconds,
+            input_tokens=getattr(child, "session_input_tokens", 0),
+            output_tokens=getattr(child, "session_output_tokens", 0),
+            cache_read_tokens=getattr(child, "session_cache_read_tokens", 0),
+            cache_write_tokens=getattr(child, "session_cache_write_tokens", 0),
+            reasoning_tokens=getattr(child, "session_reasoning_tokens", 0),
+            prompt_tokens=getattr(child, "session_prompt_tokens", 0),
+            total_tokens=getattr(child, "session_total_tokens", 0),
+            estimated_cost_usd=cost_usd,
+            cost_status=getattr(child, "session_cost_status", None),
+            cost_source=getattr(child, "session_cost_source", None),
+            result=result,
+        )
+        path = record_handoff_telemetry(event)
+        if path:
+            logger.info(
+                "handoff telemetry: trace_id=%s subagent=%s status=%s duration=%.2fs cost=%s log=%s",
+                event.get("trace_id"),
+                event.get("subagent_id"),
+                status,
+                event.get("duration_seconds", 0.0),
+                event.get("cost", {}).get("estimated_usd"),
+                path,
+            )
+    except Exception:
+        logger.debug("handoff telemetry build failed", exc_info=True)
 
 
 def _extract_output_tail(
@@ -918,6 +979,7 @@ def _build_child_agent(
     # one key.  parent_id is non-None when THIS parent is itself a subagent
     # (nested orchestrator -> worker chain).
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
+    handoff_trace_id = new_trace_id()
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
@@ -1144,6 +1206,7 @@ def _build_child_agent(
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
+    setattr(child, "_handoff_trace_id", handoff_trace_id)
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
 
@@ -1592,6 +1655,23 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
+            _record_child_handoff_telemetry(
+                child=child,
+                parent_agent=parent_agent,
+                task_index=task_index,
+                status="timeout" if is_timeout else "error",
+                exit_reason="timeout" if is_timeout else "error",
+                api_calls=child_api_calls,
+                duration_seconds=duration,
+                parent_task_id=parent_task_id,
+                result={
+                    "completed": False,
+                    "interrupted": False,
+                    "error": _err,
+                    "diagnostic_path": diagnostic_path,
+                },
+            )
+
             return {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
@@ -1668,8 +1748,11 @@ def _run_single_child(
                         # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
 
-        # Determine exit reason
-        if interrupted:
+        # Preserve the agent loop's rich exit reason when available.
+        turn_exit_reason = result.get("turn_exit_reason")
+        if isinstance(turn_exit_reason, str) and turn_exit_reason:
+            exit_reason = turn_exit_reason
+        elif interrupted:
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
@@ -1813,6 +1896,23 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        _record_child_handoff_telemetry(
+            child=child,
+            parent_agent=parent_agent,
+            task_index=task_index,
+            status=status,
+            exit_reason=exit_reason,
+            api_calls=api_calls,
+            duration_seconds=duration,
+            parent_task_id=parent_task_id,
+            result={
+                "completed": bool(completed),
+                "interrupted": bool(interrupted),
+                "summary_chars": len(summary) if isinstance(summary, str) else 0,
+                "error": entry.get("error"),
+            },
+        )
+
         return entry
 
     except Exception as exc:
@@ -1829,6 +1929,17 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
+        _record_child_handoff_telemetry(
+            child=child,
+            parent_agent=parent_agent,
+            task_index=task_index,
+            status="error",
+            exit_reason="error",
+            api_calls=0,
+            duration_seconds=duration,
+            parent_task_id=locals().get("parent_task_id"),
+            result={"completed": False, "interrupted": False, "error": str(exc)},
+        )
         return {
             "task_index": task_index,
             "status": "error",

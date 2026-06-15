@@ -3250,7 +3250,8 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    fallback_reason = classified.reason if classified.reason in {FailoverReason.rate_limit, FailoverReason.billing} else None
+                    if agent._try_activate_fallback(reason=fallback_reason):
                         retry_count = 0
                         compression_attempts = 0
                         primary_recovery_attempted = False

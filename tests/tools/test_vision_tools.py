@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import tools.vision_tools as vision_tools
+
 from tools.vision_tools import (
     _validate_image_url,
     _handle_vision_analyze,
@@ -424,6 +426,49 @@ class TestVisionConfig:
         assert mock_llm.await_args.kwargs["temperature"] == 0.1
         assert mock_llm.await_args.kwargs["timeout"] == 120.0
 
+    @pytest.mark.asyncio
+    async def test_debug_payload_includes_vision_resolution(self, tmp_path):
+        img = tmp_path / "debug.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Debug image analysis"
+        mock_response.choices = [mock_choice]
+
+        diagnostics = {
+            "requested_provider": "openrouter",
+            "resolved_provider": "openrouter",
+            "resolved_model": "google/gemini-3-flash-preview",
+            "client_available": True,
+            "used_auto_fallback": False,
+            "auto_fallback_provider": None,
+            "auto_fallback_model": None,
+            "resolution_path": "primary",
+        }
+
+        with (
+            patch("tools.vision_tools._collect_vision_resolution_diagnostics", return_value=diagnostics),
+            patch("tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+            patch("tools.vision_tools._debug.log_call") as mock_log_call,
+            patch("tools.vision_tools._debug.save") as mock_save,
+            patch.object(vision_tools._debug, "enabled", True),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
+
+        assert result["success"] is True
+        mock_log_call.assert_called()
+        payload = mock_log_call.call_args.args[1]
+        assert payload["vision_resolution"] == diagnostics
+        mock_save.assert_called()
+
 
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio
@@ -523,6 +568,56 @@ class TestVisionRequirements:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         assert check_vision_requirements() is True
+
+    def test_check_requirements_logs_primary_resolution(self, caplog):
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            return_value=("anthropic", MagicMock(), "claude-opus-4.6"),
+        ):
+            with caplog.at_level(logging.DEBUG, logger="tools.vision_tools"):
+                assert check_vision_requirements() is True
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("Vision requirements diagnostics" in m for m in messages)
+        assert any('"resolution_path": "primary"' in m for m in messages)
+        assert any('"client_available": true' in m for m in messages)
+
+    def test_check_requirements_uses_auto_fallback_when_primary_missing(self, caplog):
+        resolve_calls = []
+
+        def fake_resolve(provider=None, model=None, **kwargs):
+            resolve_calls.append(provider)
+            if provider == "auto":
+                return ("auto", MagicMock(), "gemini-3-flash-preview")
+            return ("explicit-provider", None, None)
+
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            side_effect=fake_resolve,
+        ):
+            with caplog.at_level(logging.DEBUG, logger="tools.vision_tools"):
+                assert check_vision_requirements() is True
+
+        assert resolve_calls == [None, "auto"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert any('"used_auto_fallback": true' in m for m in messages)
+        assert any('"resolution_path": "auto_fallback"' in m for m in messages)
+        assert any('"resolved_provider": "auto"' in m for m in messages)
+
+    def test_check_requirements_logs_unavailable_state_when_both_paths_fail(self, caplog):
+        def fake_resolve(provider=None, model=None, **kwargs):
+            return (provider or "explicit-provider", None, None)
+
+        with patch(
+            "agent.auxiliary_client.resolve_vision_provider_client",
+            side_effect=fake_resolve,
+        ):
+            with caplog.at_level(logging.DEBUG, logger="tools.vision_tools"):
+                assert check_vision_requirements() is False
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any('"resolution_path": "unavailable"' in m for m in messages)
+        assert any('"client_available": false' in m for m in messages)
 
 
 # ---------------------------------------------------------------------------

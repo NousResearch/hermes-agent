@@ -165,6 +165,25 @@ provider_routing:
   require_parameters: true
 ```
 
+## Cost-aware model routing checklist
+
+Use telemetry before changing routing. For delegated work, Hermes writes handoff telemetry events that include `trace_id`, parent/session correlation (`parent_session_id`, `parent_task_id`, `parent_subagent_id`, `subagent_id`), `model`, `provider`, `api_mode`, token breakdowns, `duration_seconds`, `cost.estimated_usd`, `cost.status`, `cost.source`, `status`, `exit_reason`, and `result`. Review those signals after a few representative tasks so routing decisions come from observed volume, latency, cost, and success/failure patterns rather than pricing tables alone.
+
+Recommended lanes:
+
+- **Cheap/default lane** — keep routine chat, summarization, extraction, simple code edits, and broad subagent fan-out on the configured cheap default such as `gpt-5.4-mini` or the current low-cost equivalent. This is the right lane when telemetry shows modest `tokens`, acceptable `duration_seconds`, low `cost.estimated_usd`, and successful `result.status` / `result.summary` outcomes.
+- **Stronger model lane** — escalate to a stronger model when recent telemetry for the cheap lane shows repeated poor `result` quality, retries, tool-loop churn, high reasoning complexity, failed coding/debugging attempts, or tasks whose expected output cost is lower than the cost of rework.
+- **Review lane** — use a review-oriented model or dedicated reviewer for security-sensitive changes, large refactors, production-impacting config, PR review, or any task where a cheap first pass succeeded but the `trace_id` should be auditable before merge/deploy.
+- **Fallback/provider lane** — use `fallback_providers` for reliability failures and provider outages; use OpenRouter `provider_routing` (`sort: "price"`, `latency`, `throughput`, `order`, `only`, `ignore`) only to choose the underlying OpenRouter provider for the same model request.
+
+Practical operating loop:
+
+1. Start with the cheap default for exploratory or parallel work.
+2. Inspect telemetry grouped by `model` and `trace_id`: total `tokens`, `duration_seconds`, `cost.estimated_usd`, and `result` status/quality.
+3. Escalate only the task type or trace pattern that justifies it; do not globally raise `model.default` because one task was hard.
+4. Keep review lanes explicit and auditable by preserving the original `trace_id` in notes, PRs, or summaries.
+5. Re-check telemetry after the change; keep the cheaper lane if stronger routing does not reduce failures, latency, or total cost.
+
 ## How It Works
 
 Provider routing preferences are passed to the OpenRouter API via the `extra_body.provider` field on every API call. This applies to both:

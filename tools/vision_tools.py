@@ -756,13 +756,14 @@ async def vision_analyze_tool(
         "parameters": {
             "image_url": image_url,
             "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
-            "model": model
+            "model": model,
         },
         "error": None,
         "success": False,
         "analysis_length": 0,
         "model_used": model,
-        "image_size_bytes": 0
+        "image_size_bytes": 0,
+        "vision_resolution": _collect_vision_resolution_diagnostics() if _debug.active else None,
     }
     
     temp_image_path = None
@@ -996,6 +997,64 @@ async def vision_analyze_tool(
                 )
 
 
+def _collect_vision_resolution_diagnostics() -> Dict[str, Any]:
+    """Return a small, structured snapshot of how vision would resolve.
+
+    The helper is intentionally side-effect free beyond client construction so
+    it can be reused by both the runtime tool gate and the tool debug payload.
+    """
+    diagnostics: Dict[str, Any] = {
+        "requested_provider": None,
+        "resolved_provider": None,
+        "resolved_model": None,
+        "client_available": False,
+        "used_auto_fallback": False,
+        "auto_fallback_provider": None,
+        "auto_fallback_model": None,
+        "resolution_path": "unresolved",
+    }
+    try:
+        from agent.auxiliary_client import resolve_vision_provider_client
+    except ImportError as exc:
+        diagnostics["resolution_path"] = "import_error"
+        diagnostics["error"] = f"{exc.__class__.__name__}: {exc}"
+        logger.debug("Vision resolution diagnostics unavailable: %s", exc, exc_info=True)
+        return diagnostics
+
+    try:
+        provider, client, model = resolve_vision_provider_client()
+        diagnostics.update(
+            {
+                "requested_provider": provider,
+                "resolved_provider": provider,
+                "resolved_model": model,
+                "client_available": client is not None,
+                "resolution_path": "primary" if client is not None else "primary_unavailable",
+            }
+        )
+        if client is not None:
+            return diagnostics
+
+        auto_provider, auto_client, auto_model = resolve_vision_provider_client(provider="auto")
+        diagnostics.update(
+            {
+                "used_auto_fallback": True,
+                "auto_fallback_provider": auto_provider,
+                "auto_fallback_model": auto_model,
+                "client_available": auto_client is not None,
+                "resolved_provider": auto_provider,
+                "resolved_model": auto_model,
+                "resolution_path": "auto_fallback" if auto_client is not None else "unavailable",
+            }
+        )
+        return diagnostics
+    except Exception as exc:
+        diagnostics["resolution_path"] = "exception"
+        diagnostics["error"] = f"{exc.__class__.__name__}: {exc}"
+        logger.debug("Vision resolution diagnostics failed: %s", exc, exc_info=True)
+        return diagnostics
+
+
 def check_vision_requirements() -> bool:
     """Check if the configured runtime vision path can resolve a client.
 
@@ -1006,20 +1065,9 @@ def check_vision_requirements() -> bool:
     tool list whenever the explicit provider name was unresolvable, even
     when the auto chain would have served the request (issue #31179).
     """
-    try:
-        from agent.auxiliary_client import resolve_vision_provider_client
-    except ImportError:
-        return False
-    try:
-        _provider, client, _model = resolve_vision_provider_client()
-        if client is not None:
-            return True
-        # Same fallback to "auto" that call_llm performs when the configured
-        # provider can't be resolved.
-        _provider, client, _model = resolve_vision_provider_client(provider="auto")
-        return client is not None
-    except Exception:
-        return False
+    diagnostics = _collect_vision_resolution_diagnostics()
+    logger.debug("Vision requirements diagnostics: %s", json.dumps(diagnostics, sort_keys=True, default=str))
+    return bool(diagnostics.get("client_available"))
 
 
 

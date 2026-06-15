@@ -23,6 +23,10 @@ def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
     assert "--no-default-browser-check" in cmd
     # Chrome 111+ rejects CDP WebSocket handshakes (HTTP 403) without this flag.
     assert "--remote-allow-origins=*" in cmd
+    # macOS: suppress the blocking "Keychain Not Found" Safe-Storage modal that a
+    # detached Chromium launch throws onto the user's screen (harmless elsewhere).
+    assert "--password-store=basic" in cmd
+    assert "--use-mock-keychain" in cmd
     user_data_args = [a for a in cmd if a.startswith("--user-data-dir=")]
     assert len(user_data_args) == 1, "Expected exactly one --user-data-dir flag"
     assert "chrome-debug" in user_data_args[0]
@@ -48,6 +52,35 @@ def test_manual_command_includes_remote_allow_origins_on_macos():
         command = manual_chrome_debug_command(port=9222, system="Darwin")
     assert command is not None
     assert "--remote-allow-origins=*" in command
+
+
+def test_chrome_debug_args_suppress_macos_keychain_modal():
+    """A detached Chromium launch on macOS (gateway/worker/cron — no Aqua login
+    session) throws a blocking on-screen "A keychain cannot be found to store
+    \"Chrome\"" Safe-Storage modal unless password storage is routed off the OS
+    Keychain. Every auto-launch arg set MUST carry both suppression flags, or the
+    modal leaks onto the user's display and stalls automation (recurring incident).
+    The flags are harmless no-ops on Linux/Windows, so they belong unconditionally
+    in the shared arg builder."""
+    from hermes_cli.browser_connect import _chrome_debug_args
+
+    args = _chrome_debug_args(9222)
+    assert "--password-store=basic" in args
+    assert "--use-mock-keychain" in args
+
+
+def test_manual_command_suppresses_macos_keychain_modal():
+    """The macOS `open -a "Google Chrome"` fallback (used when no direct Chrome
+    binary candidate is found) must ALSO carry the keychain-suppression flags —
+    it is a second launch path and the modal fires regardless of how Chrome is
+    spawned."""
+    with patch(
+        "hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]
+    ):
+        command = manual_chrome_debug_command(port=9222, system="Darwin")
+    assert command is not None
+    assert "--password-store=basic" in command
+    assert "--use-mock-keychain" in command
 
 
 class TestChromeDebugLaunch:

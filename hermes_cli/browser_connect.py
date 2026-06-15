@@ -136,6 +136,17 @@ def _chrome_debug_args(port: int) -> list[str]:
         # all origins is scoped to localhost. See:
         # https://chromium-review.googlesource.com/c/chromium/src/+/4106462
         "--remote-allow-origins=*",
+        # On macOS, a Chromium-family browser launched detached (no Aqua login
+        # session — e.g. from a gateway/worker/cron) tries to read its "Safe
+        # Storage" key from the macOS Keychain and throws a blocking, on-screen
+        # "A keychain cannot be found to store \"Chrome\"" modal that leaks onto
+        # the user's display and stalls automation. Routing password storage to
+        # Chrome's own basic store + mocking the keychain suppresses the modal
+        # entirely. This only changes WHERE Chrome stores passwords (its own
+        # encrypted store vs the OS Keychain); it does NOT affect cookies,
+        # logins, or the CDP session. Harmless no-ops on Linux/Windows.
+        "--password-store=basic",
+        "--use-mock-keychain",
         "--no-first-run",
         "--no-default-browser-check",
     ]
@@ -187,9 +198,13 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
 
     if system == "Darwin":
         data_dir = chrome_debug_data_dir()
+        # --password-store=basic --use-mock-keychain: suppress the blocking macOS
+        # "Keychain Not Found" Safe-Storage modal a detached Chrome throws onto the
+        # user's screen (see _chrome_debug_args). Keep this branch in sync with it.
         return (
             f'open -a "Google Chrome" --args --remote-debugging-port={port} '
             f'--user-data-dir="{data_dir}" --remote-allow-origins=* '
+            f'--password-store=basic --use-mock-keychain '
             f'--no-first-run --no-default-browser-check'
         )
 

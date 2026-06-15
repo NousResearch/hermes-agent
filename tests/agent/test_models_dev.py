@@ -176,6 +176,7 @@ class TestFetchModelsDev:
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
+        md._models_dev_cache_path = None
 
         with patch.object(md, "_save_disk_cache"):
             result = fetch_models_dev(force_refresh=True)
@@ -190,6 +191,7 @@ class TestFetchModelsDev:
         import agent.models_dev as md
         md._models_dev_cache = SAMPLE_REGISTRY
         md._models_dev_cache_time = 0  # expired
+        md._models_dev_cache_path = md._get_cache_path()
 
         with patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
             result = fetch_models_dev(force_refresh=True)
@@ -202,10 +204,45 @@ class TestFetchModelsDev:
         import time
         md._models_dev_cache = SAMPLE_REGISTRY
         md._models_dev_cache_time = time.time()  # fresh
+        md._models_dev_cache_path = md._get_cache_path()
 
         result = fetch_models_dev()
         mock_get.assert_not_called()
         assert result == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
+    def test_in_memory_cache_is_scoped_to_cache_path(self, mock_get, tmp_path):
+        """Changing HERMES_HOME/cache path must not reuse another profile's cache.
+
+        Pytest changes HERMES_HOME across tests inside one process; without the
+        cache-path guard, a fresh in-memory cache from an earlier profile can
+        short-circuit disk/network lookup for the current profile.
+        """
+        import agent.models_dev as md
+        import time
+
+        old_path = tmp_path / "old" / "models_dev_cache.json"
+        new_path = tmp_path / "new" / "models_dev_cache.json"
+        fresh_registry = {"openai": {"id": "openai", "models": {}}}
+
+        md._models_dev_cache = SAMPLE_REGISTRY
+        md._models_dev_cache_time = time.time()
+        md._models_dev_cache_path = old_path
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = fresh_registry
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        with patch.object(md, "_get_cache_path", return_value=new_path), \
+             patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev()
+
+        mock_get.assert_called_once()
+        assert result == fresh_registry
+        assert md._models_dev_cache_path == new_path
 
     @patch("agent.models_dev.requests.get")
     def test_fresh_disk_cache_skips_network(self, mock_get):
@@ -221,6 +258,7 @@ class TestFetchModelsDev:
         # Empty in-mem cache so stage 1 doesn't short-circuit.
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
+        md._models_dev_cache_path = None
 
         with patch.object(md, "_disk_cache_age_seconds", return_value=60.0), \
              patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
@@ -240,6 +278,7 @@ class TestFetchModelsDev:
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
+        md._models_dev_cache_path = None
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -266,6 +305,7 @@ class TestFetchModelsDev:
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
+        md._models_dev_cache_path = None
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -289,6 +329,7 @@ class TestFetchModelsDev:
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
+        md._models_dev_cache_path = None
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200

@@ -37,6 +37,7 @@ _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
 # In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+_models_dev_cache_path: Optional[Path] = None
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +258,13 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     function always hits the network and only falls back to disk if the
     network call fails.
     """
-    global _models_dev_cache, _models_dev_cache_time
+    global _models_dev_cache, _models_dev_cache_time, _models_dev_cache_path
+
+    cache_path = _get_cache_path()
+    if _models_dev_cache_path is not None and _models_dev_cache_path != cache_path:
+        _models_dev_cache = {}
+        _models_dev_cache_time = 0
+    _models_dev_cache_path = cache_path
 
     # Stage 1: fresh in-memory cache wins. This is the hot path on
     # long-lived processes — no I/O, no system calls.

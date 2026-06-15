@@ -980,6 +980,9 @@ def restore_quick_snapshot(
                 shutil.copy2(src, tmp)
                 dst.unlink(missing_ok=True)
                 shutil.move(str(tmp), str(dst))
+            elif rel == _CRON_JOBS_REL:
+                # This file is also written by the live cron scheduler.
+                _restore_jobs_file(src, dst)
             else:
                 shutil.copy2(src, dst)
             restored += 1
@@ -995,31 +998,86 @@ def restore_quick_snapshot(
 _CRON_JOBS_REL = "cron/jobs.json"
 
 
-def _count_cron_jobs(path: Path) -> Optional[int]:
-    """Return the number of cron jobs stored in ``path``.
+def _restore_jobs_file(
+    src: Path,
+    dst: Path,
+    *,
+    source_contents: Optional[bytes] = None,
+    expected_dst_contents: Optional[bytes] = None,
+) -> bool:
+    """Atomically restore cron jobs under the destination scheduler lock.
+
+    expected_dst_contents binds conditional recovery to the live state that
+    triggered it. If a scheduler updates the file before lock acquisition, the
+    recovery is skipped rather than overwriting that update.
+    """
+    from cron.jobs import _jobs_lock, use_cron_store
+
+    if source_contents is None:
+        source_contents = src.read_bytes()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    def _atomic_copy() -> bool:
+        if expected_dst_contents is not None:
+            try:
+                if dst.read_bytes() != expected_dst_contents:
+                    return False
+            except FileNotFoundError:
+                return False
+
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=f".{dst.name}.restore.",
+                delete=False,
+                dir=str(dst.parent),
+            ) as staged:
+                tmp = Path(staged.name)
+                staged.write(source_contents)
+                staged.flush()
+            os.replace(tmp, dst)
+            tmp = None
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("Could not remove staged restore %s: %s", tmp, exc)
+        return True
+
+    # Explicit profiles must lock their own cron store, not the process default.
+    with use_cron_store(dst.parent.parent), _jobs_lock():
+        return _atomic_copy()
+
+
+def _read_cron_jobs(path: Path) -> tuple[Optional[int], Optional[bytes]]:
+    """Return the job count and exact bytes read from ``path``.
 
     The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
     A legacy bare-list shape (``[...]``) is also honoured.
 
     Returns:
-        The job count for any *valid, readable* JSON document, or ``None`` if
-        the file is missing or cannot be parsed. ``None`` means "unknown" —
-        callers must not treat it as "zero jobs", because acting on an
-        unreadable file could mask a real corruption the user needs to see.
+        The job count and source bytes for any *valid, readable* JSON document,
+        or ``(None, None)`` if the file is missing or cannot be parsed.
     """
     if not path.is_file():
-        return None
+        return None, None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
+        contents = path.read_bytes()
+        data = json.loads(contents)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
-        return len(jobs) if isinstance(jobs, list) else None
+        return (len(jobs), contents) if isinstance(jobs, list) else (None, None)
     if isinstance(data, list):
-        return len(data)
-    return None
+        return len(data), contents
+    return None, None
+
+
+def _count_cron_jobs(path: Path) -> Optional[int]:
+    """Return the number of cron jobs stored in ``path``, or ``None``."""
+    return _read_cron_jobs(path)[0]
 
 
 def restore_cron_jobs_if_emptied(
@@ -1060,15 +1118,15 @@ def restore_cron_jobs_if_emptied(
     home = hermes_home or get_hermes_home()
     live_path = home / _CRON_JOBS_REL
 
-    live_count = _count_cron_jobs(live_path)
+    live_count, live_contents = _read_cron_jobs(live_path)
     # ``None`` (missing or unparseable) is intentionally left alone — that's a
     # different failure mode the user should see rather than have papered over.
-    if live_count is None:
+    if live_count is None or live_contents is None:
         return None
 
     snap_path = _quick_snapshot_root(home) / snapshot_id / _CRON_JOBS_REL
-    snap_count = _count_cron_jobs(snap_path)
-    if not snap_count:  # None or 0 — nothing worth restoring
+    snap_count, snap_contents = _read_cron_jobs(snap_path)
+    if not snap_count or snap_contents is None:  # None or 0 — nothing worth restoring
         return None
 
     # Restore when live has FEWER jobs than the pre-update snapshot.
@@ -1079,11 +1137,24 @@ def restore_cron_jobs_if_emptied(
         return None
 
     try:
-        live_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snap_path, live_path)
+        # Serialize against the live cron scheduler (see _restore_jobs_file).
+        restored = _restore_jobs_file(
+            snap_path,
+            live_path,
+            source_contents=snap_contents,
+            expected_dst_contents=live_contents,
+        )
     except (OSError, PermissionError) as exc:
         logger.error(
             "Cron jobs were emptied during update but auto-restore failed: %s", exc
+        )
+        return None
+
+    if not restored:
+        logger.info(
+            "Skipped cron jobs auto-restore because %s changed while waiting "
+            "for the scheduler lock",
+            live_path,
         )
         return None
 

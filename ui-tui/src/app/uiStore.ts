@@ -11,6 +11,7 @@ const buildUiState = (): UiState => ({
   busy: false,
   busyInputMode: 'queue',
   compact: false,
+  copyOnSelect: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
   indicatorStyle: DEFAULT_INDICATOR_STYLE,

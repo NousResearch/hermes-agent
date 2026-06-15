@@ -366,8 +366,12 @@ def _path_env_key(run_env: dict) -> str | None:
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
-        from tools.env_passthrough import is_env_passthrough as _is_passthrough
+        from tools.env_passthrough import (
+            get_all_passthrough as _get_all_passthrough,
+            is_env_passthrough as _is_passthrough,
+        )
     except Exception:
+        _get_all_passthrough = lambda: frozenset()  # noqa: E731
         _is_passthrough = lambda _: False  # noqa: E731
 
     merged = dict(os.environ | env)
@@ -378,6 +382,25 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+
+    # ``terminal.env_passthrough`` and skill-declared env vars are allowlists,
+    # not only blocklist overrides.  The user may keep the value in
+    # ``~/.hermes/.env`` without exporting it into the parent shell; mirror the
+    # Docker backend by filling only explicitly allowlisted missing values from
+    # Hermes' parsed .env, while preserving os.environ/self.env precedence.
+    passthrough_keys = [key for key in _get_all_passthrough() if key not in run_env]
+    if passthrough_keys:
+        try:
+            from hermes_cli.config import load_env
+
+            hermes_env = load_env() or {}
+        except Exception:
+            hermes_env = {}
+        for key in passthrough_keys:
+            value = hermes_env.get(key)
+            if value:
+                run_env[key] = value
+
     path_key = _path_env_key(run_env)
     if path_key is not None:
         run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))

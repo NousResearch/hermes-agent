@@ -212,6 +212,34 @@ class TestProviderEnvBlocklist:
         assert "MY_CUSTOM_VAR" in result_env
         assert result_env["MY_CUSTOM_VAR"] == "keep-this"
 
+    def test_passthrough_var_missing_from_os_env_is_loaded_from_dotenv(self):
+        """terminal.env_passthrough values should work even when only stored in .env."""
+        from tools.environments.local import _make_run_env
+
+        base_env = {"PATH": "/usr/bin:/bin", "HOME": "/home/user"}
+        with patch.dict(os.environ, base_env, clear=True), \
+             patch("tools.env_passthrough.get_all_passthrough", return_value=frozenset({"CUSTOM_SERVICE_TOKEN"})), \
+             patch("hermes_cli.config.load_env", return_value={"CUSTOM_SERVICE_TOKEN": "from-dotenv"}):
+            result = _make_run_env({})
+
+        assert result["CUSTOM_SERVICE_TOKEN"] == "from-dotenv"
+
+    def test_os_env_wins_over_dotenv_for_passthrough_var(self):
+        """A real parent environment value should not be overwritten by .env fallback."""
+        from tools.environments.local import _make_run_env
+
+        base_env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/user",
+            "CUSTOM_SERVICE_TOKEN": "from-os-env",
+        }
+        with patch.dict(os.environ, base_env, clear=True), \
+             patch("tools.env_passthrough.get_all_passthrough", return_value=frozenset({"CUSTOM_SERVICE_TOKEN"})), \
+             patch("hermes_cli.config.load_env", return_value={"CUSTOM_SERVICE_TOKEN": "from-dotenv"}):
+            result = _make_run_env({})
+
+        assert result["CUSTOM_SERVICE_TOKEN"] == "from-os-env"
+
 
 class TestForceEnvOptIn:
     """Callers can opt in to passing a blocked var via _HERMES_FORCE_ prefix."""

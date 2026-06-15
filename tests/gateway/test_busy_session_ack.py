@@ -669,3 +669,92 @@ class TestBusySessionOnboardingHint:
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content
+
+
+class TestInterruptCancelsPendingClarify:
+    """A follow-up message in interrupt mode must cancel a blocked clarify.
+
+    Regression: when the agent thread is blocked inside
+    clarify_gateway.wait_for_response() (a button-choice clarify, which is
+    NOT awaiting free-form text), a soft interrupt only sets a flag — the
+    blocked thread never checks it and sits until the 10-minute clarify
+    timeout. The fix wakes the blocked thread by clearing the session's
+    pending clarify entries whenever an interrupt fires.
+    """
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_interrupt_cancels_pending_clarify(self):
+        from tools import clarify_gateway as cg
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="actually do something else")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 2,
+            "max_iterations": 60,
+            "last_activity_desc": "clarify",
+            "seconds_since_activity": 1.0,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 5
+
+        # Register a BUTTON-choice clarify (awaiting_text=False) — the kind
+        # that the text-fallback intercept deliberately does NOT resolve.
+        cg.register(
+            clarify_id="clar-busy-1",
+            session_key=sk,
+            question="Which option?",
+            choices=["A", "B", "C"],
+        )
+        try:
+            assert cg.has_pending(sk) is True
+
+            with patch("gateway.run.merge_pending_message_event"):
+                await runner._handle_active_session_busy_message(event, sk)
+
+            # Interrupt was sent AND the blocked clarify was cancelled.
+            agent.interrupt.assert_called_once()
+            assert cg.has_pending(sk) is False
+        finally:
+            cg.clear_session(sk)
+
+    @pytest.mark.asyncio
+    async def test_busy_ack_queue_mode_leaves_clarify_pending(self):
+        """Queue mode does NOT interrupt, so a pending clarify stays alive."""
+        from tools import clarify_gateway as cg
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="a follow-up")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        cg.register(
+            clarify_id="clar-queue-1",
+            session_key=sk,
+            question="Which option?",
+            choices=["A", "B"],
+        )
+        try:
+            assert cg.has_pending(sk) is True
+
+            with patch("gateway.run.merge_pending_message_event"):
+                await runner._handle_active_session_busy_message(event, sk)
+
+            # Queue mode must not interrupt, and must leave clarify untouched
+            # (the user may still click a button).
+            agent.interrupt.assert_not_called()
+            assert cg.has_pending(sk) is True
+        finally:
+            cg.clear_session(sk)

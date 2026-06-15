@@ -3893,6 +3893,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 running_agent.interrupt(event.text)
             except Exception:
                 pass  # don't let interrupt failure block the ack
+            # Wake any clarify wait blocked on a threading.Event so the soft
+            # interrupt can actually take effect (see the PRIORITY interrupt
+            # path for the full rationale). Without this the agent thread sits
+            # in clarify_gateway.wait_for_response() until the 10-minute timeout.
+            try:
+                from tools import clarify_gateway as _clarify_mod
+                if _clarify_mod.has_pending(session_key):
+                    _cancelled = _clarify_mod.clear_session(session_key)
+                    logger.info(
+                        "Busy-ack interrupt cancelled %d pending clarify request(s) "
+                        "for session %s (user sent a follow-up)",
+                        _cancelled, session_key,
+                    )
+            except Exception:
+                pass
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -7262,6 +7277,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
+            # The agent thread may be blocked inside clarify_gateway.wait_for_response()
+            # on a threading.Event — exactly like the tool-approval path above. A soft
+            # interrupt() only sets _interrupt_requested; the blocked thread never checks
+            # it until the 10-minute clarify timeout fires, so the user's follow-up appears
+            # ignored for minutes. When the user sends a new message they've moved on, so
+            # the pending clarify is obsolete: cancel it to wake the thread immediately,
+            # letting the agent loop resume and observe the interrupt we just set.
+            try:
+                from tools import clarify_gateway as _clarify_mod
+                if _clarify_mod.has_pending(_quick_key):
+                    _cancelled = _clarify_mod.clear_session(_quick_key)
+                    logger.info(
+                        "PRIORITY interrupt cancelled %d pending clarify request(s) "
+                        "for session %s (user sent a follow-up)",
+                        _cancelled, _quick_key,
+                    )
+            except Exception as _clarify_exc:
+                logger.debug(
+                    "Failed to cancel pending clarify on interrupt for %s: %s",
+                    _quick_key, _clarify_exc,
+                )
             # NOTE: self._pending_messages was write-only (never consumed).
             # The actual interrupt message is delivered via adapter._pending_messages
             # which is read by _run_agent. Removed to prevent unbounded growth.

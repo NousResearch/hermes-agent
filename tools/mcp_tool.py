@@ -3604,10 +3604,17 @@ _mcp_tool_server_names: Dict[str, str] = {}
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
+_MCP_LOOP_START_TIMEOUT = 2.0
+_MCP_LOOP_STOP_TIMEOUT = 15.0
 
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
+
+# Serializes loop start/stop/reload so a rediscovery cannot schedule work onto
+# a loop while the previous stdio transports are still unwinding cancellation.
+_mcp_lifecycle_lock = threading.RLock()
+_mcp_reload_lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
 # them on shutdown if the graceful cleanup (SDK context-manager teardown)
@@ -3731,17 +3738,34 @@ def _mcp_loop_exception_handler(loop, context):
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
-    with _lock:
-        if _mcp_loop is not None and _mcp_loop.is_running():
-            return
-        _mcp_loop = asyncio.new_event_loop()
-        _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
-        _mcp_thread = threading.Thread(
-            target=_mcp_loop.run_forever,
-            name="mcp-event-loop",
-            daemon=True,
-        )
-        _mcp_thread.start()
+    with _mcp_lifecycle_lock:
+        ready = threading.Event()
+
+        with _lock:
+            if _mcp_loop is not None and _mcp_loop.is_running():
+                return
+            loop = asyncio.new_event_loop()
+            loop.set_exception_handler(_mcp_loop_exception_handler)
+
+            def _run_loop() -> None:
+                asyncio.set_event_loop(loop)
+                loop.call_soon(ready.set)
+                loop.run_forever()
+
+            thread = threading.Thread(
+                target=_run_loop,
+                name="mcp-event-loop",
+                daemon=True,
+            )
+            _mcp_loop = loop
+            _mcp_thread = thread
+            thread.start()
+
+        if not ready.wait(timeout=_MCP_LOOP_START_TIMEOUT):
+            logger.warning(
+                "MCP event loop did not report ready within %.1fs",
+                _MCP_LOOP_START_TIMEOUT,
+            )
 
 
 def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
@@ -5621,20 +5645,22 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
     return staged_engine_names
 
 
-def shutdown_mcp_servers():
+def shutdown_mcp_servers() -> bool:
     """Close all MCP server connections and stop the background loop.
 
     Each server Task is signalled to exit its ``async with`` block so that
     the anyio cancel-scope cleanup happens in the same Task that opened it.
     All servers are shut down in parallel via ``asyncio.gather``.
+
+    Returns True when the MCP loop was stopped or was already absent. A False
+    return means the old loop thread did not finish within the bounded wait.
     """
     with _lock:
         servers_snapshot = list(_servers.values())
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:
-        _stop_mcp_loop()
-        return
+        return _stop_mcp_loop()
 
     async def _shutdown():
         results = await asyncio.gather(
@@ -5664,7 +5690,25 @@ def shutdown_mcp_servers():
             except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
 
-    _stop_mcp_loop()
+    return _stop_mcp_loop()
+
+
+def reload_mcp_servers() -> List[str]:
+    """Synchronously shut down MCP servers and rediscover them on a fresh loop.
+
+    Reload callers must not stitch together ``shutdown_mcp_servers()`` and
+    ``discover_mcp_tools()`` themselves: stdio transports rely on anyio
+    cancellation scopes that need to finish unwinding before new server tasks
+    are scheduled.  Serializing the full reload here gives every UI entry point
+    the same clean shutdown -> fresh discovery boundary.
+    """
+    with _mcp_reload_lock:
+        if not shutdown_mcp_servers():
+            raise RuntimeError(
+                "MCP event loop did not stop cleanly; refusing to rediscover "
+                "servers on a partially shut down loop"
+            )
+        return discover_mcp_tools()
 
 
 def _kill_orphaned_mcp_children(
@@ -5810,24 +5854,41 @@ def _stop_mcp_loop_if_idle() -> bool:
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
-    with _lock:
-        if only_if_idle and (_servers or _server_connecting):
-            logger.debug("Leaving MCP event loop running; active servers are registered or connecting")
-            return False
-        loop = _mcp_loop
-        thread = _mcp_thread
-        _mcp_loop = None
-        _mcp_thread = None
-    if loop is not None:
-        loop.call_soon_threadsafe(loop.stop)
-        if thread is not None:
-            thread.join(timeout=5)
+    with _mcp_lifecycle_lock:
+        with _lock:
+            if only_if_idle and (_servers or _server_connecting):
+                logger.debug("Leaving MCP event loop running; active servers are registered or connecting")
+                return False
+            loop = _mcp_loop
+            thread = _mcp_thread
+            _mcp_loop = None
+            _mcp_thread = None
+
+        if loop is None:
+            return True
+
         try:
-            loop.close()
-        except Exception:
-            pass
+            if loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError as exc:
+            logger.debug("MCP event loop stop scheduling failed: %s", exc)
+
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=_MCP_LOOP_STOP_TIMEOUT)
+            if thread.is_alive():
+                logger.warning(
+                    "MCP event loop thread did not stop within %.1fs",
+                    _MCP_LOOP_STOP_TIMEOUT,
+                )
+                return False
+
+        if not loop.is_closed():
+            try:
+                loop.close()
+            except Exception:
+                pass
         # After closing the loop, any stdio subprocesses that survived the
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.
         _kill_orphaned_mcp_children(include_active=True)
-    return True
+        return True

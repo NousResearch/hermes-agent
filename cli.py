@@ -10792,7 +10792,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         sees the updated tools on the next turn.
         """
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp_tool import reload_mcp_servers, _servers, _lock
 
             # Capture old server names
             with _lock:
@@ -10801,11 +10801,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not self._command_running:
                 print("🔄 Reloading MCP servers...")
 
-            # Shutdown existing connections
-            shutdown_mcp_servers()
-
-            # Reconnect (reads config.yaml fresh)
-            new_tools = discover_mcp_tools()
+            # Shutdown and reconnect (reads config.yaml fresh) as one
+            # serialized operation so stdio transports finish unwinding
+            # cancellation before discovery schedules fresh server tasks.
+            new_tools = reload_mcp_servers()
 
             # Compute what changed
             with _lock:

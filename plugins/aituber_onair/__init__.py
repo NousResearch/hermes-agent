@@ -40,16 +40,16 @@ def register(ctx) -> None:
     ctx.register_command(
         "aituber",
         handler=core.handle_slash,
-        description="Run AITuber OnAir FBX streaming and Hakua Codex character chat.",
-        args_hint="[status|configure|prepare|start|stop|say|smoke]",
+        description="Run AITuber OnAir avatar streaming and Hakua Codex character chat.",
+        args_hint="[status|configure|prepare|start --avatar vroid|stop|say|smoke]",
     )
     ctx.register_cli_command(
         name="aituber-onair",
-        help="AITuber OnAir FBX and Hakua Codex bridge",
+        help="AITuber OnAir avatar and Hakua Codex bridge",
         setup_fn=register_cli,
         handler_fn=aituber_onair_command,
         description=(
             "Configure Hakua, prepare AITuber OnAir's Codex SDK example, "
-            "start the FBX app, run Codex-auth character prompts, and route Hakua voice."
+            "start FBX or VRoid/VRM apps, run Codex-auth character prompts, and route Hakua voice."
         ),
     )

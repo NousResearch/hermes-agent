@@ -9311,6 +9311,17 @@ def _resolve_chat_argv(
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     env.setdefault("NODE_ENV", "production")
+    # The dashboard PTY is rendered by xterm.js, not by whatever terminal
+    # launched `hermes dashboard`. Codex/CI shells often export TERM=dumb or
+    # NO_COLOR=1, which makes the Ink TUI suppress every skin color in the
+    # browser even though xterm.js supports them. Normalize only this embedded
+    # chat child so native CLI/TUI launches keep honoring the user's shell.
+    env["TERM"] = "xterm-256color"
+    env["COLORTERM"] = "truecolor"
+    env["FORCE_COLOR"] = "3"
+    env["HERMES_TUI_TRUECOLOR"] = "1"
+    env.setdefault("HERMES_TUI_BACKGROUND", "#000000")
+    env.pop("NO_COLOR", None)
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel
     # events are consumed by the TUI and forwarded as terminal input, which

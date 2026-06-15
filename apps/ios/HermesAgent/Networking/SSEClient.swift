@@ -26,7 +26,9 @@ struct SSEClient {
                     if !connection.apiKey.isEmpty {
                         req.setValue("Bearer \(connection.apiKey)", forHTTPHeaderField: "Authorization")
                     }
-                    var body: [String: Any] = ["content": message, "stream": true]
+                    // The server reads `message` (falling back to `input`); see
+                    // `_session_chat_user_message` in api_server.py.
+                    var body: [String: Any] = ["message": message, "stream": true]
                     if let model { body["model"] = model }
                     req.httpBody = try JSONSerialization.data(withJSONObject: body)
 

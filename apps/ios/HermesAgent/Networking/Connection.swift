@@ -20,7 +20,10 @@ struct Connection: Equatable {
     var webSocketURL: URL? {
         guard var components = url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) else { return nil }
         components.scheme = (components.scheme == "https") ? "wss" : "ws"
-        components.path = (components.path as NSString).appendingPathComponent("api/ws")
+        // When a host is present, URLComponents requires the path to begin with
+        // "/" (otherwise `.url` returns nil). Normalize the join accordingly.
+        let base = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
+        components.path = base + "/api/ws"
         return components.url
     }
 

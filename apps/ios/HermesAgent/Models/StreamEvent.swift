@@ -13,6 +13,7 @@ enum StreamEvent {
     case assistantDelta(messageId: String?, text: String)
     case toolStarted(id: String, toolName: String, preview: String?)
     case toolCompleted(id: String, toolName: String, preview: String?)
+    case toolFailed(id: String, toolName: String, preview: String?)
     case reasoningDelta(text: String)
     case assistantCompleted(messageId: String?, content: String?)
     case runCompleted(usage: Usage?)
@@ -53,6 +54,10 @@ enum StreamEvent {
             return .toolCompleted(id: str("tool_call_id") ?? str("message_id") ?? UUID().uuidString,
                                   toolName: str("tool_name") ?? "tool",
                                   preview: str("preview"))
+        case "tool.failed":
+            return .toolFailed(id: str("tool_call_id") ?? str("message_id") ?? UUID().uuidString,
+                               toolName: str("tool_name") ?? "tool",
+                               preview: str("preview"))
         case "tool.progress", "reasoning.available":
             // Hermes routes "thinking" through tool.progress with tool_name == "_thinking".
             if (str("tool_name") ?? "") == "_thinking" {

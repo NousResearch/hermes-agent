@@ -112,6 +112,8 @@ final class ChatViewModel: ObservableObject {
             upsertTool(ToolEvent(id: id, toolName: tool, label: nil, emoji: nil, preview: preview, status: .running))
         case .toolCompleted(let id, let tool, let preview):
             upsertTool(ToolEvent(id: id, toolName: tool, label: nil, emoji: nil, preview: preview, status: .completed))
+        case .toolFailed(let id, let tool, let preview):
+            upsertTool(ToolEvent(id: id, toolName: tool, label: nil, emoji: nil, preview: preview, status: .failed))
         case .assistantCompleted(_, let content):
             if let content, !content.isEmpty { setDraft(draftId, content) }
         case .runCompleted(let usage):

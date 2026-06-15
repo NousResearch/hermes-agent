@@ -103,8 +103,11 @@ class TestJsonlFallback:
             assert len(fb_files) == 1
             pending = [json.loads(line) for line in fb_files[0].read_text().splitlines() if line.strip()]
             assert len(pending) == 2
-            assert pending[0]["content"] == "new-one"
-            assert pending[1]["content"] == "new-two"
+            # Check wrapped format with timestamp
+            assert "_fallback_timestamp" in pending[0]
+            assert "message" in pending[0]
+            assert pending[0]["message"]["content"] == "new-one"
+            assert pending[1]["message"]["content"] == "new-two"
 
     def test_no_fallback_when_flag_false(self):
         """_session_db_failed=False → no .pending.jsonl created."""

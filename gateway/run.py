@@ -282,6 +282,158 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
+def _recover_pending_messages(session_db, profile: Optional[str] = None) -> int:
+    """
+    Recover pending messages from *.pending.jsonl files to session DB.
+
+    Returns the number of recovered messages.
+    """
+    if session_db is None:
+        logger.debug("Session DB not available; skipping pending message recovery")
+        return 0
+
+    from hermes_constants import get_hermes_home
+    import json
+
+    # Determine base directory with profile isolation
+    base = get_hermes_home()
+    if profile and profile != "default":
+        base = base / "profiles" / profile
+
+    sessions_dir = base / "sessions"
+    if not sessions_dir.exists():
+        return 0
+
+    recovered_count = 0
+    pending_files = list(sessions_dir.glob("*.pending.jsonl"))
+
+    if not pending_files:
+        return 0
+
+    logger.info("Found %d pending message file(s) for recovery", len(pending_files))
+
+    for pending_file in pending_files:
+        try:
+            # Extract session_id from filename: "session-id.pending.jsonl" -> "session-id"
+            session_id = pending_file.stem.replace(".pending", "")
+            if not session_id or session_id == "unknown":
+                logger.warning("Skipping pending file with invalid session_id: %s", pending_file.name)
+                continue
+
+            # Read all pending messages from the file
+            entries = []
+            with open(pending_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        entries.append(entry)
+                    except json.JSONDecodeError as e:
+                        logger.warning("Skipping invalid JSON line in %s: %s", pending_file.name, e)
+                        continue
+
+            if not entries:
+                logger.debug("No valid messages in %s", pending_file.name)
+                continue
+
+            logger.info("Recovering %d message(s) for session %s", len(entries), session_id)
+
+            # Try to recover each message
+            for entry in entries:
+                try:
+                    # Support both formats: new wrapped {"_fallback_timestamp": t, "message": m}
+                    # and old plain message format
+                    msg_ts = None
+                    msg = None
+                    if isinstance(entry, dict) and "_fallback_timestamp" in entry and "message" in entry:
+                        msg_ts = entry.get("_fallback_timestamp")
+                        msg = entry.get("message")
+                    else:
+                        # Backward compatibility: old format is just the message
+                        msg = entry
+
+                    if not isinstance(msg, dict):
+                        logger.warning("Skipping invalid message entry: %s", type(msg))
+                        continue
+
+                    # Extract fields from message, similar to _flush_messages_to_session_db in run_agent.py
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content")
+
+                    # Handle multimodal content - keep only text summary
+                    from agent.tool_dispatch_helpers import (
+                        _is_multimodal_tool_result,
+                        _multimodal_text_summary,
+                    )
+                    if _is_multimodal_tool_result(content):
+                        content = _multimodal_text_summary(content)
+                    elif isinstance(content, list):
+                        # OpenAI-style content parts - keep only text
+                        txt_parts = []
+                        for p in content:
+                            if isinstance(p, dict) and p.get("type") == "text":
+                                txt_parts.append(str(p.get("text", "")))
+                            elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
+                                txt_parts.append("[screenshot]")
+                        content = "\n".join(txt_parts) if txt_parts else None
+
+                    tool_name = msg.get("tool_name")
+                    tool_calls = msg.get("tool_calls")
+                    tool_call_id = msg.get("tool_call_id")
+                    finish_reason = msg.get("finish_reason")
+
+                    # Extract reasoning fields (only for assistant messages)
+                    reasoning = msg.get("reasoning") if role == "assistant" else None
+                    reasoning_content = msg.get("reasoning_content") if role == "assistant" else None
+                    reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                    codex_reasoning_items = msg.get("codex_reasoning_items") if role == "assistant" else None
+                    codex_message_items = msg.get("codex_message_items") if role == "assistant" else None
+
+                    # Append the message to session DB with original timestamp
+                    session_db.append_message(
+                        session_id=session_id,
+                        role=role,
+                        content=content,
+                        tool_name=tool_name,
+                        tool_calls=tool_calls,
+                        tool_call_id=tool_call_id,
+                        finish_reason=finish_reason,
+                        reasoning=reasoning,
+                        reasoning_content=reasoning_content,
+                        reasoning_details=reasoning_details,
+                        codex_reasoning_items=codex_reasoning_items,
+                        codex_message_items=codex_message_items,
+                        timestamp=msg_ts,
+                    )
+                    recovered_count += 1
+                except Exception as e:
+                    logger.warning("Failed to recover message for session %s: %s", session_id, e)
+                    continue
+
+            # Rename the file instead of deleting (for dev/test safety)
+            try:
+                archived_file = pending_file.with_name(pending_file.name + ".recovered")
+                # Add a unique suffix if the archived file already exists
+                counter = 1
+                while archived_file.exists():
+                    archived_file = pending_file.with_name(f"{pending_file.name}.recovered.{counter}")
+                    counter += 1
+                pending_file.rename(archived_file)
+                logger.info("Archived pending file to %s", archived_file.name)
+            except Exception as e:
+                logger.warning("Failed to archive pending file %s: %s", pending_file.name, e)
+
+        except Exception as e:
+            logger.warning("Failed to process pending file %s: %s", pending_file.name, e)
+            continue
+
+    if recovered_count > 0:
+        logger.info("Successfully recovered %d pending message(s)", recovered_count)
+    return recovered_count
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -2385,10 +2537,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()
-        
+
         # Event hook system
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
+
+        # Recover pending messages from *.pending.jsonl files
+        try:
+            profile = os.environ.get("HERMES_PROFILE")
+            _recover_pending_messages(self._session_db, profile=profile)
+        except Exception as e:
+            logger.warning("Pending message recovery failed: %s", e)
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()

@@ -15,6 +15,8 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     configure.add_argument("--repo-root", default="")
     configure.add_argument("--model", default="")
     configure.add_argument("--fbx-port", type=int, default=None)
+    configure.add_argument("--vrm-port", type=int, default=None)
+    configure.add_argument("--avatar", choices=["fbx", "vrm", "vroid"], default="")
     configure.add_argument("--system-prompt", default="")
     configure.add_argument("--tts-provider", choices=["auto", "irodori", "voicevox", "none"], default="")
     configure.add_argument("--voicevox-url", default="")
@@ -30,14 +32,17 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     prepare.add_argument("--no-install-codex-sdk", action="store_true")
     prepare.add_argument("--no-build-chat", action="store_true")
     prepare.add_argument("--build-fbx-app", action="store_true")
+    prepare.add_argument("--build-vrm-app", action="store_true")
     prepare.add_argument("--timeout-seconds", type=int, default=None)
 
-    start = subs.add_parser("start", help="Start the FBX React app")
+    start = subs.add_parser("start", help="Start the avatar React app")
     start.add_argument("--repo-root", default="")
+    start.add_argument("--avatar", choices=["fbx", "vrm", "vroid"], default="")
     start.add_argument("--fbx-port", type=int, default=None)
+    start.add_argument("--vrm-port", type=int, default=None)
     start.add_argument("--force", action="store_true")
 
-    stop = subs.add_parser("stop", help="Stop the plugin-managed FBX React app")
+    stop = subs.add_parser("stop", help="Stop the plugin-managed avatar React app")
     stop.add_argument("--force", action="store_true")
 
     subs.add_parser("tts-status", aliases=["tts"], help="Show local Hakua TTS readiness")
@@ -82,7 +87,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def aituber_onair_command(args: argparse.Namespace) -> int:
     command = getattr(args, "aituber_onair_command", None)
     if not command:
-        print("usage: hermes aituber-onair {configure,status,prepare,start,stop,tts-status,start-tts,speak,say,smoke}")
+        print(
+            "usage: hermes aituber-onair "
+            "{configure,status,prepare,start,stop,tts-status,start-tts,speak,say,smoke}"
+        )
         return 2
     if command in {"configure", "setup"}:
         return _print(
@@ -91,6 +99,8 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "repo_root": getattr(args, "repo_root", ""),
                     "model": getattr(args, "model", ""),
                     "fbx_port": getattr(args, "fbx_port", None),
+                    "vrm_port": getattr(args, "vrm_port", None),
+                    "avatar_kind": getattr(args, "avatar", ""),
                     "system_prompt": getattr(args, "system_prompt", ""),
                     "tts_provider": getattr(args, "tts_provider", ""),
                     "voicevox_url": getattr(args, "voicevox_url", ""),
@@ -111,16 +121,19 @@ def aituber_onair_command(args: argparse.Namespace) -> int:
                     "install_codex_sdk": not getattr(args, "no_install_codex_sdk", False),
                     "build_chat": not getattr(args, "no_build_chat", False),
                     "build_fbx_app": getattr(args, "build_fbx_app", False),
+                    "build_vrm_app": getattr(args, "build_vrm_app", False),
                     "timeout_seconds": getattr(args, "timeout_seconds", None),
                 }
             )
         )
     if command == "start":
         return _print(
-            core.start_fbx_app(
+            core.start_avatar_app(
                 {
                     "repo_root": getattr(args, "repo_root", ""),
+                    "avatar_kind": getattr(args, "avatar", ""),
                     "fbx_port": getattr(args, "fbx_port", None),
+                    "vrm_port": getattr(args, "vrm_port", None),
                     "force": getattr(args, "force", False),
                 }
             )

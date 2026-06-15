@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -27,6 +28,7 @@ PLUGIN_NAME = "aituber-onair"
 CONFIG_ALIASES = (PLUGIN_ID, "aituber_onair", "aituber")
 TOOLSET = "aituber-onair"
 DEFAULT_FBX_PORT = 5174
+DEFAULT_VRM_PORT = 5175
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_RESPONSE_LENGTH = "short"
 DEFAULT_TTS_PROVIDER = "auto"
@@ -34,6 +36,37 @@ DEFAULT_VOICEVOX_URL = "http://127.0.0.1:50021"
 DEFAULT_VOICEVOX_SPEAKER = 8
 DEFAULT_TTS_FORMAT = "wav"
 SUPPORTED_TTS_PROVIDERS = {"auto", "irodori", "voicevox", "none"}
+CODEX_SDK_PACKAGE = "@openai/codex-sdk"
+CODEX_CLI_PACKAGE = "@openai/codex"
+SAFE_CHILD_ENV_KEYS = {
+    "APPDATA",
+    "COMSPEC",
+    "CODEX_HOME",
+    "HERMES_HOME",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LC_ALL",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_ARCHITEW6432",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+}
 
 DEFAULT_HAKUA_SYSTEM_PROMPT = (
     "あなたは「はくあ」、Codex Authで動くAIVTuberです。"
@@ -69,6 +102,17 @@ CONFIGURE_HAKUA_SCHEMA = {
                 "minimum": 1024,
                 "maximum": 65535,
                 "description": "Local Vite port for the FBX app.",
+            },
+            "vrm_port": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 65535,
+                "description": "Local Vite port for the VRoid/VRM app.",
+            },
+            "avatar_kind": {
+                "type": "string",
+                "enum": ["fbx", "vrm", "vroid"],
+                "description": "Default avatar app. vroid is treated as VRM.",
             },
             "system_prompt": {
                 "type": "string",
@@ -112,7 +156,7 @@ PREPARE_SCHEMA = {
             "repo_root": {"type": "string"},
             "install_codex_sdk": {
                 "type": "boolean",
-                "description": "Install @openai/codex-sdk locally without saving package metadata.",
+                "description": "Install the local Codex SDK and CLI packages without saving package metadata.",
             },
             "build_chat": {
                 "type": "boolean",
@@ -121,6 +165,10 @@ PREPARE_SCHEMA = {
             "build_fbx_app": {
                 "type": "boolean",
                 "description": "Build the FBX React app after preparation.",
+            },
+            "build_vrm_app": {
+                "type": "boolean",
+                "description": "Build the VRoid/VRM React app after preparation.",
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -133,15 +181,21 @@ PREPARE_SCHEMA = {
 
 START_SCHEMA = {
     "name": "aituber_onair_start",
-    "description": "Start the local AITuber OnAir FBX React app.",
+    "description": "Start the local AITuber OnAir avatar React app.",
     "parameters": {
         "type": "object",
         "properties": {
             "repo_root": {"type": "string"},
+            "avatar_kind": {
+                "type": "string",
+                "enum": ["fbx", "vrm", "vroid"],
+                "description": "Avatar app to start. vroid uses the VRM app.",
+            },
             "fbx_port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+            "vrm_port": {"type": "integer", "minimum": 1024, "maximum": 65535},
             "force": {
                 "type": "boolean",
-                "description": "Stop an existing plugin-managed FBX app before starting.",
+                "description": "Stop an existing plugin-managed avatar app before starting.",
             },
         },
     },
@@ -149,7 +203,7 @@ START_SCHEMA = {
 
 STOP_SCHEMA = {
     "name": "aituber_onair_stop",
-    "description": "Stop the plugin-managed AITuber OnAir FBX app.",
+    "description": "Stop the plugin-managed AITuber OnAir avatar app.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -427,6 +481,34 @@ def _fbx_app_dir(repo_root: Path, explicit: str | None = None) -> Path:
     return repo_root / "packages" / "core" / "examples" / "react-fbx-app"
 
 
+def _vrm_app_dir(repo_root: Path, explicit: str | None = None) -> Path:
+    cfg = _plugin_config()
+    raw = explicit or cfg.get("vrm_app_dir")
+    if raw:
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = repo_root / path
+        return path
+    return repo_root / "packages" / "core" / "examples" / "react-vrm-app"
+
+
+def _coerce_avatar_kind(value: Any = None) -> str:
+    raw = _path_text(value or _plugin_config().get("avatar_kind")).lower()
+    if raw in {"vrm", "vroid", "vroid_vrm", "vroid-vrm"}:
+        return "vrm"
+    return "fbx"
+
+
+def _avatar_app_dir(repo_root: Path, avatar_kind: str) -> Path:
+    if _coerce_avatar_kind(avatar_kind) == "vrm":
+        return _vrm_app_dir(repo_root)
+    return _fbx_app_dir(repo_root)
+
+
+def _avatar_display_name(avatar_kind: str) -> str:
+    return "VRoid/VRM" if _coerce_avatar_kind(avatar_kind) == "vrm" else "FBX"
+
+
 def _codex_chat_script(repo_root: Path) -> Path:
     cfg = _plugin_config()
     raw = cfg.get("codex_character_cli")
@@ -506,6 +588,24 @@ def _plugin_fbx_port(explicit: Any = None) -> int:
     return port if 1024 <= port <= 65535 else DEFAULT_FBX_PORT
 
 
+def _plugin_vrm_port(explicit: Any = None) -> int:
+    cfg = _plugin_config()
+    raw = explicit if explicit is not None else cfg.get("vrm_port")
+    if raw is None:
+        return DEFAULT_VRM_PORT
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_VRM_PORT
+    return port if 1024 <= port <= 65535 else DEFAULT_VRM_PORT
+
+
+def _plugin_avatar_port(avatar_kind: str, explicit: Any = None) -> int:
+    if _coerce_avatar_kind(avatar_kind) == "vrm":
+        return _plugin_vrm_port(explicit)
+    return _plugin_fbx_port(explicit)
+
+
 def _plugin_tts_provider(explicit: Any = None) -> str:
     cfg = _plugin_config()
     raw = explicit if explicit is not None else cfg.get("tts_provider")
@@ -575,6 +675,18 @@ def _process_output_text(value: str | bytes | None) -> str:
     return value or ""
 
 
+def _child_process_env(extra: dict[str, Any] | None = None) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in SAFE_CHILD_ENV_KEYS
+    }
+    for key, value in (extra or {}).items():
+        if value is not None:
+            env[str(key)] = str(value)
+    return env
+
+
 def _run_command(
     cmd: list[str],
     *,
@@ -586,7 +698,7 @@ def _run_command(
         completed = subprocess.run(
             cmd,
             cwd=str(cwd),
-            env=env,
+            env=env if env is not None else _child_process_env(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -688,20 +800,65 @@ def _codex_sdk_installed(repo_root: Path) -> dict[str, Any]:
     npm = _npm_exe()
     if not npm:
         return {"ok": False, "installed": False, "error": "npm was not found on PATH."}
+    required = [CODEX_SDK_PACKAGE, CODEX_CLI_PACKAGE]
+    native_package = _codex_native_package_name()
+    if native_package:
+        required.append(native_package)
     result = _run_command(
-        [npm, "ls", "@openai/codex-sdk", "--workspaces=false", "--depth=0"],
+        [npm, "ls", *required, "--workspaces=false", "--depth=0"],
         cwd=repo_root,
         timeout_seconds=30,
     )
     stdout = result.get("stdout", "")
-    installed = result.get("ok") is True and "@openai/codex-sdk" in stdout
+    missing = [package for package in required if package not in stdout]
+    installed = result.get("ok") is True and not missing
     return {
         "ok": result.get("ok") is True,
         "installed": installed,
+        "required_packages": required,
+        "missing_packages": missing,
         "exit_code": result.get("exit_code"),
         "stdout": stdout.strip(),
         "stderr": str(result.get("stderr") or "").strip(),
     }
+
+
+def _codex_native_package_name() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    is_x64 = machine in {"amd64", "x86_64", "x64"}
+    is_arm64 = machine in {"arm64", "aarch64"}
+    if system == "windows" and is_x64:
+        return "@openai/codex-win32-x64"
+    if system == "windows" and is_arm64:
+        return "@openai/codex-win32-arm64"
+    if system == "darwin" and is_x64:
+        return "@openai/codex-darwin-x64"
+    if system == "darwin" and is_arm64:
+        return "@openai/codex-darwin-arm64"
+    if system == "linux" and is_x64:
+        return "@openai/codex-linux-x64"
+    if system == "linux" and is_arm64:
+        return "@openai/codex-linux-arm64"
+    return ""
+
+
+def _codex_native_package_spec(repo_root: Path) -> str:
+    native_package = _codex_native_package_name()
+    if not native_package:
+        return ""
+    package_json = repo_root / "node_modules" / "@openai" / "codex" / "package.json"
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    optional = data.get("optionalDependencies", {})
+    if not isinstance(optional, dict):
+        return ""
+    spec = optional.get(native_package)
+    if not isinstance(spec, str) or not spec:
+        return ""
+    return f"{native_package}@{spec}"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -843,6 +1000,7 @@ def _start_voicevox_tts(values: dict[str, Any]) -> dict[str, Any]:
         "cwd": str(engine.parent),
         "stdout": log_fh,
         "stderr": subprocess.STDOUT,
+        "env": _child_process_env(),
         "close_fds": True,
     }
     if os.name == "nt":
@@ -1129,9 +1287,13 @@ def status() -> dict[str, Any]:
     cfg = _plugin_config()
     repo = resolve_repo_root()
     fbx_app = _fbx_app_dir(repo) if repo else None
+    vrm_app = _vrm_app_dir(repo) if repo else None
     chat_script = _codex_chat_script(repo) if repo else None
     fbx_port = _plugin_fbx_port()
-    url = f"http://127.0.0.1:{fbx_port}/"
+    vrm_port = _plugin_vrm_port()
+    avatar_kind = _coerce_avatar_kind(cfg.get("avatar_kind"))
+    port = _plugin_avatar_port(avatar_kind)
+    url = f"http://127.0.0.1:{port}/"
     active = _active_status()
     active["url_ready"] = _url_ready(str(active.get("url") or url)) if active.get("alive") else False
     tts = tts_status()
@@ -1141,6 +1303,7 @@ def status() -> dict[str, Any]:
         "npm": bool(_npm_exe()),
         "codex_cli_auth": _codex_cli_auth_status().get("has_access_token") is True,
         "fbx_app": bool(fbx_app and (fbx_app / "package.json").is_file()),
+        "vrm_app": bool(vrm_app and (vrm_app / "package.json").is_file()),
         "codex_character_cli": bool(chat_script and chat_script.is_file()),
         "chat_dist": bool(repo and _chat_agent_dist(repo).is_file()),
         "tts_backend": bool(tts.get("ok")),
@@ -1168,7 +1331,9 @@ def status() -> dict[str, Any]:
             "character_name": cfg.get("character_name") or "はくあ",
             "model": cfg.get("model") or "Codex CLI default",
             "response_length": cfg.get("response_length") or DEFAULT_RESPONSE_LENGTH,
+            "avatar_kind": avatar_kind,
             "fbx_port": fbx_port,
+            "vrm_port": vrm_port,
             "url": url,
             "tts_provider": cfg.get("tts_provider") or DEFAULT_TTS_PROVIDER,
             "tts_voice": _plugin_tts_voice() or "provider default",
@@ -1179,6 +1344,7 @@ def status() -> dict[str, Any]:
         "paths": {
             "repo_root": str(repo) if repo else "",
             "fbx_app_dir": str(fbx_app) if fbx_app else "",
+            "vrm_app_dir": str(vrm_app) if vrm_app else "",
             "codex_character_cli": str(chat_script) if chat_script else "",
             "chat_agent_dist": str(_chat_agent_dist(repo)) if repo else "",
             "active_file": str(_active_file()),
@@ -1231,7 +1397,12 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
     entry["fbx_app_dir"] = str(
         Path("packages") / "core" / "examples" / "react-fbx-app"
     )
+    entry["vrm_app_dir"] = str(
+        Path("packages") / "core" / "examples" / "react-vrm-app"
+    )
+    entry["avatar_kind"] = _coerce_avatar_kind(values.get("avatar_kind"))
     entry["fbx_port"] = _plugin_fbx_port(values.get("fbx_port"))
+    entry["vrm_port"] = _plugin_vrm_port(values.get("vrm_port"))
     entry["tts_provider"] = _plugin_tts_provider(values.get("tts_provider"))
     entry["voicevox_url"] = _plugin_voicevox_url(values.get("voicevox_url"))
     entry["voicevox_speaker"] = _plugin_voicevox_speaker(values.get("voicevox_speaker"))
@@ -1260,6 +1431,8 @@ def save_hakua_config(values: dict[str, Any]) -> dict[str, Any]:
         "character_name": entry["character_name"],
         "model": entry.get("model") or "Codex CLI default",
         "fbx_url": f"http://127.0.0.1:{entry['fbx_port']}/",
+        "vrm_url": f"http://127.0.0.1:{entry['vrm_port']}/",
+        "avatar_kind": entry["avatar_kind"],
         "tts_provider": entry["tts_provider"],
         "voicevox_url": entry["voicevox_url"],
         "voicevox_speaker": entry["voicevox_speaker"],
@@ -1290,6 +1463,7 @@ def prepare(values: dict[str, Any]) -> dict[str, Any]:
     install_codex_sdk = values.get("install_codex_sdk")
     build_chat = values.get("build_chat")
     build_fbx_app = bool(values.get("build_fbx_app"))
+    build_vrm_app = bool(values.get("build_vrm_app"))
     if install_codex_sdk is None:
         install_codex_sdk = True
     if build_chat is None:
@@ -1305,12 +1479,46 @@ def prepare(values: dict[str, Any]) -> dict[str, Any]:
                 {
                     "name": "install_codex_sdk",
                     **_run_command(
-                        [npm, "install", "--no-save", "--package-lock=false", "@openai/codex-sdk"],
+                        [
+                            npm,
+                            "install",
+                            "--include=optional",
+                            "--no-save",
+                            "--package-lock=false",
+                            CODEX_SDK_PACKAGE,
+                            CODEX_CLI_PACKAGE,
+                        ],
                         cwd=repo,
                         timeout_seconds=timeout,
                     ),
                 }
             )
+            after_install = _codex_sdk_installed(repo)
+            native_package = _codex_native_package_name()
+            if (
+                after_install.get("installed") is not True
+                and native_package
+                and native_package in after_install.get("missing_packages", [])
+            ):
+                native_spec = _codex_native_package_spec(repo)
+                if native_spec:
+                    steps.append(
+                        {
+                            "name": "install_codex_native_package",
+                            **_run_command(
+                                [
+                                    npm,
+                                    "install",
+                                    "--include=optional",
+                                    "--no-save",
+                                    "--package-lock=false",
+                                    native_spec,
+                                ],
+                                cwd=repo,
+                                timeout_seconds=timeout,
+                            ),
+                        }
+                    )
 
     if build_chat:
         steps.append({"name": "build_chat", **_build_chat_for_codex(repo, npm, timeout)})
@@ -1329,6 +1537,28 @@ def prepare(values: dict[str, Any]) -> dict[str, Any]:
             steps.append(
                 {
                     "name": "build_fbx_app",
+                    **_run_command(
+                        [npm, "run", "build"],
+                        cwd=app_dir,
+                        timeout_seconds=timeout,
+                    ),
+                }
+            )
+
+    if build_vrm_app:
+        app_dir = _vrm_app_dir(repo)
+        if not (app_dir / "package.json").is_file():
+            steps.append(
+                {
+                    "name": "build_vrm_app",
+                    "ok": False,
+                    "error": f"VRoid/VRM app package.json was not found: {app_dir}",
+                }
+            )
+        else:
+            steps.append(
+                {
+                    "name": "build_vrm_app",
                     **_run_command(
                         [npm, "run", "build"],
                         cwd=app_dir,
@@ -1393,14 +1623,16 @@ def handle_prepare(args: dict[str, Any] | None = None) -> str:
     return _json(prepare(args or {}))
 
 
-def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
+def start_avatar_app(values: dict[str, Any]) -> dict[str, Any]:
     repo, error = _resolve_required_repo(values.get("repo_root"))
     if error:
         return error
     assert repo is not None
-    app_dir = _fbx_app_dir(repo)
+    avatar_kind = _coerce_avatar_kind(values.get("avatar_kind"))
+    app_dir = _avatar_app_dir(repo, avatar_kind)
+    display_name = _avatar_display_name(avatar_kind)
     if not (app_dir / "package.json").is_file():
-        return {"ok": False, "error": f"FBX app package.json was not found: {app_dir}"}
+        return {"ok": False, "error": f"{display_name} app package.json was not found: {app_dir}"}
     npm = _npm_exe()
     if not npm:
         return {"ok": False, "error": "npm was not found on PATH."}
@@ -1413,21 +1645,27 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
             "pid": existing.get("pid"),
             "url": existing.get("url"),
             "log_path": existing.get("log_path"),
+            "avatar_kind": existing.get("avatar_kind") or "unknown",
         }
     if existing.get("alive") and values.get("force"):
         stop_fbx_app({"force": True})
 
-    port = _plugin_fbx_port(values.get("fbx_port"))
+    explicit_port = values.get("vrm_port") if avatar_kind == "vrm" else values.get("fbx_port")
+    port = _plugin_avatar_port(avatar_kind, explicit_port)
     url = f"http://127.0.0.1:{port}/"
-    log_path = _log_file("fbx-vite.log")
+    log_path = _log_file(f"{avatar_kind}-vite.log")
     cmd = [npm, "run", "dev", "--", "--host", "127.0.0.1", "--port", str(port)]
-    env = os.environ.copy()
-    env["AITUBER_ONAIR_HERMES_PLUGIN"] = "1"
-    env["AITUBER_ONAIR_CHARACTER_NAME"] = _plugin_character_name()
-    env["AITUBER_ONAIR_CODEX_AUTH_SOURCE"] = "local-codex-cli"
-    env["AITUBER_ONAIR_TTS_PROVIDER"] = _select_tts_provider()
-    env["VOICEVOX_URL"] = _plugin_voicevox_url()
-    env["VOICEVOX_SPEAKER"] = str(_plugin_voicevox_speaker())
+    env = _child_process_env(
+        {
+            "AITUBER_ONAIR_HERMES_PLUGIN": "1",
+            "AITUBER_ONAIR_AVATAR_KIND": avatar_kind,
+            "AITUBER_ONAIR_CHARACTER_NAME": _plugin_character_name(),
+            "AITUBER_ONAIR_CODEX_AUTH_SOURCE": "local-codex-cli",
+            "AITUBER_ONAIR_TTS_PROVIDER": _select_tts_provider(),
+            "VOICEVOX_URL": _plugin_voicevox_url(),
+            "VOICEVOX_SPEAKER": str(_plugin_voicevox_speaker()),
+        }
+    )
 
     log_fh = open(log_path, "ab", buffering=0)
     kwargs: dict[str, Any] = {
@@ -1456,6 +1694,8 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
         "pid": proc.pid,
         "repo_root": str(repo),
         "app_dir": str(app_dir),
+        "avatar_kind": avatar_kind,
+        "avatar_display_name": display_name,
         "url": url,
         "port": port,
         "started_at": time.time(),
@@ -1474,8 +1714,12 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "ready": ready, **record}
 
 
+def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
+    return start_avatar_app({**values, "avatar_kind": "fbx"})
+
+
 def handle_start(args: dict[str, Any] | None = None) -> str:
-    return _json(start_fbx_app(args or {}))
+    return _json(start_avatar_app(args or {}))
 
 
 def stop_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
@@ -1599,21 +1843,25 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
     ]
     if model:
         cmd.append(f"--model={model}")
-    env = os.environ.copy()
-    env["CODEX_CHARACTER_NAME"] = character_name
-    env["CODEX_CHARACTER_SYSTEM_PROMPT"] = _plugin_system_prompt()
-    env["CODEX_WORKING_DIRECTORY"] = _plugin_working_directory(repo)
-    env["CODEX_SKIP_GIT_REPO_CHECK"] = "true"
-    env["CODEX_RESPONSE_LENGTH"] = response_length
-    if model:
-        env["CODEX_SDK_MODEL"] = model
+    env = _child_process_env(
+        {
+            "CODEX_CHARACTER_NAME": character_name,
+            "CODEX_CHARACTER_SYSTEM_PROMPT": _plugin_system_prompt(),
+            "CODEX_WORKING_DIRECTORY": _plugin_working_directory(repo),
+            "CODEX_SKIP_GIT_REPO_CHECK": "true",
+            "CODEX_RESPONSE_LENGTH": response_length,
+            "CODEX_SDK_MODEL": model if model else None,
+        }
+    )
 
     result = _run_command(cmd, cwd=repo, env=env, timeout_seconds=timeout)
     stdout = str(result.get("stdout") or "")
     stderr = str(result.get("stderr") or "")
     reply = _extract_character_reply(stdout, character_name)
+    provider_failed = "codex-sdk provider failed" in stderr.lower() or "original error:" in stderr.lower()
+    ok = result.get("ok") is True and bool(reply) and not provider_failed
     payload = {
-        "ok": result.get("ok") is True,
+        "ok": ok,
         "character_name": character_name,
         "provider": "codex-sdk",
         "model": model or "Codex CLI default",
@@ -1624,6 +1872,13 @@ def run_hakua_once(values: dict[str, Any]) -> dict[str, Any]:
         "command": result.get("command"),
         "cwd": result.get("cwd"),
     }
+    if not ok:
+        if provider_failed:
+            payload["error"] = "Codex SDK provider failed."
+        elif not reply:
+            payload["error"] = "Codex character chat returned no reply."
+        else:
+            payload["error"] = "Codex character chat command failed."
     if values.get("speak") and reply:
         payload["tts"] = synthesize_speech(
             {
@@ -1656,7 +1911,7 @@ HELP = """aituber commands:
   /aituber status
   /aituber configure
   /aituber prepare
-  /aituber start [--force]
+  /aituber start [fbx|vrm|vroid] [--force]
   /aituber stop [--force]
   /aituber tts-status
   /aituber start-tts
@@ -1682,7 +1937,11 @@ def handle_slash(raw_args: str) -> str:
     if command == "prepare":
         return handle_prepare({})
     if command == "start":
-        return handle_start({"force": "--force" in argv})
+        avatar_kind = next(
+            (arg for arg in argv[1:] if arg.lower() in {"fbx", "vrm", "vroid"}),
+            "",
+        )
+        return handle_start({"avatar_kind": avatar_kind, "force": "--force" in argv})
     if command == "stop":
         return handle_stop({"force": "--force" in argv})
     if command in {"tts-status", "tts"}:

@@ -34,6 +34,9 @@ def _fake_repo(tmp_path: Path) -> Path:
     (repo / "packages" / "core" / "examples" / "react-fbx-app").mkdir(
         parents=True
     )
+    (repo / "packages" / "core" / "examples" / "react-vrm-app").mkdir(
+        parents=True
+    )
     (repo / "package.json").write_text('{"name":"aituber-onair"}', encoding="utf-8")
     (repo / "packages" / "chat" / "examples" / "codex-character-chat" / "index.js").write_text(
         "console.log('ok')\n", encoding="utf-8"
@@ -43,6 +46,9 @@ def _fake_repo(tmp_path: Path) -> Path:
     )
     (repo / "packages" / "core" / "examples" / "react-fbx-app" / "package.json").write_text(
         '{"name":"react-fbx-app"}', encoding="utf-8"
+    )
+    (repo / "packages" / "core" / "examples" / "react-vrm-app" / "package.json").write_text(
+        '{"name":"react-vrm-app"}', encoding="utf-8"
     )
     return repo
 
@@ -65,6 +71,21 @@ def test_resolve_repo_root_accepts_aituber_checkout(tmp_path):
     repo = _fake_repo(tmp_path)
 
     assert core.resolve_repo_root(str(repo)) == repo
+
+
+def test_child_process_env_omits_provider_secrets(monkeypatch):
+    monkeypatch.setenv("PATH", "C:/tools")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-openai-key")
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-github-token")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "dummy-aws-secret")
+
+    env = core._child_process_env({"AITUBER_ONAIR_HERMES_PLUGIN": "1"})
+
+    assert env["PATH"] == "C:/tools"
+    assert env["AITUBER_ONAIR_HERMES_PLUGIN"] == "1"
+    assert "OPENAI_API_KEY" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
 
 
 def test_tts_status_prefers_installed_irodori(monkeypatch):
@@ -256,6 +277,39 @@ def test_run_hakua_once_can_synthesize_reply(monkeypatch, tmp_path):
     assert result["tts"]["text"] == "[happy] hello"
 
 
+def test_run_hakua_once_rejects_empty_provider_failure(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+
+    monkeypatch.setattr(core, "_node_exe", lambda: "node")
+    monkeypatch.setattr(
+        core,
+        "_codex_sdk_installed",
+        lambda _repo: {"ok": True, "installed": True},
+    )
+    monkeypatch.setattr(core, "_codex_cli_auth_status", lambda: {"has_access_token": True})
+    monkeypatch.setattr(core, "_plugin_character_name", lambda: "Hakua")
+    monkeypatch.setattr(core, "_plugin_system_prompt", lambda: "Hakua prompt")
+    monkeypatch.setattr(core, "_plugin_working_directory", lambda _repo: str(repo))
+    monkeypatch.setattr(
+        core,
+        "_run_command",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "exit_code": 0,
+            "command": args[0],
+            "cwd": str(kwargs["cwd"]),
+            "stdout": "=== Codex Character Chat ===\nHakua> \n",
+            "stderr": "[error] codex-sdk provider failed.\n\nOriginal error:\nUnable to locate Codex CLI binaries.",
+        },
+    )
+
+    result = core.run_hakua_once({"repo_root": str(repo), "prompt": "say hello"})
+
+    assert result["ok"] is False
+    assert result["reply"] == ""
+    assert result["error"] == "Codex SDK provider failed."
+
+
 def test_handle_smoke_uses_hakua_prompt(monkeypatch):
     seen = {}
 
@@ -298,7 +352,10 @@ def test_prepare_runs_install_then_chat_build(monkeypatch, tmp_path):
     result = core.prepare({"repo_root": str(repo), "timeout_seconds": 10})
 
     assert result["ok"] is True
-    assert commands[0][:3] == ["npm", "install", "--no-save"]
+    assert commands[0][:2] == ["npm", "install"]
+    assert "--include=optional" in commands[0]
+    assert "@openai/codex-sdk" in commands[0]
+    assert "@openai/codex" in commands[0]
     assert commands[1] == ["npm", "-w", "@aituber-onair/chat", "run", "build"]
 
 
@@ -352,6 +409,8 @@ def test_start_uses_detached_vite_command(monkeypatch, tmp_path):
     repo = _fake_repo(tmp_path)
     popen_calls = []
 
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-openai-key")
+    monkeypatch.setenv("GITHUB_TOKEN", "dummy-github-token")
     monkeypatch.setattr(core, "_npm_exe", lambda: "npm")
     monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
     monkeypatch.setattr(core, "_url_ready", lambda *_args, **_kwargs: True)
@@ -376,3 +435,54 @@ def test_start_uses_detached_vite_command(monkeypatch, tmp_path):
     cmd, kwargs = popen_calls[0]
     assert cmd == ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5188"]
     assert kwargs["cwd"].endswith("react-fbx-app")
+    assert "OPENAI_API_KEY" not in kwargs["env"]
+    assert "GITHUB_TOKEN" not in kwargs["env"]
+
+
+def test_start_vroid_uses_vrm_app_and_default_port(monkeypatch, tmp_path):
+    repo = _fake_repo(tmp_path)
+    popen_calls = []
+
+    monkeypatch.setattr(core, "_npm_exe", lambda: "npm")
+    monkeypatch.setattr(core, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(core, "_url_ready", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(core, "_workspace_root", lambda: tmp_path / "workspace")
+
+    class FakeProc:
+        pid = 23456
+
+        def poll(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    result = core.start_avatar_app({"repo_root": str(repo), "avatar_kind": "vroid"})
+
+    assert result["ok"] is True
+    assert result["ready"] is True
+    assert result["avatar_kind"] == "vrm"
+    assert result["url"] == "http://127.0.0.1:5175/"
+    cmd, kwargs = popen_calls[0]
+    assert cmd == ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5175"]
+    assert kwargs["cwd"].endswith("react-vrm-app")
+    assert kwargs["env"]["AITUBER_ONAIR_AVATAR_KIND"] == "vrm"
+
+
+def test_run_command_uses_sanitized_default_env(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy-openai-key")
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = core._run_command(["npm", "--version"], cwd=tmp_path, timeout_seconds=5)
+
+    assert result["ok"] is True
+    assert "OPENAI_API_KEY" not in captured["env"]

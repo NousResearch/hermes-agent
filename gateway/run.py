@@ -28,6 +28,7 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import inspect
+import hashlib
 import json
 import logging
 import os
@@ -16015,7 +16016,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None, int | None, str | None], dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
@@ -16023,16 +16024,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @classmethod
     def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
+        """Extract Honcho identity keys, memoized by honcho.json file identity."""
         try:
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
 
             path = resolve_config_path()
             try:
-                mtime_ns = path.stat().st_mtime_ns
+                stat_result = path.stat()
+                mtime_ns = stat_result.st_mtime_ns
+                size = stat_result.st_size
+                content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
             except OSError:
                 mtime_ns = None
-            memo_key = (str(path), mtime_ns)
+                size = None
+                content_hash = None
+            # Some filesystems available in lightweight/migrated deployments
+            # report coarse mtimes for rapid rewrites. Include a content hash so
+            # equal-size honcho.json edits still bust the memo when st_mtime_ns
+            # is unchanged within the same filesystem tick.
+            memo_key = (str(path), mtime_ns, size, content_hash)
             cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
             if cached is not None:
                 return dict(cached)

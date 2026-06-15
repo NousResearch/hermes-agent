@@ -10,6 +10,8 @@ Verifies that the agent cache correctly:
 """
 
 import threading
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -385,6 +387,61 @@ class TestExtractCacheBustingConfig:
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first
+        assert parse_calls == [config_path, config_path]
+
+    def test_honcho_cache_busting_config_refreshes_on_equal_size_same_mtime_rewrite(self, monkeypatch, tmp_path):
+        """Equal-size rewrites under coarse mtimes must still refresh the Honcho parse."""
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text('{"peer_name":"alice"}')
+        parse_calls = []
+
+        class FakeConfig:
+            ai_peer = "hermes"
+            pin_peer_name = False
+            runtime_peer_prefix = "tg_"
+            user_peer_aliases = {"123": "eri"}
+
+            @classmethod
+            def from_global_config(cls, config_path=None):
+                parse_calls.append(config_path)
+                data = json.loads(config_path.read_text(encoding="utf-8"))
+                return type(
+                    "Cfg",
+                    (),
+                    {
+                        "peer_name": data["peer_name"],
+                        "ai_peer": cls.ai_peer,
+                        "pin_peer_name": cls.pin_peer_name,
+                        "runtime_peer_prefix": cls.runtime_peer_prefix,
+                        "user_peer_aliases": cls.user_peer_aliases,
+                    },
+                )()
+
+        fake_client = SimpleNamespace(
+            HonchoClientConfig=FakeConfig,
+            resolve_config_path=lambda: config_path,
+        )
+        monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        original_stat = config_path.stat()
+        fixed_ns = original_stat.st_mtime_ns
+        original_size = original_stat.st_size
+
+        first = GatewayRunner._extract_honcho_cache_busting_config()
+        assert first["honcho.peer_name"] == "alice"
+
+        rewritten = '{"peer_name":"bruce"}'
+        assert len(rewritten.encode("utf-8")) == original_size
+        config_path.write_text(rewritten, encoding="utf-8")
+        os.utime(config_path, ns=(fixed_ns, fixed_ns))
+
+        second = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert second["honcho.peer_name"] == "bruce"
         assert parse_calls == [config_path, config_path]
 
     def test_full_round_trip_busts_cache_on_real_edit(self):

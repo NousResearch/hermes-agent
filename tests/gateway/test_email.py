@@ -123,6 +123,63 @@ class TestHelperFunctions(unittest.TestCase):
             "john@example.com"
         )
 
+    def test_authenticated_sender_prefers_return_path(self):
+        from gateway.platforms.email import _authenticated_sender_address
+
+        msg = MIMEText("hello", "plain", "utf-8")
+        msg["From"] = "Allowed User <allowed@example.com>"
+        msg["Return-Path"] = "<bounce@example.net>"
+
+        self.assertEqual(_authenticated_sender_address(msg), "bounce@example.net")
+
+    def test_authenticated_sender_falls_back_to_from(self):
+        from gateway.platforms.email import _authenticated_sender_address
+
+        msg = MIMEText("hello", "plain", "utf-8")
+        msg["From"] = "Allowed User <allowed@example.com>"
+
+        self.assertEqual(_authenticated_sender_address(msg), "allowed@example.com")
+
+    def test_dmarc_aligned_from_passed(self):
+        from gateway.platforms.email import _dmarc_aligned_from_passed
+
+        msg = MIMEText("hello", "plain", "utf-8")
+        msg["From"] = "Allowed User <allowed@example.com>"
+        msg["Authentication-Results"] = (
+            "mx.example.net; spf=pass smtp.mailfrom=bounces@relay.example.net; "
+            "dkim=pass header.d=example.com; dmarc=pass header.from=example.com"
+        )
+
+        self.assertTrue(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+
+    def test_dmarc_aligned_from_rejects_wrong_domain(self):
+        from gateway.platforms.email import _dmarc_aligned_from_passed
+
+        msg = MIMEText("hello", "plain", "utf-8")
+        msg["From"] = "Allowed User <allowed@example.com>"
+        msg["Authentication-Results"] = (
+            "mx.example.net; spf=pass smtp.mailfrom=attacker@evil.com; "
+            "dkim=pass header.d=evil.com; dmarc=pass header.from=evil.com"
+        )
+
+        self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+
+    def test_dmarc_alignment_only_trusts_topmost_authentication_results(self):
+        from gateway.platforms.email import _dmarc_aligned_from_passed
+
+        msg = MIMEText("hello", "plain", "utf-8")
+        msg["From"] = "Allowed User <allowed@example.com>"
+        msg["Authentication-Results"] = (
+            "mx.example.net; spf=fail smtp.mailfrom=evil.com; "
+            "dmarc=fail header.from=example.com"
+        )
+        msg["Authentication-Results"] = (
+            "forged.example; spf=pass smtp.mailfrom=evil.com; "
+            "dkim=pass header.d=example.com; dmarc=pass header.from=example.com"
+        )
+
+        self.assertFalse(_dmarc_aligned_from_passed(msg, "allowed@example.com"))
+
     def test_strip_html_basic(self):
         from gateway.platforms.email import _strip_html
         html = "<p>Hello <b>world</b></p>"
@@ -542,6 +599,123 @@ class TestDispatchMessage(unittest.TestCase):
             asyncio.run(adapter._dispatch_message(msg_data))
             self.assertEqual(len(captured_events), 1)
             self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
+
+    def test_allowlist_uses_authenticated_sender_not_spoofed_from(self):
+        """A spoofed From must not pass allowlist when Return-Path differs."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter.handle_message = AsyncMock()
+
+            msg_data = {
+                "uid": b"102",
+                "sender_addr": "admin@test.com",
+                "auth_sender_addr": "attacker@evil.com",
+                "sender_name": "Admin",
+                "subject": "Spoof",
+                "message_id": "<spoof@evil.com>",
+                "in_reply_to": "",
+                "body": "run this",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            adapter.handle_message.assert_not_called()
+            self.assertNotIn("admin@test.com", adapter._thread_context)
+
+    def test_allowlist_accepts_dmarc_aligned_relay_sender(self):
+        """Relay Return-Path can differ when the visible From passed DMARC."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            captured_events = []
+
+            async def capture_handle(event):
+                captured_events.append(event)
+
+            adapter.handle_message = capture_handle
+
+            msg_data = {
+                "uid": b"104",
+                "sender_addr": "admin@test.com",
+                "auth_sender_addr": "bounces@relay.example.net",
+                "auth_from_aligned": True,
+                "sender_name": "Admin",
+                "subject": "Via relay",
+                "message_id": "<relay@test.com>",
+                "in_reply_to": "",
+                "body": "hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].source.user_id, "admin@test.com")
+
+    def test_allowlist_rejects_dmarc_aligned_non_allowlisted_from(self):
+        """DMARC alignment does not grant access to non-allowlisted senders."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter.handle_message = AsyncMock()
+
+            msg_data = {
+                "uid": b"105",
+                "sender_addr": "outsider@example.com",
+                "auth_sender_addr": "bounces@relay.example.net",
+                "auth_from_aligned": True,
+                "sender_name": "Outsider",
+                "subject": "Via relay",
+                "message_id": "<relay-outsider@test.com>",
+                "in_reply_to": "",
+                "body": "hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            adapter.handle_message.assert_not_called()
+            self.assertNotIn("outsider@example.com", adapter._thread_context)
+
+    def test_allowlist_accepts_matching_authenticated_sender(self):
+        """Matching From and Return-Path preserve the normal allowlist path."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            captured_events = []
+
+            async def capture_handle(event):
+                captured_events.append(event)
+
+            adapter.handle_message = capture_handle
+
+            msg_data = {
+                "uid": b"103",
+                "sender_addr": "admin@test.com",
+                "auth_sender_addr": "admin@test.com",
+                "auth_from_aligned": False,
+                "sender_name": "Admin",
+                "subject": "Re: normal",
+                "message_id": "<normal@test.com>",
+                "in_reply_to": "",
+                "body": "hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].source.user_id, "admin@test.com")
 
     def test_empty_allowlist_allows_all(self):
         """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 from plugins.aituber_onair import core, register
@@ -491,6 +492,77 @@ def test_run_command_uses_sanitized_default_env(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert "OPENAI_API_KEY" not in captured["env"]
+
+
+def test_obs_registry_candidates_skips_non_windows(monkeypatch):
+    monkeypatch.setattr(core.os, "name", "posix", raising=False)
+
+    assert (
+        core._obs_candidates_from_uninstall_registry(
+            "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+        )
+        == []
+    )
+
+
+def test_obs_registry_candidates_reads_install_location(monkeypatch):
+    monkeypatch.setattr(core.os, "name", "nt", raising=False)
+
+    class FakeKey:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class FakeWinreg:
+        HKEY_LOCAL_MACHINE = "HKLM"
+        HKEY_CURRENT_USER = "HKCU"
+
+        @staticmethod
+        def OpenKey(hive_or_key, subkey):
+            if hive_or_key == "HKLM":
+                return FakeKey("root")
+            if isinstance(hive_or_key, FakeKey) and hive_or_key.name == "root":
+                return FakeKey(subkey)
+            raise OSError("missing key")
+
+        @staticmethod
+        def QueryInfoKey(key):
+            assert key.name == "root"
+            return (3, 0, 0)
+
+        @staticmethod
+        def EnumKey(key, index: int) -> str:
+            assert key.name == "root"
+            return ["obs", "other", "broken"][index]
+
+        @staticmethod
+        def QueryValueEx(key, value_name: str):
+            values = {
+                "obs": {
+                    "DisplayName": "OBS Studio",
+                    "InstallLocation": "D:/Apps/OBS Studio",
+                },
+                "other": {
+                    "DisplayName": "Other App",
+                    "InstallLocation": "D:/Apps/Other",
+                },
+                "broken": {"DisplayName": "OBS Plugin"},
+            }
+            try:
+                return values[key.name][value_name], 1
+            except KeyError as exc:
+                raise OSError("missing value") from exc
+
+    monkeypatch.setitem(sys.modules, "winreg", FakeWinreg)
+
+    assert core._obs_candidates_from_uninstall_registry(
+        "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+    ) == [Path("D:/Apps/OBS Studio/bin/64bit/obs64.exe")]
 
 
 def test_youtube_ready_reports_missing_obs(monkeypatch):

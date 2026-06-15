@@ -1371,6 +1371,13 @@ def _obs_exe_candidates() -> list[Path]:
         if found:
             candidates.append(Path(found))
 
+    for root in (
+        "HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+        "HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+        "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    ):
+        candidates.extend(_obs_candidates_from_uninstall_registry(root))
+
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
         candidates.append(
@@ -1398,6 +1405,50 @@ def _obs_exe_candidates() -> list[Path]:
         if path.is_file():
             found_candidates.append(path)
     return found_candidates
+
+
+def _obs_candidates_from_uninstall_registry(root: str) -> list[Path]:
+    if os.name != "nt":
+        return []
+    try:
+        import winreg
+    except Exception:
+        return []
+
+    hive_name, _, subkey = root.partition(":\\")
+    hive = {
+        "HKLM": winreg.HKEY_LOCAL_MACHINE,
+        "HKCU": winreg.HKEY_CURRENT_USER,
+    }.get(hive_name)
+    if hive is None or not subkey:
+        return []
+
+    candidates: list[Path] = []
+    try:
+        with winreg.OpenKey(hive, subkey) as key:
+            count = winreg.QueryInfoKey(key)[0]
+            for index in range(count):
+                try:
+                    child_name = winreg.EnumKey(key, index)
+                    with winreg.OpenKey(key, child_name) as child:
+                        display_name, _ = winreg.QueryValueEx(child, "DisplayName")
+                        if "OBS" not in str(display_name).upper():
+                            continue
+                        install_location, _ = winreg.QueryValueEx(
+                            child, "InstallLocation"
+                        )
+                        if install_location:
+                            candidates.append(
+                                Path(str(install_location))
+                                / "bin"
+                                / "64bit"
+                                / "obs64.exe"
+                            )
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return candidates
 
 
 def _obs_status() -> dict[str, Any]:

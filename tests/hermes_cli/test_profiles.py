@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.profiles import (
     normalize_profile_name,
@@ -35,6 +36,7 @@ from hermes_cli.profiles import (
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
 )
+from hermes_cli.config import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -206,9 +208,25 @@ class TestCreateProfile:
 
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
 
-        assert (profile_dir / "config.yaml").read_text() == "model: test"
-        assert (profile_dir / ".env").read_text() == "KEY=val"
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"] == "test"
+        assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_migrates_legacy_config_version(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n",
+            encoding="utf-8",
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"]["provider"] == "openrouter"
 
     def test_clone_config_copies_source_skills(self, profile_env):
         tmp_path = profile_env
@@ -1453,8 +1471,10 @@ class TestEdgeCases:
         target_dir = create_profile(
             "target", clone_from="source", clone_config=True, no_alias=True,
         )
-        assert (target_dir / "config.yaml").read_text() == "model: cloned"
-        assert (target_dir / ".env").read_text() == "SECRET=yes"
+        cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text())
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"] == "cloned"
+        assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
 
     def test_delete_clears_active_profile(self, profile_env):
         """Deleting the active profile resets active to default."""

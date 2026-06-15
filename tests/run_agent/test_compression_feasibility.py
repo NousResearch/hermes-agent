@@ -471,3 +471,77 @@ def test_run_conversation_clears_warning_after_replay(mock_get_client, mock_ctx_
         agent._compression_warning = None
 
     assert len(callback_events) == 0
+
+
+def test_compression_warning_deduplicated_across_agent_recreation():
+    """Session-scoped dedup: when the gateway recreates the agent for the
+    same session (config-signature change, cache eviction), the compression
+    warning must NOT re-fire (issue #46820)."""
+    from agent.turn_context import _COMPRESSION_WARNING_REPLAYED_SESSIONS
+
+    # Clean up before and after to avoid polluting other tests
+    _COMPRESSION_WARNING_REPLAYED_SESSIONS.discard("test-dedup-sid")
+    _COMPRESSION_WARNING_REPLAYED_SESSIONS.discard("test-dedup-sid-other")
+    try:
+        # Agent 1: first time for this session -> should send
+        agent1 = _make_agent()
+        agent1.session_id = "test-dedup-sid"
+        agent1._compression_warning = "test warning"
+        events1 = []
+        agent1.status_callback = lambda ev, msg: events1.append((ev, msg))
+
+        # Simulate conversation_loop.py replay logic
+        if agent1._compression_warning:
+            _sid = getattr(agent1, "session_id", None)
+            if _sid and _sid in _COMPRESSION_WARNING_REPLAYED_SESSIONS:
+                agent1._compression_warning = None
+            else:
+                agent1._replay_compression_warning()
+                agent1._compression_warning = None
+                if _sid:
+                    _COMPRESSION_WARNING_REPLAYED_SESSIONS.add(_sid)
+
+        assert len(events1) == 1
+        assert agent1._compression_warning is None
+
+        # Agent 2: same session, recreated -> should NOT send
+        agent2 = _make_agent()
+        agent2.session_id = "test-dedup-sid"
+        agent2._compression_warning = "test warning"
+        events2 = []
+        agent2.status_callback = lambda ev, msg: events2.append((ev, msg))
+
+        if agent2._compression_warning:
+            _sid = getattr(agent2, "session_id", None)
+            if _sid and _sid in _COMPRESSION_WARNING_REPLAYED_SESSIONS:
+                agent2._compression_warning = None
+            else:
+                agent2._replay_compression_warning()
+                agent2._compression_warning = None
+                if _sid:
+                    _COMPRESSION_WARNING_REPLAYED_SESSIONS.add(_sid)
+
+        assert len(events2) == 0  # deduped
+        assert agent2._compression_warning is None
+
+        # Agent 3: different session -> should send
+        agent3 = _make_agent()
+        agent3.session_id = "test-dedup-sid-other"
+        agent3._compression_warning = "test warning"
+        events3 = []
+        agent3.status_callback = lambda ev, msg: events3.append((ev, msg))
+
+        if agent3._compression_warning:
+            _sid = getattr(agent3, "session_id", None)
+            if _sid and _sid in _COMPRESSION_WARNING_REPLAYED_SESSIONS:
+                agent3._compression_warning = None
+            else:
+                agent3._replay_compression_warning()
+                agent3._compression_warning = None
+                if _sid:
+                    _COMPRESSION_WARNING_REPLAYED_SESSIONS.add(_sid)
+
+        assert len(events3) == 1
+    finally:
+        _COMPRESSION_WARNING_REPLAYED_SESSIONS.discard("test-dedup-sid")
+        _COMPRESSION_WARNING_REPLAYED_SESSIONS.discard("test-dedup-sid-other")

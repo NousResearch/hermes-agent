@@ -33,6 +33,13 @@ from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
+# Session-scoped dedup for compression warnings.  In the gateway the agent
+# is recreated on config-signature changes or cache eviction, so per-agent
+# "send once" semantics silently re-fire.  Tracking session_id here ensures
+# each session receives the warning at most once.
+_COMPRESSION_WARNING_REPLAYED_SESSIONS: set[str] = set()
+
+
 
 @dataclass
 class TurnContext:
@@ -156,9 +163,18 @@ def build_turn_context(
         except Exception:
             pass
     # Replay compression warning through status_callback for gateway platforms.
+    # Session-scoped dedup: in the gateway, agent instances are recreated
+    # on config-signature changes; without session-level tracking the
+    # warning re-fires on every message (issue #46820).
     if agent._compression_warning:
-        agent._replay_compression_warning()
-        agent._compression_warning = None  # send once
+        _sid = getattr(agent, "session_id", None)
+        if _sid and _sid in _COMPRESSION_WARNING_REPLAYED_SESSIONS:
+            agent._compression_warning = None  # already sent this session
+        else:
+            agent._replay_compression_warning()
+            agent._compression_warning = None
+            if _sid:
+                _COMPRESSION_WARNING_REPLAYED_SESSIONS.add(_sid)
 
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     agent.iteration_budget = IterationBudget(agent.max_iterations)

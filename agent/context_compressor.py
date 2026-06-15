@@ -818,10 +818,27 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        Also includes a cooldown: skip compression if one just completed
+        within the last 30 seconds to prevent double-fire (first summary
+        injected, context still above threshold, second summary created).
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # Cooldown: don't re-compress within 30s of the last compression
+        # completing. Prevents the "two summaries back-to-back" bug where
+        # the first summary's injection is still above threshold.
+        import time
+        if hasattr(self, '_last_compression_finished_at'):
+            elapsed = time.monotonic() - self._last_compression_finished_at
+            if elapsed < 30:
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression skipped — last compression was %.1fs ago (cooldown: 30s)",
+                        elapsed,
+                    )
+                return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -2406,8 +2423,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         saved_estimate = display_tokens - new_estimate
 
         # Anti-thrashing: track compression effectiveness
+        import time
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
+        self._last_compression_finished_at = time.monotonic()
         if savings_pct < 10:
             self._ineffective_compression_count += 1
         else:

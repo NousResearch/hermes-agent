@@ -375,7 +375,9 @@ Then call `sendRichMessage` with the final rich message. Do not rely on the draf
 
 ## Hermes-Specific Guidance
 
-Current Hermes Telegram gateway responses may still flow through classic Telegram formatting and the platform's Markdown conversion. In those paths:
+Current Hermes Telegram gateway responses use rich delivery automatically when it materially improves the message: native tables, task lists, headings, collapsible details, math, footnotes/references, rich HTML blocks, or long replies that would otherwise split at Telegram's 4,096-character text limit. Short/plain replies still use the classic Telegram formatting path because it is simpler and renders well for bold, italic, links, inline code, spoilers, and similar lightweight formatting. If Telegram rejects a rich payload or the endpoint is unavailable, Hermes falls back to classic MarkdownV2 without losing the message.
+
+In classic fallback paths:
 
 - Standard Telegram output supports common markdown such as `**bold**`, `*italic*`, `~~strike~~`, `||spoiler||`, inline code, fenced code, headings, links, and media attachments.
 - Telegram has no classic Markdown table rendering; Hermes may rewrite pipe tables into readable row groups.

@@ -900,9 +900,11 @@ gateway:
 
 ## Rendering: Rich Messages, Tables and Link Previews
 
-**Rich Messages (Bot API 10.1).** Final replies are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so tables, task lists, headings, nested blockquotes, collapsible `<details>`, footnotes/references, math/formulas, underline, sub/superscript, marked text, and anchors render natively — no client-side flattening. In DMs the live streaming preview also uses `sendRichMessageDraft`, so the animated draft matches the final rich message.
+**Rich Messages (Bot API 10.1).** When a final reply benefits from Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage), Hermes sends the agent's **raw markdown** through the rich path so tables, task lists, headings, collapsible `<details>`, footnotes/references, math/formulas, underline, sub/superscript, marked text, anchors, and rich HTML blocks render natively — no client-side flattening. Short/plain replies that only use legacy-safe formatting (bold, italic, inline code, normal links) stay on the simpler MarkdownV2 path.
 
-The rich path is skipped automatically when content exceeds the 32,768-byte rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
+Hermes also uses rich messages for long replies that fit Telegram's 32,768-character rich-message cap but would otherwise be split at the normal 4,096-character text limit. In DMs, matching streaming previews use `sendRichMessageDraft` when the current draft contains rich-worthy content; otherwise they use the legacy draft/edit path.
+
+The rich path is skipped automatically when content exceeds the 32,768-character rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
 
 **MarkdownV2 fallback.** When the rich path is unavailable for a message, Hermes converts markdown to MarkdownV2. Since MarkdownV2 has no native table syntax, pipe tables are normalized:
 

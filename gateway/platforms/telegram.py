@@ -419,8 +419,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
-        # with the raw agent markdown so tables/task lists/etc. render natively.
+        # Bot API 10.1 Rich Messages: when a final reply contains rich-only
+        # structure (tables, task lists, details, math, etc.) or would otherwise
+        # be split at Telegram's 4096-char text limit, send it via
+        # sendRichMessage with the raw agent markdown so it renders natively.
         # Enabled by default; users can opt out for clients that accept but do
         # not render rich messages via platforms.telegram.extra.rich_messages.
         self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", True)
@@ -923,10 +925,11 @@ class TelegramAdapter(BasePlatformAdapter):
     # Bot API 10.1 Rich Messages (sendRichMessage)
     #
     # Final / new-message replies opportunistically use sendRichMessage with
-    # the RAW agent markdown so richer constructs (tables, task lists,
-    # collapsible details, math, ...) render natively. The legacy MarkdownV2
-    # send() path stays as the fallback for unsupported/oversized content and
-    # older PTB/clients. Streaming edits stay on Hermes' existing MarkdownV2
+    # the RAW agent markdown when rich delivery materially improves rendering:
+    # tables, task lists, collapsible details, math, footnotes, rich HTML blocks,
+    # or long replies that would otherwise be fragmented. The legacy MarkdownV2
+    # send() path stays as the fallback for short/plain content,
+    # unsupported/oversized content, and older PTB/clients. Streaming edits stay
     # edit path for now; finalization can re-send as rich and delete the stale
     # preview until rich_message edit support is wired directly.
     # ------------------------------------------------------------------
@@ -962,6 +965,40 @@ class TelegramAdapter(BasePlatformAdapter):
         r"int|prod|sqrt|lim|infty|begin\{(?:equation|align|matrix|cases)\}))",
         re.IGNORECASE | re.DOTALL,
     )
+    _RICH_MARKDOWN_HINTS: tuple[re.Pattern[str], ...] = tuple(
+        re.compile(pattern, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        for pattern in (
+            # Native rich blocks / inline features that legacy MarkdownV2 would
+            # flatten, escape, or fail to render semantically.
+            r"^\s*\|[^\n]+\|\s*\n\s*\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$",  # table header + separator
+            r"^\s*[-*+]\s+\[[ xX]\]\s+",  # task list checkbox
+            r"<details\b|</details>",
+            r"<summary\b|</summary>",
+            r"<tg-(?:collage|slideshow|map|math|math-block|reference|emoji|time)\b",
+            r"<(?:table|thead|tbody|tr|th|td|figure|figcaption|aside|footer|mark|sub|sup|u|ins)\b",
+            r"\$\$.*?\$\$|```math\b|^\s{0,3}\[\^.+?\]:",  # block math or footnote definition
+            r"(?<!\\)\[\^.+?\]",  # footnote reference
+            r"^\s{0,3}#{1,6}\s+\S",  # real heading, not just bold text
+            r"^\s{0,3}---\s*$",  # horizontal rule
+        )
+    )
+
+    def _content_benefits_from_rich(self, content: str) -> bool:
+        """Return True when rich delivery materially improves Telegram output.
+
+        ``rich_messages: true`` means "use rich messages by default when they
+        help," not "pay an extra raw Bot API path for every tiny chat reply."
+        Short plain Markdown (bold/italic/code/links) already renders well via
+        the legacy MarkdownV2 path. Rich is worthwhile for blocks MarkdownV2
+        cannot render natively (tables, task lists, details, math, footnotes,
+        HTML rich blocks) and for long replies that fit the 32k rich cap but
+        would otherwise be fragmented at Telegram's 4096-character text limit.
+        """
+        if not content or not content.strip():
+            return False
+        if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
+            return True
+        return any(pattern.search(content) for pattern in self._RICH_MARKDOWN_HINTS)
 
     def _has_telegram_desktop_details_math_crash_shape(self, content: str) -> bool:
         """Return True for rich-message details+math content that crashes TDesktop.
@@ -988,6 +1025,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
+            and self._content_benefits_from_rich(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
@@ -1221,6 +1259,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
+            and self._content_benefits_from_rich(content)
             and not self._has_telegram_desktop_details_math_crash_shape(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()

@@ -1,9 +1,11 @@
 """Tests for Bot API 10.1 Rich Messages (sendRichMessage) on Telegram.
 
 Final / new-message replies opportunistically use ``sendRichMessage`` with the
-RAW agent markdown so tables, task lists, etc. render natively. The legacy
-MarkdownV2 ``send_message`` path stays as the fallback for unsupported /
-oversized content and for transports that lack the endpoint.
+RAW agent markdown when rich delivery materially improves Telegram rendering
+(tables, task lists, collapsible details, math, footnotes, rich HTML blocks, or
+long replies that would otherwise fragment). The legacy MarkdownV2
+``send_message`` path stays as the fallback for short/plain content,
+unsupported / oversized content, and transports that lack the endpoint.
 
 The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 (:func:`_ensure_telegram_mock`), so these tests construct a real
@@ -193,6 +195,68 @@ async def test_rich_messages_default_is_enabled():
 
 
 @pytest.mark.asyncio
+async def test_plain_short_markdown_uses_legacy_send_even_when_enabled():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        "Quick **bold** reply with a [link](https://example.com) and `code`.",
+    )
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_long_plain_reply_uses_rich_to_avoid_legacy_fragmentation():
+    adapter = _make_adapter()
+    long_plain = "A" * (TelegramAdapter.MAX_MESSAGE_LENGTH + 1)
+
+    result = await adapter.send("12345", long_plain)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+    assert _rich_api_kwargs(adapter)["rich_message"]["markdown"] == long_plain
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "# Heading\n\nShort body",
+        "<details><summary>More</summary>Hidden</details>",
+        "A formula:\n\n$$E = mc^2$$",
+        "Footnote ref[^1]\n\n[^1]: source",
+        "<table><tr><td>Native table</td></tr></table>",
+        "<tg-collage>\n![](https://example.com/a.jpg)\n</tg-collage>",
+    ],
+)
+def test_content_benefits_from_rich_detects_rich_only_constructs(content):
+    adapter = _make_adapter()
+
+    assert adapter._content_benefits_from_rich(content) is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Short plain reply.",
+        "Short **bold** and _italic_ reply.",
+        "Inline `code` and [link](https://example.com).",
+    ],
+)
+def test_content_benefits_from_rich_rejects_short_legacy_safe_content(content):
+    adapter = _make_adapter()
+
+    assert adapter._content_benefits_from_rich(content) is False
+
+
+@pytest.mark.asyncio
 async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
     adapter = _make_adapter()
 
@@ -314,7 +378,7 @@ async def test_real_ptb_endpoint_missing_falls_back_and_latches_off(exc):
 async def test_rich_payload_preserves_link_preview_disable():
     adapter = _make_adapter(extra={"disable_link_previews": True})
 
-    result = await adapter.send("12345", "See https://example.com")
+    result = await adapter.send("12345", "## Link report\n\nSee https://example.com")
 
     assert result.success is True
     api_kwargs = _rich_api_kwargs(adapter)

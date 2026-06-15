@@ -709,3 +709,101 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+class TestNonBuiltinProviderAvailability:
+    """Regression: a plugin-registered WebSearchProvider with no built-in
+    provider credentials must still light up web_search / web_extract tools.
+
+    PR #28652 refactored tools/web_tools.py to use provider is_available()
+    checks instead of direct env-var checks.  This class verifies that a
+    custom (non-built-in) provider discovered via the registry is sufficient
+    to make check_web_api_key() return True, _get_backend() return the
+    custom name, and the tool registry entries remain active.
+    """
+
+    # All env vars that could make a built-in provider available.
+    _WEB_ENV_KEYS = (
+        "EXA_API_KEY",
+        "PARALLEL_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FIRECRAWL_API_URL",
+        "FIRECRAWL_GATEWAY_URL",
+        "TOOL_GATEWAY_DOMAIN",
+        "TOOL_GATEWAY_SCHEME",
+        "TOOL_GATEWAY_USER_TOKEN",
+        "TAVILY_API_KEY",
+        "SEARXNG_URL",
+        "BRAVE_SEARCH_API_KEY",
+        "XAI_API_KEY",
+    )
+
+    @staticmethod
+    def _create_fake_provider():
+        """Dynamically create a WebSearchProvider subclass.
+
+        Uses a local class definition (not a nested class) to avoid
+        Python 3.13 __bases__ deallocator issue with nested class
+        reassignment.
+        """
+        from agent.web_search_provider import WebSearchProvider
+
+        class FakePluginProvider(WebSearchProvider):
+            @property
+            def name(self):
+                return "fake-plugin-prov"
+
+            def is_available(self):
+                return True
+
+            def supports_search(self):
+                return True
+
+            def supports_extract(self):
+                return True
+
+        return FakePluginProvider()
+
+    def setup_method(self):
+        """Strip all built-in web provider env vars and reset the registry."""
+        for key in self._WEB_ENV_KEYS:
+            os.environ.pop(key, None)
+        from agent.web_search_registry import _reset_for_tests, register_provider
+        _reset_for_tests()
+        register_provider(self._create_fake_provider())
+
+    def teardown_method(self):
+        """Reset the registry and restore env after each test."""
+        from agent.web_search_registry import _reset_for_tests
+        _reset_for_tests()
+        for key in self._WEB_ENV_KEYS:
+            os.environ.pop(key, None)
+
+    def test_check_web_api_key_returns_true_for_custom_provider(self):
+        """With only a custom provider registered (no built-in creds),
+        check_web_api_key() must return True."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_get_backend_discovers_custom_provider(self):
+        """_get_backend() must return the custom provider name when it's
+        the only available provider."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            from tools.web_tools import _get_backend
+            assert _get_backend() == "fake-plugin-prov"
+
+    def test_tool_registry_entries_not_filtered_out(self):
+        """web_search and web_extract tool entries must remain in the
+        registry when only a custom provider is available."""
+        with patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("tools.web_tools._peek_nous_access_token", return_value=None):
+            import tools.web_tools
+            web_search_entry = tools.web_tools.registry.get_entry("web_search")
+            web_extract_entry = tools.web_tools.registry.get_entry("web_extract")
+            assert web_search_entry is not None, \
+                "web_search tool was filtered out despite custom provider being available"
+            assert web_extract_entry is not None, \
+                "web_extract tool was filtered out despite custom provider being available"

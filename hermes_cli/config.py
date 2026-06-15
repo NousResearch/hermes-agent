@@ -2996,6 +2996,14 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "IFLOW_API_KEY": {
+        "description": "iFlow Search API key for web search and page fetch",
+        "prompt": "iFlow Search API key",
+        "url": "https://platform.iflow.cn/docs/",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "FIRECRAWL_GATEWAY_URL": {
         "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",

@@ -421,9 +421,8 @@ class ClaudeCodeACPClient:
     # Declarative dispatch table: maps recognized CLI flags from acp_args
     # to their ACP session config actions. Each entry defines:
     #   flag: the CLI flag to match (e.g. "--model")
-    #   channel: "session_config" (via session/set_config_option) or "init"
+    #   channel: "session_config" (via session/set_config_option)
     #   config_id: the ACP configId for session_config channel entries
-    #   attr: the instance attribute to set for init channel entries
     #   takes_value: True if the flag consumes the next token as its value
     #   validate: optional method name (str) for value validation; None = trust caller
     #   repeatable: if False, only the first occurrence is honoured
@@ -1326,9 +1325,6 @@ class ClaudeCodeACPClient:
             if channel == "session_config":
                 config_id = directive["config_id"]
                 self._pending_session_configs[config_id] = value
-            elif channel == "init":
-                attr = directive["attr"]
-                setattr(self, attr, value)
 
             i += (2 if directive["takes_value"] else 1)
 

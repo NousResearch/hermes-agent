@@ -270,7 +270,13 @@ def _record(**over):
         comp_tool_arg_tokens=200, comp_tool_result_count=4,
         comp_skills_tokens=600, comp_framing_tokens=720,
         comp_skills_count=58,
-        comp_calls_json=json.dumps([{"fixed_tokens": 3000}]),
+        comp_calls_json=json.dumps([
+            {
+                "composition": {"fixed_tokens": 3000},
+                "output_tokens": 7,
+                "reasoning_tokens": 1,
+            }
+        ]),
     )
     base.update(over)
     return TurnRecord(**base)  # type: ignore[arg-type]
@@ -290,7 +296,13 @@ def test_comp_columns_round_trip(bb_store):
     assert got["comp_skills_tokens"] == 600
     assert got["comp_skills_count"] == 58
     assert got["comp_framing_tokens"] == 720
-    assert json.loads(got["comp_calls_json"]) == [{"fixed_tokens": 3000}]
+    assert json.loads(got["comp_calls_json"]) == [
+        {
+            "composition": {"fixed_tokens": 3000},
+            "output_tokens": 7,
+            "reasoning_tokens": 1,
+        }
+    ]
 
 
 def test_comp_columns_null_for_absent(bb_store):

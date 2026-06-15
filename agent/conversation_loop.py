@@ -5010,7 +5010,14 @@ def run_conversation(
                 _last_composition = _last_call.get("composition") or None
                 # Per-call composition history (small ints, ~60B/call) so
                 # /cost <turn_id> can show how the request grew call-by-call.
-                _comp_calls = [c.get("composition") for c in _turn_calls]
+                _comp_calls = [
+                    {
+                        "composition": c.get("composition"),
+                        "output_tokens": int(c.get("output_tokens", 0) or 0),
+                        "reasoning_tokens": int(c.get("reasoning_tokens", 0) or 0),
+                    }
+                    for c in _turn_calls
+                ]
                 _turn_usage = {
                     "api_calls": len(_turn_calls),
                     "input_tokens": sum(c["input_tokens"] for c in _turn_calls),

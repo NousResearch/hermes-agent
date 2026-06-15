@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // No global setupFiles registers auto-cleanup, so unmount between tests —
 // otherwise a second render() leaks the first editor and getByTestId('editor')
@@ -117,12 +117,12 @@ describe('Korean IME keyCode 229 guard (#44278)', () => {
 
     function Harness() {
       const ref = useRef(null)
-      const plain = (el) => el.textContent ?? ''
+      const plain = (el: HTMLElement) => el.textContent ?? ''
       const submitDraft = () => {
         const t = ref.current ? plain(ref.current) : ''
         if (t.trim()) onSubmit(t)
       }
-      const onKeyDown = (e) => {
+      const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
         if (composing || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitDraft() }
       }

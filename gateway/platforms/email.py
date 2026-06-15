@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ── HTML Email Styling ──────────────────────────────────────────────────────
 # Inline CSS for maximum email client compatibility (Gmail, Outlook, Apple Mail).
 
-_HERMES_EMAIL_CSS = """\
+_HTML_PREFIX = """\
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"></head>
@@ -101,17 +101,17 @@ def _style_html_email(html: str) -> str:
     """Inject inline CSS styles into HTML elements for email client compat."""
     import re
     for tag, style in _HERMES_EMAIL_ELEMENT_STYLES:
-        # Skip tags that already have a style attribute to avoid duplication
-        # Use negative lookahead: only match <tag that is NOT followed by ...style=
+        # Skip tags that already have a style attribute anywhere in the opening tag
+        # Use lookahead over [^>]* to check for style= before closing >
         html = re.sub(
-            rf'<{tag}(?!\s+style=)(\s|>)',
+            rf'<{tag}(?![^>]*style=)(\s|>)',
             rf'<{tag} {style}\1',
             html,
         )
     # Special handling: <code> inside <pre> should be transparent
     # Match <pre ...>...<code> and apply override style
     html = re.sub(
-        r'(<pre[^>]*>.*?)<code(?!\s+style=)(\s|>)',
+        r'(<pre[^>]*>.*?)<code(?![^>]*style=)(\s|>)',
         r'\1<code style="background:transparent;padding:0;color:inherit;"\2',
         html,
         flags=re.DOTALL,
@@ -350,6 +350,17 @@ class EmailAdapter(BasePlatformAdapter):
         # If the threat model changes (e.g. forwarding untrusted content),
         # add bleach.clean() here with an allowed-tags list.
         self._html_format = extra.get("html_format", True)
+
+        # Validate markdown dependency availability once at init time
+        if self._html_format:
+            try:
+                import markdown  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "[Email] 'markdown' package not installed — HTML email disabled. "
+                    "Install with: pip install markdown"
+                )
+                self._html_format = False
 
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
@@ -641,8 +652,9 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        # Plain text fallback
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        # Build body as multipart/alternative (plain + optional HTML)
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(body, "plain", "utf-8"))
 
         # HTML version with inline CSS (if enabled)
         if self._html_format:
@@ -653,10 +665,12 @@ class EmailAdapter(BasePlatformAdapter):
                     extensions=["tables", "fenced_code", "nl2br"],
                 )
                 html_body = _style_html_email(html_body)
-                html_email = _HERMES_EMAIL_CSS + html_body + _HERMES_EMAIL_FOOTER
-                msg.attach(MIMEText(html_email, "html", "utf-8"))
+                html_email = _HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER
+                alt.attach(MIMEText(html_email, "html", "utf-8"))
             except Exception as e:
                 logger.warning("[Email] HTML conversion failed, sending plain only: %s", e)
+
+        msg.attach(alt)
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:

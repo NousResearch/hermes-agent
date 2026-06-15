@@ -89,22 +89,22 @@ Run `pixel_art()` first; if animation was requested, chain into
 
 ## Preset Catalog
 
-| Preset | Era | Palette | Block | Best for |
-|--------|-----|---------|-------|----------|
-| `arcade` | 80s arcade | adaptive 16 | 8px | Bold posters, hero art |
-| `snes` | 16-bit | adaptive 32 | 4px | Characters, detailed scenes |
-| `nes` | 8-bit | NES (54) | 8px | True NES look |
-| `gameboy` | DMG handheld | 4 green shades | 8px | Monochrome Game Boy |
-| `gameboy_pocket` | Pocket handheld | 4 grey shades | 8px | Mono GB Pocket |
-| `pico8` | PICO-8 | 16 fixed | 6px | Fantasy-console look |
-| `c64` | Commodore 64 | 16 fixed | 8px | 8-bit home computer |
-| `apple2` | Apple II hi-res | 6 fixed | 10px | Extreme retro, 6 colors |
-| `teletext` | BBC Teletext | 8 pure | 10px | Chunky primary colors |
-| `mspaint` | Windows MS Paint | 24 fixed | 8px | Nostalgic desktop |
-| `mono_green` | CRT phosphor | 2 green | 6px | Terminal/CRT aesthetic |
-| `mono_amber` | CRT amber | 2 amber | 6px | Amber monitor look |
-| `neon` | Cyberpunk | 10 neons | 6px | Vaporwave/cyber |
-| `pastel` | Soft pastel | 10 pastels | 6px | Kawaii / gentle |
+| Preset           | Era              | Palette         | Block | Best for                    |
+| ---------------- | ---------------- | --------------- | ----- | --------------------------- |
+| `arcade`         | 80s arcade       | adaptive 16     | 8px   | Bold posters, hero art      |
+| `snes`           | 16-bit           | adaptive 32     | 4px   | Characters, detailed scenes |
+| `nes`            | 8-bit            | NES (54)        | 8px   | True NES look               |
+| `gameboy`        | DMG handheld     | 4 green shermes | 8px   | Monochrome Game Boy         |
+| `gameboy_pocket` | Pocket handheld  | 4 grey shermes  | 8px   | Mono GB Pocket              |
+| `pico8`          | PICO-8           | 16 fixed        | 6px   | Fantasy-console look        |
+| `c64`            | Commodore 64     | 16 fixed        | 8px   | 8-bit home computer         |
+| `apple2`         | Apple II hi-res  | 6 fixed         | 10px  | Extreme retro, 6 colors     |
+| `teletext`       | BBC Teletext     | 8 pure          | 10px  | Chunky primary colors       |
+| `mspaint`        | Windows MS Paint | 24 fixed        | 8px   | Nostalgic desktop           |
+| `mono_green`     | CRT phosphor     | 2 green         | 6px   | Terminal/CRT aesthetic      |
+| `mono_amber`     | CRT amber        | 2 amber         | 6px   | Amber monitor look          |
+| `neon`           | Cyberpunk        | 10 neons        | 6px   | Vaporwave/cyber             |
+| `pastel`         | Soft pastel      | 10 pastels      | 6px   | Kawaii / gentle             |
 
 Named palettes live in `scripts/palettes.py` (see `references/palettes.md` for
 the complete list — 28 named palettes total). Any preset can be overridden:
@@ -115,20 +115,20 @@ pixel_art("in.png", "out.png", preset="snes", palette="PICO_8", block=6)
 
 ## Scene Catalog (for video)
 
-| Scene | Effects |
-|-------|---------|
-| `night` | Twinkling stars + fireflies + drifting leaves |
-| `dusk` | Fireflies + sparkles |
-| `tavern` | Dust motes + warm sparkles |
-| `indoor` | Dust motes |
-| `urban` | Rain + neon pulse |
-| `nature` | Leaves + fireflies |
-| `magic` | Sparkles + fireflies |
-| `storm` | Rain + lightning |
-| `underwater` | Bubbles + light sparkles |
-| `fire` | Embers + sparkles |
-| `snow` | Snowflakes + sparkles |
-| `desert` | Heat shimmer + dust |
+| Scene        | Effects                                       |
+| ------------ | --------------------------------------------- |
+| `night`      | Twinkling stars + fireflies + drifting leaves |
+| `dusk`       | Fireflies + sparkles                          |
+| `tavern`     | Dust motes + warm sparkles                    |
+| `indoor`     | Dust motes                                    |
+| `urban`      | Rain + neon pulse                             |
+| `nature`     | Leaves + fireflies                            |
+| `magic`      | Sparkles + fireflies                          |
+| `storm`      | Rain + lightning                              |
+| `underwater` | Bubbles + light sparkles                      |
+| `fire`       | Embers + sparkles                             |
+| `snow`       | Snowflakes + sparkles                         |
+| `desert`     | Heat shimmer + dust                           |
 
 ## Invocation Patterns
 
@@ -169,6 +169,7 @@ python pixel_art_video.py out.png out.mp4 --scene night --duration 6 --gif
 ## Pipeline Rationale
 
 **Pixel conversion:**
+
 1. Boost contrast/color/sharpness (stronger for smaller palettes)
 2. Posterize to simplify tonal regions before quantization
 3. Downscale by `block` with `Image.NEAREST` (hard pixels, no interpolation)
@@ -180,6 +181,7 @@ Quantizing AFTER downscale keeps dithering aligned with the final pixel grid.
 Quantizing before would waste error-diffusion on detail that disappears.
 
 **Video overlay:**
+
 - Copies the base frame each tick (static background)
 - Overlays stateless-per-frame particle draws (one function per effect)
 - Encodes via ffmpeg `libx264 -pix_fmt yuv420p -crf 18`

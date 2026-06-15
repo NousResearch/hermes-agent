@@ -1,0 +1,12 @@
+model:
+  provider: custom
+  model: nvidia/Qwen3.6-35B-A3B-NVFP4
+  base_url: https://vllm.athena.cibertrs.cloud/v1
+  context_length: 262144
+terminal:
+  backend: local
+gateway:
+  deepagents_mode: true
+plugins:
+  enabled:
+    - observability/langfuse

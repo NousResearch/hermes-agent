@@ -28,7 +28,7 @@ HSB advantages:
 ```javascript
 colorMode(HSL, 360, 100, 100, 100);
 // Lightness 50 = pure color, 0 = black, 100 = white
-// More intuitive for tints (L > 50) and shades (L < 50)
+// More intuitive for tints (L > 50) and shermes (L < 50)
 ```
 
 ### RGB

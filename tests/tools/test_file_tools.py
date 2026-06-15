@@ -43,6 +43,41 @@ class TestReadFileHandler:
         mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 10, 20)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_positional_task_id_remains_backward_compatible(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "line1"
+        result_obj.to_dict.return_value = {"content": "line1", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        read_file_tool("/tmp/big.txt", 1, 500, "legacy-task")
+
+        mock_get.assert_called_once_with("legacy-task")
+        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 500)
+
+    @patch("tools.file_tools.file_state.record_read")
+    @patch("tools.file_tools._resolve_path_for_task", return_value="/tmp/example.txt")
+    @patch("tools.file_tools._get_file_ops")
+    def test_raw_mode_returns_content_without_line_numbers(self, mock_get, _mock_resolve, mock_record_read):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "hello\nworld\n"
+        result_obj.to_dict.return_value = {"content": "hello\nworld\n", "file_size": 12}
+        mock_ops.read_file_raw.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/example.txt", raw=True, task_id="task-raw"))
+
+        assert result["content"] == "hello\nworld\n"
+        assert "1|" not in result["content"]
+        mock_ops.read_file_raw.assert_called_once_with("/tmp/example.txt")
+        mock_ops.read_file.assert_not_called()
+        mock_record_read.assert_called_once_with("task-raw", "/tmp/example.txt", partial=False)
+
+    @patch("tools.file_tools._get_file_ops")
     def test_invalid_offset_and_limit_are_normalized_before_dispatch(self, mock_get):
         mock_ops = MagicMock()
         result_obj = MagicMock()

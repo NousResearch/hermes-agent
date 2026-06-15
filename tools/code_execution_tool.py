@@ -225,9 +225,9 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 500",
-        '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
-        '{"path": path, "offset": offset, "limit": limit}',
+        "path: str, offset: int = 1, limit: int = 500, raw: bool = False",
+        '"""Read a file (1-indexed lines by default). raw=True returns unnumbered content for safe read/transform/write scripts."""',
+        '{"path": path, "offset": offset, "limit": limit, "raw": raw}',
     ),
     "write_file": (
         "write_file",
@@ -1720,8 +1720,8 @@ _TOOL_DOC_LINES = [
      "  web_extract(urls: list[str]) -> dict\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
     ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+     "  read_file(path: str, offset: int = 1, limit: int = 500, raw: bool = False) -> dict\n"
+     "    Lines are 1-indexed by default. raw=True returns unnumbered content for read/transform/write scripts."),
     ("write_file",
      "  write_file(path: str, content: str) -> dict\n"
      "    Always overwrites the entire file."),

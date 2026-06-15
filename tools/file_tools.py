@@ -742,9 +742,20 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
-    """Read a file with pagination and line numbers."""
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 500,
+    task_id: str = "default",
+    *,
+    raw: bool = False,
+) -> str:
+    """Read a file with pagination and line numbers, or raw unnumbered content."""
     try:
+        if isinstance(raw, str):
+            raw = raw.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            raw = bool(raw)
         offset, limit = normalize_read_pagination(offset, limit)
 
         # ── Device path guard ─────────────────────────────────────────
@@ -765,7 +776,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 
-        if is_extractable_document(str(_resolved)):
+        if not raw and is_extractable_document(str(_resolved)):
             try:
                 extracted_text = extract_document_text(str(_resolved))
             except ExtractionError:
@@ -828,11 +839,41 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if block_error:
             return json.dumps({"error": block_error})
 
+        resolved_str = str(_resolved)
+
+        if raw:
+            file_ops = _get_file_ops(task_id)
+            result = file_ops.read_file_raw(path)
+            result_dict = result.to_dict()
+            content_len = len(result.content or "")
+            file_size = result_dict.get("file_size", 0)
+            max_chars = _get_max_read_chars()
+            if content_len > max_chars:
+                return json.dumps({
+                    "error": (
+                        f"Raw read produced {content_len:,} characters which exceeds "
+                        f"the safety limit ({max_chars:,} chars). Use normal "
+                        "read_file offset/limit pagination or narrow the file first."
+                    ),
+                    "path": path,
+                    "file_size": file_size,
+                }, ensure_ascii=False)
+
+            if result.content:
+                result.content = redact_sensitive_text(result.content, code_file=True)
+                result_dict["content"] = result.content
+
+            try:
+                file_state.record_read(task_id, resolved_str, partial=False)
+            except Exception:
+                logger.debug("file_state.record_read failed for raw read", exc_info=True)
+
+            return json.dumps(result_dict, ensure_ascii=False)
+
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
-        resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -1576,7 +1617,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        raw=args.get("raw", False),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

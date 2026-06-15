@@ -91,6 +91,14 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def web_search(", src)
         self.assertNotIn("def read_file(", src)
 
+    def test_read_file_stub_exposes_raw_mode(self):
+        src = generate_hermes_tools_module(["read_file"])
+        self.assertIn(
+            "def read_file(path: str, offset: int = 1, limit: int = 500, raw: bool = False)",
+            src,
+        )
+        self.assertIn('"raw": raw', src)
+
     def test_empty_list_generates_nothing(self):
         src = generate_hermes_tools_module([])
         self.assertNotIn("def terminal(", src)
@@ -240,6 +248,40 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool_calls_made"], 2)
+
+    def test_read_file_raw_mode_forwards_to_dispatcher(self):
+        """Regression for #46465: sandbox scripts need unnumbered content."""
+        seen_args = []
+
+        def raw_aware_mock(function_name, function_args, task_id=None, user_task=None):
+            if function_name == "read_file":
+                seen_args.append(dict(function_args))
+                if function_args.get("raw"):
+                    return json.dumps({"content": "hello\nworld\n", "total_lines": 2})
+                return json.dumps({"content": "1|hello\n2|world\n", "total_lines": 2})
+            return _mock_handle_function_call(
+                function_name, function_args, task_id=task_id, user_task=user_task
+            )
+
+        code = """
+from hermes_tools import read_file
+result = read_file("/tmp/example.txt", raw=True)
+print(result["content"])
+"""
+        with patch("model_tools.handle_function_call", side_effect=raw_aware_mock):
+            result = json.loads(execute_code(
+                code=code,
+                task_id="test-read-file-raw",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            ))
+
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertEqual(
+            seen_args,
+            [{"path": "/tmp/example.txt", "offset": 1, "limit": 500, "raw": True}],
+        )
+        self.assertIn("hello\nworld", result["output"])
+        self.assertNotIn("1|hello", result["output"])
 
     def test_syntax_error(self):
         """Script with a syntax error returns error status."""

@@ -531,6 +531,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 supports_reasoning=params.get("supports_reasoning", False),
                 qwen_session_metadata=params.get("qwen_session_metadata"),
                 model=model,
+                base_url=params.get("base_url"),
                 ollama_num_ctx=params.get("ollama_num_ctx"),
                 session_id=params.get("session_id"),
             )

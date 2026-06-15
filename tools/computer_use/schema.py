@@ -230,6 +230,17 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             },
         },
         "required": ["action"],
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"action": {"const": "switch_desktop"}},
+                    "required": ["action"],
+                },
+                "then": {
+                    "required": ["direction"],
+                },
+            },
+        ],
     },
 }
 

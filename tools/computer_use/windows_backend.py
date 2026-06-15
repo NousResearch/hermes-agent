@@ -302,6 +302,9 @@ def _switch_desktop_via_keybd(direction: str, overlay_client) -> bool:
     virtual-desktop transition, so we stop it before switching and restart
     it on the new desktop.
     """
+    if direction not in ("left", "right"):
+        return False
+
     VK_CONTROL = 0x11
     VK_LWIN = 0x5B
     VK_LEFT = 0x25
@@ -322,15 +325,19 @@ def _switch_desktop_via_keybd(direction: str, overlay_client) -> bool:
     try:
         overlay_client.stop()
         _send_inputs(seq)
+        # The virtual-desktop transition is asynchronous — a brief delay
+        # before restarting the overlay avoids racing the DWM compositor.
+        time.sleep(0.15)
         overlay_client._dead = False
         overlay_client.start()
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("switch_desktop SendInput failed: %s", e)
         try:
             overlay_client._dead = False
             overlay_client.start()
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.warning("switch_desktop overlay restart also failed: %s", e2)
         return False
 
 

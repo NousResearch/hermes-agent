@@ -18,13 +18,13 @@ ZAI_FREE_MODELS = (
 def _fetch_models_with_free(self, *, api_key=None, timeout=8.0):
     """Fetch live model list and append universally-free models."""
     live = ProviderProfile.fetch_models(self, api_key=api_key, timeout=timeout)
-    if live:
-        seen = {m.lower() for m in live}
-        for m in ZAI_FREE_MODELS:
-            if m.lower() not in seen:
-                live.append(m)
-                seen.add(m.lower())
-    return live
+    models = list(live) if live else []
+    seen = {m.lower() for m in models}
+    for m in ZAI_FREE_MODELS:
+        if m.lower() not in seen:
+            models.append(m)
+            seen.add(m.lower())
+    return models
 
 
 zai = ProviderProfile(

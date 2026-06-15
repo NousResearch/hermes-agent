@@ -69,6 +69,20 @@ def test_detect_service_manager_returns_known_value() -> None:
     assert result in ("systemd", "launchd", "windows", "s6", "none")
 
 
+def test_detect_service_manager_s6_keys_off_s6_running_not_is_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: Fly runs s6-overlay as PID 1 in a Firecracker microVM, which
+    is not a Docker/Podman container. Gating s6 detection on is_container() made
+    the dispatch path inert on Fly, so `hermes gateway restart` spawned a
+    foreground gateway that fought the supervised one. Detection must key off
+    s6 being PID 1 (`_s6_running`) alone."""
+    monkeypatch.setattr(
+        "hermes_cli.service_manager._s6_running", lambda: True,
+    )
+    assert detect_service_manager() == "s6"
+
+
 # ---------------------------------------------------------------------------
 # _s6_running — must work for unprivileged users, not just root
 # ---------------------------------------------------------------------------

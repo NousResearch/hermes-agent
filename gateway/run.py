@@ -8875,6 +8875,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _response_time, _api_calls, _resp_len,
             )
 
+            # Re-baseline the cached agent's message_count snapshot now that
+            # this turn has completed and the agent has flushed its rows to
+            # the SessionDB.  The cross-process coherence guard (#45966)
+            # snapshots the count at agent-BUILD time (before this turn's own
+            # writes) and never refreshes it on reuse — so without this, this
+            # process's own turn would grow the count and the next turn would
+            # see a mismatch and rebuild the agent every turn, destroying
+            # prompt caching.  Refreshing here makes the guard fire only on a
+            # DIFFERENT process's writes.  Uses the (possibly compaction-
+            # updated) live session_id.  Fail-safe inside the helper.
+            self._refresh_agent_cache_message_count(
+                session_key, session_entry.session_id
+            )
+
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
             # restarts where the session was active (never completed).
@@ -12784,6 +12798,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if release_running_state:
             self._release_running_agent_state(session_key)
 
+    def _refresh_agent_cache_message_count(
+        self, session_key: str, session_id: Optional[str]
+    ) -> None:
+        """Re-baseline a cached agent's stored message_count after THIS turn.
+
+        The cross-process coherence guard (#45966) compares the session's
+        on-disk ``message_count`` against the count snapshotted next to the
+        cached agent, and rebuilds the agent on a mismatch.  But the snapshot
+        is taken at agent-BUILD time — before this turn writes its own user +
+        assistant (+ tool) rows — and the cache entry is never rewritten on a
+        reuse.  So without this re-baseline, THIS process's own turn would
+        grow ``message_count`` and the very next turn would see a mismatch
+        and rebuild the agent — every turn, for every conversation — silently
+        destroying the per-conversation prompt caching the cache exists to
+        protect.
+
+        Call this once a turn has completed and the agent has flushed its
+        rows to the SessionDB.  It snapshots the now-current count (which
+        includes this process's own writes) so the guard only fires when a
+        DIFFERENT process changes the transcript out from under us.  The
+        ``_sig`` is left untouched; only the count element is refreshed, and
+        only when the same agent is still cached (no rebuild/eviction raced
+        in between).  Fail-safe: any DB error leaves the snapshot as-is, which
+        at worst costs one unnecessary rebuild on the next turn.
+        """
+        if self._session_db is None or not session_id:
+            return
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if not _cache_lock or _cache is None:
+            return
+        try:
+            _sess_row = self._session_db.get_session(session_id)
+            _live = _sess_row.get("message_count", 0) if _sess_row else None
+        except Exception:
+            return
+        if _live is None:
+            return
+        with _cache_lock:
+            cached = _cache.get(session_key)
+            # Only re-baseline a live 3-tuple entry; skip pending sentinels,
+            # legacy 2-tuples (they intentionally opt out of the guard), and
+            # the case where the entry was evicted/rebuilt mid-turn.
+            if (
+                isinstance(cached, tuple)
+                and len(cached) > 2
+                and cached[0] is not _AGENT_PENDING_SENTINEL
+            ):
+                if cached[2] != _live:
+                    _cache[session_key] = (cached[0], cached[1], _live)
+
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
 
@@ -14307,20 +14372,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
+
+            # Detect cross-process writes: when another process (e.g. hermes
+            # dashboard) appends to the same session in the shared SessionDB,
+            # the cached agent's in-memory transcript becomes stale.  Compare
+            # the session's current message_count against the count recorded
+            # when the agent was cached; on mismatch, invalidate the cache
+            # so a fresh agent re-reads from disk. (#45966)
+            _current_msg_count = None
+            if self._session_db is not None and session_id:
+                try:
+                    _sess_row = self._session_db.get_session(session_id)
+                    if _sess_row:
+                        _current_msg_count = _sess_row.get("message_count", 0)
+                except Exception:
+                    pass
+
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        # cached[2] is the message_count at cache time;
+                        # stale when a second process appended rows.
+                        _cached_mc = cached[2] if len(cached) > 2 else None
+                        if (
+                            _cached_mc is not None
+                            and _current_msg_count is not None
+                            and _current_msg_count != _cached_mc
+                        ):
+                            # Cross-process write detected — discard stale
+                            # agent so it rebuilds from fresh DB transcript.
+                            logger.info(
+                                "Agent cache invalidated for session %s: "
+                                "message_count changed (%s -> %s), "
+                                "possible cross-process write",
+                                session_key, _cached_mc, _current_msg_count,
+                            )
+                            evicted = self._agent_cache.pop(session_key, None)
+                            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                            if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+                                self._cleanup_agent_resources(_ev_agent)
+                        else:
+                            agent = cached[0]
+                            # Refresh LRU order so the cap enforcement evicts
+                            # truly-oldest entries, not the one we just used.
+                            if hasattr(_cache, "move_to_end"):
+                                try:
+                                    _cache.move_to_end(session_key)
+                                except KeyError:
+                                    pass
+                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -14358,7 +14460,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
-                        _cache[session_key] = (agent, _sig)
+                        _cache[session_key] = (agent, _sig, _current_msg_count)
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 

@@ -48,7 +48,11 @@ PTB_INVALID_TOKEN_404 = InvalidToken(
 
 def _make_adapter(extra=None):
     """Build a TelegramAdapter with a mock bot wired for the rich path."""
-    config = PlatformConfig(enabled=True, token="fake-token", extra=extra or {})
+    config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={"rich_messages": True, **(extra or {})},
+    )
     adapter = TelegramAdapter(config)
     bot = MagicMock()
     # do_api_request as an AsyncMock makes inspect.iscoroutinefunction(...) True,
@@ -180,16 +184,22 @@ async def test_rich_messages_opt_out_accepts_string_false():
 
 
 @pytest.mark.asyncio
-async def test_rich_messages_default_is_enabled():
-    adapter = _make_adapter()
+async def test_rich_messages_default_is_disabled():
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
 
     result = await adapter.send("12345", RICH_CONTENT)
 
     assert result.success is True
     bot = adapter._bot
     assert bot is not None
-    bot.do_api_request.assert_awaited_once()
-    bot.send_message.assert_not_called()
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -519,14 +529,13 @@ async def test_rich_draft_oversized_uses_legacy():
 
 
 # ----------------------------------------------------------------------
-# prefers_fresh_final_streaming: the stream consumer asks the adapter whether
-# to finalize a streamed reply by sending a fresh (rich) message + deleting the
-# preview, instead of final-editing the preview through the non-rich edit path.
-# Telegram opts in exactly when the content is rich-eligible.
+# prefers_fresh_final_streaming: Telegram keeps streamed finals on the edit
+# path, even when rich messages are enabled, so users do not briefly see two
+# copies of the answer while the preview cleanup delete races the fresh send.
 # ----------------------------------------------------------------------
-def test_prefers_fresh_final_streaming_when_rich_enabled():
+def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
     adapter = _make_adapter()
-    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is False
 
 
 def test_prefers_fresh_final_streaming_honors_rich_opt_out():

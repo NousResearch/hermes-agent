@@ -417,9 +417,9 @@ class StreamingConfig:
     # if the original preview has been visible for at least this many
     # seconds, so the platform's visible timestamp reflects completion
     # time instead of the preview creation time.  Currently applied to
-    # Telegram only (other platforms ignore the setting).  Default 60s
-    # matches the OpenClaw rollout.  Set to 0 to disable.
-    fresh_final_after_seconds: float = 60.0
+    # Telegram only (other platforms ignore the setting).  Default 0 disables
+    # the fresh-message replacement path; set >0 to opt in.
+    fresh_final_after_seconds: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -446,7 +446,7 @@ class StreamingConfig:
             ),
             cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
             fresh_final_after_seconds=_coerce_float(
-                data.get("fresh_final_after_seconds"), 60.0
+                data.get("fresh_final_after_seconds"), 0.0
             ),
         )
 

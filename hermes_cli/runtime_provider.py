@@ -224,10 +224,27 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
     configured_provider = str(model_cfg.get("provider") or "").strip().lower()
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+    model_name = str(model_cfg.get("default") or "").strip()
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
+        # A stale/incompatible explicit ``codex_responses`` must not override
+        # Copilot's hard per-model requirement.  Copilot serves ``gpt-5-mini``
+        # on chat completions only; a Responses-API request there silently
+        # succeeds but returns no reasoning/thinking content.  This stale
+        # value commonly survives a provider switch (e.g. a previous Nous or
+        # Codex primary wrote ``api_mode: codex_responses``, then the primary
+        # was changed to Copilot + gpt-5-mini without clearing it).  The
+        # check is the pure-regex Copilot exception — no network call.  See
+        # #46527.
+        if configured_mode == "codex_responses" and model_name:
+            try:
+                from hermes_cli.models import _should_use_copilot_responses_api
+
+                if not _should_use_copilot_responses_api(model_name):
+                    return "chat_completions"
+            except Exception:
+                pass
         return configured_mode
 
-    model_name = str(model_cfg.get("default") or "").strip()
     if not model_name:
         return "chat_completions"
 

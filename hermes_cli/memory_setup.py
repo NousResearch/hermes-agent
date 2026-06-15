@@ -426,7 +426,16 @@ def cmd_status(args) -> None:
                         print(f"  Status:    not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
                         # Check all fields that have env_var (both secret and non-secret)
-                        required_fields = [f for f in schema if f.get("env_var")]
+                        # Respect "when" conditions — skip fields not relevant to current mode
+                        current_mode = provider_config.get("mode", "cloud")
+                        required_fields = []
+                        for f in schema:
+                            if not f.get("env_var"):
+                                continue
+                            when = f.get("when", {})
+                            if when and "mode" in when and when["mode"] != current_mode:
+                                continue
+                            required_fields.append(f)
                         if required_fields:
                             print(f"  Missing:")
                             for f in required_fields:

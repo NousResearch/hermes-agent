@@ -1,5 +1,6 @@
 """_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
 
+import json
 import os
 import types
 from pathlib import Path
@@ -89,6 +90,148 @@ def test_no_install_when_only_peer_annotation_differs(tmp_path: Path, main_mod) 
         '}}'
     )
     assert main_mod._tui_need_npm_install(tmp_path) is False
+
+
+def test_workspace_scoped_tui_install_ignores_uninstalled_sibling_workspaces(
+    tmp_path: Path, main_mod
+) -> None:
+    """A TUI-scoped npm install does not populate hidden lock entries for
+    unrelated workspaces, so those entries must not force a reinstall.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    (tui_dir / "packages" / "hermes-ink").mkdir(parents=True)
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "apps" / "bootstrap-installer").mkdir(parents=True)
+    _touch_ink(tmp_path)
+
+    wanted_packages = {
+        "": {"workspaces": ["apps/*", "ui-tui", "ui-tui/packages/*"]},
+        "apps/bootstrap-installer": {"dependencies": {"react-dom": "^19.0.0"}},
+        "ui-tui": {
+            "dependencies": {
+                "@hermes/ink": "file:./packages/hermes-ink",
+                "react": "^19.0.0",
+            },
+            "devDependencies": {"tsx": "^4.0.0"},
+        },
+        "ui-tui/packages/hermes-ink": {"dependencies": {"chalk": "^5.0.0"}},
+        "node_modules/@hermes/ink": {
+            "resolved": "ui-tui/packages/hermes-ink",
+            "link": True,
+        },
+        "node_modules/chalk": {"version": "5.0.0"},
+        "node_modules/react": {"version": "19.0.0"},
+        "node_modules/react-dom": {"version": "19.0.0"},
+        "node_modules/tsx": {"version": "4.0.0"},
+    }
+    installed_packages = {
+        name: pkg
+        for name, pkg in wanted_packages.items()
+        if name not in {"apps/bootstrap-installer", "node_modules/react-dom"}
+    }
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"packages": wanted_packages})
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": installed_packages})
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_workspace_scoped_tui_install_still_detects_missing_tui_dependency(
+    tmp_path: Path, main_mod
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    (tui_dir / "packages" / "hermes-ink").mkdir(parents=True)
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+
+    wanted_packages = {
+        "ui-tui": {"dependencies": {"@hermes/ink": "file:./packages/hermes-ink"}},
+        "ui-tui/packages/hermes-ink": {"dependencies": {"chalk": "^5.0.0"}},
+        "node_modules/@hermes/ink": {
+            "resolved": "ui-tui/packages/hermes-ink",
+            "link": True,
+        },
+        "node_modules/chalk": {"version": "5.0.0"},
+    }
+    installed_packages = {
+        name: pkg
+        for name, pkg in wanted_packages.items()
+        if name != "node_modules/chalk"
+    }
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"packages": wanted_packages})
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": installed_packages})
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is True
+
+
+def test_workspace_scoped_tui_install_prefers_nested_transitive_dependency(
+    tmp_path: Path, main_mod
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+
+    wanted_packages = {
+        "ui-tui": {"devDependencies": {"vite": "^7.0.0"}},
+        "node_modules/vite": {"dependencies": {"postcss": "^8.0.0"}},
+        "node_modules/postcss": {"dependencies": {"nanoid": "^3.3.11"}},
+        "node_modules/nanoid": {"version": "5.1.11"},
+        "node_modules/postcss/node_modules/nanoid": {"version": "3.3.12"},
+    }
+    installed_packages = {
+        name: pkg
+        for name, pkg in wanted_packages.items()
+        if name != "node_modules/nanoid"
+    }
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"packages": wanted_packages})
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": installed_packages})
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
+
+
+def test_workspace_scoped_tui_install_uses_workspace_ancestor_dependency(
+    tmp_path: Path, main_mod
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    (tui_dir / "packages" / "hermes-ink").mkdir(parents=True)
+    (tui_dir / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+
+    wanted_packages = {
+        "ui-tui": {"dependencies": {"@hermes/ink": "file:./packages/hermes-ink"}},
+        "ui-tui/packages/hermes-ink": {"dependencies": {"wrap-ansi": "^9.0.0"}},
+        "node_modules/@hermes/ink": {
+            "resolved": "ui-tui/packages/hermes-ink",
+            "link": True,
+        },
+        "node_modules/wrap-ansi": {"version": "7.0.0"},
+        "ui-tui/node_modules/wrap-ansi": {"version": "9.0.2"},
+    }
+    installed_packages = {
+        name: pkg
+        for name, pkg in wanted_packages.items()
+        if name != "node_modules/wrap-ansi"
+    }
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps({"packages": wanted_packages})
+    )
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": installed_packages})
+    )
+
+    assert main_mod._tui_need_npm_install(tui_dir) is False
 
 
 def test_install_when_version_differs_even_with_peer_drop(tmp_path: Path, main_mod) -> None:

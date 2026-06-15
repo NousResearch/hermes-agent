@@ -11275,6 +11275,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             elif _args:
                 _cprint(f"  {_DIM}✗ Unknown argument: {_escape(_args)}. Use /exit --delete to also remove session history.{_RST}")
                 return True
+            # Plugin hook: post_command — fires before CLI exits so plugins
+            # can auto-title, compress conversation, or save state.
+            try:
+                from hermes_cli.plugins import invoke_hook as _post_cmd_hook
+                _post_cmd_hook(
+                    "post_command",
+                    command="quit",
+                    raw=cmd_original,
+                    session_id=self.session_id,
+                    cli=self,
+                )
+            except Exception:
+                pass
             return False
         elif canonical == "help":
             self.show_help()

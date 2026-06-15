@@ -1,4 +1,6 @@
-param()
+param(
+    [switch]$StartLlama
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -69,19 +71,24 @@ if ($DelaySeconds -gt 0) {
     Start-Sleep -Seconds $DelaySeconds
 }
 
-$llamaScript = Join-Path $ScriptDir "start-llama-secretary.ps1"
-if (-not (Test-Path -LiteralPath $llamaScript)) {
-    $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1"
-}
-if (-not (Test-Path -LiteralPath $llamaScript)) {
-    $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback.ps1"
-}
-if (Test-Path -LiteralPath $llamaScript) {
-    try {
-        & $llamaScript | Out-Null
-    } catch {
-        Write-Warning "llama.cpp fallback autostart failed: $_"
+$startLlamaFromEnv = $env:HERMES_GATEWAY_START_LLAMA -and $env:HERMES_GATEWAY_START_LLAMA.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
+if ($StartLlama -or $startLlamaFromEnv) {
+    $llamaScript = Join-Path $ScriptDir "start-llama-secretary.ps1"
+    if (-not (Test-Path -LiteralPath $llamaScript)) {
+        $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3060.ps1"
     }
+    if (-not (Test-Path -LiteralPath $llamaScript)) {
+        $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback.ps1"
+    }
+    if (Test-Path -LiteralPath $llamaScript) {
+        try {
+            & $llamaScript | Out-Null
+        } catch {
+            Write-Warning "llama.cpp fallback autostart failed: $_"
+        }
+    }
+} else {
+    Write-Host "Skipping gateway llama fallback; set HERMES_GATEWAY_START_LLAMA=1 or pass -StartLlama for rollback/recovery checks."
 }
 
 $env:PYTHONIOENCODING = "utf-8"

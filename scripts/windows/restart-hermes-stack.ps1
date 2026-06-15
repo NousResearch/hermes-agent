@@ -1,6 +1,8 @@
-# Idempotent Hermes stack restart: llama (8080) -> tunnels -> gateway/harness/webui/dashboard.
+# Idempotent Hermes stack restart: gateway/harness/webui/dashboard.
+# Pass -StartLlama only for rollback/recovery checks that need the local GGUF server.
 param(
     [switch]$SkipTunnels,
+    [switch]$StartLlama,
     [int]$WaitModelsSeconds = 300
 )
 
@@ -43,40 +45,46 @@ try { & $PythonExe -m hermes_cli.main gateway stop --all 2>$null } catch {}
 try { & $PythonExe -m hermes_cli.main harness stop 2>$null } catch {}
 Stop-PortListener -Port 8787 -NamePattern "server\.py|hermes"
 Stop-PortListener -Port 9120 -NamePattern "hermes_cli\.main dashboard|dashboard"
-Stop-PortListener -Port 8080 -NamePattern "llama-server"
-
-Write-Step "Starting llama secretary on :8080 (H: HF cache)"
-& (Join-Path $PSScriptRoot "start-llama-secretary.ps1") -WaitSeconds $WaitModelsSeconds
-
-$modelsOk = $false
-$deadline = (Get-Date).AddSeconds($WaitModelsSeconds)
-while ((Get-Date) -lt $deadline) {
-    try {
-        $models = Invoke-RestMethod -Uri "http://127.0.0.1:8080/v1/models" -TimeoutSec 8
-        $ids = @($models.data | ForEach-Object { $_.id })
-        Write-Step ("8080 models: {0}" -f ($ids -join ", "))
-        if ($ids -contains $DesiredModel) {
-            $modelsOk = $true
-            break
-        }
-        if ($ids.Count -gt 0) {
-            Write-Warning "Desired model not listed yet; continuing to wait"
-        }
-    } catch {
-        Write-Step ("Waiting for llama /v1/models: {0}" -f $_.Exception.Message)
-    }
-    Start-Sleep -Seconds 5
+if ($StartLlama) {
+    Stop-PortListener -Port 8080 -NamePattern "llama-server"
+} else {
+    Write-Step "Skipping llama restart; pass -StartLlama only for rollback/recovery checks"
 }
-if (-not $modelsOk) {
-    throw "llama /v1/models did not expose $DesiredModel within ${WaitModelsSeconds}s"
+
+if ($StartLlama) {
+    Write-Step "Starting llama secretary on :8080 (H: HF cache)"
+    & (Join-Path $PSScriptRoot "start-llama-secretary.ps1") -WaitSeconds $WaitModelsSeconds
+
+    $modelsOk = $false
+    $deadline = (Get-Date).AddSeconds($WaitModelsSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $models = Invoke-RestMethod -Uri "http://127.0.0.1:8080/v1/models" -TimeoutSec 8
+            $ids = @($models.data | ForEach-Object { $_.id })
+            Write-Step ("8080 models: {0}" -f ($ids -join ", "))
+            if ($ids -contains $DesiredModel) {
+                $modelsOk = $true
+                break
+            }
+            if ($ids.Count -gt 0) {
+                Write-Warning "Desired model not listed yet; continuing to wait"
+            }
+        } catch {
+            Write-Step ("Waiting for llama /v1/models: {0}" -f $_.Exception.Message)
+        }
+        Start-Sleep -Seconds 5
+    }
+    if (-not $modelsOk) {
+        throw "llama /v1/models did not expose $DesiredModel within ${WaitModelsSeconds}s"
+    }
 }
 
 if (-not $SkipTunnels) {
-    if (Test-Path -LiteralPath $TailscaleScript) {
+    if ($StartLlama -and (Test-Path -LiteralPath $TailscaleScript)) {
         Write-Step "Updating Tailscale serve (/ /line /v1)"
         & $TailscaleScript -LlamaPort 8080
         & tailscale serve status
-    } else {
+    } elseif ($StartLlama) {
         Write-Warning "Missing Tailscale script: $TailscaleScript"
     }
 
@@ -84,14 +92,14 @@ if (-not $SkipTunnels) {
         Write-Step "Ensuring LINE ngrok (:8646)"
         & $LineNgrokScript
     }
-    if (Test-Path -LiteralPath $LlamaNgrokScript) {
+    if ($StartLlama -and (Test-Path -LiteralPath $LlamaNgrokScript)) {
         Write-Step "Ensuring llama ngrok (:8080)"
         & $LlamaNgrokScript -LlamaPort 8080
     }
 }
 
 Write-Step "Starting gateway"
-& (Join-Path $PSScriptRoot "start-hermes-gateway.ps1")
+& (Join-Path $PSScriptRoot "start-hermes-gateway.ps1") -StartLlama:$StartLlama
 
 Write-Step "Starting harness"
 Start-Process -FilePath $PythonExe -ArgumentList @("-m", "hermes_cli.main", "harness", "start") -WorkingDirectory $ProjectRoot -WindowStyle Hidden | Out-Null

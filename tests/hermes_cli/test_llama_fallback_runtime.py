@@ -26,7 +26,7 @@ def test_llama_cpp_not_configured():
 
 
 def test_custom_loopback_fallback_enables_local_secretary(monkeypatch):
-    monkeypatch.delenv("HERMES_LLAMA_FALLBACK_AUTOSTART", raising=False)
+    monkeypatch.setenv("HERMES_LLAMA_FALLBACK_AUTOSTART", "auto")
     cfg = {
         "fallback_providers": [
             {
@@ -81,7 +81,7 @@ def test_ollama_loopback_does_not_use_llama_secretary_launcher(monkeypatch):
 
 
 def test_primary_custom_loopback_uses_local_secretary_launcher(monkeypatch):
-    monkeypatch.delenv("HERMES_LLAMA_FALLBACK_AUTOSTART", raising=False)
+    monkeypatch.setenv("HERMES_LLAMA_FALLBACK_AUTOSTART", "auto")
     cfg = {
         "model": {
             "provider": "custom",
@@ -101,7 +101,7 @@ def test_primary_custom_loopback_uses_local_secretary_launcher(monkeypatch):
 
 
 def test_local_secretary_model_path_uses_gguf_launcher(tmp_path, monkeypatch):
-    monkeypatch.delenv("HERMES_LLAMA_FALLBACK_AUTOSTART", raising=False)
+    monkeypatch.setenv("HERMES_LLAMA_FALLBACK_AUTOSTART", "auto")
     model = tmp_path / "secretary.gguf"
     model.write_text("fake", encoding="utf-8")
     cfg = {
@@ -140,7 +140,7 @@ def test_resolve_model_path_from_basename(tmp_path, monkeypatch):
 
 
 def test_resolve_settings_auto_enabled_when_fallback_configured(monkeypatch):
-    monkeypatch.delenv("HERMES_LLAMA_FALLBACK_AUTOSTART", raising=False)
+    monkeypatch.setenv("HERMES_LLAMA_FALLBACK_AUTOSTART", "auto")
     cfg = {
         "providers": {
             "llama-cpp": {
@@ -156,6 +156,22 @@ def test_resolve_settings_auto_enabled_when_fallback_configured(monkeypatch):
     assert settings.kv_profile == "f16v_turbo4"
     assert settings.spec_type == "ngram-mod"
     assert settings.context_size == 49152
+
+
+def test_resolve_settings_default_does_not_autostart_loopback(monkeypatch):
+    monkeypatch.delenv("HERMES_LLAMA_FALLBACK_AUTOSTART", raising=False)
+    settings = resolve_llama_fallback_settings(
+        {"fallback_providers": [{"provider": "llama-cpp", "model": "demo.gguf"}]}
+    )
+    assert settings.enabled is False
+
+
+def test_resolve_settings_true_enables_when_fallback_configured(monkeypatch):
+    monkeypatch.setenv("HERMES_LLAMA_FALLBACK_AUTOSTART", "true")
+    settings = resolve_llama_fallback_settings(
+        {"fallback_providers": [{"provider": "llama-cpp", "model": "demo.gguf"}]}
+    )
+    assert settings.enabled is True
 
 
 def test_build_server_args_includes_ngram_mod_and_kv_profile():

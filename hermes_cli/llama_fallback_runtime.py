@@ -339,7 +339,7 @@ def _resolve_model_path(cfg: dict[str, Any]) -> str:
 
 def resolve_llama_fallback_settings(cfg: dict[str, Any] | None = None) -> LlamaFallbackSettings:
     cfg = cfg or _load_config()
-    autostart = _env_flag("HERMES_LLAMA_FALLBACK_AUTOSTART", "auto")
+    autostart = _env_flag("HERMES_LLAMA_FALLBACK_AUTOSTART", "false")
     configured = _llama_cpp_configured(cfg)
     enabled = autostart in {"1", "true", "yes", "on"} or (
         autostart == "auto" and configured

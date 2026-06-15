@@ -123,8 +123,10 @@ if ($DelaySeconds -gt 0) {
 # Hypura serve (GGUF) + OpenAI-compatible proxy (Hermes -> /v1/chat/completions)
 # ---------------------------------------------------------------------------
 $hypuraStarted = $false
-$enableHypura = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_HYPURA" -DefaultValue $true
-$enableHypuraProxy = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_HYPURA_PROXY" -DefaultValue $true
+# Keep local GGUF servers opt-in. They reserve VRAM, so normal Hermes restarts
+# should not start them unless a rollback/recovery check explicitly asks for it.
+$enableHypura = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_HYPURA" -DefaultValue $false
+$enableHypuraProxy = Get-BoolEnvOrDefault -Name "HERMES_AUTOSTART_HYPURA_PROXY" -DefaultValue $false
 
 $hypuraExe = Get-EnvValue -Name "HERMES_HYPURA_EXE"
 if (-not $hypuraExe) {

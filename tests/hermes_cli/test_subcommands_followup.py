@@ -64,3 +64,23 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_mcp_add_accepts_client_credentials_auth_choice():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=_h("mcp"))
+
+    ns = parser.parse_args([
+        "mcp",
+        "add",
+        "linear",
+        "--url",
+        "https://mcp.linear.app/mcp",
+        "--auth",
+        "client_credentials",
+    ])
+
+    assert ns.command == "mcp"
+    assert ns.mcp_action == "add"
+    assert ns.auth == "client_credentials"

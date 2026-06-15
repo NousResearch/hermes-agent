@@ -1646,21 +1646,35 @@ class MCPServerTask:
         ssl_verify = config.get("ssl_verify", True)
         client_cert = _resolve_client_cert(self.name, config)
 
-        # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
-        # same provider instance is reused across reconnects, pre-flow
-        # disk-watch is active, and config-time CLI code paths share state.
-        # If OAuth setup fails (e.g. non-interactive env without cached
-        # tokens), re-raise so this server is reported as failed without
-        # blocking other MCP servers from connecting.
-        _oauth_auth = None
+        # HTTP auth providers: OAuth 2.1 PKCE routes through the central
+        # MCPOAuthManager; OAuth client_credentials routes through its own
+        # process-local manager so rotating access tokens stay in memory only.
+        # If auth setup fails, re-raise so this server is reported as failed
+        # without blocking other MCP servers from connecting.
+        _http_auth = None
         if self._auth_type == "oauth":
             try:
                 from tools.mcp_oauth_manager import get_manager
-                _oauth_auth = get_manager().get_or_build_provider(
+                _http_auth = get_manager().get_or_build_provider(
                     self.name, url, config.get("oauth"),
                 )
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+                raise
+        elif self._auth_type == "client_credentials":
+            try:
+                from tools.mcp_client_credentials import get_client_credentials_manager
+                _http_auth = get_client_credentials_manager().get_or_build_provider(
+                    self.name,
+                    url,
+                    config.get("oauth") or config.get("client_credentials"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MCP client_credentials setup failed for '%s': %s",
+                    self.name,
+                    _sanitize_error(str(exc)),
+                )
                 raise
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
@@ -1691,11 +1705,10 @@ class MCPServerTask:
                 "timeout": float(connect_timeout),
                 "sse_read_timeout": 300.0,
             }
-            if _oauth_auth is not None:
-                # Pass OAuth auth through to sse_client so SSE MCP servers
-                # behind OAuth 2.1 PKCE work. Previously built but never
-                # forwarded — SSE OAuth would silently fail with 401s.
-                _sse_kwargs["auth"] = _oauth_auth
+            if _http_auth is not None:
+                # Pass HTTP auth through to sse_client so SSE MCP servers
+                # behind OAuth 2.1 PKCE or client_credentials work.
+                _sse_kwargs["auth"] = _http_auth
             if client_cert is not None or ssl_verify is not True:
                 # SSE transport doesn't expose verify/cert as kwargs, so route
                 # them through an httpx_client_factory that wraps the SDK's
@@ -1768,8 +1781,8 @@ class MCPServerTask:
             }
             if headers:
                 client_kwargs["headers"] = headers
-            if _oauth_auth is not None:
-                client_kwargs["auth"] = _oauth_auth
+            if _http_auth is not None:
+                client_kwargs["auth"] = _http_auth
             if client_cert is not None:
                 client_kwargs["cert"] = client_cert
 
@@ -1797,8 +1810,8 @@ class MCPServerTask:
                 "timeout": float(connect_timeout),
                 "verify": ssl_verify,
             }
-            if _oauth_auth is not None:
-                _http_kwargs["auth"] = _oauth_auth
+            if _http_auth is not None:
+                _http_kwargs["auth"] = _http_auth
             async with streamablehttp_client(url, **_http_kwargs) as (
                 read_stream, write_stream, _get_session_id,
             ):
@@ -1960,9 +1973,9 @@ class MCPServerTask:
                 if not self._ready.is_set():
                     if _is_auth_error(exc):
                         logger.warning(
-                            "MCP server '%s' failed initial OAuth authentication, "
+                            "MCP server '%s' failed initial HTTP authentication, "
                             "not retrying automatically: %s",
-                            self.name, exc,
+                            self.name, _sanitize_error(str(exc)),
                         )
                         self._error = exc
                         self._ready.set()
@@ -2143,6 +2156,8 @@ def _get_auth_error_types() -> tuple:
         optional import for forward/backward compatibility.
       - ``tools.mcp_oauth.OAuthNonInteractiveError`` — raised by our callback
         handler when no user is present to complete a browser flow.
+      - ``tools.mcp_client_credentials.ClientCredentialsTokenError`` — raised
+        when noninteractive client_credentials token minting fails.
       - ``httpx.HTTPStatusError`` — caller must additionally check
         ``status_code == 401`` via :func:`_is_auth_error`.
     """
@@ -2164,6 +2179,11 @@ def _get_auth_error_types() -> tuple:
     try:
         from tools.mcp_oauth import OAuthNonInteractiveError
         types.append(OAuthNonInteractiveError)
+    except ImportError:
+        pass
+    try:
+        from tools.mcp_client_credentials import ClientCredentialsTokenError
+        types.append(ClientCredentialsTokenError)
     except ImportError:
         pass
     try:
@@ -2205,9 +2225,8 @@ def _handle_auth_error_and_retry(
     Called by the 5 MCP tool handlers when ``session.<op>()`` raises an
     auth-related exception. Workflow:
 
-      1. Ask :class:`tools.mcp_oauth_manager.MCPOAuthManager.handle_401` if
-         recovery is viable (i.e., disk has fresh tokens, or the SDK can
-         refresh in-place).
+      1. Ask the configured auth manager (OAuth PKCE or client_credentials)
+         if recovery is viable.
       2. If yes, set the server's ``_reconnect_event`` so the server task
          tears down the current MCP session and rebuilds it with fresh
          credentials. Wait briefly for ``_ready`` to re-fire.
@@ -2231,24 +2250,35 @@ def _handle_auth_error_and_retry(
     if not _is_auth_error(exc):
         return None
 
-    from tools.mcp_oauth_manager import get_manager
-    manager = get_manager()
+    with _lock:
+        srv = _servers.get(server_name)
+    auth_type = (getattr(srv, "_auth_type", "") or "").lower().strip()
 
-    async def _recover():
-        return await manager.handle_401(server_name, None)
+    recovery_label = "OAuth"
+    if auth_type == "client_credentials":
+        recovery_label = "client_credentials"
+
+        async def _recover():
+            from tools.mcp_client_credentials import get_client_credentials_manager
+            return await get_client_credentials_manager().handle_401(server_name)
+
+    else:
+        from tools.mcp_oauth_manager import get_manager
+        manager = get_manager()
+
+        async def _recover():
+            return await manager.handle_401(server_name, None)
 
     try:
         recovered = _run_on_mcp_loop(_recover, timeout=10)
     except Exception as rec_exc:
         logger.warning(
-            "MCP OAuth '%s': recovery attempt failed: %s",
-            server_name, rec_exc,
+            "MCP %s '%s': recovery attempt failed: %s",
+            recovery_label, server_name, _sanitize_error(str(rec_exc)),
         )
         recovered = False
 
     if recovered:
-        with _lock:
-            srv = _servers.get(server_name)
         if srv is not None and hasattr(srv, "_reconnect_event"):
             loop = _mcp_loop
             if loop is not None and loop.is_running():
@@ -2271,8 +2301,8 @@ def _handle_auth_error_and_retry(
                     _run_on_mcp_loop(_await_ready(), timeout=15)
                 except Exception as exc:
                     logger.warning(
-                        "MCP OAuth '%s': ready poll failed: %s",
-                        server_name, exc,
+                        "MCP %s '%s': ready poll failed: %s",
+                        recovery_label, server_name, _sanitize_error(str(exc)),
                     )
 
         # A successful OAuth recovery is independent evidence that the
@@ -2298,13 +2328,24 @@ def _handle_auth_error_and_retry(
         except Exception as retry_exc:
             logger.warning(
                 "MCP %s/%s retry after auth recovery failed: %s",
-                server_name, op_description, retry_exc,
+                server_name, op_description, _sanitize_error(str(retry_exc)),
             )
 
     # No recovery available, or retry also failed: surface a structured
     # needs_reauth error. Bumps the circuit breaker so the model stops
     # retrying the tool.
     _bump_server_error(server_name)
+    if auth_type == "client_credentials":
+        return json.dumps({
+            "error": (
+                f"MCP server '{server_name}' client_credentials token refresh "
+                "failed. Check mcp_servers.<name>.oauth client_id, "
+                "client_secret, token_url, and scopes. Do NOT retry this tool "
+                "until the configuration is fixed."
+            ),
+            "needs_reauth": True,
+            "server": server_name,
+        }, ensure_ascii=False)
     return json.dumps({
         "error": (
             f"MCP server '{server_name}' requires re-authentication. "

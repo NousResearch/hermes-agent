@@ -397,6 +397,52 @@ class TestMcpAdd:
         assert srv["args"] == ["custom-server"]
         assert "env" not in srv
 
+
+    def test_add_http_server_client_credentials_saves_secret_placeholder(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        fake_tools = [FakeTool("issues", "List issues")]
+
+        def mock_probe(name, config, **kw):
+            assert config["auth"] == "client_credentials"
+            assert config["oauth"]["client_id"] == "linear-client-id"
+            assert config["oauth"]["client_secret"] == "${MCP_LINEAR_CLIENT_SECRET}"
+            assert "LINEAR_API_KEY" not in str(config)
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        prompt_inputs = iter([
+            "",  # token URL: use built-in Linear default
+            "linear-client-id",
+            "linear-client-secret",
+            "read,comments:create",
+        ])
+
+        from hermes_cli import mcp_config as mc
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config, get_env_value
+
+        monkeypatch.setattr(mc, "_prompt", lambda *a, **kw: next(prompt_inputs))
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        cmd_mcp_add(_make_args(
+            name="linear",
+            url="https://mcp.linear.app/mcp",
+            auth="client_credentials",
+        ))
+        out = capsys.readouterr().out
+
+        assert "Saved" in out
+        assert "LINEAR_API_KEY" in out
+        assert "linear-client-secret" not in out
+        assert get_env_value("MCP_LINEAR_CLIENT_SECRET") == "linear-client-secret"
+        srv = read_raw_config()["mcp_servers"]["linear"]
+        assert srv["auth"] == "client_credentials"
+        assert srv["oauth"]["client_secret"] == "${MCP_LINEAR_CLIENT_SECRET}"
+        assert "LINEAR_API_KEY" not in str(srv)
+
     def test_unknown_preset_rejected(self, capsys):
         """An unknown preset name is rejected with a clear error."""
         from hermes_cli.mcp_config import cmd_mcp_add
@@ -746,3 +792,31 @@ class TestMcpLogin:
         assert "Authenticated — 3 tool(s) available" in out
         assert "no OAuth token" not in out
 
+
+
+class TestMcpClientCredentialsAuthDisplay:
+    def test_test_command_displays_client_credentials_without_secrets(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "linear": {
+                "url": "https://mcp.linear.app/mcp",
+                "auth": "client_credentials",
+                "oauth": {
+                    "client_id": "linear-client-id",
+                    "client_secret": "linear-client-secret",
+                    "scope": "read,comments:create",
+                },
+            },
+        })
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server",
+            lambda name, cfg: [("issues", "List issues")],
+        )
+
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="linear"))
+        out = capsys.readouterr().out
+
+        assert "client_credentials" in out
+        assert "linear-client-secret" not in out
+        assert "LINEAR_API_KEY" not in out

@@ -122,6 +122,11 @@ def _env_key_for_server(name: str) -> str:
     return f"MCP_{name.upper().replace('-', '_')}_API_KEY"
 
 
+def _client_secret_env_key_for_server(name: str) -> str:
+    """Convert server name to an env-var key for OAuth client secrets."""
+    return f"MCP_{name.upper().replace('-', '_')}_CLIENT_SECRET"
+
+
 def _strip_bearer_prefix(token: str) -> str:
     """Strip a leading ``Bearer `` from a pasted token.
 
@@ -390,6 +395,44 @@ def cmd_mcp_add(args):
                 _info("Cancelled.")
                 return
 
+    elif url and auth_type == "client_credentials":
+        print()
+        _info("Configuring OAuth client_credentials (non-interactive).")
+        if name.lower() == "linear":
+            _info(
+                "LINEAR_API_KEY is not used for this auth mode; "
+                "use OAuth client credentials."
+            )
+        token_url = _prompt(
+            "OAuth token URL (blank for built-in Linear default)",
+            default="",
+        ).strip()
+        client_id = _prompt("OAuth client ID", default="").strip()
+        secret_env_key = _client_secret_env_key_for_server(name)
+        existing_secret = get_env_value(secret_env_key)
+        if existing_secret:
+            _success(f"{secret_env_key}: already configured")
+        else:
+            client_secret = _prompt("OAuth client secret", password=True)
+            if client_secret:
+                save_env_value(secret_env_key, client_secret)
+                _success(
+                    f"Saved to {display_hermes_home()}/.env as {secret_env_key}"
+                )
+        scope = _prompt("OAuth scopes (optional)", default="").strip()
+
+        oauth_cfg: Dict[str, Any] = {
+            "client_secret": f"${{{secret_env_key}}}",
+        }
+        if token_url:
+            oauth_cfg["token_url"] = token_url
+        if client_id:
+            oauth_cfg["client_id"] = client_id
+        if scope:
+            oauth_cfg["scope"] = scope
+        server_config["auth"] = "client_credentials"
+        server_config["oauth"] = oauth_cfg
+
     elif url:
         # Prompt for API key / Bearer token for HTTP servers
         print()
@@ -629,6 +672,8 @@ def cmd_mcp_test(args):
     headers = cfg.get("headers", {})
     if auth_type == "oauth":
         _info("Auth: OAuth 2.1 PKCE")
+    elif auth_type == "client_credentials":
+        _info("Auth: OAuth 2.0 client_credentials")
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):

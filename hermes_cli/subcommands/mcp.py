@@ -58,7 +58,11 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         default=[],
         help="Arguments for stdio command; must be the last option",
     )
-    mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+    mcp_add_p.add_argument(
+        "--auth",
+        choices=["oauth", "header", "client_credentials"],
+        help="Auth method",
+    )
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")
     mcp_add_p.add_argument(
         "--env",

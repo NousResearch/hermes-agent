@@ -289,6 +289,25 @@ class TestDelegateTask(unittest.TestCase):
         mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_validation_precedes_credential_resolution(self, mock_creds, mock_run):
+        # Input validation must not depend on delegation credentials resolving:
+        # an over-cap batch returns the cap error even when credential
+        # resolution would fail, and credentials are never resolved for input
+        # that is rejected up front.
+        mock_creds.side_effect = ValueError(
+            "Cannot resolve delegation provider 'x': no creds"
+        )
+        parent = _make_mock_parent()
+        limit = _get_max_concurrent_children()
+        tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("Too many tasks", result["error"])
+        mock_run.assert_not_called()
+        mock_creds.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
         """When tasks array is provided, top-level goal/context/toolsets are ignored."""
         mock_run.return_value = {

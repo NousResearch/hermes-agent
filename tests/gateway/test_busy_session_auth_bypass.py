@@ -165,6 +165,35 @@ class TestBusySessionAuthBypass:
         assert sk in adapter._pending_messages
 
     @pytest.mark.asyncio
+    async def test_authorized_queue_mode_text_sends_terse_ack(self):
+        """Queue-mode text should be preserved and visibly acknowledged."""
+        from gateway.run import GatewayRunner
+
+        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner._busy_input_mode = "queue"
+        runner._busy_text_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="follow up", user_id="user1")
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        running_agent.get_activity_summary.return_value = {}
+        runner._running_agents[sk] = running_agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_active_session_busy_message(
+            runner, event, sk
+        )
+
+        assert result is True
+        assert adapter._pending_messages[sk].text == "follow up"
+        adapter._send_with_retry.assert_awaited_once()
+        sent = adapter._send_with_retry.await_args.kwargs["content"]
+        assert "Queued for the next turn" in sent
+
+    @pytest.mark.asyncio
     async def test_unauthorized_user_during_drain_still_blocked(self):
         """Even during drain mode, unauthorized users must be dropped."""
         from gateway.run import GatewayRunner

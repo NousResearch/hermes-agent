@@ -3622,12 +3622,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
-        if (
-            event.message_type == MessageType.TEXT
-            and busy_text_mode == "queue"
-            and effective_mode != "steer"
-        ):
-            return False
+        # Queue-mode TEXT follow-ups still go through this runner-level
+        # handler so the user gets the terse "queued" acknowledgement. Older
+        # code returned False here to let BasePlatformAdapter debounce and
+        # merge the text silently; that preserved the follow-up, but made
+        # WhatsApp/Telegram/Slack look like they had swallowed the message.
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet

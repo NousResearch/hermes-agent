@@ -1,0 +1,16 @@
+name: google-colab
+version: 0.1.0
+description: Google Colab CLI job runner for remote accelerator workloads.
+author: HermesAgent
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - google_colab_status
+  - google_colab_sessions
+  - google_colab_run
+  - google_colab_sft_template
+provides_cli:
+  - google-colab

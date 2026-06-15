@@ -123,15 +123,9 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     read that raw override before falling back to the collapsed container key.
     """
     try:
-        from tools.terminal_tool import _resolve_container_task_id, _task_env_overrides
+        from tools.terminal_tool import resolve_task_overrides
 
-        raw_task_id = task_id or "default"
-        container_key = _resolve_container_task_id(raw_task_id)
-        overrides = (
-            _task_env_overrides.get(raw_task_id)
-            or _task_env_overrides.get(container_key)
-            or {}
-        )
+        overrides = resolve_task_overrides(task_id)
     except Exception:
         return None
 
@@ -693,15 +687,11 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 terminal_env = None
 
         if terminal_env is None:
-            from tools.terminal_tool import _task_env_overrides
+            from tools.terminal_tool import resolve_task_overrides
 
             config = _get_env_config()
             env_type = config["env_type"]
-            overrides = (
-                _task_env_overrides.get(raw_task_id)
-                or _task_env_overrides.get(task_id)
-                or {}
-            )
+            overrides = resolve_task_overrides(raw_task_id)
 
             if env_type == "docker":
                 image = overrides.get("docker_image") or config["docker_image"]

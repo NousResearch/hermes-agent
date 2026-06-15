@@ -609,6 +609,204 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+# ---------------------------------------------------------------------------
+# Card JSON 2.0 table helpers
+# ---------------------------------------------------------------------------
+
+# Feishu card 2.0 hard limits
+_FEISHU_CARD_MAX_TABLES = 5
+_FEISHU_CARD_MAX_COLUMNS = 50
+
+
+def _split_content_into_blocks(content: str) -> List[Dict[str, Any]]:
+    """Split *content* into an ordered list of typed blocks.
+
+    Each block is one of:
+      {"type": "markdown", "text": <str>}
+      {"type": "table",    "raw":  <str>}   # raw GFM table lines (no fence)
+
+    Fenced code blocks are treated as opaque markdown and are NEVER parsed
+    as tables, even if they contain ``|`` characters.
+    """
+    blocks: List[Dict[str, Any]] = []
+    lines = content.splitlines(keepends=True)
+
+    # State machine: track whether we're inside a fenced code block
+    in_fence = False
+    current_lines: List[str] = []
+    current_type: str = "markdown"  # "markdown" or "table"
+
+    def _flush(buf: List[str], btype: str) -> None:
+        text = "".join(buf)
+        if text.strip():
+            blocks.append({"type": btype, "text": text if btype == "markdown" else text.rstrip("\n")})
+
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.strip()
+
+        # Detect fence open/close
+        if not in_fence and _MARKDOWN_FENCE_OPEN_RE.match(stripped):
+            in_fence = True
+            # Flush any pending table block first (tables can't contain fences)
+            if current_type == "table":
+                _flush(current_lines, "table")
+                current_lines = []
+                current_type = "markdown"
+            current_lines.append(raw)
+            i += 1
+            continue
+
+        if in_fence:
+            current_lines.append(raw)
+            if _MARKDOWN_FENCE_CLOSE_RE.match(stripped):
+                in_fence = False
+                # Keep as markdown
+            i += 1
+            continue
+
+        # Detect GFM table: current line starts with | and next line is separator
+        if (
+            stripped.startswith("|")
+            and i + 1 < len(lines)
+            and re.match(r"^\|[-|: ]+\|", lines[i + 1].strip())
+        ):
+            # Transition: flush previous markdown buffer
+            if current_type == "markdown":
+                _flush(current_lines, "markdown")
+                current_lines = []
+                current_type = "table"
+            # Collect all consecutive table lines (lines starting with |)
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                current_lines.append(lines[i])
+                i += 1
+            _flush(current_lines, "table")
+            current_lines = []
+            current_type = "markdown"
+            continue
+
+        # Normal markdown line
+        if current_type == "table":
+            _flush(current_lines, "table")
+            current_lines = []
+            current_type = "markdown"
+        current_lines.append(raw)
+        i += 1
+
+    _flush(current_lines, current_type)
+    return blocks
+
+
+def _parse_gfm_table(raw: str) -> Optional[Dict[str, Any]]:
+    """Parse a raw GFM table string into a Feishu card 2.0 table element.
+
+    Returns None if the table cannot be parsed (e.g. fewer than 2 rows).
+    Column ``name`` keys use ``c0/c1/...`` to avoid issues with non-ASCII
+    or special-character headers.
+    """
+    lines = [ln for ln in raw.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+
+    def _split_cells(line: str) -> List[str]:
+        # Strip leading/trailing pipes, then split on |
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|"):
+            stripped = stripped[:-1]
+        return [cell.strip() for cell in stripped.split("|")]
+
+    header_cells = _split_cells(lines[0])
+    n_cols = len(header_cells)
+
+    if n_cols == 0 or n_cols > _FEISHU_CARD_MAX_COLUMNS:
+        return None
+
+    # Verify line[1] is a separator row
+    sep_cells = _split_cells(lines[1])
+    if not all(re.match(r"^[-: ]+$", c) for c in sep_cells if c):
+        return None
+
+    col_keys = [f"c{idx}" for idx in range(n_cols)]
+    columns = [
+        {
+            "name": col_keys[idx],
+            "display_name": header_cells[idx],
+            "data_type": "markdown",
+            "width": "auto",
+        }
+        for idx in range(n_cols)
+    ]
+
+    rows: List[Dict[str, str]] = []
+    for line in lines[2:]:
+        if not line.strip():
+            continue
+        cells = _split_cells(line)
+        # Pad or trim to n_cols
+        row: Dict[str, str] = {}
+        for idx, key in enumerate(col_keys):
+            row[key] = cells[idx] if idx < len(cells) else ""
+        rows.append(row)
+
+    return {
+        "columns": columns,
+        "rows": rows,
+    }
+
+
+def _build_table_card(content: str) -> Optional[str]:
+    """Try to build a Feishu card JSON 2.0 string with table component(s).
+
+    Returns the JSON string on success, or None if the content exceeds
+    hard limits or cannot be parsed.
+    """
+    blocks = _split_content_into_blocks(content)
+
+    table_count = sum(1 for b in blocks if b["type"] == "table")
+    if table_count == 0 or table_count > _FEISHU_CARD_MAX_TABLES:
+        return None
+
+    elements: List[Dict[str, Any]] = []
+    tbl_index = 0
+
+    for block in blocks:
+        if block["type"] == "markdown":
+            text = block["text"].strip()
+            if text:
+                elements.append({"tag": "markdown", "content": text})
+        else:
+            parsed = _parse_gfm_table(block["text"])
+            if parsed is None:
+                # Can't parse this table; abort and fall back
+                return None
+            elements.append(
+                {
+                    "tag": "table",
+                    "element_id": f"tbl_{tbl_index}",
+                    "header_style": {
+                        "bold": True,
+                        "background_style": "grey",
+                    },
+                    "columns": parsed["columns"],
+                    "rows": parsed["rows"],
+                    "row_height": "auto",
+                    "row_max_height": "300px",
+                }
+            )
+            tbl_index += 1
+
+    card: Dict[str, Any] = {
+        "schema": "2.0",
+        "body": {
+            "elements": elements,
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 def parse_feishu_post_payload(
     payload: Any,
     *,
@@ -4374,10 +4572,19 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # When the content contains a markdown table, attempt to build a
+        # Feishu card JSON 2.0 with a table component so the table renders
+        # as a real table instead of degrading to plain text.
         if _MARKDOWN_TABLE_RE.search(content):
+            try:
+                card_json = _build_table_card(content)
+                if card_json is not None:
+                    return "interactive", card_json
+            except Exception as exc:
+                logger.warning(
+                    "[Feishu] Failed to build table card, falling back to text: %s", exc
+                )
+            # Fallback: send as plain text (original behaviour for tables)
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

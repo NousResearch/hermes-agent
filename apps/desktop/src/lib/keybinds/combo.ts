@@ -2,8 +2,9 @@
 //
 // A combo is a canonical lowercase string like "mod+k", "mod+shift+]", "shift+x",
 // or "r". `mod` is Cmd on macOS / Ctrl elsewhere, so a single binding works on
-// both. We derive the base key from `event.code` (not `event.key`) so Shift never
-// mutates it ("shift+/" stays "shift+/" instead of becoming "shift+?").
+// both. We prefer layout-aware `event.key` for letters, then fall back to
+// `event.code` so shifted punctuation still normalizes to its unshifted token
+// ("shift+/" stays "shift+/" instead of becoming "shift+?").
 //
 // `ctrl` is physical Control, distinct from `mod`. It only matters on macOS,
 // where `mod` is Cmd and Cmd+Tab is OS-reserved — so `ctrl+tab` is literally
@@ -70,6 +71,10 @@ function baseKeyFromCode(code: string): string | null {
   return CODE_TO_KEY[code] ?? null
 }
 
+function baseKeyFromEventKey(key: string): string | null {
+  return /^[a-z]$/i.test(key) ? key.toLowerCase() : null
+}
+
 // Returns the canonical combo for a keydown, or null while only modifiers are
 // held (so capture mode keeps waiting for a real key).
 export function comboFromEvent(event: KeyboardEvent): string | null {
@@ -77,7 +82,7 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
     return null
   }
 
-  const base = baseKeyFromCode(event.code)
+  const base = baseKeyFromEventKey(event.key) ?? baseKeyFromCode(event.code)
 
   if (!base) {
     return null

@@ -1,0 +1,72 @@
+mcp_servers:
+  youcom:
+    url: https://api.you.com/mcp
+    headers:
+      Authorization: Bearer ${YOUCOM_API_KEY}
+    enabled: true
+    timeout: 120
+    connect_timeout: 30
+  composio:
+    url: https://connect.composio.dev/mcp
+    auth: oauth
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+
+model:
+  provider: openrouter
+  default: deepseek/deepseek-v4-flash
+  api_key: env:OPENROUTER_API_KEY
+
+fallback_providers:
+  - provider: openrouter
+    model: qwen/qwen3-next-80b-a3b-instruct
+    reason: main_model_failed
+
+delegation:
+  provider: openrouter
+  model: qwen/qwen3-next-80b-a3b-instruct
+  max_concurrent_children: 3
+  max_iterations: 50
+  child_timeout_seconds: 600
+
+terminal:
+  cwd: ~/secure-safer-content
+
+auxiliary:
+  vision:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+  compression:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+  session_search:
+    provider: openrouter
+    model: deepseek/deepseek-v4-flash
+
+platform_toolsets:
+  cli:
+    - web
+    - file
+    - skills
+    - memory
+    - session_search
+    - image_gen
+    - vision
+    - clarify
+    - todo
+    - terminal
+
+approvals:
+  mode: off
+
+security:
+  tirith_enabled: false
+
+display:
+  skin: secure-safer
+  personality: kawaii
+  show_reasoning: false
+
+goals:
+  max_turns: 30

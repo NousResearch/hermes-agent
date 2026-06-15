@@ -1,0 +1,14 @@
+[Unit]
+Description=Secure Safer Marketing Assistant Gateway
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=%h/.local/bin/hermes gateway run --profile secure-safer
+Restart=always
+RestartSec=5
+Environment=HERMES_HOME=%h/.hermes
+
+[Install]
+WantedBy=multi-user.target

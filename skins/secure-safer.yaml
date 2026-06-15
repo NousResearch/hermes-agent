@@ -1,0 +1,30 @@
+name: secure-safer
+description: "Secure Safer Marketing Assistant - Vibrant Professionalism. Orange #fc820c on clean white"
+
+colors:
+  banner_border: "#fc820c"
+  banner_title: "#fc820c"
+  banner_accent: "#fc820c"
+  banner_dim: "#d3daef"
+  banner_text: "#141b2b"
+  ui_accent: "#fc820c"
+  ui_label: "#fc820c"
+  ui_ok: "#4caf50"
+  ui_error: "#ef5350"
+  ui_warn: "#ffa726"
+  prompt: "#fc820c"
+  response_box_border: "#fc820c"
+  response_box_title: "#fc820c"
+  response_box_text: "#141b2b"
+
+spinner:
+  faces: ["🟠", "⚡", "◉", "◎", "◇"]
+  verbs: ["Researching", "Writing", "Editing", "Optimizing", "Saving"]
+  wings: ["🟠", "⚡", "🎯", "📝", "💾"]
+
+banner_logo: "[bold #fc820c]   _|_|_|_|_|  _|_|_|_|_|  _|_|_|_|_|_|  _|_|_|_|_|  _|      _|  _|_|_|_|_|_|[/]
+[bold #fc820c]   _|            _|          _|          _|          _|_|    _|_|  _|_|_|_|_|_|[/]
+[bold #fc820c]   _|_|_|        _|          _|_|_|_|    _|_|_|      _|  _|  _|  _|      _|[/]
+[bold #fc820c]   _|            _|          _|          _|          _|      _|  _|      _|[/]
+[bold #fc820c]   _|            _|          _|          _|_|_|_|_|  _|      _|  _|      _|[/]
+[#d3daef]             Secure Safer Marketing Assistant[/]\n

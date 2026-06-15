@@ -25,11 +25,13 @@ downloads the audio and transcribes it.
 ## Setup
 
 ```bash
-pip install yt-dlp     # ffmpeg must also be on PATH (brew install ffmpeg / apt install ffmpeg)
+pip install yt-dlp faster-whisper   # ffmpeg must also be on PATH (brew install ffmpeg / apt install ffmpeg)
 ```
 
 Requires Python 3.10+ (older interpreters silently fail Twitch's GraphQL — run inside the
 Hermes venv).
+
+A transcription backend is required: faster-whisper (installed above) runs locally with no key and is the default. Otherwise set one of GROQ_API_KEY (free tier), VOICE_TOOLS_OPENAI_KEY, MISTRAL_API_KEY, XAI_API_KEY, or ELEVENLABS_API_KEY. With no backend, audio downloads fine but every transcript fails with: No STT provider available.
 
 ## Helper Script
 

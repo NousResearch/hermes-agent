@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
+# ``websockets`` is a direct hermes-agent dependency because the browser CDP
+# supervisor and browser_dialog tool import it during tool discovery. Keep the
+# fork's compatibility wrapper so stale or incomplete installs fail cleanly.
 from tools.websocket_compat import (
     WebSocketException,
     websocket_connect,

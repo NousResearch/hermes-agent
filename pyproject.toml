@@ -98,6 +98,9 @@ dependencies = [
   # (which is a silent killer on Windows) and `os.killpg` (which doesn't
   # exist on Windows).
   "psutil==7.2.2",
+  # Browser CDP supervisor + browser_dialog import this directly. Keep core
+  # so browser tool discovery doesn't fail on lean installs.
+  "websockets==15.0.1",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
@@ -143,7 +146,7 @@ dev = [
     "starlette==1.0.1",  # starlette: CVE-2026-48710
     "ty==0.0.21",
     "ruff==0.15.10",
-    "setuptools==82.0.1",
+    "setuptools==81.0.0",  # latest <82; torch >=2.11 caps setuptools<82
     "aiohttp==3.14.0",
     "pywinpty==2.0.15 ; sys_platform == 'win32'",
     "ptyprocess==0.7.0 ; sys_platform != 'win32'",

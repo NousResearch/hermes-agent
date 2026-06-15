@@ -4732,6 +4732,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True
 
+        # --- Approval response routing (#46866) ---
+        # When the agent is blocked waiting for a dangerous-command approval,
+        # plain-text responses like "yes" or "approve" must be routed to the
+        # approval handler instead of being steered/queued/interrupted.
+        # Otherwise approval via messaging platforms never succeeds.
+        try:
+            from tools.approval import has_blocking_approval, resolve_gateway_approval
+            if has_blocking_approval(session_key):
+                _raw_text = (event.text or "").strip().lower()
+                _approval_choice = None
+                if _raw_text in {"approve", "yes", "ok", "confirm", "y"}:
+                    _approval_choice = "once"
+                elif _raw_text in {"deny", "no", "reject", "n"}:
+                    _approval_choice = "deny"
+                elif _raw_text in {"always", "approve always", "always approve"}:
+                    _approval_choice = "always"
+                elif _raw_text in {"session", "approve session", "session approve"}:
+                    _approval_choice = "session"
+                if _approval_choice is not None:
+                    if _approval_choice == "deny":
+                        resolve_gateway_approval(session_key, "deny")
+                    else:
+                        resolve_gateway_approval(session_key, _approval_choice)
+                    _adapter = self.adapters.get(event.source.platform)
+                    if _adapter:
+                        _adapter.resume_typing_for_chat(event.source.chat_id)
+                    logger.info(
+                        "Approval response via plain text: session=%s choice=%s",
+                        session_key, _approval_choice,
+                    )
+                    return True
+        except Exception:
+            pass  # non-fatal — fall through to normal busy handling
+
         # Normal busy case (agent actively running a task)
         adapter = self.adapters.get(event.source.platform)
         if not adapter:

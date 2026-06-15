@@ -38,9 +38,10 @@ const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
-const { buildDesktopBackendEnv } = require('./backend-env.cjs')
+const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
+const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const {
   buildPosixCleanupScript,
@@ -239,7 +240,7 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
+  if (process.env.HERMES_HOME) return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')
@@ -1834,6 +1835,44 @@ async function applyUpdates(opts = {}) {
   }
 }
 
+async function handOffWindowsBootstrapRecovery(reason) {
+  if (!IS_WINDOWS || !IS_PACKAGED) return false
+
+  const updater = resolveUpdaterBinary()
+  if (!updater) return false
+
+  const updateRoot = resolveUpdateRoot()
+  const { branch: configuredBranch } = readDesktopUpdateConfig()
+  const branch = directoryExists(path.join(updateRoot, '.git'))
+    ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+    : configuredBranch || DEFAULT_UPDATE_BRANCH
+  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+  const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
+  const updaterArgs = fileExists(venvHermes) ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+
+  await releaseBackendLockForUpdate(updateRoot)
+
+  const child = spawn(updater, updaterArgs, {
+    cwd: HERMES_HOME,
+    env: {
+      ...process.env,
+      HERMES_HOME,
+      PATH: [path.join(HERMES_HOME, 'node', 'bin'), venvBin, process.env.PATH].filter(Boolean).join(path.delimiter)
+    },
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false
+  })
+  child.unref()
+
+  rememberLog(`[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`)
+  setTimeout(() => {
+    app.quit()
+  }, 600)
+
+  return true
+}
+
 // Resolve the hermes CLI to drive an in-app update: prefer the venv shim in
 // the install we're updating, fall back to `hermes` on PATH.
 function resolveHermesCliBinary(updateRoot) {
@@ -2430,6 +2469,14 @@ async function ensureRuntime(backend) {
   // to a renderer-side install overlay.
   if (backend.kind === 'bootstrap-needed') {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
+
+    if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
+      const handoffError = new Error('Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.')
+      handoffError.isBootstrapFailure = true
+      handoffError.bootstrapHandedOff = true
+      bootstrapFailure = handoffError
+      throw handoffError
+    }
 
     // Eagerly flip the bootstrap UI state to 'active' so the renderer
     // shows the install overlay BEFORE the runner finishes fetching the
@@ -5562,11 +5609,30 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) return false
-  new Notification({
+  // Action buttons render only on signed macOS builds; elsewhere they're dropped
+  // and the body click still works.
+  const actions = Array.isArray(payload?.actions) ? payload.actions : []
+  const notification = new Notification({
     title: payload?.title || 'Hermes',
     body: payload?.body || '',
-    silent: Boolean(payload?.silent)
-  }).show()
+    silent: Boolean(payload?.silent),
+    actions: actions.map(action => ({ type: 'button', text: String(action?.text || '') }))
+  })
+  notification.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    focusWindow(mainWindow)
+    if (payload?.sessionId) {
+      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
+    }
+  })
+  notification.on('action', (_actionEvent, index) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const action = actions[index]
+    if (action?.id) {
+      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })
+    }
+  })
+  notification.show()
   return true
 })
 
@@ -5953,6 +6019,8 @@ function disposeTerminalSession(id) {
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
+
+ipcMain.handle('hermes:fs:worktrees', async (_event, cwds) => worktreesForIpc(cwds))
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {

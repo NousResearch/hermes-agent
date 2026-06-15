@@ -132,6 +132,18 @@ export const ja = defineLocale({
       transcriptionUnavailable: '音声文字起こしはまだ利用できません。',
       tryRecordingAgain: 'もう一度録音してください。',
       unavailable: '音声は利用できません'
+    },
+    native: {
+      approvalTitle: '承認が必要です',
+      approveAction: '承認',
+      rejectAction: '拒否',
+      inputTitle: '入力が必要です',
+      inputBody: 'Hermes が応答を待っています。',
+      turnDoneTitle: 'Hermes が完了しました',
+      turnDoneBody: '応答の準備ができました。',
+      turnErrorTitle: 'ターンが失敗しました',
+      backgroundDoneTitle: 'バックグラウンドタスクが完了しました',
+      backgroundFailedTitle: 'バックグラウンドタスクが失敗しました'
     }
   },
 
@@ -177,7 +189,47 @@ export const ja = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
-      about: '情報'
+      about: '情報',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro:
+        'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      enableAll: '通知を有効にする',
+      enableAllDesc: 'マスタースイッチ。オフにすると以下のすべての通知を無効にします。',
+      focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
+      kinds: {
+        approval: {
+          label: '承認が必要',
+          description: 'コマンドが承認または拒否を待っています。'
+        },
+        input: {
+          label: '入力が必要',
+          description: 'Hermes が質問したか、パスワードやシークレットを必要としています。'
+        },
+        turnDone: {
+          label: '応答完了',
+          description: 'Hermes がバックグラウンドのときにターンが完了しました。'
+        },
+        turnError: {
+          label: 'ターン失敗',
+          description: 'ターンがエラーで終了しました。'
+        },
+        backgroundDone: {
+          label: 'バックグラウンドタスク完了',
+          description: 'バックグラウンドのターミナルコマンドが完了しました。'
+        }
+      },
+      test: 'テスト通知を送信',
+      testTitle: 'Hermes',
+      testBody: '通知は正常に動作しています。',
+      testSent:
+        'テストを送信しました。表示されない場合は、OS の通知許可と集中モード／おやすみモードを確認してください。',
+      testUnsupported: 'このシステムはネイティブ通知に対応していません。',
+      completionSoundTitle: '完了サウンド',
+      completionSoundDesc: 'エージェントのターン終了時に再生されます。プリセットを選んでここで試聴できます。',
+      completionSoundPreview: '試聴'
     },
     sections: {
       model: 'モデル',
@@ -642,6 +694,12 @@ export const ja = defineLocale({
       collapse: '折りたたむ',
       connectAnother: '別のプロバイダーを接続',
       otherProviders: 'その他のプロバイダー',
+      removeConfirm: provider => `${provider} を削除しますか？`,
+      removeExternal: (provider, command) => `${provider} は Hermes の外部で管理されています。${command} で削除してください。`,
+      removeKeyManaged: provider => `${provider} は API キーで設定されています。API Keys から削除してください。`,
+      removedTitle: 'アカウントを削除しました',
+      removedMessage: provider => `${provider} を削除しました。`,
+      failedRemove: provider => `${provider} を削除できませんでした`,
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
       loading: 'プロバイダーを読み込み中...'
     },
@@ -773,6 +831,7 @@ export const ja = defineLocale({
     back: '戻る',
     searchPlaceholder: 'セッション、ビュー、アクションを検索',
     goTo: '移動',
+    goToSession: 'セッションへ移動',
     commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
@@ -1040,6 +1099,9 @@ export const ja = defineLocale({
     deleting: '削除中...',
     createDesc: 'プロファイルは独立した Hermes 環境です：設定、スキル、SOUL.md が別々になります。',
     nameLabel: '名前',
+    cloneFrom: '複製元',
+    cloneFromNone: 'なし（空）',
+    cloneFromDesc: '選択したプロファイルから設定、スキル、SOUL.md をコピーします。',
     cloneFromDefault: 'デフォルトプロファイルから設定を複製',
     cloneFromDefaultDesc: 'デフォルトプロファイルから設定、スキル、SOUL.md をコピーします。',
     invalidName: hint => `無効なプロファイル名。${hint}`,
@@ -1348,6 +1410,8 @@ export const ja = defineLocale({
     queueSendNext: '次に送信',
     queueSend: '送信',
     queueDelete: '削除',
+    queueStuckTitle: 'キュー内のメッセージを送信できません',
+    queueStuckBody: 'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1794,6 +1858,7 @@ export const ja = defineLocale({
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
+      showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
       thinking: '考え中',
       today: time => `今日 ${time}`,
@@ -1823,9 +1888,11 @@ export const ja = defineLocale({
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
       sendFailed: '承認応答を送信できませんでした',
       run: '実行',
+      command: 'コマンド',
       moreOptions: 'その他の承認オプション',
       allowSession: 'このセッションで許可',
       alwaysAllowMenu: '常に許可…',
+      jumpToApproval: '承認が必要',
       reject: '拒否',
       alwaysTitle: 'このコマンドを常に許可しますか？',
       alwaysDescription: pattern =>

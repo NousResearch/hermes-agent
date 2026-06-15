@@ -1081,6 +1081,7 @@ def _normalize_codex_response(
     message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
+    saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
     saw_commentary_phase = False
     saw_final_answer_phase = False
     saw_reasoning_item = False
@@ -1095,6 +1096,7 @@ def _normalize_codex_response(
 
         if item_status in {"queued", "in_progress", "incomplete"}:
             has_incomplete_items = True
+            saw_streaming_or_item_incomplete = True
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
@@ -1252,7 +1254,9 @@ def _normalize_codex_response(
         finish_reason = "tool_calls"
     elif leaked_tool_call_text:
         finish_reason = "incomplete"
-    elif has_incomplete_items or (saw_commentary_phase and not saw_final_answer_phase):
+    elif saw_streaming_or_item_incomplete:
+        finish_reason = "incomplete"
+    elif (has_incomplete_items or saw_commentary_phase) and not saw_final_answer_phase:
         finish_reason = "incomplete"
     elif (reasoning_items_raw or reasoning_parts or saw_reasoning_item) and not final_text:
         # Response contains only reasoning (encrypted thinking state and/or

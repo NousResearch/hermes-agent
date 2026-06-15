@@ -541,6 +541,67 @@ class TestGotDoneOverflowSplitNotRefinalized:
         assert consumer.final_response_sent is True
 
 
+class TestFinalCleanupEditFloodControl:
+    """Regression for duplicate final sends when the cursor-strip edit fails."""
+
+    @pytest.mark.asyncio
+    async def test_failed_final_cleanup_edit_marks_visible_content_delivered(self):
+        adapter = _make_adapter()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False,
+            error="Flood control exceeded. Retry in 12 seconds",
+        ))
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+            ),
+        )
+
+        final_text = "The complete answer is already visible before cleanup."
+        consumer.on_delta(final_text)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # streaming preview lands with cursor
+        assert consumer._last_sent_text == f"{final_text} ▉"
+
+        consumer.finish()
+        await task
+
+        # The final cosmetic edit failed, so final_response_sent stays false;
+        # the important signal is that content_delivered suppresses the
+        # gateway's normal full final send and prevents a duplicate answer.
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is True
+        assert adapter.send.call_count == 1
+        assert adapter.edit_message.call_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_failed_final_edit_does_not_mark_undelivered_tail(self):
+        adapter = _make_adapter()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=False,
+            error="Flood control exceeded. Retry in 12 seconds",
+        ))
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=10.0, buffer_threshold=10_000, cursor=" ▉",
+            ),
+        )
+        await consumer._send_or_edit("visible prefix ▉")
+
+        ok = await consumer._send_or_edit(
+            "visible prefix plus unsent tail",
+            finalize=True,
+        )
+
+        assert ok is False
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+
 class TestStreamConsumerConfigFreshFinalField:
     """The dataclass field must exist and default to 0 (disabled)."""
 
@@ -556,15 +617,15 @@ class TestStreamConsumerConfigFreshFinalField:
 class TestStreamingConfigFreshFinalField:
     """The gateway-level StreamingConfig carries the setting."""
 
-    def test_default_enables_with_60s(self):
+    def test_default_is_disabled(self):
         from gateway.config import StreamingConfig
         cfg = StreamingConfig()
-        assert cfg.fresh_final_after_seconds == 60.0
+        assert cfg.fresh_final_after_seconds == 0.0
 
     def test_from_dict_uses_default_when_missing(self):
         from gateway.config import StreamingConfig
         cfg = StreamingConfig.from_dict({"enabled": True})
-        assert cfg.fresh_final_after_seconds == 60.0
+        assert cfg.fresh_final_after_seconds == 0.0
 
     def test_from_dict_respects_explicit_zero(self):
         from gateway.config import StreamingConfig

@@ -118,6 +118,10 @@ const paletteFilter = (value: string, search: string, keywords?: string[]): numb
   return needle.split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0
 }
 
+// Hermes session ids: <YYYYMMDD>_<HHMMSS>_<6 hex>. Used to offer a direct
+// "Go to session ‹id›" jump for ids that aren't in the recent-200 list.
+const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
+
 type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
 
 const toSessionEntry = (session: SessionRow): SessionEntry => ({
@@ -412,6 +416,24 @@ export function CommandPalette() {
     }
 
     const result: PaletteGroup[] = []
+
+    // Paste a raw session id → jump straight to it, even if it predates the
+    // recent-200 window the lists below are built from.
+    const directId = search.trim()
+
+    if (SESSION_ID_RE.test(directId)) {
+      result.push({
+        items: [
+          {
+            icon: MessageCircle,
+            id: `goto-${directId}`,
+            keywords: ['session', 'id', 'go to', directId],
+            label: `${t.commandCenter.goToSession} ${directId}`,
+            run: go(sessionRoute(directId))
+          }
+        ]
+      })
+    }
 
     if (sessions.length > 0) {
       result.push({

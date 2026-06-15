@@ -127,6 +127,18 @@ export const zhHant = defineLocale({
       transcriptionUnavailable: '語音轉寫暫不可用。',
       tryRecordingAgain: '請再錄製一次。',
       unavailable: '語音不可用'
+    },
+    native: {
+      approvalTitle: '需要核准',
+      approveAction: '核准',
+      rejectAction: '拒絕',
+      inputTitle: '需要輸入',
+      inputBody: 'Hermes 正在等待你的回應。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回覆已就緒。',
+      turnErrorTitle: '本輪失敗',
+      backgroundDoneTitle: '背景工作已完成',
+      backgroundFailedTitle: '背景工作失敗'
     }
   },
 
@@ -172,7 +184,45 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
-      about: '關於'
+      about: '關於',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
+      enableAll: '啟用通知',
+      enableAllDesc: '總開關。關閉後會靜音下方所有通知。',
+      focusedHint: '完成提醒僅在 Hermes 位於背景時觸發。',
+      kinds: {
+        approval: {
+          label: '需要核准',
+          description: '有指令正在等待你核准或拒絕。'
+        },
+        input: {
+          label: '需要輸入',
+          description: 'Hermes 提出了問題，或需要密碼或密鑰。'
+        },
+        turnDone: {
+          label: '回覆就緒',
+          description: 'Hermes 在背景時完成了一輪對話。'
+        },
+        turnError: {
+          label: '本輪失敗',
+          description: '本輪以錯誤結束。'
+        },
+        backgroundDone: {
+          label: '背景工作完成',
+          description: '背景終端機指令已完成。'
+        }
+      },
+      test: '傳送測試通知',
+      testTitle: 'Hermes',
+      testBody: '通知運作正常。',
+      testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
+      testUnsupported: '此系統不支援原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
+      completionSoundPreview: '預覽'
     },
     sections: {
       model: '模型',
@@ -621,6 +671,12 @@ export const zhHant = defineLocale({
       collapse: '收合',
       connectAnother: '連結其他提供方',
       otherProviders: '其他提供方',
+      removeConfirm: provider => `移除 ${provider}？`,
+      removeExternal: (provider, command) => `${provider} 由 Hermes 外部管理。請使用 ${command} 移除。`,
+      removeKeyManaged: provider => `${provider} 由 API 金鑰設定。請從 API Keys 中移除。`,
+      removedTitle: '帳號已移除',
+      removedMessage: provider => `${provider} 已移除。`,
+      failedRemove: provider => `無法移除 ${provider}`,
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
       loading: '正在載入提供方...'
     },
@@ -748,6 +804,7 @@ export const zhHant = defineLocale({
     back: '返回',
     searchPlaceholder: '搜尋工作階段、檢視和動作',
     goTo: '前往',
+    goToSession: '前往工作階段',
     commandCenter: '命令中心',
     appearance: '外觀',
     settings: '設定',
@@ -998,6 +1055,9 @@ export const zhHant = defineLocale({
     deleting: '刪除中…',
     createDesc: '設定檔是獨立的 Hermes 環境：各自擁有獨立的設定、技能和 SOUL.md。',
     nameLabel: '名稱',
+    cloneFrom: '複製來源',
+    cloneFromNone: '無（空白）',
+    cloneFromDesc: '從選取的來源設定檔複製設定、技能和 SOUL.md。',
     cloneFromDefault: '從預設設定檔複製設定',
     cloneFromDefaultDesc: '從您的預設設定檔複製設定、技能和 SOUL.md。',
     invalidName: hint => `設定檔名稱無效。${hint}`,
@@ -1304,6 +1364,8 @@ export const zhHant = defineLocale({
     queueSendNext: '下一個',
     queueSend: '傳送',
     queueDelete: '刪除',
+    queueStuckTitle: '佇列訊息未送出',
+    queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,
@@ -1738,6 +1800,7 @@ export const zhHant = defineLocale({
   assistant: {
     thread: {
       loadingSession: '正在載入工作階段',
+      showEarlier: '顯示較早的訊息',
       loadingResponse: 'Hermes 正在載入回覆',
       thinking: '思考中',
       today: time => `今天，${time}`,
@@ -1767,9 +1830,11 @@ export const zhHant = defineLocale({
       gatewayDisconnected: 'Hermes 閘道未連線',
       sendFailed: '無法傳送核准回應',
       run: '執行',
+      command: '指令',
       moreOptions: '更多核准選項',
       allowSession: '允許本工作階段',
       alwaysAllowMenu: '一律允許…',
+      jumpToApproval: '需要核准',
       reject: '拒絕',
       alwaysTitle: '一律允許此指令？',
       alwaysDescription: pattern =>

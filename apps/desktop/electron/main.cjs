@@ -43,6 +43,15 @@ const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const {
+  resolveUnpackedRelease,
+  decideRelaunchOutcome,
+  sandboxPreflight,
+  sandboxFallbackFromEnv,
+  collectRelaunchArgs,
+  collectRelaunchEnv,
+  buildRelaunchScript
+} = require('./update-relaunch.cjs')
+const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -1971,53 +1980,128 @@ async function applyUpdatesPosixInApp() {
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
   }
 
-  // Linux source build: `hermes desktop --build-only` rebuilds the unpacked app
-  // in place under apps/desktop/release/<platform>-unpacked, so there's no
-  // bundle to swap — but THIS process still holds the OLD binary. Mirror the
-  // macOS handoff: a detached watcher waits for us to exit (freeing the binary),
-  // then relaunches it. Without this the backend + GUI update successfully but
-  // the app never restarts and the overlay hangs on "applying" forever, with no
-  // close button, until the user kills it by hand.
+  // Linux in-app update terminal state. `hermes desktop --build-only` rebuilds
+  // the unpacked app in place under apps/desktop/release/<plat>-unpacked. We
+  // can only HONESTLY relaunch into the new GUI when the *running* binary IS
+  // that rebuilt one — i.e. execPath lives under release/<plat>-unpacked. The
+  // outcome is decided by three signals (see update-relaunch.cjs):
   //
-  // Coverage: this fires ONLY for a source build whose binary lives under the
-  // repo's release/ dir (the `hermes desktop` install path). Other Linux package
-  // formats — AppImage, .deb, .rpm — run from elsewhere, fail the startsWith()
-  // guard, and fall through to the "restart to load the new version" result,
-  // which they pick up on the next manual launch.
+  //   underUnpacked + sandboxOk  → 'relaunch': detached watcher re-execs us in
+  //       place (mirrors the macOS handoff). Without it the update succeeds but
+  //       the app never restarts and the overlay hangs on "applying" forever.
+  //   !underUnpacked             → 'guiSkew': the running shell is an AppImage/
+  //       .deb/.rpm/dev/unresolved binary we did NOT replace. Claiming "loads
+  //       next launch" is a lie (GUI/backend skew, #37541) — surface an
+  //       explicit closeable terminal state telling the user the GUI package
+  //       was NOT changed and must be updated/reinstalled.
+  //   underUnpacked + !sandboxOk → 'manual': we'd be relaunching the rebuilt
+  //       binary, but a fresh rebuild can leave chrome-sandbox without
+  //       root:root + setuid (mode 4755) and Electron then refuses to launch
+  //       ("quit and never came back"). DO NOT quit into a dead app — keep the
+  //       working window and surface the closeable manual-restart state.
   if (!IS_MAC) {
-    const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release') + path.sep
-    if (process.execPath.startsWith(releaseDir)) {
+    const unpackedDir = resolveUnpackedRelease(process.execPath, updateRoot, process.platform)
+    const underUnpacked = unpackedDir !== null
+
+    // Sandbox preflight (#45205 review item 3). Only meaningful when we'd
+    // actually relaunch the rebuilt binary. A repo grep found NO existing
+    // non-interactive sandbox fallback in the desktop app — the only
+    // chrome-sandbox reference is documentation in scripts/before-pack.cjs — so
+    // the only fallback we honor is the standard Electron escape hatch
+    // (ELECTRON_DISABLE_SANDBOX=1 / an explicit --no-sandbox launch arg), which
+    // sandboxFallbackFromEnv detects.
+    const preflight = underUnpacked
+      ? sandboxPreflight(unpackedDir, p => fs.statSync(p))
+      : { ok: false, reason: 'not-under-unpacked', path: null }
+    const sandboxFallback = sandboxFallbackFromEnv(process.env, process.argv.slice(1))
+    const sandboxOk = preflight.ok || sandboxFallback
+    if (underUnpacked && !preflight.ok) {
+      rememberLog(
+        `[updates] sandbox preflight: not launchable (${preflight.reason}) at ${preflight.path}; ` +
+          `fallback=${sandboxFallback ? 'env/--no-sandbox' : 'none'}`
+      )
+    }
+
+    const outcome = decideRelaunchOutcome({ underUnpacked, sandboxOk })
+
+    if (outcome === 'relaunch') {
       emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes…', percent: 100 })
-      // Wait up to ~30s for a graceful exit, then SIGKILL: a hung/zombie parent
-      // must be gone before we relaunch, or the new instance bails on the
-      // single-instance lock. The watcher self-deletes before exec so temp
-      // scripts don't accumulate across updates.
-      const relaunchScript = `#!/bin/bash
-set -u
-APP_PID=${process.pid}
-for _ in $(seq 1 60); do
-  kill -0 "$APP_PID" 2>/dev/null || break
-  sleep 0.5
-done
-if kill -0 "$APP_PID" 2>/dev/null; then
-  kill -9 "$APP_PID" 2>/dev/null || true
-  sleep 0.5
-fi
-rm -f -- "$0" 2>/dev/null || true
-exec ${shellQuote(process.execPath)}
-`
+      // Preserve launch context across the re-exec: replay the original args
+      // (filtered of Electron internals) and the env/cwd that define which
+      // backend/profile/root this instance talks to. Without this the
+      // relaunched instance comes up with default context instead of the user's.
+      const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
+      const relaunchEnv = collectRelaunchEnv(process.env)
+      const relaunchScript = buildRelaunchScript({
+        pid: process.pid,
+        execPath: process.execPath,
+        args: relaunchArgs,
+        env: relaunchEnv,
+        cwd: process.cwd()
+      })
       const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
       try {
         fs.writeFileSync(scriptPath, relaunchScript, { mode: 0o755 })
         const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
         child.unref()
-        rememberLog(`[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath}`)
+        rememberLog(
+          `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
+            `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
+        )
         setTimeout(() => app.quit(), 600)
         return { ok: true, handedOff: true }
       } catch (err) {
+        // Couldn't even stage the watcher — degrade to the closeable
+        // manual-restart state rather than stranding the user on a spinner.
+        // The renderer store maps manualRestart → a closeable terminal view on
+        // IPC resolve; we deliberately do NOT emit a streamed 'manual' progress
+        // here (its message would be misrendered as a copyable shell command).
         rememberLog(`[updates] linux relaunch failed: ${err.message}; falling back to manual restart`)
-        // fall through to the manual-restart result below
+        return {
+          ok: true,
+          backendUpdated: true,
+          guiUpdated: false,
+          manualRestart: true,
+          message: 'Backend updated. Quit and reopen Hermes to load the new version.'
+        }
       }
+    }
+
+    if (outcome === 'guiSkew') {
+      // Backend updated; the running GUI package was NOT changed. Do NOT claim a
+      // GUI update — that would imply the new GUI loads next launch when in fact
+      // this packaged shell will keep running old code against the new backend.
+      emitUpdateProgress({
+        stage: 'guiSkew',
+        message:
+          'Backend updated, but the desktop app package was not changed. ' +
+          'Update or reinstall the Hermes desktop app to match.',
+        percent: 100
+      })
+      rememberLog(
+        `[updates] gui/backend skew: execPath ${process.execPath} not under release/*-unpacked; ` +
+          'backend updated, GUI package unchanged (AppImage/.deb/.rpm/dev/unresolved)'
+      )
+      return { ok: true, backendUpdated: true, guiUpdated: false, guiSkew: true }
+    }
+
+    // outcome === 'manual': we're the rebuilt binary, but its sandbox helper is
+    // not launchable and no fallback applies. Keep this working window alive.
+    // No streamed 'manual' progress (see catch above) — the renderer maps
+    // manualRestart → a closeable terminal view on IPC resolve.
+    rememberLog(
+      `[updates] sandbox not launchable (${preflight.reason}); skipping auto-relaunch, ` +
+        'returning manual-restart so the user keeps a working window'
+    )
+    return {
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      manualRestart: true,
+      sandboxBlocked: true,
+      message:
+        'Backend updated. The rebuilt app can’t relaunch automatically ' +
+        '(sandbox helper needs root). Quit and reopen Hermes to finish.'
     }
   }
 

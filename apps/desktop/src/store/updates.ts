@@ -304,6 +304,37 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
     // state: the apply IPC resolves here, but the progress stream may have left
     // us on a non-terminal stage (e.g. 'done'/'rebuild'), which renders as a
     // spinner with no close button — the exact hang this guards against.
+    // Linux GUI/backend skew (#45205): the backend was updated but the running
+    // desktop app PACKAGE was not changed (AppImage/.deb/.rpm). We must NOT tell
+    // the user "the new version loads next launch" — that's false; this packaged
+    // shell keeps running old GUI code against the new backend. Land on the
+    // dedicated, closeable guiSkew terminal state telling them to update/reinstall
+    // the desktop app.
+    if (result?.guiSkew) {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        stage: 'guiSkew',
+        message: result.message ?? translateNow('updates.guiSkewBody')
+      })
+
+      return result
+    }
+
+    // Backend updated but the app couldn't auto-relaunch (e.g. the rebuilt
+    // sandbox helper isn't launchable): keep a closeable manual-restart state so
+    // the user keeps a working window instead of a dead app or a stuck spinner.
+    if (result?.ok && result?.manualRestart) {
+      $updateApply.set({
+        ...IDLE,
+        applying: false,
+        stage: 'manual',
+        message: result.message ?? translateNow('updates.manualPickedUp')
+      })
+
+      return result
+    }
+
     if (!result?.handedOff) {
       if (result?.ok) {
         // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
@@ -442,7 +473,11 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
 function ingestProgress(payload: DesktopUpdateProgress): void {
   const current = $updateApply.get()
   const log = [...current.log, { stage: payload.stage, message: payload.message, at: payload.at }].slice(-50)
-  const terminal = payload.stage === 'error' || payload.stage === 'restart' || payload.stage === 'manual'
+  const terminal =
+    payload.stage === 'error' ||
+    payload.stage === 'restart' ||
+    payload.stage === 'manual' ||
+    payload.stage === 'guiSkew'
 
   $updateApply.set({
     applying: !terminal,

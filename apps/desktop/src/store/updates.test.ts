@@ -231,6 +231,51 @@ describe('applyUpdates terminal state', () => {
     expect($updateOverlayOpen.get()).toBe(true)
     expect(notifySpy).not.toHaveBeenCalled()
   })
+
+  it('lands on the guiSkew terminal state for a GUI/backend skew (AppImage/.deb/.rpm), without claiming a GUI update', async () => {
+    // Linux: backend updated, but the running desktop package was NOT replaced.
+    // Must NOT toast "loads next launch" — that's the dishonest message #45205
+    // guards against. Lands on a closeable guiSkew view instead.
+    applyMock.mockResolvedValue({
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      guiSkew: true,
+      message: 'Backend updated, but the desktop app package was not changed.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.guiUpdated).toBe(false)
+    expect($updateApply.get().stage).toBe('guiSkew')
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().message).toMatch(/desktop app package was not changed/)
+    // Overlay stays open on a closeable terminal view; no "all set" toast.
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('lands on a closeable manual-restart state when the rebuilt sandbox blocks auto-relaunch', async () => {
+    // Under release/*-unpacked but chrome-sandbox isn't launchable: don't quit
+    // into a dead app — keep a working window on a closeable manual state.
+    applyMock.mockResolvedValue({
+      ok: true,
+      backendUpdated: true,
+      guiUpdated: false,
+      manualRestart: true,
+      sandboxBlocked: true,
+      message: 'Backend updated. Quit and reopen Hermes to finish.'
+    })
+
+    const result = await applyUpdates()
+
+    expect(result.manualRestart).toBe(true)
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBeNull()
+    expect($updateApply.get().message).toMatch(/Quit and reopen/)
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
 })
 
 describe('applyBackendUpdate recovery', () => {

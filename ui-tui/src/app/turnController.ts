@@ -619,6 +619,16 @@ class TurnController {
 
     if (finalText) {
       finalMessages.push({ role: 'assistant', text: finalText })
+    } else if (split.reasoning.trim()) {
+      // Entire model output wrapped in reasoning tags (e.g. kimi-k2.6).
+      // Surface reasoning as the answer so the thread doesn't go silent.
+      finalMessages.push({ role: 'assistant', text: split.reasoning.trim() })
+      // Avoid rendering the same reasoning twice — once as the assistant
+      // message above and once in the thinking/details panel.
+      if (finalDetails.thinking) {
+        finalDetails.thinking = undefined
+        finalDetails.thinkingTokens = undefined
+      }
     }
 
     const wasInterrupted = this.interrupted

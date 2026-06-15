@@ -69,6 +69,10 @@ _HERMES_EMAIL_HTML_TEMPLATE = """\
 """
 
 # Inline CSS per-element for email client compat (Gmail strips <style> tags).
+# Note: Python-Markdown generates <pre><code>...</code></pre> for fenced code.
+# The <pre> styling provides the dark background; <code> inside inherits it.
+# We use a two-pass approach: first style all <code> (inline code gets light bg),
+# then override <code> inside <pre> blocks to be transparent.
 _HERMES_EMAIL_STYLES = [
     ("h1", 'style="font-size:24px;font-weight:700;color:#1a202c;margin:24px 0 12px;border-bottom:2px solid #667eea;padding-bottom:8px;"'),
     ("h2", 'style="font-size:20px;font-weight:700;color:#2d3748;margin:24px 0 10px;border-bottom:1px solid #e2e8f0;padding-bottom:6px;"'),
@@ -84,10 +88,15 @@ _HERMES_EMAIL_STYLES = [
     ("td", 'style="padding:8px 12px;border-bottom:1px solid #e2e8f0;"'),
     ("code", 'style="background:#edf2f7;padding:2px 5px;border-radius:3px;font-size:13px;font-family:Menlo,Monaco,Consolas,monospace;"'),
     ("pre", 'style="background:#2d3748;color:#e2e8f0;padding:16px;border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.5;"'),
-    ("pre code", 'style="background:transparent;padding:0;color:inherit;"'),
     ("a", 'style="color:#667eea;text-decoration:none;"'),
     ("hr", 'style="border:none;border-top:1px solid #e2e8f0;margin:20px 0;"'),
 ]
+
+# Regex to match <code> inside <pre> blocks — override inline code styling
+_PRE_CODE_OVERRIDE = (
+    re.compile(r"(<pre[^>]*>.*?)<code(\s|>)", re.DOTALL),
+    r'\1<code style="background:transparent;padding:0;color:inherit;font-size:13px;font-family:Menlo,Monaco,Consolas,monospace;"\2',
+)
 
 
 def _markdown_to_html_email(body: str) -> str:
@@ -97,7 +106,10 @@ def _markdown_to_html_email(body: str) -> str:
     # Inject inline styles per element (Gmail strips <style> blocks)
     for tag, style in _HERMES_EMAIL_STYLES:
         html = re.sub(rf"<{tag}(\s|>)", rf"<{tag} {style}\1", html)
-    return _HERMES_EMAIL_HTML_TEMPLATE.format(body=html)
+    # Override <code> inside <pre> blocks (two-pass: inline code already styled above)
+    html = _PRE_CODE_OVERRIDE[0].sub(_PRE_CODE_OVERRIDE[1], html)
+    # Use .replace() instead of .format() — body may contain { } braces
+    return _HERMES_EMAIL_HTML_TEMPLATE.replace("{body}", html)
 
 
 # Automated sender patterns — emails from these are silently ignored
@@ -686,25 +698,23 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _attach_body(self, msg: MIMEMultipart, body: str) -> None:
         """Attach body as plain text + optional HTML to a message."""
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-        if self._html_format:
-            try:
-                html = _markdown_to_html_email(body)
-                msg.attach(MIMEText(html, "html", "utf-8"))
-            except Exception as e:
-                logger.warning("[Email] HTML conversion failed, sending plain only: %s", e)
+        self._attach_parts(msg, body)
 
     def _create_body_part(self, body: str) -> MIMEMultipart:
         """Create a multipart/alternative body part (for use inside multipart/mixed)."""
         alt = MIMEMultipart("alternative")
-        alt.attach(MIMEText(body, "plain", "utf-8"))
+        self._attach_parts(alt, body)
+        return alt
+
+    def _attach_parts(self, container: MIMEMultipart, body: str) -> None:
+        """Attach plain + optional HTML parts to a multipart container."""
+        container.attach(MIMEText(body, "plain", "utf-8"))
         if self._html_format:
             try:
                 html = _markdown_to_html_email(body)
-                alt.attach(MIMEText(html, "html", "utf-8"))
+                container.attach(MIMEText(html, "html", "utf-8"))
             except Exception as e:
-                logger.warning("[Email] HTML conversion failed, sending plain only: %s", e)
-        return alt
+                logger.warning("[Email] HTML conversion failed, sending plain only: %s", e, exc_info=True)
 
     def _send_email(
         self,

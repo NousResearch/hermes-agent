@@ -154,20 +154,20 @@ def _simulate_note_injection(
             else "a gateway interruption"
         )
         message = (
-            f"[System note: Your previous turn in this session was interrupted "
-            f"by {reason_phrase}. The conversation history below is intact. "
-            f"If it contains unfinished tool result(s), process them first and "
-            f"summarize what was accomplished, then address the user's new "
-            f"message below.]\n\n"
+            f"[System note: A new message has arrived. The previous turn "
+            f"was interrupted by {reason_phrase}. "
+            f"Address the user's NEW message below FIRST. "
+            f"Do NOT re-execute old tool calls — skip any unfinished "
+            f"work from the conversation history and focus on what the "
+            f"user is asking now.]\n\n"
             + message
         )
     elif has_fresh_tool_tail:
         message = (
-            "[System note: Your previous turn was interrupted before you could "
-            "process the last tool result(s). The conversation history contains "
-            "tool outputs you haven't responded to yet. Please finish processing "
-            "those results and summarize what was accomplished, then address the "
-            "user's new message below.]\n\n"
+            "[System note: A new message has arrived. The conversation "
+            "history contains pending tool outputs from an interrupted turn. "
+            "IGNORE those pending results. Address the user's NEW message "
+            "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
             + message
         )
     return message
@@ -442,6 +442,8 @@ class TestResumePendingSystemNote:
         )
         assert "[System note:" in result
         assert "gateway restart" in result
+        assert "NEW message" in result
+        assert "Do NOT re-execute" in result
         assert "what happened?" in result
 
     def test_resume_pending_shutdown_note_mentions_shutdown(self):
@@ -466,6 +468,7 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
         assert "[System note:" in result
         assert "gateway restart" in result
+        assert "NEW message" in result
 
     def test_resume_pending_subsumes_tool_tail_note(self):
         """When BOTH conditions are true, the restart-resume note wins —
@@ -495,7 +498,8 @@ class TestResumePendingSystemNote:
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
-        assert "tool result" in result
+        assert "pending tool outputs" in result
+        assert "Do NOT re-execute" in result
 
     def test_stale_resume_pending_does_not_inject_restart_note(self):
         """Old restart markers must not revive an unrelated stale task.
@@ -533,7 +537,8 @@ class TestResumePendingSystemNote:
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
-        assert "tool result" in result
+        assert "pending tool outputs" in result
+        assert "Do NOT re-execute" in result
 
     def test_stale_tool_tail_does_not_inject_auto_continue_note(self):
         """The core bug fix: stale tool-tail must not revive a dead task.
@@ -624,7 +629,8 @@ class TestResumePendingSystemNote:
             history, "ping", resume_entry=None, window_secs=0,
         )
         assert "[System note:" in result
-        assert "tool result" in result
+        assert "pending tool outputs" in result
+        assert "Do NOT re-execute" in result
 
     def test_legacy_history_without_timestamps_still_injects(self):
         """Transcripts predating timestamp persistence must keep the old
@@ -637,7 +643,8 @@ class TestResumePendingSystemNote:
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
-        assert "tool result" in result
+        assert "pending tool outputs" in result
+        assert "Do NOT re-execute" in result
 
     def test_no_note_when_nothing_to_resume(self):
         history = [
@@ -1187,6 +1194,86 @@ async def test_auto_resume_skips_sessions_with_running_agent():
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_gate_queues_real_inbound_messages():
+    """Real inbound messages wait while startup restore is in progress."""
+    runner, _adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="restore-chat"),
+    )
+
+    result = await runner._handle_message(inbound)
+
+    assert result is None
+    assert runner._startup_restore_queue == [inbound]
+
+
+@pytest.mark.asyncio
+async def test_startup_restore_waits_for_resume_before_draining_inbound():
+    """Queued inbound turns replay only after startup resume tasks finish."""
+    runner, adapter = make_restart_runner()
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+
+    source = make_restart_source(chat_id="restore-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:restore-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    resume_done = asyncio.Event()
+    seen: list[str] = []
+
+    async def fake_handle_message(event: MessageEvent) -> None:
+        if event.internal:
+            seen.append("resume-start")
+            task = asyncio.create_task(resume_done.wait())
+            adapter._session_tasks[pending_entry.session_key] = task
+            return
+        seen.append(f"inbound:{event.text}")
+
+    adapter.handle_message = fake_handle_message
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    await asyncio.sleep(0)
+
+    inbound = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    assert await runner._handle_message(inbound) is None
+    assert scheduled == 1
+    assert seen == ["resume-start"]
+    assert runner._startup_restore_queue == [inbound]
+
+    finish_task = asyncio.create_task(runner._finish_startup_restore())
+    await asyncio.sleep(0)
+    assert seen == ["resume-start"]
+
+    resume_done.set()
+    await finish_task
+
+    assert seen == ["resume-start", "inbound:hello"]
+    assert runner._startup_restore_queue == []
+    assert runner._startup_restore_in_progress is False
 
 
 # ---------------------------------------------------------------------------

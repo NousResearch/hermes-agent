@@ -352,6 +352,28 @@ class TestTrackForgetQuick:
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
 
+    def test_quick_does_not_descend_into_protected_top_level_dirs(self, _isolate_env):
+        dg = _load_lib()
+        protected_empty = (
+            _isolate_env / "hermes-agent" / "node_modules" / "pkg" / "empty"
+        )
+        protected_empty.mkdir(parents=True)
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 0
+        assert protected_empty.exists()
+
+    def test_quick_removes_empty_dirs_in_managed_subtrees(self, _isolate_env):
+        dg = _load_lib()
+        managed_empty = _isolate_env / "scratch" / "nested" / "empty"
+        managed_empty.mkdir(parents=True)
+
+        summary = dg.quick()
+
+        assert summary["empty_dirs"] == 3
+        assert not (_isolate_env / "scratch").exists()
+
 
 class TestStatus:
     def test_empty_status(self, _isolate_env):

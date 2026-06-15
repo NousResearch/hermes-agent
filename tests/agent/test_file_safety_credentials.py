@@ -536,3 +536,56 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     root_tok.parent.mkdir(parents=True, exist_ok=True)
     root_tok.write_text("x")
     assert "MCP token" in (get_read_block_error(str(root_tok)) or "")
+
+
+def test_sibling_profile_credentials_blocked(tmp_path, monkeypatch):
+    """Credential stores in sibling profiles must also be blocked."""
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    active = root / "profiles" / "active"
+    sibling = root / "profiles" / "sibling"
+    active.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: active)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error
+
+    sibling_auth = sibling / "auth.json"
+    sibling_auth.write_text('{"token": "dummy_sibling_secret"}')
+    err = get_read_block_error(str(sibling_auth))
+    assert err is not None
+    assert "credential store" in err
+    assert "dummy_sibling_secret" not in err
+
+    sibling_oauth = sibling / ".anthropic_oauth.json"
+    sibling_oauth.write_text('{"key": "dummy_sibling_oauth"}')
+    err = get_read_block_error(str(sibling_oauth))
+    assert err is not None
+    assert "credential store" in err
+
+    sibling_mcp = sibling / "mcp-tokens"
+    sibling_mcp.mkdir()
+    (sibling_mcp / "token.json").write_text("dummy_token")
+    err = get_read_block_error(str(sibling_mcp))
+    assert err is not None
+    assert "MCP token" in err
+
+    sibling_webhook = sibling / "webhook_subscriptions.json"
+    sibling_webhook.write_text("{}")
+    err = get_read_block_error(str(sibling_webhook))
+    assert err is not None
+    assert "credential store" in err
+
+    sibling_readme = sibling / "README.md"
+    sibling_readme.write_text("# sibling")
+    assert get_read_block_error(str(sibling_readme)) is None
+
+    third = root / "profiles" / "third"
+    third.mkdir(parents=True)
+    third_auth = third / "auth.json"
+    third_auth.write_text('{"token": "dummy_third_secret"}')
+    err = get_read_block_error(str(third_auth))
+    assert err is not None
+    assert "credential store" in err

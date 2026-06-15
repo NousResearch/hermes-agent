@@ -76,6 +76,94 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
     ]
 
 
+def test_background_review_idle_delay_cancels_when_foreground_turn_resumes(monkeypatch):
+    """Interactive users can type immediately after a turn.
+
+    The delayed review fork must notice that a newer foreground turn started
+    during the idle window and exit before it spends model/GPU capacity.
+    """
+    import agent.background_review as bg_review
+
+    events = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            events.append(("init", kwargs))
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append(("run_conversation", kwargs))
+
+        def shutdown_memory_provider(self):
+            events.append(("shutdown_memory_provider", None))
+
+        def close(self):
+            events.append(("close", None))
+
+    agent = _bare_agent()
+    agent._foreground_turn_generation = 7
+    agent._background_review_idle_delay_seconds = 8.0
+
+    def fake_sleep(seconds):
+        events.append(("sleep", seconds))
+        agent._foreground_turn_generation += 1
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(bg_review.time, "sleep", fake_sleep)
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert events == [("sleep", 8.0)]
+
+
+def test_background_review_idle_delay_runs_when_foreground_stays_idle(monkeypatch):
+    """The idle gate is a defer/cancel guard, not a blanket disable."""
+    import agent.background_review as bg_review
+
+    events = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            events.append(("init", kwargs))
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            events.append(("run_conversation", kwargs))
+
+        def shutdown_memory_provider(self):
+            events.append(("shutdown_memory_provider", None))
+
+        def close(self):
+            events.append(("close", None))
+
+    agent = _bare_agent()
+    agent._foreground_turn_generation = 3
+    agent._background_review_idle_delay_seconds = 8.0
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(bg_review.time, "sleep", lambda seconds: events.append(("sleep", seconds)))
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert [name for name, _payload in events] == [
+        "sleep",
+        "init",
+        "run_conversation",
+        "shutdown_memory_provider",
+        "close",
+    ]
+
+
 def test_background_review_summarizer_receives_captured_messages_after_close(monkeypatch):
     """The action summarizer must see review messages even after close cleanup.
 

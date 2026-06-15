@@ -422,6 +422,14 @@ def init_agent(
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
+    agent._foreground_turn_generation = 0
+    agent._background_review_idle_delay_seconds = 60.0 if platform == "tui" else 0.0
+    try:
+        _bg_idle_raw = os.getenv("HERMES_BACKGROUND_REVIEW_IDLE_DELAY_SECONDS")
+        if _bg_idle_raw not in (None, ""):
+            agent._background_review_idle_delay_seconds = max(0.0, float(_bg_idle_raw))
+    except Exception:
+        pass
 
     # /steer mechanism — inject a user note into the next tool result
     # without interrupting the agent. Unlike interrupt(), steer() does

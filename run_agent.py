@@ -1456,11 +1456,16 @@ class AIAgent:
         keep working.
         """
         from agent.background_review import spawn_background_review_thread
+        foreground_generation = int(getattr(self, "_foreground_turn_generation", 0) or 0)
         target, _prompt = spawn_background_review_thread(
             self,
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
+            foreground_generation=foreground_generation,
+            idle_delay_seconds=float(
+                getattr(self, "_background_review_idle_delay_seconds", 0.0) or 0.0
+            ),
         )
         t = threading.Thread(target=target, daemon=True, name="bg-review")
         t.start()

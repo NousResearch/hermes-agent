@@ -14,7 +14,7 @@ metadata:
 
 ## Overview
 
-Computer Use is Hermes' native desktop-control lane for real macOS apps. Use it when the task needs the user's local GUI: Finder, Safari, Xcode, native utilities, Electron apps, games, or any interface that is not better handled by browser/CDP, terminal, files, or an app-specific API.
+Computer Use is Hermes' native desktop-control lane for real macOS apps. Use it when the task needs the user's local GUI: Finder, Helium, Xcode, native utilities, Electron apps, games, or any interface that is not better handled by browser/CDP, terminal, files, or an app-specific API. On Kamell's machine, use Helium first for browser auth/GUI work, Chrome only if Helium is unavailable, and never Arc or Safari.
 
 Treat the tool surface as first-class Hermes, not a driver tutorial. Models call `computer_use_*` tools. Hermes handles transport, policy, permissions, screenshots, app targeting, and future Swift/TUI/Telegram approval UX underneath.
 

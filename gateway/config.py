@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from gateway.realtime_voice.config import RealtimeVoiceConfig
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -488,6 +489,9 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Experimental realtime voice configuration
+    realtime_voice: RealtimeVoiceConfig = field(default_factory=RealtimeVoiceConfig)
+
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
     # growing unbounded in gateways serving many chats/threads/users over
@@ -587,6 +591,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "realtime_voice": self.realtime_voice.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
         }
     
@@ -655,6 +660,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            realtime_voice=RealtimeVoiceConfig.from_dict(data.get("realtime_voice", {})),
             session_store_max_age_days=session_store_max_age_days,
         )
 
@@ -736,6 +742,10 @@ def load_gateway_config() -> GatewayConfig:
             stt_cfg = yaml_cfg.get("stt")
             if isinstance(stt_cfg, dict):
                 gw_data["stt"] = stt_cfg
+
+            realtime_voice_cfg = yaml_cfg.get("realtime_voice")
+            if isinstance(realtime_voice_cfg, dict):
+                gw_data["realtime_voice"] = realtime_voice_cfg
 
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
@@ -870,6 +880,10 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if plat == Platform.DISCORD and "voice_backend" in platform_cfg:
+                    bridged["voice_backend"] = platform_cfg["voice_backend"]
+                if plat == Platform.DISCORD and "voice_timeout_seconds" in platform_cfg:
+                    bridged["voice_timeout_seconds"] = platform_cfg["voice_timeout_seconds"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

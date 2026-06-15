@@ -43,7 +43,7 @@ def _handle(action: str, args: Dict[str, Any], **kwargs):
 
 
 _COMMON_TARGET = {
-    "app": {"type": "string", "description": "App name or bundle id, e.g. Safari or com.apple.Safari."},
+    "app": {"type": "string", "description": "App name or bundle id, e.g. Helium or net.imput.helium."},
     "element": {"type": "integer", "description": "Element index from the latest app state."},
     "coordinate": {"type": "array", "items": {"type": "integer"}, "minItems": 2, "maxItems": 2, "description": "Fallback [x, y] coordinate when no accessibility element works."},
     "capture_after": {"type": "boolean", "description": "Take and return app state after the action."},

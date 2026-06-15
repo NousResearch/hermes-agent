@@ -205,16 +205,12 @@ const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number =
   if (!cfg?.config) {
     return 5
   }
-
   const raw = cfg.config.paste_collapse_threshold
-
   if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
     return Math.round(raw)
   }
-
   if (typeof raw === 'string') {
     const n = parseInt(raw, 10)
-
     if (Number.isFinite(n) && n >= 0) {
       return n
     }
@@ -227,16 +223,12 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
   if (!cfg?.config) {
     return 2000
   }
-
   const raw = cfg.config.paste_collapse_char_threshold
-
   if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
     return Math.round(raw)
   }
-
   if (typeof raw === 'string') {
     const n = parseInt(raw, 10)
-
     if (Number.isFinite(n) && n >= 0) {
       return n
     }
@@ -300,6 +292,7 @@ export const applyDisplay = (
     battery: !!d.battery,
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
+    copyOnSelect: d.copy_on_select !== false,
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
     // of silently changing approval behavior until the next successful poll.

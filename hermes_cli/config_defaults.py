@@ -860,6 +860,7 @@ DEFAULT_CONFIG = {
         # Memory updated") | "verbose" (content preview). Per-platform via
         # display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        "copy_on_select": True,  # macOS TUI: auto-copy text selection to clipboard
         # Gateway notices when a terminal(background=true) process finishes: "concise" (one line;
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".

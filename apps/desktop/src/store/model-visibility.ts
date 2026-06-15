@@ -129,9 +129,11 @@ export function effectiveVisibleKeys(
 
   for (const provider of providers) {
     const providerPrefix = `${provider.slug}::`
+
     const hasStoredProvider = [...stored].some(
       key => key.startsWith(providerPrefix) && !isProviderSentinel(key)
     )
+
     const hasSentinel = stored.has(emptyProviderSentinelKey(provider.slug))
 
     if (hasStoredProvider || hasSentinel) {

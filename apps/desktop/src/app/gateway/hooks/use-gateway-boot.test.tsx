@@ -68,7 +68,7 @@ class FakeWebSocket {
   }
 
   private emit(type: string, ev: unknown) {
-    for (const fn of this.listeners[type] ?? []) fn(ev)
+    for (const fn of this.listeners[type] ?? []) {fn(ev)}
   }
 }
 
@@ -250,9 +250,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     FakeWebSocket.mode = 'fail'
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
+
     for (let i = 0; i < 8; i += 1) {
       await advanceBackoff()
     }
+
     expect($desktopBoot.get().error).toBeTruthy()
 
     // The remote comes back: next reconnect attempt opens.

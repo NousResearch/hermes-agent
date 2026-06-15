@@ -176,7 +176,7 @@ function trackForPane(pane: CollectedPane, states: Record<string, { open: boolea
     return { open: false, track: '0px' }
   }
 
-  const override = pane.resizable ? states[pane.id]?.widthOverride : undefined
+  const override = states[pane.id]?.widthOverride
 
   return { open: true, track: override !== undefined ? `${override}px` : pane.width }
 }

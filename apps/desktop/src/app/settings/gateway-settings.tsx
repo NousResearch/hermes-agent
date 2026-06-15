@@ -155,7 +155,7 @@ export function GatewaySettings() {
       })
 
     return () => void (cancelled = true)
-  }, [scope])
+  }, [g.failedLoad, scope])
 
   // Debounced probe of the entered remote URL. Only runs in remote mode with a
   // syntactically plausible URL. The probe result drives whether we render the

@@ -75,8 +75,11 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list; the unconfigured
     // provider + its setup hint are the unique signal of the full universe.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
-    expect(await screen.findByText(/DeepSeek/)).toBeTruthy()
-    expect(await screen.findByText(/set up/)).toBeTruthy()
+    const deepseekOption = await screen.findByText(/DeepSeek/)
+    expect(deepseekOption).toBeTruthy()
+
+    fireEvent.click(deepseekOption)
+    expect(await screen.findByPlaceholderText(/Paste DEEPSEEK_API_KEY/)).toBeTruthy()
   })
 
   it('activates an unconfigured api_key provider inline by saving its key', async () => {

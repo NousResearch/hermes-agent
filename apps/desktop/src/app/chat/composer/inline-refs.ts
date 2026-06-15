@@ -159,6 +159,7 @@ export function insertInlineRefsIntoEditor(editor: HTMLDivElement, refs: readonl
   editor.focus({ preventScroll: true })
 
   const selection = window.getSelection()
+
   const range =
     selection?.rangeCount && editor.contains(selection.getRangeAt(0).commonAncestorContainer)
       ? selection.getRangeAt(0)

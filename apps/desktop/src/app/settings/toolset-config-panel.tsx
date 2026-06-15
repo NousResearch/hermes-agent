@@ -310,7 +310,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [toolset])
+  }, [copy.failedLoad, toolset])
 
   useEffect(() => {
     void refresh()

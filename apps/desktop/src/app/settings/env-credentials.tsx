@@ -76,7 +76,7 @@ export function useEnvCredentials(): UseEnvCredentials {
     })()
 
     return () => void (cancelled = true)
-  }, [])
+  }, [t.settings.keys.failedLoad])
 
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))

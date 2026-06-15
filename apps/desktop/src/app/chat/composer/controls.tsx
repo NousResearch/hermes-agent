@@ -66,6 +66,7 @@ export function ComposerControls({
   const c = t.composer
   const steerCombo = formatCombo('mod+enter')
   const steerLabel = `${c.steer} (${steerCombo})`
+
   const steerTip = (
     <span className="inline-flex items-center gap-1.5">
       {c.steer}

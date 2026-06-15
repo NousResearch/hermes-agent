@@ -2,7 +2,7 @@
 
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState, type ComponentProps } from 'react'
+import { type ComponentProps, type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useState } from 'react'
 
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
@@ -151,7 +151,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         setSubmitting(false)
       }
     },
-    [gateway, matchingRequest, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
   )
 
   const handleTextareaKey = useCallback(

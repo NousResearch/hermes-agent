@@ -226,9 +226,10 @@ const attachToMain = (attachment: ComposerAttachment) => {
 export function useComposerActions({ activeSessionId, currentCwd, requestGateway }: ComposerActionsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
-  }, [copy.imagePreviewFailed])
+  }, [])
 
   const addTerminalSelectionAttachment = useCallback((text: string, label = 'selection') => {
     const trimmed = text.trim()
@@ -357,7 +358,7 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
 
       return true
     }
-  }, [])
+  }, [copy.imagePreviewFailed])
 
   const attachImageBlob = useCallback(
     async (blob: Blob) => {

@@ -70,7 +70,7 @@ export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
       .catch(err => notifyError(err, m.failedLoad))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [m.failedLoad])
 
   const servers = useMemo(() => getServers(config), [config])
   const names = useMemo(() => Object.keys(servers).sort(), [servers])

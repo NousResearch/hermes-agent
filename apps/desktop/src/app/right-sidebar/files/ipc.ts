@@ -1,7 +1,7 @@
 import ignore from 'ignore'
 
-import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import type { HermesReadDirEntry, HermesReadDirResult } from '@/global'
+import { desktopFsCacheKey, desktopGitRoot, readDesktopDir, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 
 export type ProjectTreeEntry = HermesReadDirEntry
 
@@ -68,7 +68,7 @@ async function gitRootFor(start: string) {
   let cached = gitRootCache.get(key)
 
   if (!cached) {
-    cached = desktopGitRoot(start)
+    cached = desktopGitRoot(clean(start))
     gitRootCache.set(key, cached)
   }
 

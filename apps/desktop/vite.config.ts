@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -6,6 +6,10 @@ import path from 'path'
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
+  test: {
+    exclude: ['build/**', 'dist/**', 'electron/**', 'node_modules/**', 'release/**', 'scripts/**'],
+    include: ['src/**/*.{test,spec}.{ts,tsx}']
+  },
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

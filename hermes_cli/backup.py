@@ -14,6 +14,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tarfile
 import tempfile
 import time
 import zipfile
@@ -495,13 +496,14 @@ def run_import(args) -> None:
 
 # Critical state files to include in quick snapshots (relative to HERMES_HOME).
 # Everything else is either regeneratable (logs, cache) or managed separately
-# (skills, repo, sessions/).
+# (repo, sessions/).
 #
 # Entries may be individual files OR directories.  Directories are captured
-# recursively; missing entries are silently skipped.  Pairing data lives in
-# platform-specific JSON blobs outside state.db, so it's listed here explicitly
-# — `hermes update` snapshots this set before pulling so approved-user lists
-# are recoverable if anything goes wrong (issue #15733).
+# recursively (with _EXCLUDED_DIRS pruning); missing entries are silently
+# skipped.  Pairing data lives in platform-specific JSON blobs outside
+# state.db, so it's listed here explicitly — `hermes update` snapshots this
+# set before pulling so approved-user lists are recoverable if anything goes
+# wrong (issue #15733).
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
@@ -512,6 +514,12 @@ _QUICK_STATE_FILES = (
     "channel_directory.json",
     "channel_aliases.json",
     "processes.json",
+    # Agent-authored code and integrations — not regeneratable from a fresh
+    # install.  Walked with _EXCLUDED_DIRS pruning so .git history and
+    # node_modules inside installed skill repos are not captured.
+    "skills",
+    "plugins",
+    "scripts",
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
     "platforms/pairing",                # new location (gateway/pairing.py)
@@ -558,18 +566,25 @@ def create_quick_snapshot(
         if src.is_dir():
             # Walk the directory and record each file individually in the
             # manifest so restore can treat them uniformly.  Empty dirs are
-            # skipped (nothing to snapshot).
-            for sub in src.rglob("*"):
-                if not sub.is_file():
-                    continue
-                sub_rel = sub.relative_to(home).as_posix()
-                dst = snap_dir / sub_rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    shutil.copy2(sub, dst)
-                    manifest[sub_rel] = dst.stat().st_size
-                except (OSError, PermissionError) as exc:
-                    logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+            # skipped (nothing to snapshot).  _EXCLUDED_DIRS are pruned
+            # in-place so os.walk never descends into .git history,
+            # node_modules, __pycache__, etc. inside installed skill repos.
+            for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+                dp = Path(dirpath)
+                dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+                for fname in filenames:
+                    fpath = dp / fname
+                    sub_rel = fpath.relative_to(home)
+                    if _should_exclude(sub_rel):
+                        continue
+                    sub_rel_str = sub_rel.as_posix()
+                    dst = snap_dir / sub_rel_str
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(fpath, dst)
+                        manifest[sub_rel_str] = dst.stat().st_size
+                    except (OSError, PermissionError) as exc:
+                        logger.warning("Could not snapshot %s: %s", sub_rel_str, exc)
             continue
 
         if not src.is_file():
@@ -818,16 +833,27 @@ def prune_quick_snapshots(
 
 
 def run_quick_backup(args) -> None:
-    """CLI entry point for hermes backup --quick."""
+    """CLI entry point for hermes backup --quick, with optional tarball output via -o."""
     label = getattr(args, "label", None)
+    output = getattr(args, "output", None)
+
     snap_id = create_quick_snapshot(label=label)
-    if snap_id:
-        print(f"State snapshot created: {snap_id}")
-        snaps = list_quick_snapshots()
-        print(f"  {len(snaps)} snapshot(s) stored in {display_hermes_home()}/state-snapshots/")
-        print(f"  Restore with: /snapshot restore {snap_id}")
-    else:
+    if not snap_id:
         print("No state files found to snapshot.")
+        return
+
+    snaps = list_quick_snapshots()
+    print(f"State snapshot created: {snap_id}")
+    print(f"  {len(snaps)} snapshot(s) stored in {display_hermes_home()}/state-snapshots/")
+    print(f"  Restore with: /snapshot restore {snap_id}")
+
+    if output:
+        snap_dir = _quick_snapshot_root() / snap_id
+        out_path = Path(output).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(out_path, "w:gz") as tf:
+            tf.add(snap_dir, arcname=snap_id)
+        print(f"Archive size: {_format_size(out_path.stat().st_size)}")
 
 
 # ---------------------------------------------------------------------------

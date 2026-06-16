@@ -444,6 +444,53 @@ def test_sync_turn_queues_user_and_assistant_session_messages(monkeypatch):
     ]
 
 
+def test_write_worker_uses_parts_payload_and_reconnects_after_post_failure(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    clients = []
+
+    class FakeClient:
+        def __init__(self, *, fail=False):
+            self.fail = fail
+            self.posts = []
+            clients.append(self)
+
+        def post(self, path, payload):
+            self.posts.append((path, payload))
+            if self.fail:
+                raise RuntimeError("stale client")
+            return {}
+
+    stale = FakeClient(fail=True)
+    fresh = FakeClient()
+    next_clients = [stale, fresh]
+    monkeypatch.setattr(provider, "_new_client", lambda: next_clients.pop(0))
+
+    provider._write_queue.put(("session-1", "user", "hello"))
+    provider._write_queue.put(None)
+
+    provider._write_worker()
+
+    expected = (
+        "/api/v1/sessions/session-1/messages",
+        {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
+    )
+    assert stale.posts == [expected]
+    assert fresh.posts == [expected]
+
+
+def test_on_session_end_skips_commit_when_async_writes_do_not_flush(monkeypatch):
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._session_id = "session-1"
+    provider._turn_count = 2
+    monkeypatch.setattr(provider, "_flush_async_writes", lambda timeout=10.0: False)
+
+    provider.on_session_end([])
+
+    provider._client.post.assert_not_called()
+    assert provider._turn_count == 2
+
+
 def test_on_memory_write_uses_content_write_without_session_turn(monkeypatch):
     provider = OpenVikingMemoryProvider()
     provider._client = object()
@@ -497,6 +544,29 @@ def test_on_memory_write_uses_content_write_without_session_turn(monkeypatch):
     assert payload["mode"] == "create"
     assert provider._session_id == "session-1"
     assert provider._turn_count == 0
+
+
+def test_tool_remember_uses_content_write_category_subdir():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._user = "user"
+    provider._agent = "agent"
+    provider._client.post.return_value = {"result": {"written_bytes": 18}}
+
+    result = json.loads(provider._tool_remember({
+        "content": "Project Aurora launches in July.",
+        "category": "event",
+    }))
+
+    provider._client.post.assert_called_once()
+    path, payload = provider._client.post.call_args.args
+    assert path == "/api/v1/content/write"
+    assert payload["uri"].startswith("viking://user/user/agent/agent/memories/events/mem_")
+    assert payload["uri"].endswith(".md")
+    assert payload["content"] == "Project Aurora launches in July."
+    assert payload["mode"] == "create"
+    assert result["status"] == "stored"
+    assert result["uri"] == payload["uri"]
 
 
 def test_tool_search_uses_openviking_limit_and_ignores_dead_mode():
@@ -927,9 +997,10 @@ def test_handle_tool_call_reconnects_after_startup_health_failure(monkeypatch):
 
     assert result["status"] == "stored"
     assert len(instances) == 2
-    assert instances[1].posts == [
-        (
-            "/api/v1/sessions/session-1/messages",
-            {"role": "user", "parts": [{"type": "text", "text": "[Remember] stable fact"}]},
-        )
-    ]
+    assert len(instances[1].posts) == 1
+    path, payload = instances[1].posts[0]
+    assert path == "/api/v1/content/write"
+    assert payload["uri"].startswith("viking://user/default/agent/hermes/memories/preferences/mem_")
+    assert payload["uri"].endswith(".md")
+    assert payload["content"] == "stable fact"
+    assert payload["mode"] == "create"

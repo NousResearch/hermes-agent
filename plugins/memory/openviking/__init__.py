@@ -642,12 +642,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
         )
         self._prefetch_thread.start()
 
-    def _post_session_message(self, session_id: str, role: str, content: str) -> None:
-        client = self._new_client()
+    @staticmethod
+    def _post_session_message(client: _VikingClient, session_id: str, role: str, content: str) -> None:
         client.post(f"/api/v1/sessions/{session_id}/messages", {
             "role": role,
-            "content": content,
+            "parts": [{"type": "text", "text": content}],
         })
+
+    @staticmethod
+    def _write_memory_content(client: _VikingClient, uri: str, content: str) -> int:
+        result = client.post("/api/v1/content/write", {
+            "uri": uri,
+            "content": content,
+            "mode": "create",
+        })
+        payload = OpenVikingMemoryProvider._unwrap_result(result)
+        if isinstance(payload, dict):
+            return int(payload.get("written_bytes") or 0)
+        return 0
 
     def _ensure_write_worker(self) -> None:
         with self._write_thread_lock:
@@ -661,27 +673,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._write_thread.start()
 
     def _write_worker(self) -> None:
-        try:
-            client = self._new_client()
-        except Exception as e:
-            logger.debug("OpenViking write worker failed to create client: %s", e)
-            client = None
+        client: Optional[_VikingClient] = None
 
         while True:
             item = self._write_queue.get()
             try:
                 if item is None:
                     return
-                if client is None:
-                    continue
                 session_id, role, content = item
                 try:
-                    client.post(f"/api/v1/sessions/{session_id}/messages", {
-                        "role": role,
-                        "content": content,
-                    })
+                    if client is None:
+                        client = self._new_client()
+                    self._post_session_message(client, session_id, role, content)
                 except Exception as e:
-                    logger.debug("OpenViking async message write failed: %s", e)
+                    logger.debug("OpenViking async message write failed, reconnecting: %s", e)
+                    try:
+                        client = self._new_client()
+                        self._post_session_message(client, session_id, role, content)
+                    except Exception as retry_error:
+                        client = None
+                        logger.warning("OpenViking async message write failed: %s", retry_error)
             finally:
                 self._write_queue.task_done()
 
@@ -735,6 +746,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         if not self._flush_async_writes():
             logger.warning("OpenViking async writes did not flush before session commit")
+            return
 
         if self._turn_count == 0:
             try:
@@ -774,11 +786,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         def _write():
             try:
                 client = self._new_client()
-                client.post("/api/v1/content/write", {
-                    "uri": uri,
-                    "content": content,
-                    "mode": "create",
-                })
+                self._write_memory_content(client, uri, content)
             except Exception as e:
                 logger.debug("OpenViking memory mirror failed: %s", e)
 
@@ -1199,23 +1207,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not evidence:
             return ""
         base_status = self._prefetch_status(diagnostics)
-        draft = (
-            f"{_PREFETCH_GUIDANCE}\n\n"
-            f"Retrieval status: {base_status}; context_may_be_partial=true.\n\n"
-            f"{evidence}\n\n"
-            f"{_PREFETCH_FOOTER}"
+        draft_len = len(
+            _PREFETCH_GUIDANCE
+            + "\n\nRetrieval status: "
+            + base_status
+            + "; context_may_be_partial=true.\n\n"
+            + evidence
+            + "\n\n"
+            + _PREFETCH_FOOTER
         )
         enriched_diagnostics = {
             **diagnostics,
-            "chars": len(draft),
-            "truncated": str(len(draft) > _PREFETCH_TOTAL_LIMIT).lower(),
+            "chars": draft_len,
+            "truncated": str(draft_len > _PREFETCH_TOTAL_LIMIT).lower(),
         }
-        logger.debug("OpenViking prefetch diagnostics %s", self._prefetch_status(enriched_diagnostics))
+        status = self._prefetch_status(enriched_diagnostics)
+        logger.debug("OpenViking prefetch diagnostics %s", status)
         return self._truncate_text(
             (
                 f"{_PREFETCH_GUIDANCE}\n\n"
-                f"Retrieval status: {self._prefetch_status(enriched_diagnostics)}; "
-                "context_may_be_partial=true.\n\n"
+                f"Retrieval status: {status}; context_may_be_partial=true.\n\n"
                 f"{evidence}\n\n"
                 f"{_PREFETCH_FOOTER}"
             ),
@@ -1605,24 +1616,23 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not content:
             return tool_error("content is required")
 
-        # Store as a session message that will be extracted during commit.
-        # The category hint helps OpenViking's extraction classify correctly.
         category = args.get("category", "")
-        text = f"[Remember] {content}"
-        if category:
-            text = f"[Remember — {category}] {content}"
+        subdir = _CATEGORY_SUBDIR_MAP.get(category, _DEFAULT_MEMORY_SUBDIR)
+        uri = self._build_memory_uri(subdir)
+        client = self._client
+        if client is None:
+            return tool_error("OpenViking server not connected")
 
-        self._client.post(f"/api/v1/sessions/{self._session_id}/messages", {
-            "role": "user",
-            "parts": [
-                {"type": "text", "text": text},
-            ],
-        })
-
-        return json.dumps({
-            "status": "stored",
-            "message": "Memory recorded. Will be extracted and indexed on session commit.",
-        })
+        try:
+            written = self._write_memory_content(client, uri, content)
+            return json.dumps({
+                "status": "stored",
+                "uri": uri,
+                "message": f"Memory stored ({written}b) and queued for vector indexing.",
+            })
+        except Exception as e:
+            logger.error("OpenViking content/write failed: %s", e)
+            return tool_error(f"Failed to store memory: {e}")
 
     def _tool_add_resource(self, args: dict) -> str:
         url = args.get("url", "")

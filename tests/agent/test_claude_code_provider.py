@@ -208,3 +208,143 @@ def test_provider_alias_no_longer_maps_to_anthropic():
     assert normalize_provider("claude-max") == "claude-code"
     # plain "claude" still means the direct-API Anthropic provider
     assert normalize_provider("claude") == "anthropic"
+
+
+# --- hardened paths (stress-test-driven) ------------------------------------
+
+def test_parallel_tool_use_preserves_order_and_ids():
+    out = _stream(
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Two things."},
+            {"type": "tool_use", "id": "toolu_A",
+             "name": "mcp__hermes__read_file", "input": {"path": "a"}},
+            {"type": "tool_use", "id": "toolu_B",
+             "name": "mcp__hermes__read_file", "input": {"path": "b"}},
+        ]}},
+        {"type": "result", "stop_reason": "tool_use"},
+    )
+    msg = cc._parse_stream(out)
+    tools = [b for b in msg.content if b.type == "tool_use"]
+    assert [t.id for t in tools] == ["toolu_A", "toolu_B"]  # order preserved
+    assert [t.input["path"] for t in tools] == ["a", "b"]
+    assert all(t.name == "read_file" for t in tools)  # prefix stripped
+
+
+def test_parse_stream_tolerates_malformed_and_unknown_lines():
+    out = (
+        "this is not json\n"
+        + json.dumps({"type": "system", "subtype": "init", "tools": []}) + "\n"
+        + json.dumps({"type": "stream_event", "event": {"type": "ping"}}) + "\n"
+        + json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "ok"}]}}) + "\n"
+        + "{ truncated json"
+    )
+    msg = cc._parse_stream(out)
+    assert [b.text for b in msg.content] == ["ok"]
+    assert msg.saw_result is False  # no terminal result in this stream
+
+
+def test_parse_stream_empty_turn_with_result_is_legitimate():
+    # An assistant that completed a turn with nothing to add (result present,
+    # no content) is valid — must NOT be treated as a failure.
+    msg = cc._parse_stream(_stream(
+        {"type": "result", "subtype": "success", "stop_reason": "end_turn"}))
+    assert msg.content == []
+    assert msg.saw_result is True
+
+
+def test_parse_stream_empty_output_marks_no_result():
+    msg = cc._parse_stream("")
+    assert msg.content == []
+    assert msg.saw_result is False
+
+
+def _fake_proc(stdout="", stderr="", returncode=0):
+    return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def test_client_create_raises_on_silent_empty_output(monkeypatch):
+    # exit 0 but no stdout at all — must raise, not return an empty turn.
+    monkeypatch.setattr(cc, "resolve_claude_command", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(cc.subprocess, "run",
+                        lambda *a, **k: _fake_proc(stdout="", returncode=0))
+    with pytest.raises(cc.ClaudeCodeError, match="no usable output"):
+        cc.ClaudeCodeClient().messages.create(
+            messages=[{"role": "user", "content": "hi"}])
+
+
+def test_client_create_surfaces_stderr_on_failure(monkeypatch):
+    monkeypatch.setattr(cc, "resolve_claude_command", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(cc.subprocess, "run",
+                        lambda *a, **k: _fake_proc(stderr="boom happened", returncode=2))
+    with pytest.raises(cc.ClaudeCodeError, match="boom happened"):
+        cc.ClaudeCodeClient().messages.create(
+            messages=[{"role": "user", "content": "hi"}])
+
+
+def test_client_create_raises_clear_error_on_timeout(monkeypatch):
+    import subprocess as _sp
+
+    def _timeout(*a, **k):
+        raise _sp.TimeoutExpired(cmd="claude", timeout=1)
+
+    monkeypatch.setattr(cc, "resolve_claude_command", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(cc.subprocess, "run", _timeout)
+    with pytest.raises(cc.ClaudeCodeError, match="timed out"):
+        cc.ClaudeCodeClient().messages.create(
+            messages=[{"role": "user", "content": "hi"}])
+
+
+def test_client_create_cleans_tempdir_on_cancel(monkeypatch, tmp_path):
+    import glob
+    import tempfile as _tf
+
+    def _cancel(*a, **k):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cc, "resolve_claude_command", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(cc.subprocess, "run", _cancel)
+    before = set(glob.glob(_tf.gettempdir() + "/hermes-claude-code-*"))
+    with pytest.raises(KeyboardInterrupt):
+        cc.ClaudeCodeClient().messages.create(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"name": "t", "description": "d",
+                    "input_schema": {"type": "object", "properties": {}}}],
+        )
+    after = set(glob.glob(_tf.gettempdir() + "/hermes-claude-code-*"))
+    assert after == before  # temp dir cleaned up even on cancellation
+
+
+def test_long_prompt_is_piped_via_stdin_not_argv(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, *a, **k):
+        captured["cmd"] = cmd
+        captured["input"] = k.get("input")
+        return _fake_proc(stdout=_stream(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}},
+            {"type": "result", "stop_reason": "end_turn"}))
+
+    monkeypatch.setattr(cc, "resolve_claude_command", lambda: "/usr/bin/claude")
+    monkeypatch.setattr(cc.subprocess, "run", fake_run)
+    big = "X" * 300_000
+    cc.ClaudeCodeClient().messages.create(
+        messages=[{"role": "user", "content": big}])
+    # The big prompt must travel via stdin; argv must stay small (no OS limit).
+    assert captured["input"] == big
+    assert all(big not in str(arg) for arg in captured["cmd"])
+
+
+def test_context_window_pinned_to_subscription_limit(monkeypatch):
+    from agent.model_metadata import get_model_context_length as g
+
+    monkeypatch.delenv("HERMES_CLAUDE_CODE_CONTEXT_TOKENS", raising=False)
+    # Bare aliases and 4.6 ids would resolve to 256K/1M via name patterns;
+    # claude-code must pin to the real `claude -p` window so compaction fires.
+    assert g("sonnet", provider="claude-code") == 200_000
+    assert g("claude-sonnet-4-6", provider="claude-code") == 200_000
+    # Other providers are unaffected.
+    assert g("sonnet", provider="anthropic") != 200_000
+    # Env override wins.
+    monkeypatch.setenv("HERMES_CLAUDE_CODE_CONTEXT_TOKENS", "150000")
+    assert g("opus", provider="claude-code") == 150_000

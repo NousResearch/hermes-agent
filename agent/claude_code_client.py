@@ -84,6 +84,7 @@ class _Message:
         stop_reason: str,
         usage: Optional[Dict[str, Any]],
         model: str,
+        saw_result: bool = True,
     ):
         self.id = "claude-code"
         self.role = "assistant"
@@ -93,6 +94,12 @@ class _Message:
         self.stop_sequence = None
         self.model = model
         self.usage = _Usage(usage)
+        # Whether `claude -p` emitted a terminal `result` event. An empty
+        # content list is only a legitimate "nothing to add" turn when the CLI
+        # actually completed one; no result + no content means the CLI produced
+        # nothing usable (crash / killed / silent exit) and must not be passed
+        # off as a successful empty turn.
+        self.saw_result = saw_result
 
 
 # --- Prompt serialization ---------------------------------------------------
@@ -249,6 +256,7 @@ def _parse_stream(stdout: str) -> _Message:
     usage: Optional[Dict[str, Any]] = None
     model = ""
     result_error: Optional[str] = None
+    saw_result = False
 
     for line in stdout.splitlines():
         line = line.strip()
@@ -274,6 +282,7 @@ def _parse_stream(stdout: str) -> _Message:
                         raw_block["name"] = name[len(_MCP_PREFIX):]
                 blocks.append(_Block(raw_block))
         elif etype == "result":
+            saw_result = True
             stop_reason = evt.get("stop_reason") or stop_reason
             usage = evt.get("usage") or usage
             if evt.get("is_error") and evt.get("subtype") not in (
@@ -295,7 +304,13 @@ def _parse_stream(stdout: str) -> _Message:
     if any(b.type == "tool_use" for b in blocks):
         stop_reason = "tool_use"
 
-    return _Message(content=blocks, stop_reason=stop_reason, usage=usage, model=model)
+    return _Message(
+        content=blocks,
+        stop_reason=stop_reason,
+        usage=usage,
+        model=model,
+        saw_result=saw_result,
+    )
 
 
 class _Messages:
@@ -379,10 +394,17 @@ class _Messages:
                 raise ClaudeCodeError(f"Could not launch `claude`: {exc}") from exc
 
             message = _parse_stream(proc.stdout or "")
-            if not message.content and (proc.returncode or 0) != 0:
+            # An empty turn is only legitimate when the CLI actually completed
+            # one (emitted a terminal `result`). No result AND no content means
+            # the CLI crashed / was killed / exited silently — surface it with
+            # stderr instead of passing off an empty "successful" turn. This
+            # also catches exit-0-with-no-output, which the old returncode-only
+            # guard missed.
+            if not message.content and not message.saw_result:
                 raise ClaudeCodeError(
-                    "`claude -p` produced no output "
-                    f"(exit {proc.returncode}): {(proc.stderr or '').strip()[:500]}"
+                    "`claude -p` produced no usable output "
+                    f"(exit {proc.returncode}). stderr: "
+                    f"{(proc.stderr or '').strip()[:500] or '<empty>'}"
                 )
             return message
         finally:

@@ -1562,6 +1562,20 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    # 0a. Claude (Max subscription) via the official `claude` CLI. The real
+    # window for `claude -p` is the subscription model's (200K standard), NOT
+    # the 256K/1M that bare-alias name patterns ("sonnet", "claude-sonnet-4-6")
+    # would otherwise yield below. Pin it conservatively so Hermes' own context
+    # compaction triggers before `claude -p` hits its real limit on long
+    # sessions (the shim replays full history each stateless call). An explicit
+    # config.context_length (step 0) or HERMES_CLAUDE_CODE_CONTEXT_TOKENS wins.
+    if provider == "claude-code":
+        import os as _os
+        _raw = _os.getenv("HERMES_CLAUDE_CODE_CONTEXT_TOKENS", "").strip()
+        if _raw.isdigit() and int(_raw) > 0:
+            return int(_raw)
+        return 200_000
+
     # 0b. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.

@@ -1054,8 +1054,10 @@ def _completion_cwd(params: dict | None = None) -> str:
         params.get("cwd")
         or _sessions.get(params.get("session_id") or "", {}).get("cwd")
         # A session bound to another profile resolves its workspace from THAT
-        # profile's config before falling back to the launch profile's env var.
-        or _profile_configured_cwd(_profile_home(params.get("profile")))
+        # profile's config.  When no profile is specified (or it is the launch
+        # profile), fall back to the launch profile's own terminal.cwd config
+        # before trying the TERMINAL_CWD env var and os.getcwd().
+        or _profile_configured_cwd(_profile_home(params.get("profile")) or _hermes_home)
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )

@@ -554,9 +554,12 @@ def strip_think_blocks(agent, content: str) -> str:
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
+    # Adds the ``mm:think`` tag variant emitted by MiniMax-M2.7 native-mode
+    # reasoning when <think> isn't routed through the XML-SCRATCHPAD path
+    # the rest of MiniMax-M2.7 uses (#45222).
     content = re.sub(
-        r'(?:^|\n)[ \t]*<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$',
-        '',
+        r"(?:^|\n)[ \t]*<(?:mm:think|think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$",
+        "",
         content,
         flags=re.DOTALL | re.IGNORECASE,
     )

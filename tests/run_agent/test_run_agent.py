@@ -467,6 +467,31 @@ class TestStripThinkBlocks:
         assert "<tool_call>" not in result
         assert "final answer" in result
 
+    # ─── Unterminated mm:think tag coverage (#45222) ────────────────
+    # ``mm:think`` is emitted by MiniMax-M2.7 native-mode reasoning when
+    # the tag isn't routed through the XML-SCRATCHPAD path the rest of
+    # MiniMax-M2.7 uses. Without including ``mm:think`` in the
+    # unterminated-tag regex on line 564, a stream containing an
+    # unterminated ``mm:think`` block would either leak the raw
+    # reasoning (regex without ``mm:think`` alternative) or raise
+    # ``re.error: missing ), unterminated subpattern`` (regex with the
+    # last alternative unclosed). The fix adds ``mm:think`` to the
+    # alternation and closes the non-capturing group with ``)``.
+
+    def test_unterminated_mm_think_block_content_stripped(self, agent):
+        """The unterminated-tag regex on line ~564 must include
+        ``mm:think`` so the streaming case doesn't leak raw reasoning.
+        Also exercises the regex compile path end-to-end so a future
+        ``)`` removal (regression of #45222) raises
+        ``re.error: missing ), unterminated subpattern`` at this call
+        rather than in production.
+        """
+        result = agent._strip_think_blocks(
+            "<mm:think>let me reconsider"
+        )
+        assert "let me reconsider" not in result
+        assert result.strip() == ""
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

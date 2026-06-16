@@ -2025,15 +2025,25 @@ def run_conversation(
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
-                            interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                            messages.append(interim_msg)
+                            _is_partial_stream_stub = (
+                                getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                            )
+                            _trunc_content_empty = not bool(
+                                getattr(assistant_message, "content", None)
+                            )
+                            # Gemini rejects history containing an assistant
+                            # turn with neither content nor tool_calls. A
+                            # partial-stream-stub can legitimately have no
+                            # recoverable visible text after a network reset;
+                            # ask for continuation without poisoning the next
+                            # request payload with an empty assistant message.
+                            if not (_is_partial_stream_stub and _trunc_content_empty):
+                                interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
+                                messages.append(interim_msg)
                             if assistant_message.content:
                                 truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 4:
-                                _is_partial_stream_stub = (
-                                    getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
-                                )
                                 _dropped_tools = getattr(
                                     response, "_dropped_tool_names", None
                                 )

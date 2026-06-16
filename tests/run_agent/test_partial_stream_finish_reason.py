@@ -364,6 +364,53 @@ class TestConversationLoopPartialStreamContinuation:
         assert "forty-two" in result["final_response"]
 
 
+    def test_empty_partial_stream_stub_skips_empty_assistant_turn(self, loop_agent):
+        """Gemini rejects assistant messages with neither content nor
+        tool_calls. When a network reset leaves no recoverable text, the loop
+        should request continuation without appending an empty assistant turn."""
+
+        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_response
+
+        partial_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=None),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+        continuation = _mock_response(
+            content="Recovered answer.", finish_reason="stop",
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            partial_stub, continuation,
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("ask me something")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered answer."
+
+        second_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call_kwargs.kwargs.get("messages") or second_call_kwargs.args[0].get("messages")
+        assert not any(
+            m.get("role") == "assistant"
+            and not (m.get("content") or "")
+            and not m.get("tool_calls")
+            for m in msgs
+        ), msgs
+        assert msgs[-1]["role"] == "user"
+        assert "network error mid-stream" in (msgs[-1].get("content") or "")
+
+
 class TestContentFilterStallActivatesFallback:
     """Regression for #32421: a provider output-layer content safety filter
     (e.g. MiniMax ``output new_sensitive (1027)``) terminates a streaming

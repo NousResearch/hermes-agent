@@ -789,5 +789,22 @@ class TestApplyAcpArgDirectives(unittest.TestCase):
         self.assertEqual(flush_calls[0]["pending_model"], "sonnet")
 
 
+# ===========================================================================
+# 15. B1 (4a798e19f) — dead function regression guard
+# ===========================================================================
+class TestDeadCodeRemoved(unittest.TestCase):
+    def test_trace_to_messages_snapshot_removed(self):
+        """B1 (4a798e19f) removed the 49-line trace_to_messages_snapshot
+        function. Re-addition would indicate a regression of the dead-code
+        review. This test guards against that.
+        """
+        client = _make_client()
+        self.assertFalse(
+            hasattr(client, "trace_to_messages_snapshot"),
+            "trace_to_messages_snapshot was removed in B1; "
+            "re-add only if a real caller emerges",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

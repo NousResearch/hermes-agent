@@ -3,11 +3,17 @@
 import json
 from unittest.mock import patch, MagicMock
 
+import pytest
 
 from agent.anthropic_adapter import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
 )
+
+
+@pytest.fixture(autouse=True)
+def enable_mocked_keychain(monkeypatch):
+    monkeypatch.delenv("HERMES_DISABLE_CLAUDE_CODE_KEYCHAIN", raising=False)
 
 
 class TestReadClaudeCodeCredentialsFromKeychain:
@@ -40,6 +46,13 @@ class TestReadClaudeCodeCredentialsFromKeychain:
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
              patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            assert _read_claude_code_credentials_from_keychain() is None
+
+    @pytest.mark.parametrize("stdout", [None, b'{"claudeAiOauth": {"accessToken": "tok"}}'])
+    def test_returns_none_for_non_text_stdout(self, stdout):
+        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
+             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
     def test_returns_none_for_non_json_payload(self):

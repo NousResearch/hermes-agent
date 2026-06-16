@@ -374,6 +374,9 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
+    # macOS Keychain is outside HOME/HERMES_HOME and can contain a real
+    # Claude Code token. Unit tests must only see their explicit fixtures.
+    monkeypatch.setenv("HERMES_DISABLE_CLAUDE_CODE_KEYCHAIN", "1")
     # Tirith auto-installs from GitHub when enabled and missing. Unit tests
     # should never perform that implicit network/bootstrap path; Tirith-specific
     # tests opt back in by patching the security config directly.
@@ -657,6 +660,7 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _SHELL_WRAPPERS = {"bash", "sh", "zsh", "dash", "fish"}
 
     def _cmd_to_string(cmd) -> str:
         if cmd is None:
@@ -693,26 +697,89 @@ def _live_system_guard(request, monkeypatch):
 
     def _is_process_killer(cmd) -> bool:
         cmd_str = _cmd_to_string(cmd)
-        try:
-            tokens = _shlex.split(cmd_str)
-        except ValueError:
-            tokens = cmd_str.split()
+        if isinstance(cmd, (list, tuple)):
+            try:
+                tokens = [str(t) for t in cmd]
+            except Exception:
+                tokens = []
+        else:
+            try:
+                tokens = _shlex.split(cmd_str)
+            except ValueError:
+                tokens = cmd_str.split()
         if not tokens:
             return False
-        for tok in tokens:
-            head = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+        def _basename(token: str) -> str:
+            return token.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+
+        def _skip_wrapper_options(head: str, start: int) -> int:
+            idx = start
+            if head == "sudo":
+                sudo_opts_with_args = {
+                    "-A", "-a", "-b", "-C", "-c", "-D", "-g", "-h", "-p",
+                    "-R", "-r", "-T", "-t", "-U", "-u",
+                }
+                while idx < len(tokens) and tokens[idx].startswith("-"):
+                    opt = tokens[idx]
+                    idx += 1
+                    if opt in sudo_opts_with_args and idx < len(tokens):
+                        idx += 1
+                return idx
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            return idx
+
+        def _shell_payload_index(start: int) -> int | None:
+            idx = start
+            while idx < len(tokens):
+                token = tokens[idx]
+                if token == "-c":
+                    return idx + 1 if idx + 1 < len(tokens) else None
+                if token.startswith("-") and "c" in token[1:]:
+                    return idx + 1 if idx + 1 < len(tokens) else None
+                idx += 1
+            return None
+
+        def _scan_from(start: int) -> bool:
+            idx = start
+            while idx < len(tokens):
+                head = _basename(tokens[idx])
+                if head == "env":
+                    idx += 1
+                    while idx < len(tokens) and (
+                        "=" in tokens[idx] or tokens[idx].startswith("-")
+                    ):
+                        idx += 1
+                    continue
+                if head in {"sudo", "setsid", "nohup", "command"}:
+                    idx = _skip_wrapper_options(head, idx + 1)
+                    continue
+                break
+            if idx >= len(tokens):
+                return False
+            head = _basename(tokens[idx])
+            if head in _SHELL_WRAPPERS:
+                payload_idx = _shell_payload_index(idx + 1)
+                return (
+                    payload_idx is not None
+                    and payload_idx < len(tokens)
+                    and _is_process_killer(tokens[payload_idx])
+                )
             if head in _PROCESS_KILLERS:
-                low = cmd_str.lower()
+                low = " ".join(tokens[idx:]).lower()
                 # pkill -f pattern: catch hermes-themed patterns + a
                 # plain "python" -f which would catch the live gateway
                 # whose cmdline contains "python -m hermes_cli.main".
                 if (
                     "hermes" in low
                     or "gateway" in low
-                    or ("python" in low and "-f" in tokens)
+                    or ("python" in low and "-f" in tokens[idx:])
                 ):
                     return True
-        return False
+            return False
+
+        return _scan_from(0)
 
     def _check_subprocess_cmd(name, cmd):
         if _is_blocked_systemctl(cmd):

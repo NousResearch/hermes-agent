@@ -338,7 +338,7 @@ def _marker_root(cwd: Path) -> Optional[Path]:
         if depth > 6:
             break
         if parent == home:
-            continue
+            break
         for marker in _PROJECT_MARKERS:
             if (parent / marker).exists():
                 return parent

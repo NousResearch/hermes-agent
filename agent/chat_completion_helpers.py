@@ -122,6 +122,119 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _tool_call_id(tool_call: Any) -> str:
+    if isinstance(tool_call, dict):
+        value = tool_call.get("call_id") or tool_call.get("id")
+    else:
+        value = getattr(tool_call, "call_id", None) or getattr(tool_call, "id", None)
+    return str(value) if value else ""
+
+
+def _tool_call_needs_chat_completions_id(tool_call: Any) -> bool:
+    if not isinstance(tool_call, dict):
+        return False
+    call_id = tool_call.get("call_id")
+    return bool(call_id) and tool_call.get("id") != call_id
+
+
+def _normalize_tool_call_for_chat_completions(tool_call: Any) -> Any:
+    tc_id = _tool_call_id(tool_call)
+    if not tc_id or not isinstance(tool_call, dict):
+        return tool_call
+    normalized = tool_call.copy()
+    normalized["id"] = tc_id
+    return normalized
+
+
+def _sanitize_openai_tool_message_sequence(messages: list) -> list:
+    """Return an OpenAI-valid chat-completions tool message sequence.
+
+    OpenAI-compatible chat-completions providers require tool result messages
+    to appear as the contiguous response block immediately following the
+    assistant message whose ``tool_calls`` declared those IDs.  Hermes' broader
+    history sanitizer repairs missing IDs globally, but interrupted turns can
+    still leave an old ``role="tool"`` message after a later user message.
+    Anthropic tolerates that shape; OpenAI rejects it with HTTP 400.
+    """
+    if not messages:
+        return messages
+
+    sanitized: list = []
+    changed = False
+    index = 0
+    total = len(messages)
+
+    while index < total:
+        msg = messages[index]
+        if not isinstance(msg, dict):
+            sanitized.append(msg)
+            index += 1
+            continue
+
+        if msg.get("role") == "tool":
+            changed = True
+            index += 1
+            continue
+
+        tool_calls = msg.get("tool_calls")
+        if msg.get("role") != "assistant" or not isinstance(tool_calls, list) or not tool_calls:
+            sanitized.append(msg)
+            index += 1
+            continue
+
+        declared_ids = [_tool_call_id(tc) for tc in tool_calls]
+        declared_id_set = {tc_id for tc_id in declared_ids if tc_id}
+        all_declared_ids_valid = len(declared_id_set) == len(declared_ids)
+        ids_need_normalization = any(
+            _tool_call_needs_chat_completions_id(tc) for tc in tool_calls
+        )
+        matched_ids: set[str] = set()
+        kept_tool_messages: list = []
+        scan = index + 1
+
+        while scan < total:
+            candidate = messages[scan]
+            if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                break
+            tc_id = candidate.get("tool_call_id")
+            if tc_id in declared_id_set and tc_id not in matched_ids:
+                kept_tool_messages.append(candidate)
+                matched_ids.add(tc_id)
+            else:
+                changed = True
+            scan += 1
+
+        if (
+            all_declared_ids_valid
+            and not ids_need_normalization
+            and len(matched_ids) == len(declared_id_set)
+            and len(kept_tool_messages) == scan - index - 1
+        ):
+            sanitized.append(msg)
+        else:
+            changed = True
+            kept_calls = []
+            kept_call_ids: set[str] = set()
+            for tc in tool_calls:
+                tc_id = _tool_call_id(tc)
+                if tc_id in matched_ids and tc_id not in kept_call_ids:
+                    kept_calls.append(_normalize_tool_call_for_chat_completions(tc))
+                    kept_call_ids.add(tc_id)
+            msg = msg.copy()
+            if kept_calls:
+                msg["tool_calls"] = kept_calls
+            else:
+                msg.pop("tool_calls", None)
+                if msg.get("content") is None:
+                    msg["content"] = ""
+            sanitized.append(msg)
+
+        sanitized.extend(kept_tool_messages)
+        index = scan
+
+    return sanitized if changed else messages
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -740,6 +853,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # (e.g. DeepSeek, Kimi). The legacy path below already does this, but
         # registered providers with profiles were bypassing the strip.
         api_messages = agent._prepare_messages_for_non_vision_model(api_messages)
+        api_messages = _sanitize_openai_tool_message_sequence(api_messages)
 
         return _ct.build_kwargs(
             model=agent.model,
@@ -772,6 +886,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
 
     # Strip image parts for non-vision models (no-op when vision-capable).
     _msgs_for_chat = agent._prepare_messages_for_non_vision_model(api_messages)
+    _msgs_for_chat = _sanitize_openai_tool_message_sequence(_msgs_for_chat)
 
     return _ct.build_kwargs(
         model=agent.model,
@@ -1359,6 +1474,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+        if agent.api_mode == "chat_completions":
+            api_messages = _sanitize_openai_tool_message_sequence(api_messages)
 
         summary_extra_body = {}
         try:

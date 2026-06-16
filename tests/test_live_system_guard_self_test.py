@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import signal
+import shutil
 import subprocess
 
 import pytest
@@ -196,6 +197,16 @@ def test_subprocess_pkill_python_dash_f_blocked():
         subprocess.run(["pkill", "-f", "python"])
 
 
+def test_subprocess_pkill_hermes_through_sudo_option_blocked():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["sudo", "-n", "pkill", "-f", "hermes"])
+
+
+def test_subprocess_pkill_hermes_through_shell_blocked():
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["bash", "-c", "pkill -f hermes"])
+
+
 def test_subprocess_killall_hermes_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.run(["killall", "hermes"])
@@ -203,7 +214,10 @@ def test_subprocess_killall_hermes_blocked():
 
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
+_HAS_SYSTEMCTL = shutil.which("systemctl") is not None
 
+
+@pytest.mark.skipif(not _HAS_SYSTEMCTL, reason="systemctl is not installed")
 def test_systemctl_status_passes_through():
     """Read-only systemctl probes (status/show/list-units) are fine."""
     # Run with check=False so we don't fail on the gateway's exit code.
@@ -216,6 +230,7 @@ def test_systemctl_status_passes_through():
     assert r is not None  # Did not raise — the guard let it through.
 
 
+@pytest.mark.skipif(not _HAS_SYSTEMCTL, reason="systemctl is not installed")
 def test_systemctl_show_passes_through():
     r = subprocess.run(
         ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
@@ -226,6 +241,7 @@ def test_systemctl_show_passes_through():
     assert r is not None
 
 
+@pytest.mark.skipif(not _HAS_SYSTEMCTL, reason="systemctl is not installed")
 def test_systemctl_list_units_passes_through():
     r = subprocess.run(
         ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
@@ -236,6 +252,7 @@ def test_systemctl_list_units_passes_through():
     assert r is not None
 
 
+@pytest.mark.skipif(not _HAS_SYSTEMCTL, reason="systemctl is not installed")
 def test_systemctl_unrelated_unit_passes_through():
     """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
     # Use --dry-run so we don't actually try to restart anything; just
@@ -276,6 +293,16 @@ def test_normal_subprocess_run_passes_through():
     """Plain non-systemctl subprocess.run should work normally."""
     r = subprocess.run(["echo", "hello"], capture_output=True, text=True)
     assert r.stdout.strip() == "hello"
+
+
+def test_process_killer_name_as_argument_passes_through():
+    """A command argument containing ``skill`` is not the ``skill`` executable."""
+    r = subprocess.run(
+        ["python", "-c", "print('real skill search term')"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.stdout.strip() == "real skill search term"
 
 
 # ──────────────────── bypass marker ─────────────────────────────

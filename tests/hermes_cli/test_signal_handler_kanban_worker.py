@@ -103,6 +103,13 @@ def _is_alive_like_dispatcher(pid: int) -> bool:
                         break
         except (FileNotFoundError, PermissionError, OSError):
             pass
+    try:
+        import psutil
+
+        if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+            return False
+    except Exception:
+        pass
     return True
 
 

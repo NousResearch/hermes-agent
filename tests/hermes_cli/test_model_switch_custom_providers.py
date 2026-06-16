@@ -336,11 +336,11 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
         user_providers={},
         custom_providers=[
             {"name": "Ollama — MiniMax M2.7", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "minimax-m2.7"},
+             "api_key": "ollama", "model": "minimax-m2.7", "discover_models": False},
             {"name": "Ollama — GLM 5.1",      "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "glm-5.1"},
+             "api_key": "ollama", "model": "glm-5.1", "discover_models": False},
             {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "qwen3-coder"},
+             "api_key": "ollama", "model": "qwen3-coder", "discover_models": False},
         ],
         max_models=50,
     )
@@ -420,11 +420,11 @@ def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypat
         user_providers={},
         custom_providers=[
             {"name": "Ollama — GLM 5.1", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "glm-5.1"},
+             "api_key": "ollama", "model": "glm-5.1", "discover_models": False},
             {"name": "Moonshot", "base_url": "https://api.moonshot.cn/v1",
-             "api_key": "sk-m", "model": "moonshot-v1"},
+             "api_key": "sk-m", "model": "moonshot-v1", "discover_models": False},
             {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
-             "api_key": "ollama", "model": "qwen3-coder"},
+             "api_key": "ollama", "model": "qwen3-coder", "discover_models": False},
         ],
         max_models=50,
     )
@@ -513,7 +513,7 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
 
     entries = [
         {"name": f"Ollama \u2014 Model {i}", "base_url": "http://localhost:11434/v1",
-         "api_key": "ollama", "model": f"model-{i}"}
+         "api_key": "ollama", "model": f"model-{i}", "discover_models": False}
         for i in range(6)
     ]
     providers = list_authenticated_providers(

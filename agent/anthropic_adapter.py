@@ -868,6 +868,14 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    if os.getenv("HERMES_DISABLE_CLAUDE_CODE_KEYCHAIN", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return None
+
     if platform.system() != "Darwin":
         return None
 
@@ -890,7 +898,11 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
         return None
 
-    raw = result.stdout.strip()
+    raw_stdout = result.stdout
+    if not isinstance(raw_stdout, str):
+        logger.debug("Keychain: credentials payload is not text")
+        return None
+    raw = raw_stdout.strip()
     if not raw:
         return None
 

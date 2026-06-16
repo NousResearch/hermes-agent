@@ -46,6 +46,30 @@ class TestChatCompletionsBasic:
         assert "codex_reasoning_items" in msgs[0]
         assert "codex_message_items" in msgs[0]
 
+    def test_convert_messages_keeps_normalized_tool_call_id(self, transport):
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "t", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_123", "content": "ok"},
+        ]
+
+        result = transport.convert_messages(msgs)
+
+        assert result[0]["tool_calls"][0]["id"] == result[1]["tool_call_id"]
+        assert "call_id" not in result[0]["tool_calls"][0]
+        assert "response_item_id" not in result[0]["tool_calls"][0]
+
     def _msg_with_extra_content(self):
         return [
             {"role": "assistant", "content": "ok",

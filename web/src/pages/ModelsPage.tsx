@@ -26,7 +26,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -209,10 +209,16 @@ function UseAsMenu({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    message: string;
+    scope: "main" | "auxiliary";
+    task: string;
+  } | null>(null);
 
   const assign = async (
     scope: "main" | "auxiliary",
     task: string,
+    confirmExpensiveModel = false,
   ) => {
     if (!provider || !model) {
       setError("Missing provider/model");
@@ -221,7 +227,23 @@ function UseAsMenu({
     setBusy(true);
     setError(null);
     try {
-      await api.setModelAssignment({ scope, provider, model, task });
+      const result = await api.setModelAssignment({
+        confirm_expensive_model: confirmExpensiveModel,
+        scope,
+        provider,
+        model,
+        task,
+      });
+      if (result.confirm_required) {
+        setPendingConfirm({
+          scope,
+          task,
+          message:
+            result.confirm_message ||
+            "This model has unusually high known pricing.",
+        });
+        return;
+      }
       onAssigned();
       setOpen(false);
     } catch (e) {
@@ -310,6 +332,22 @@ function UseAsMenu({
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={!!pendingConfirm}
+        title="Expensive Model Warning"
+        description={pendingConfirm?.message}
+        destructive
+        confirmLabel="Switch anyway"
+        cancelLabel="Cancel"
+        loading={busy}
+        onCancel={() => setPendingConfirm(null)}
+        onConfirm={() => {
+          const pending = pendingConfirm;
+          if (!pending) return;
+          setPendingConfirm(null);
+          void assign(pending.scope, pending.task, true);
+        }}
+      />
     </div>
   );
 }
@@ -619,14 +657,16 @@ function AuxiliaryTasksModal({
               AUX_TASKS.find((t) => t.key === picker.task)?.label ??
               picker.task
             }`}
-            onApply={async ({ provider, model }) => {
-              await api.setModelAssignment({
+            onApply={async ({ provider, model, confirmExpensiveModel }) => {
+              const result = await api.setModelAssignment({
+                confirm_expensive_model: confirmExpensiveModel,
                 scope: "auxiliary",
                 task: picker.task,
                 provider,
                 model,
               });
-              onSaved();
+              if (!result.confirm_required) onSaved();
+              return result;
             }}
             onClose={() => setPicker(null)}
           />
@@ -666,14 +706,23 @@ function ModelSettingsPanel({
     task,
     provider,
     model,
+    confirmExpensiveModel,
   }: {
+    confirmExpensiveModel?: boolean;
     scope: "main" | "auxiliary";
     task: string;
     provider: string;
     model: string;
   }) => {
-    await api.setModelAssignment({ scope, task, provider, model });
-    onSaved();
+    const result = await api.setModelAssignment({
+      confirm_expensive_model: confirmExpensiveModel,
+      scope,
+      task,
+      provider,
+      model,
+    });
+    if (!result.confirm_required) onSaved();
+    return result;
   };
 
   // Count how many aux tasks have overrides
@@ -749,14 +798,15 @@ function ModelSettingsPanel({
             loader={api.getModelOptions}
             alwaysGlobal
             title="Set Main Model"
-            onApply={async ({ provider, model }) => {
-              await applyAssignment({
+            onApply={({ provider, model, confirmExpensiveModel }) =>
+              applyAssignment({
+                confirmExpensiveModel,
                 scope: "main",
                 task: "",
                 provider,
                 model,
-              });
-            }}
+              })
+            }
             onClose={() => setPicker(null)}
           />
         )}
@@ -820,14 +870,18 @@ export default function ModelsPage() {
       .finally(() => setLoading(false));
   }, [days]);
 
-  const onAssigned = useCallback(() => {
-    // Reload aux state after any assignment change.
+  const refreshAux = useCallback(() => {
     api
       .getAuxiliaryModels()
       .then(setAux)
       .catch(() => {});
-    setSaveKey((k) => k + 1);
   }, []);
+
+  const onAssigned = useCallback(() => {
+    // Reload aux state after any assignment change.
+    refreshAux();
+    setSaveKey((k) => k + 1);
+  }, [refreshAux]);
 
   useLayoutEffect(() => {
     // Period selector + refresh both live in afterTitle so the controls
@@ -871,6 +925,24 @@ export default function ModelsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Model assignments can change outside this page (config editor, chat
+  // /model --global, CLI), so refetch them when the page regains focus.
+  useEffect(() => {
+    let last = 0;
+    const onFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - last < 1000) return;
+      last = Date.now();
+      refreshAux();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [refreshAux]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">

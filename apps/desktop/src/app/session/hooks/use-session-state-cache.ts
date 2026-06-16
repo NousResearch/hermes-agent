@@ -5,7 +5,21 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  noteSessionActivity,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentPersonality,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier,
+  setSessionAttention,
+  setSessionWorking,
+  setTurnStartedAt,
+  setYoloActive
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -38,6 +52,16 @@ interface SessionStateCacheOptions {
   setAwaitingResponse: (awaiting: boolean) => void
   setBusy: (busy: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+}
+
+function syncRuntimeMetadataToView(state: ClientSessionState) {
+  setCurrentModel(state.model ?? '')
+  setCurrentProvider(state.provider ?? '')
+  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  setCurrentServiceTier(state.serviceTier ?? '')
+  setCurrentFastMode(state.fast ?? false)
+  setYoloActive(state.yolo ?? false)
+  setCurrentPersonality(state.personality ?? '')
 }
 
 export function useSessionStateCache({
@@ -124,6 +148,7 @@ export function useSessionStateCache({
       setMessages(nextMessages)
     }
 
+    syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
@@ -148,7 +173,31 @@ export function useSessionStateCache({
         return
       }
 
+      syncRuntimeMetadataToView(state)
       pendingViewStateRef.current = { sessionId, state }
+
+      // Terminal / attention transitions (turn finished, error, or the agent is
+      // now waiting on the user) MUST reach the view immediately. Electron
+      // throttles `requestAnimationFrame` to ~0 while the window is
+      // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
+      // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
+      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
+      // (cancelling any in-flight RAF, since we're about to publish the latest
+      // state anyway). The plain busy heartbeat stays RAF-batched: that
+      // coalescing exists only to keep periodic `session.info` updates from
+      // churning `$messages` and jerking the scroll position while reading.
+      const isCriticalTransition = !state.busy || state.needsInput
+
+      if (isCriticalTransition) {
+        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+          window.cancelAnimationFrame(viewSyncRafRef.current)
+          viewSyncRafRef.current = null
+        }
+
+        flushPendingViewState()
+
+        return
+      }
 
       if (viewSyncRafRef.current !== null) {
         return

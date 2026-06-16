@@ -658,6 +658,17 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('does not fetch config while constructing the gateway event handler', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+
+    ctx.gateway.rpc = vi.fn(async () => null)
+
+    createGatewayEventHandler(ctx)
+
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
@@ -858,6 +869,29 @@ describe('createGatewayEventHandler', () => {
     ])
   })
 
+  it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' }, type: 'approval.request' } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
+  })
+
+  it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({
+      allowPermanent: false,
+      command: 'curl suspicious | bash',
+      description: 'content-security warning'
+    })
+  })
+
   it('still surfaces terminal turn failures as errors', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -1020,8 +1054,9 @@ describe('createGatewayEventHandler', () => {
     )
     const onEvent = createGatewayEventHandler(ctx)
 
-    // Eager config fetch fires at creation; let it resolve before any spawn
-    // (mirrors real usage — config lands well before the first delegation).
+    // Config fetch starts once the gateway is ready; let it resolve before any
+    // spawn (mirrors real usage — config lands well before first delegation).
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
     await Promise.resolve()
     await Promise.resolve()
 

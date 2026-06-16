@@ -96,6 +96,23 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
 
 
+def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
+    """Normalize a cwd candidate to an absolute, sentinel-free anchor.
+
+    Returns the expanded path only when *raw* is non-empty, not a sentinel (see
+    ``_TERMINAL_CWD_SENTINELS``), and absolute. A relative anchor is meaningless
+    without knowing which cwd it is relative to — exactly the ambiguity that
+    misroutes worktree edits — so relative/sentinel/empty values yield ``None``.
+    """
+    raw = str(raw or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
+
+
 def _configured_terminal_cwd() -> str | None:
     """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
 
@@ -104,13 +121,26 @@ def _configured_terminal_cwd() -> str | None:
     relative to, which is exactly the ambiguity that misroutes worktree edits.
     Only an absolute, sentinel-free value is honored.
     """
-    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
-    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+    return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+
+
+def _registered_task_cwd_override(task_id: str = "default") -> str | None:
+    """Return a registered cwd override for the raw task id, when available.
+
+    ``terminal_tool`` intentionally collapses CWD-only task overrides to the
+    shared ``"default"`` environment so TUI/dashboard/ACP sessions do not spin
+    up isolated sandboxes just because they have different workspaces. The cwd
+    value itself is still keyed by the raw session/task id, so file tools must
+    read that raw override before falling back to the collapsed container key.
+    """
+    try:
+        from tools.terminal_tool import resolve_task_overrides
+
+        overrides = resolve_task_overrides(task_id)
+    except Exception:
         return None
-    expanded = os.path.expanduser(raw)
-    if not os.path.isabs(expanded):
-        return None
-    return expanded
+
+    return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
@@ -149,8 +179,10 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
 
     Prefers the live terminal cwd (the directory the agent is actually working
     in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a sentinel-free absolute ``$TERMINAL_CWD``. This is what lets
-    a worktree session warn about (and resolve into) the worktree from the very
+    falls back to a registered task/session cwd override (TUI/Desktop/ACP
+    sessions register a raw-keyed cwd before any tool runs), then to a
+    sentinel-free absolute ``$TERMINAL_CWD``. This is what lets a worktree or
+    Desktop session warn about (and resolve into) its workspace from the very
     first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
@@ -159,6 +191,9 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    registered = _registered_task_cwd_override(task_id)
+    if registered:
+        return registered
     return _configured_terminal_cwd()
 
 
@@ -168,10 +203,12 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     Resolution order:
       1. The task's live terminal cwd (the directory the agent is actually
          working in — e.g. a git worktree). Authoritative when known.
-      2. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed workspace cwd before any terminal command runs).
+      3. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
          terminal command has populated the live cwd registry.
-      3. The process cwd.
+      4. The process cwd.
 
     The returned base is ALWAYS absolute. This is the core invariant that
     prevents the worktree-cwd divergence bug: a relative or sentinel
@@ -218,9 +255,10 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     target. ``None`` when the path is absolute, the base is unknown, or the
     resolved path is correctly under the workspace root.
 
-    The workspace root is the live terminal cwd when known, else a sentinel-free
-    absolute ``$TERMINAL_CWD`` — so a worktree session whose terminal registry
-    is still empty (no ``cd`` run yet) is warned on the very first write.
+    The workspace root is the live terminal cwd when known, else a registered
+    task/session cwd override, else a sentinel-free absolute ``$TERMINAL_CWD``
+    — so a worktree or Desktop session whose terminal registry is still empty
+    (no ``cd`` run yet) is warned on the very first write.
     """
     try:
         if Path(filepath).expanduser().is_absolute():
@@ -625,7 +663,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     )
     import time
 
-    task_id = _resolve_container_task_id(task_id)
+    raw_task_id = task_id or "default"
+    task_id = _resolve_container_task_id(raw_task_id)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -658,11 +697,11 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 terminal_env = None
 
         if terminal_env is None:
-            from tools.terminal_tool import _task_env_overrides
+            from tools.terminal_tool import resolve_task_overrides
 
             config = _get_env_config()
             env_type = config["env_type"]
-            overrides = _task_env_overrides.get(task_id, {})
+            overrides = resolve_task_overrides(raw_task_id)
 
             if env_type == "docker":
                 image = overrides.get("docker_image") or config["docker_image"]
@@ -759,6 +798,52 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         _resolved = _resolve_path_for_task(path, task_id)
+
+        # ── Structured-document extraction ────────────────────────────
+        # Try before the binary-extension guard so .docx/.xlsx can render as text.
+        # Malformed documents fall through to the normal path/binary guard.
+        from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
+
+        if is_extractable_document(str(_resolved)):
+            try:
+                extracted_text = extract_document_text(str(_resolved))
+            except ExtractionError:
+                logger.debug("document extraction failed for %s", path, exc_info=True)
+            else:
+                file_ops = _get_file_ops(task_id)
+                lines = extracted_text.splitlines()
+                total_lines = len(lines)
+                end_line = offset + limit - 1
+                page_text = "\n".join(lines[offset - 1:end_line])
+                result_dict = {
+                    "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+                    "total_lines": total_lines,
+                    "file_size": os.path.getsize(_resolved),
+                    "truncated": total_lines > end_line,
+                    "extracted_document": True,
+                }
+                if result_dict["truncated"]:
+                    result_dict["hint"] = (
+                        f"Use offset={end_line + 1} to continue reading "
+                        f"(showing {offset}-{min(end_line, total_lines)} of {total_lines} lines)"
+                    )
+                content_len = len(result_dict["content"])
+                max_chars = _get_max_read_chars()
+                if content_len > max_chars:
+                    return json.dumps({
+                        "error": (
+                            f"Read produced {content_len:,} characters which exceeds "
+                            f"the safety limit ({max_chars:,} chars). "
+                            "Use offset and limit to read a smaller range. "
+                            f"The document has {total_lines} lines of extracted text."
+                        ),
+                        "path": path,
+                        "total_lines": total_lines,
+                        "file_size": result_dict["file_size"],
+                    }, ensure_ascii=False)
+                if result_dict["content"]:
+                    result_dict["content"] = redact_sensitive_text(result_dict["content"], code_file=True)
+                return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -1427,7 +1512,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. Jupyter notebooks (.ipynb), Word documents (.docx), and Excel workbooks (.xlsx) are auto-extracted to readable text. NOTE: Cannot read images or other binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {

@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -191,9 +192,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
+        # Focus mode (opt-in) demotes non-coding skill categories to
+        # names-only in the index (never hidden — skill_view/skills_list
+        # reach everything, and every name stays visible for recall). The
+        # default coding posture leaves the index untouched.
+        _compact_cats = frozenset()
+        try:
+            from agent.coding_context import coding_compact_skill_categories
+
+            _compact_cats = coding_compact_skill_categories(
+                platform=agent.platform, cwd=resolve_context_cwd()
+            )
+        except Exception:
+            _compact_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
+            compact_categories=_compact_cats or None,
         )
     else:
         skills_prompt = ""
@@ -220,6 +235,26 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
+
+    # Coding posture (base Hermes, any interactive coding surface in a code
+    # workspace — see agent/coding_context.py). The operating brief + the live
+    # git/workspace snapshot are built once here and cached for the session;
+    # the snapshot is never re-probed per turn (that would break the prompt
+    # cache), so the brief tells the model to re-check git before relying on it.
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_blocks
+
+            stable_parts.extend(
+                coding_system_blocks(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
@@ -366,7 +401,14 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+
+    # Surface context-file truncation warnings through the normal agent status
+    # channel so gateway/CLI users see them in chat instead of only in logs.
+    for warning in drain_truncation_warnings():
+        agent._emit_status(warning)
+
+    return joined
 
 
 def invalidate_system_prompt(agent: Any) -> None:

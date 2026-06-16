@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
@@ -489,15 +490,41 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "whatsapp_cloud": (
+        "You are on a text messaging communication platform, WhatsApp "
+        "(via Meta's official Business Cloud API). Standard markdown "
+        "(**bold**, ~~strike~~, # headers, [links](url)) is auto-converted "
+        "to WhatsApp's native syntax (*bold*, ~strike~, etc.) — feel free "
+        "to write in markdown. Tables are NOT supported — prefer bullet "
+        "lists or labeled key:value pairs. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png) become photo attachments, "
+        "videos (.mp4) play inline, audio (.mp3, .ogg) sends as voice/audio "
+        "messages, other files arrive as documents. Image URLs in markdown "
+        "format ![alt](url) also work. "
+        "IMPORTANT: this platform has a 24-hour conversation window — if the "
+        "user hasn't messaged in 24h, free-form replies are refused by Meta "
+        "(error 131047). This rarely matters for live chat, but is worth "
+        "knowing if you're scheduling a delayed message."
+    ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Standard markdown is automatically converted to Telegram format. "
+        "Standard Markdown is automatically converted to Telegram formatting. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "
-        "Telegram has NO table syntax — prefer bullet lists or labeled "
-        "key: value pairs over pipe tables (any tables you do emit are "
-        "auto-rewritten into row-group bullets, which you can produce "
-        "directly for cleaner output). "
+        "Telegram now supports rich Markdown, so lean into it: whenever it "
+        "makes the answer clearer or easier to scan, actively reach for real "
+        "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "
+        "lists, task lists (`- [ ]` / `- [x]`), headings, nested blockquotes, "
+        "collapsible details, footnotes/references, math/formulas (`$...$`, "
+        "`$$...$$`), underline, subscript/superscript, marked (highlighted) "
+        "text, and anchors. Default to structured formatting over dense "
+        "paragraphs for any comparison, set of steps, key/value summary, or "
+        "tabular data. Prefer real Markdown tables and task lists over "
+        "hand-built bullet substitutes when presenting structured data; these "
+        "degrade gracefully (tables become readable bullet groups) when rich "
+        "rendering is unavailable, but advanced constructs like math and "
+        "collapsible details may render as plain source text in that case. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -885,6 +912,22 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
+    # Hermes desktop GUI — any agent running under the desktop app should know
+    # it. HERMES_DESKTOP marks the backend powering the chat; HERMES_DESKTOP_TERMINAL
+    # marks a hermes launched in the embedded terminal pane. Both set by main.cjs.
+    _truthy = ("1", "true", "yes")
+    _in_desktop = (os.getenv("HERMES_DESKTOP") or "").strip().lower() in _truthy
+    _in_desktop_term = (os.getenv("HERMES_DESKTOP_TERMINAL") or "").strip().lower() in _truthy
+    if _in_desktop or _in_desktop_term:
+        _desktop_hint = "Runtime surface: you're running inside the Hermes desktop GUI app."
+        if _in_desktop_term:
+            _desktop_hint += (
+                " You're in its embedded terminal pane, beside the GUI chat — the user can "
+                "select your output (⌥-drag on macOS, Shift-drag elsewhere) and press "
+                "⌘/Ctrl+L to send it to the chat composer."
+            )
+        hints.append(_desktop_hint)
+
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
@@ -914,6 +957,52 @@ def build_environment_hints() -> str:
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
+
+
+def _get_context_file_max_chars() -> int:
+    """Return the configured context-file truncation limit.
+
+    ``CONTEXT_FILE_MAX_CHARS`` remains the upstream-compatible default and
+    fallback. Users with larger context windows can raise
+    ``context_file_max_chars`` in config.yaml without patching Hermes.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        val = load_config().get("context_file_max_chars")
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    except Exception as e:
+        logger.debug("Could not read context_file_max_chars from config: %s", e)
+    return CONTEXT_FILE_MAX_CHARS
+
+# Collect truncation warnings so the caller (run_agent) can surface them.
+# A ContextVar (not a module-global list) isolates accumulation per thread /
+# per async task, so concurrent gateway-session prompt builds can't drain or
+# clear each other's pending warnings (cross-session leak). Each build runs in
+# its own context, collects its own warnings, and drains them synchronously.
+_truncation_warnings: "contextvars.ContextVar[Optional[list]]" = contextvars.ContextVar(
+    "context_file_truncation_warnings", default=None
+)
+
+
+def _record_truncation_warning(msg: str) -> None:
+    """Append a truncation warning to the current context's accumulator."""
+    warnings = _truncation_warnings.get()
+    if warnings is None:
+        warnings = []
+        _truncation_warnings.set(warnings)
+    warnings.append(msg)
+
+
+def drain_truncation_warnings() -> list:
+    """Return and clear any truncation warnings accumulated in this context."""
+    warnings = _truncation_warnings.get()
+    if not warnings:
+        return []
+    drained = list(warnings)
+    warnings.clear()
+    return drained
 
 
 # =========================================================================
@@ -1085,11 +1174,12 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    compact_categories: "frozenset[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
     Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
       2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
          mtime/size manifest — survives process restarts
 
@@ -1099,6 +1189,12 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    ``compact_categories`` (e.g. from the coding posture — see
+    agent/coding_context.py) demotes whole categories to a names-only line in
+    the rendered index. Nothing is ever hidden: every skill name stays
+    visible and loadable via ``skill_view`` / ``skills_list``; only the
+    descriptions are dropped, and a footer note explains the demotion.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1115,7 +1211,7 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
-    disabled = get_disabled_skill_names()
+    disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1123,6 +1219,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(compact_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1256,18 +1353,44 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # Posture-driven category demotion (e.g. non-coding skills while pairing
+    # on code). Demoted categories stay in the index as a single names-only
+    # line — descriptions are dropped to cut noise, but every skill name
+    # remains visible so memory-anchored recall ("load <name>") keeps working.
+    # NEVER remove entries entirely: agent-created skills are the model's
+    # project memory, and models don't reach for skills_list to rediscover
+    # what the index stops showing them. Match on the top-level category
+    # segment so nested categories ("social-media/twitter") are demoted with
+    # their parent.
+    demoted = frozenset(
+        cat for cat in skills_by_category
+        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+    )
+
+    hidden_note = ""
+    if demoted:
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        )
+
     if not skills_by_category:
         result = ""
     else:
         index_lines = []
         for category in sorted(skills_by_category.keys()):
+            # Deduplicate and sort skills within each category
+            seen = set()
+            if category in demoted:
+                names = sorted({name for name, _ in skills_by_category[category]})
+                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                continue
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
@@ -1304,6 +1427,7 @@ def build_skills_system_prompt(
             "</available_skills>\n"
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
+            + hidden_note
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────
@@ -1367,13 +1491,13 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
     lines = [
         "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, OpenAI Whisper STT, and browser automation (Browser Use) by default. Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
     lines.extend(
         [
-            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",
             "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
             "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
             "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
@@ -1386,10 +1510,19 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
+def _truncate_content(content: str, filename: str, max_chars: Optional[int] = None) -> str:
     """Head/tail truncation with a marker in the middle."""
+    if max_chars is None:
+        max_chars = _get_context_file_max_chars()
     if len(content) <= max_chars:
         return content
+    msg = (
+        f"⚠️  Context file {filename} TRUNCATED: "
+        f"{len(content)} chars exceeds limit of {max_chars} — "
+        f"increase context_file_max_chars or trim the file!"
+    )
+    logger.warning(msg)
+    _record_truncation_warning(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     head = content[:head_chars]

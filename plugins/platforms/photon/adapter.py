@@ -58,6 +58,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 from gateway.platforms.helpers import strip_markdown
@@ -142,7 +143,7 @@ def _env_enablement() -> Optional[dict]:
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    seed = {"project_id": project_id, "project_secret": project_secret}
+    seed: dict = {"project_id": project_id, "project_secret": project_secret}
     home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
@@ -150,6 +151,19 @@ def _env_enablement() -> Optional[dict]:
             "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
         }
     return seed
+
+
+def _markdown_enabled() -> bool:
+    """Send agent replies as markdown (spectrum-ts ``markdown()`` builder).
+
+    iMessage renders it natively; other Spectrum platforms degrade to
+    readable plain text. On-device rendering can't be unit-tested, so
+    ``PHOTON_MARKDOWN=false`` is the kill-switch back to stripped plain
+    text without a release.
+    """
+    return os.getenv("PHOTON_MARKDOWN", "true").strip().lower() not in {
+        "false", "0", "no",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +213,10 @@ class PhotonAdapter(BasePlatformAdapter):
         ).lower() not in ("0", "false", "no")
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
+        # With markdown on, format_message preserves fences and the sidecar's
+        # markdown() builder renders them (or degrades them readably).
+        self.supports_code_blocks = _markdown_enabled()
+
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
@@ -208,6 +226,14 @@ class PhotonAdapter(BasePlatformAdapter):
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
+        # Ids of messages WE sent (bounded, insertion-order eviction). Inbound
+        # reaction events are only routed to the agent when they target one of
+        # these — a tapback on a human↔human message is not addressed to us.
+        self._sent_message_ids: Dict[str, float] = {}
+        # Latest inbound message id per chat (bounded). Lets the agent-facing
+        # react action default to "the message that triggered me" without
+        # requiring the model to thread message ids through tool calls.
+        self._last_inbound_by_chat: Dict[str, str] = {}
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
@@ -414,14 +440,19 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
-        if len(self._seen_messages) > _DEDUP_MAX_SIZE:
-            cutoff = now - _DEDUP_WINDOW_SECONDS
-            self._seen_messages = {
-                k: v for k, v in self._seen_messages.items() if v > cutoff
-            }
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
+        seen = self._seen_messages
+        t = seen.get(msg_id)
+        if t is not None and now - t < _DEDUP_WINDOW_SECONDS:
+            return True  # seen, unexpired
+        # New or expired: record and enforce a HARD size bound (evict oldest,
+        # insertion-order) so a burst of unique ids within the window can't grow
+        # the dict without limit — not just the expired-only prune.
+        if msg_id in seen:
+            del seen[msg_id]  # refresh insertion order
+        seen[msg_id] = now
+        if len(seen) > _DEDUP_MAX_SIZE:
+            for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
+                del seen[old]
         return False
 
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
@@ -437,7 +468,10 @@ class PhotonAdapter(BasePlatformAdapter):
               "content": {"type": "text", "text": "..."}
                        | {"type": "attachment"|"voice", "id", "name",
                           "mimeType", "size", "duration"?, "data"?,
-                          "encoding"?},
+                          "encoding"?}
+                       | {"type": "reaction", "emoji": "❤️",
+                          "targetMessageId": "..." | null,
+                          "targetDirection": "inbound"|"outbound" | null},
               "timestamp": "2026-05-14T19:06:32.000Z"
 
         Attachment and voice content carry the bytes inline as base64 ``data``
@@ -475,6 +509,44 @@ class PhotonAdapter(BasePlatformAdapter):
         media_types: List[str] = []
 
         ctype = content.get("type")
+        if ctype == "reaction":
+            # Route only tapbacks on messages WE sent — those are implicitly
+            # addressed to the bot (feishu precedent: synthetic text event).
+            # Reactions on human↔human messages are not for us. Checked before
+            # the mention gate: a tapback never carries a wake word.
+            target_id = content.get("targetMessageId")
+            is_ours = content.get("targetDirection") == "outbound" or (
+                target_id and target_id in self._sent_message_ids
+            )
+            if not is_ours:
+                logger.debug(
+                    "[photon] ignoring reaction on a message we didn't send"
+                )
+                return
+            emoji = content.get("emoji") or ""
+            source = self.build_source(
+                chat_id=space_id,
+                chat_name=space_id,
+                chat_type=chat_type,
+                user_id=sender_id,
+                user_name=sender_id or None,
+            )
+            await self.handle_message(
+                MessageEvent(
+                    text=f"reaction:added:{emoji}",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=event.get("messageId"),
+                    raw_message=event,
+                    timestamp=timestamp,
+                )
+            )
+            return
+        # Anything past here is a real (reactable) message — remember it as
+        # the chat's latest inbound so `add_reaction` can target it when the
+        # caller doesn't pass an explicit message id. Recorded before the
+        # mention gate: a reaction to a non-wake-word group message is valid.
+        self._record_last_inbound(space_id, event.get("messageId"))
         if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
@@ -548,21 +620,118 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Sidecar lifecycle -------------------------------------------------
 
+    @staticmethod
+    def _find_listener_pids(port: int) -> List[int]:
+        """PIDs listening on a local TCP port (empty if none/undeterminable)."""
+        try:
+            out = subprocess.run(  # noqa: S603, S607
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=5.0, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return [int(tok) for tok in out.stdout.split() if tok.strip().isdigit()]
+
+    @staticmethod
+    def _pid_is_sidecar(pid: int) -> bool:
+        """True if ``pid``'s command line is a Photon sidecar process."""
+        try:
+            out = subprocess.run(  # noqa: S603, S607
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=5.0, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        # Checkout-agnostic: any Hermes checkout's sidecar entry point.
+        return "photon/sidecar/index.mjs" in out.stdout
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)  # windows-footgun: ok — only called from _reap_stale_sidecar which win32-guards early
+            return True
+        except OSError:
+            return False
+
+    async def _reap_stale_sidecar(self) -> None:
+        """Kill an orphaned sidecar squatting our port before spawning ours.
+
+        A hard gateway exit (crash, SIGKILL, supervisor restart) used to leave
+        the detached sidecar running with a token the new gateway doesn't
+        know, so it can't be told to ``/shutdown`` — and every replacement
+        spawn died on EADDRINUSE, failing each reconnect attempt. The
+        stdin-EOF watch prevents new orphans; this reclaims the port from
+        orphans that predate it (or survived it). Listeners are verified by
+        command line before being signalled.
+        """
+        if sys.platform == "win32":  # lsof/ps; orphaning is a POSIX-only path
+            return
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(
+                    f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
+                    headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                )
+        except httpx.RequestError:
+            return  # nothing listening — the normal case
+        pids = self._find_listener_pids(self._sidecar_port)
+        stale = [pid for pid in pids if self._pid_is_sidecar(pid)]
+        foreign = [pid for pid in pids if pid not in stale]
+        if not stale:
+            raise RuntimeError(
+                f"port {self._sidecar_port} is in use by another process "
+                f"(pids: {foreign or 'unknown'}, not a Photon sidecar) — "
+                f"free it or set PHOTON_SIDECAR_PORT to a different port"
+            )
+        for pid in stale:
+            logger.warning(
+                "[photon] reaping orphaned sidecar (pid %d) on port %d",
+                pid, self._sidecar_port,
+            )
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.time() + 3.0
+        while time.time() < deadline and any(self._pid_alive(p) for p in stale):
+            await asyncio.sleep(0.1)
+        for pid in stale:
+            if self._pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — unreachable on win32 (early return above)
+                except OSError:
+                    pass
+        # Give the OS a beat to release the listening socket.
+        await asyncio.sleep(0.2)
+        if foreign:
+            raise RuntimeError(
+                f"port {self._sidecar_port} is also held by non-sidecar "
+                f"processes (pids: {foreign}) — free it or set "
+                f"PHOTON_SIDECAR_PORT to a different port"
+            )
+
     async def _start_sidecar(self) -> None:
         if not (_SIDECAR_DIR / "node_modules").exists():
             raise RuntimeError(
                 f"Photon sidecar deps not installed. Run: "
                 f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"
             )
+        await self._reap_stale_sidecar()
+
         env = os.environ.copy()
         env["PHOTON_PROJECT_ID"] = self._project_id
         env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
+        # The sidecar exits when its stdin (the pipe below) hits EOF, so a
+        # gateway death of ANY kind — including SIGKILL, where disconnect()
+        # never runs — can't leave it orphaned on the port.
+        env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
@@ -619,6 +788,14 @@ class PhotonAdapter(BasePlatformAdapter):
         if proc is None:
             return
         try:
+            # Closing our end of the stdin pipe is itself a shutdown signal
+            # (the sidecar watches for EOF), and covers the case where the
+            # HTTP call below can't get through.
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
             # Polite shutdown first.
             if self._http_client is not None:
                 try:
@@ -769,6 +946,176 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[photon] stop_typing failed: %s", e)
 
+    # -- Reactions (tapbacks) -----------------------------------------------
+    #
+    # Same lifecycle-hook pattern as Telegram/Discord: 👀 while processing,
+    # swapped for 👍/👎 on completion. Opt-in via PHOTON_REACTIONS — iMessage
+    # is a personal-texting channel, and a tapback on every text is noisy.
+
+    _SENT_IDS_MAX = 1000
+    _LAST_INBOUND_CHATS_MAX = 200
+
+    def _record_sent_message(self, message_id: Optional[str]) -> None:
+        if not message_id:
+            return
+        sent = self._sent_message_ids
+        if message_id in sent:
+            del sent[message_id]  # refresh insertion order
+        sent[message_id] = time.time()
+        if len(sent) > self._SENT_IDS_MAX:
+            for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
+                del sent[old]
+
+    # A DM space is addressable two ways — the chat GUID (`any;-;+1555...`)
+    # that inbound events carry, and the bare E.164 phone that home-channel
+    # config typically uses. The sidecar's resolveSpace treats them as the
+    # same space; normalize to the bare phone so the last-inbound tracker
+    # does too (mirrors phoneTargetFromSpaceId in sidecar/index.mjs).
+    _DM_CHAT_GUID_RE = re.compile(r"^any;-;(\+\d{6,})$")
+
+    @classmethod
+    def _normalize_chat_key(cls, chat_id: str) -> str:
+        match = cls._DM_CHAT_GUID_RE.match(chat_id)
+        return match.group(1) if match else chat_id
+
+    def _record_last_inbound(
+        self, chat_id: Optional[str], message_id: Optional[str]
+    ) -> None:
+        if not chat_id or not message_id:
+            return
+        key = self._normalize_chat_key(chat_id)
+        last = self._last_inbound_by_chat
+        if key in last:
+            del last[key]  # refresh insertion order
+        last[key] = message_id
+        if len(last) > self._LAST_INBOUND_CHATS_MAX:
+            for old in list(last.keys())[
+                : len(last) - self._LAST_INBOUND_CHATS_MAX
+            ]:
+                del last[old]
+
+    def _reactions_enabled(self) -> bool:
+        return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
+    async def _add_reaction(
+        self, chat_id: str, message_id: str, emoji: str
+    ) -> bool:
+        """Tapback ``emoji`` onto a message. Soft-fails (False), never raises."""
+        try:
+            await self._sidecar_call(
+                "/react",
+                {"spaceId": chat_id, "messageId": message_id, "emoji": emoji},
+            )
+            return True
+        except Exception as e:
+            logger.debug("[photon] add_reaction failed: %s", e)
+            return False
+
+    async def _remove_reaction(self, chat_id: str, message_id: str) -> bool:
+        """Retract our tapback from a message. Soft-fails (False), never raises.
+
+        The sidecar tracks one reaction handle per target message; after a
+        sidecar restart the handle is gone and removal is best-effort (the
+        stale tapback self-heals when the next reaction replaces it).
+        """
+        try:
+            await self._sidecar_call(
+                "/unreact", {"spaceId": chat_id, "messageId": message_id},
+            )
+            return True
+        except Exception as e:
+            logger.debug("[photon] remove_reaction failed: %s", e)
+            return False
+
+    # -- Agent-facing reactions (send_message action="react") ---------------
+    #
+    # Unlike the lifecycle hooks below, these are deliberate agent intents,
+    # so they are NOT gated by PHOTON_REACTIONS (that env var exists to mute
+    # the automatic per-message tapback noise, not explicit requests).
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Tapback ``emoji`` onto a message in ``chat_id``.
+
+        Without ``message_id``, targets the chat's most recent inbound
+        message (typically the one the agent is responding to). iMessage
+        maps ❤️👍👎😂‼️❓ to native tapbacks; anything else uses Apple's
+        custom-emoji reaction.
+        """
+        target = message_id or self._last_inbound_by_chat.get(
+            self._normalize_chat_key(chat_id)
+        )
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id (no "
+                "inbound message seen in this chat since the gateway started)",
+            }
+        ok = await self._add_reaction(chat_id, target, emoji)
+        if not ok:
+            return {
+                "success": False,
+                "error": "reaction failed (see gateway debug log)",
+            }
+        return {"success": True, "message_id": target}
+
+    async def remove_reaction(
+        self, chat_id: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Retract our tapback from a message (best-effort)."""
+        target = message_id or self._last_inbound_by_chat.get(
+            self._normalize_chat_key(chat_id)
+        )
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to unreact — pass message_id",
+            }
+        ok = await self._remove_reaction(chat_id, target)
+        if not ok:
+            return {
+                "success": False,
+                "error": "unreact failed (see gateway debug log)",
+            }
+        return {"success": True, "message_id": target}
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Tapback 👀 on the triggering message while the agent works."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._add_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Swap the 👀 progress tapback for a 👍/👎 result.
+
+        Remove-then-add rather than a bare replace: deterministic whether the
+        platform replaces a sender's previous tapback or stacks them, and it
+        keeps the sidecar's reaction-handle slot coherent.
+        """
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return
+        await self._remove_reaction(chat_id, message_id)
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(chat_id, message_id, "\U0001f44d")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(chat_id, message_id, "\U0001f44e")
+        # CANCELLED: leave the message unreacted.
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.
 
@@ -778,6 +1125,11 @@ class PhotonAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm", "id": chat_id}
 
     def format_message(self, content: str) -> str:
+        # Markdown is passed through verbatim — the sidecar sends it with the
+        # markdown() builder and iMessage renders it. The strip path remains
+        # as the PHOTON_MARKDOWN=false kill-switch.
+        if _markdown_enabled():
+            return content
         return strip_markdown(content)
 
     async def _send_with_retry(
@@ -789,7 +1141,12 @@ class PhotonAdapter(BasePlatformAdapter):
         max_retries: int = 2,
         base_delay: float = 2.0,
     ) -> SendResult:
-        """Photon/iMessage is plain text, so never show the generic Markdown banner."""
+        """Retry sends without the generic Markdown banner.
+
+        Photon replies are markdown (rendered by iMessage) or stripped plain
+        text under ``PHOTON_MARKDOWN=false`` — either way the gateway's
+        generic banner never applies.
+        """
         text = self.format_message(content)
         result = await self.send(
             chat_id=chat_id,
@@ -853,10 +1210,15 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
+        # Omit the key when disabled so an older sidecar (pre-`format`)
+        # keeps accepting the body during a half-upgraded restart.
+        if _markdown_enabled():
+            body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_send_attachment(
@@ -905,17 +1267,22 @@ class PhotonAdapter(BasePlatformAdapter):
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        # Guard: adapter not yet connected (no sidecar address known).
         if self._http_client is None:
             raise RuntimeError("Photon adapter not connected")
-        resp = await self._http_client.post(
-            f"http://{self._sidecar_bind}:{self._sidecar_port}{path}",
-            json=body,
-            headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
-            timeout=30.0,
-        )
+        # Use a fresh client per call so this method is safe when invoked from
+        # a worker thread that owns a different event loop than the one the
+        # persistent _http_client was created on (e.g. via _run_async in
+        # send_message_tool).  The inbound streaming loop continues to use
+        # _http_client directly — it always runs on the gateway's loop.
+        url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
+        headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"
@@ -1057,10 +1424,14 @@ async def _standalone_send(
         async with httpx.AsyncClient(timeout=30.0) as client:
             # 1. Text body first (if any), so it leads the conversation.
             if message:
+                send_body: Dict[str, Any] = {
+                    "spaceId": chat_id,
+                    "text": message[:_MAX_MESSAGE_LENGTH],
+                }
+                if _markdown_enabled():
+                    send_body["format"] = "markdown"
                 resp = await client.post(
-                    f"{base}/send",
-                    json={"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]},
-                    headers=headers,
+                    f"{base}/send", json=send_body, headers=headers,
                 )
                 if resp.status_code != 200:
                     return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
@@ -1141,10 +1512,11 @@ def register(ctx) -> None:
         allow_update_command=True,
         platform_hint=(
             "You are communicating via Photon Spectrum (iMessage). "
-            "Treat replies like regular text messages — short, friendly, no "
-            "markdown rendering. Recipient identifiers are E.164 phone "
-            "numbers; never expose them in responses unless the user asked. "
-            "Attachments arrive as metadata only."
+            "Treat replies like regular text messages — short and friendly. "
+            "Markdown is rendered (bold, italics, lists, code), but keep "
+            "formatting light and conversational. Recipient identifiers are "
+            "E.164 phone numbers; never expose them in responses unless the "
+            "user asked. Attachments arrive as metadata only."
         ),
     )
 

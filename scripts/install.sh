@@ -413,6 +413,25 @@ get_command_link_display_dir() {
     fi
 }
 
+# Point a Hermes-managed Node's `npm install -g` at a directory that is on
+# PATH. npm's default global prefix for a bundled Node is the Node dir itself,
+# so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
+# PATH (only the command link dir is) and is wiped on every Node upgrade.
+# Redirecting the prefix to the link dir's parent makes global bins resolve to
+# the command link dir (node/npm/npx live there too, already on PATH) and
+# survive upgrades. Scoped to the managed Node via its prefix-local global
+# npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
+# Hermes's own global installs pass an explicit --prefix and are unaffected.
+# Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
+# every install run repairs pre-existing installs, not just fresh ones.
+configure_managed_node_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -722,6 +741,11 @@ node_satisfies_build() {
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
+    # Repair pre-existing Hermes-managed installs where `npm install -g` lands
+    # off PATH. No-op when there's no managed Node, so this is safe to run on
+    # every install — including re-runs that skip the Node (re)install below.
+    configure_managed_node_npm_prefix
+
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
         log_success "Node.js $(node --version) found"
         HAS_NODE=true
@@ -850,6 +874,8 @@ install_node() {
     ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    configure_managed_node_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -1111,6 +1137,19 @@ clone_repo() {
 
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
+                # A previously interrupted update can leave the index with
+                # unmerged entries. In that state `git stash` aborts with
+                # "could not write index" and the later `git checkout` aborts
+                # with "you need to resolve your current index first", failing
+                # the whole install at the repository stage. Clear the conflict
+                # markers with `git reset` first -- this keeps working-tree
+                # changes (they're still stashed just below) and only drops the
+                # index-level conflict state. Mirrors the `hermes update` path
+                # (#4735).
+                if [ -n "$(git ls-files --unmerged)" ]; then
+                    log_info "Clearing unmerged index entries from a previous conflict..."
+                    git reset -q
+                fi
                 local stash_name
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."
@@ -2281,6 +2320,93 @@ postinstall_mode() {
     fi
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial/resumed download
+# that leaves concatenated junk - makes electron-builder's `unpack-electron`
+# extract a tree MISSING the electron binary, so the `electron`->`Hermes` rename
+# dies with ENOENT and every re-run repeats the broken extraction forever. This
+# is the bash sibling of install.ps1's Clear-ElectronBuildCache and the Python
+# _purge_electron_build_cache() used by `hermes desktop`; install.sh was the only
+# build path lacking it. Echoes the removed paths (one per line); best-effort.
+clear_electron_build_cache() {
+    local desktop_dir="$1"
+    local removed=""
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the platform defaults (macOS: ~/Library/Caches/electron,
+    # Linux: $XDG_CACHE_HOME/electron or ~/.cache/electron).
+    local cache_dirs=()
+    [ -n "${electron_config_cache:-}" ] && cache_dirs+=("$electron_config_cache")
+    [ -n "${ELECTRON_CACHE:-}" ] && cache_dirs+=("$ELECTRON_CACHE")
+    if [ "$OS" = "macos" ]; then
+        cache_dirs+=("$HOME/Library/Caches/electron")
+    else
+        [ -n "${XDG_CACHE_HOME:-}" ] && cache_dirs+=("$XDG_CACHE_HOME/electron")
+        cache_dirs+=("$HOME/.cache/electron")
+    fi
+
+    local dir zip
+    for dir in "${cache_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        while IFS= read -r zip; do
+            [ -n "$zip" ] || continue
+            if rm -f "$zip" 2>/dev/null; then
+                removed="$removed$zip
+"
+            fi
+        done <<EOF
+$(find "$dir" -type f -name 'electron-*.zip' 2>/dev/null)
+EOF
+    done
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (mac-arm64-unpacked / linux-unpacked).
+    local release_dir="$desktop_dir/release"
+    if [ -d "$release_dir" ]; then
+        local unpacked
+        while IFS= read -r unpacked; do
+            [ -n "$unpacked" ] || continue
+            if rm -rf "$unpacked" 2>/dev/null; then
+                removed="$removed$unpacked
+"
+            fi
+        done <<EOF
+$(find "$release_dir" -maxdepth 1 -type d -name '*-unpacked' 2>/dev/null)
+EOF
+    fi
+
+    printf '%s' "$removed"
+}
+
+# Run the desktop pack in $1 (the apps/desktop dir). `npm run pack` = tsc +
+# vite build + electron-builder --dir, producing an unpacked app for the
+# current OS. Signing auto-discovery is disabled so electron-builder falls back
+# to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
+# keychain (a real signed/notarized .dmg needs Apple credentials — a separate
+# release concern). Optional $2 = an ELECTRON_MIRROR base URL for this attempt,
+# used as a fallback when the default GitHub release download is blocked.
+_desktop_pack() {
+    local desktop_dir="$1"
+    local mirror="${2:-}"
+    if [ -n "$mirror" ]; then
+        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    else
+        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    fi
+}
+
+# Public Electron mirror used as a last-resort fallback when GitHub's release
+# host is blocked/throttled (the repeating "retrying" symptom). npmmirror.com is
+# the de-facto Electron community mirror (Alibaba). @electron/get SHASUM-checks
+# the download, but the SHASUMS come from the same mirror — that guards against a
+# corrupt/partial download, NOT a compromised mirror. Reaching for it is an
+# explicit trust trade-off we only make AFTER the canonical GitHub download has
+# failed, and we never override a user-pinned ELECTRON_MIRROR.
+DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2338,18 +2464,53 @@ install_desktop() {
     }
     log_success "Desktop workspace dependencies installed"
 
-    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
-    #    producing an unpacked app for the current OS. We disable signing
-    #    auto-discovery so electron-builder falls back to an ad-hoc signature
-    #    instead of grabbing an unrelated Developer ID from the keychain; a
-    #    real signed/notarized .dmg needs Apple credentials and is a separate
-    #    release concern.
+    # 2. Build, with up to three escalating attempts so a transient/blocked
+    #    Electron download self-heals instead of failing the whole install:
+    #      a) plain `npm run pack` (downloads Electron from GitHub),
+    #      b) on failure, purge a corrupt cached zip + stale unpacked dir and
+    #         retry (matches install.ps1 / `hermes desktop`),
+    #      c) on still-failing, fall back to a public Electron mirror — this is
+    #         the GitHub-blocked/throttled case (the repeating "retrying" log).
     log_info "Building desktop app (this takes 1-3 minutes)..."
-    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+    local pack_ok=false
+    if _desktop_pack "$desktop_dir"; then
+        pack_ok=true
+    else
+        # (b) Corrupt cached Electron zip is the most common self-healable cause.
+        local purged
+        purged="$(clear_electron_build_cache "$desktop_dir")"
+        if [ -n "$purged" ]; then
+            log_warn "Desktop build failed; cleared cached Electron download and retrying once..."
+            if _desktop_pack "$desktop_dir"; then
+                pack_ok=true
+            fi
+        fi
+    fi
+
+    # (c) Still failing and the user hasn't pinned their own mirror: the GitHub
+    #     release host is likely blocked/throttled. Retry once via a public
+    #     Electron mirror (@electron/get still SHASUM-verifies the download).
+    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
+        log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
+        log_warn "Retrying once via a public Electron mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR)..."
+        log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            pack_ok=true
+        fi
+    fi
+
+    if [ "$pack_ok" = false ]; then
         log_error "Desktop app build failed"
-        log_info "Run manually: cd $desktop_dir && npm run pack"
+        # If the log shows repeated "retrying" lines fetching the Electron zip,
+        # the binary download is blocked/throttled (firewall, proxy, region) and
+        # the mirror fallback above also couldn't reach a host. Try a mirror you
+        # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
+        log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
+        log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
+        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
         return 1
-    }
+    fi
 
     local app=""
     if [ "$OS" = "linux" ]; then

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { CopyButton } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -21,6 +21,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
+import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 interface SessionActions {
   sessionId: string
@@ -48,33 +49,37 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
 
+  const pinItem: ItemSpec = {
+    disabled: !onPin,
+    icon: 'pin',
+    label: pinned ? r.unpin : r.pin,
+    onSelect: () => {
+      triggerHaptic('selection')
+      onPin?.()
+    }
+  }
+
   const items: ItemSpec[] = [
-    {
-      disabled: !onPin,
-      icon: 'pin',
-      label: pinned ? r.unpin : r.pin,
-      onSelect: () => {
-        triggerHaptic('selection')
-        onPin?.()
-      }
-    },
-    {
-      disabled: !sessionId,
-      icon: 'copy',
-      label: r.copyId,
-      onSelect: event => {
-        event.preventDefault()
-        triggerHaptic('selection')
-        void writeClipboardText(sessionId).catch(err => notifyError(err, r.copyIdFailed))
-      }
-    },
+    ...(canOpenSessionWindow()
+      ? [
+          {
+            disabled: !sessionId,
+            icon: 'link-external',
+            label: r.newWindow,
+            onSelect: () => {
+              triggerHaptic('selection')
+              void openSessionInNewWindow(sessionId)
+            }
+          }
+        ]
+      : []),
     {
       disabled: !sessionId,
       icon: 'cloud-download',
       label: r.export,
       onSelect: () => {
         triggerHaptic('selection')
-        void exportSession(sessionId, { title })
+        void exportSession(sessionId, { profile, title })
       }
     },
     {
@@ -108,13 +113,28 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
     }
   ]
 
-  const renderItems = (Item: MenuItem) =>
-    items.map(({ className, disabled, icon, label, onSelect, variant }) => (
-      <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
-        <Codicon name={icon} size="0.875rem" />
-        <span>{label}</span>
-      </Item>
-    ))
+  const renderMenuItem = (Item: MenuItem, { className, disabled, icon, label, onSelect, variant }: ItemSpec) => (
+    <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
+      <Codicon name={icon} size="0.875rem" />
+      <span>{label}</span>
+    </Item>
+  )
+
+  const renderItems = (Item: MenuItem) => (
+    <>
+      {renderMenuItem(Item, pinItem)}
+      <CopyButton
+        appearance={Item === DropdownMenuItem ? 'menu-item' : 'context-menu-item'}
+        disabled={!sessionId}
+        errorMessage={r.copyIdFailed}
+        key={r.copyId}
+        label={r.copyId}
+        onCopyError={err => notifyError(err, r.copyIdFailed)}
+        text={sessionId}
+      />
+      {items.map(spec => renderMenuItem(Item, spec))}
+    </>
+  )
 
   const renameDialog = (
     <RenameSessionDialog

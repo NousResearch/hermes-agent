@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ModelOptionProvider } from '@/types/hermes'
 
 import {
+  collapseModelFamilies,
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
   isProviderSentinel,
@@ -76,6 +77,18 @@ describe('model visibility', () => {
 
     expect(visible.has(modelVisibilityKey('nous', 'hermes-3-llama-3.1-70b'))).toBe(true)
     expect(visible.has(modelVisibilityKey('nous', 'hermes-3-llama-3.1-8b'))).toBe(false)
+  })
+
+  it('folds a date-pinned snapshot into its rolling alias when present', () => {
+    const families = collapseModelFamilies(['claude-opus-4-5', 'claude-opus-4-5-20251101'])
+
+    expect(families.map(f => f.id)).toEqual(['claude-opus-4-5'])
+  })
+
+  it('keeps a date-pinned snapshot standing alone when it has no alias', () => {
+    const families = collapseModelFamilies(['claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'])
+
+    expect(families.map(f => f.id)).toEqual(['claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'])
   })
 
   it('sentinel key helper produces correct format', () => {

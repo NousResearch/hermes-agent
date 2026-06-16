@@ -10,6 +10,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
+import { $terminalInjection } from '../store'
+
 import { makeTerminalReader, setActiveTerminalReader } from './buffer'
 import {
   isAddSelectionShortcut,
@@ -674,6 +676,28 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     return () => cancelAnimationFrame(raf)
   }, [activeTheme, themeName])
+
+  // Flush a queued command (e.g. a provider-disconnect) into the live session.
+  // Only active while open; the subscribe fires immediately, so a command set
+  // before this pane mounted runs as soon as the session is ready. Clearing the
+  // atom after writing stops a later remount from replaying a stale command.
+  useEffect(() => {
+    if (status !== 'open') {
+      return
+    }
+
+    return $terminalInjection.subscribe(command => {
+      const id = sessionIdRef.current
+
+      if (!command || !id) {
+        return
+      }
+
+      void window.hermesDesktop?.terminal?.write(id, `${command}\r`)
+      $terminalInjection.set(null)
+      termRef.current?.focus()
+    })
+  }, [status])
 
   return {
     addSelectionToChat,

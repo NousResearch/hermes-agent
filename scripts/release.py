@@ -67,6 +67,7 @@ AUTHOR_MAP = {
     "raysun12142006@gmail.com": "yanxue06",
     "alberto.regalado@ymail.com": "ARegalado1",
     "alchemistchaos@protonmail.com": "AlchemistChaos",  # co-author only
+    "cypres0099@users.noreply.github.com": "cypres0099",
     "gilad@smiti.ai": "giladbau",
     "yusufalweshdemir@gmail.com": "Dusk1e",
     "804436395@qq.com": "LaPhilosophie",

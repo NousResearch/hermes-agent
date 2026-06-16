@@ -247,7 +247,7 @@ class TestWebServerEndpoints:
         assert "active_sessions" in data
         assert data["can_update_hermes"] is True
 
-    def test_get_status_hides_update_capability_in_hosted_mode(self, monkeypatch):
+    def test_get_status_hides_update_capability_in_managed_runtime(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: True)
@@ -260,7 +260,6 @@ class TestWebServerEndpoints:
         import hermes_constants
         import hermes_cli.web_server as web_server
 
-        monkeypatch.setattr(web_server, "_default_hermes_root_is_opt_data", lambda: False)
         monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
 
         assert web_server._dashboard_local_update_managed_externally() is True
@@ -931,7 +930,7 @@ class TestWebServerEndpoints:
         assert status_data["pid"] is None
         assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
 
-    def test_update_hermes_returns_hosted_guidance_without_spawning(self, monkeypatch):
+    def test_update_hermes_returns_managed_runtime_guidance_without_spawning(self, monkeypatch):
         import hermes_cli.web_server as web_server
 
         spawned = False
@@ -940,12 +939,12 @@ class TestWebServerEndpoints:
         def fail_spawn(*_args, **_kwargs):
             nonlocal spawned
             spawned = True
-            raise AssertionError("hosted update guard should not spawn hermes update")
+            raise AssertionError("managed runtime update guard should not spawn hermes update")
 
         def fail_detect(*_args, **_kwargs):
             nonlocal detected
             detected = True
-            raise AssertionError("hosted update guard should not detect install method")
+            raise AssertionError("managed runtime update guard should not detect install method")
 
         monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: True)
         monkeypatch.setattr(web_server, "detect_install_method", fail_detect)

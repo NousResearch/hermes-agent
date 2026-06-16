@@ -1227,15 +1227,11 @@ def _default_hermes_root_is_opt_data() -> bool:
 def _dashboard_local_update_managed_externally() -> bool:
     """Return true when the dashboard should not offer ``hermes update``.
 
-    Hosted agent dashboards run with the Hermes root at ``/opt/data``.  Generic
-    containerized dashboards may not use that exact root, but their lifecycle is
-    still owned by the outer launcher/image, not by an in-browser local update
-    action.  Keep this dashboard capability separate from install-method
-    detection: manual git/pip installs inside containers can still behave like
-    their actual install method in the CLI.
+    Containerized dashboards are updated by the outer launcher/image, not by an
+    in-browser local update action. Keep this dashboard capability separate
+    from install-method detection: manual git/pip installs inside containers can
+    still behave like their actual install method in the CLI.
     """
-    if _default_hermes_root_is_opt_data():
-        return True
     try:
         from hermes_constants import is_container
 
@@ -2188,7 +2184,7 @@ async def update_hermes():
     """Kick off ``hermes update`` in the background."""
     if _dashboard_local_update_managed_externally():
         message = (
-            "Hermes updates are managed outside this dashboard for hosted or "
+            "Hermes updates are managed outside this dashboard in "
             "containerized environments. The built-in local updater is "
             "disabled here."
         )
@@ -2310,8 +2306,8 @@ async def check_hermes_update(force: bool = False):
             "can_apply": False,
             "update_command": "managed outside dashboard",
             "message": (
-                "Hermes updates are managed outside this dashboard for hosted "
-                "or containerized environments."
+                "Hermes updates are managed outside this dashboard in "
+                "containerized environments."
             ),
         }
 

@@ -772,7 +772,7 @@ class TestUpdateCheckEndpoint:
         assert body["message"]
         assert body["behind"] is None
 
-    def test_hosted_dashboard_is_not_applyable(self, monkeypatch):
+    def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
@@ -780,7 +780,7 @@ class TestUpdateCheckEndpoint:
             ws,
             "detect_install_method",
             lambda *a, **k: pytest.fail(
-                "hosted update check should not probe install method"
+                "managed runtime update check should not probe install method"
             ),
         )
 

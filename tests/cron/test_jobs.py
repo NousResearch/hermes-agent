@@ -341,6 +341,37 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_with_reusable_session(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Check server status",
+            schedule="every 1h",
+            session="gateway_health_monitor",
+        )
+
+        assert job["session"] == "gateway_health_monitor"
+        assert get_job(job["id"])["session"] == "gateway_health_monitor"
+
+    @pytest.mark.parametrize("session", ["../escape", "bad/session", "bad.session", "-bad"])
+    def test_create_rejects_invalid_reusable_session(self, tmp_cron_dir, session):
+        with pytest.raises(ValueError, match="Cron session"):
+            create_job(prompt="Test", schedule="every 1h", session=session)
+
+    def test_create_empty_reusable_session_is_disabled(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="every 1h", session="")
+
+        assert job.get("session") is None
+
+    def test_reusable_session_preserves_attach_to_session(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Daily brief",
+            schedule="every 1d",
+            session="daily_brief",
+            attach_to_session=True,
+        )
+
+        assert job["session"] == "daily_brief"
+        assert job["attach_to_session"] is True
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -401,6 +432,32 @@ class TestUpdateJob:
         assert updated is not None
         assert updated["schedule"]["kind"] == "once"
         assert updated["next_run_at"] is not None
+
+    def test_update_reusable_session(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+
+        updated = update_job(job["id"], {"session": "health-check"})
+
+        assert updated["session"] == "health-check"
+        assert get_job(job["id"])["session"] == "health-check"
+
+    def test_update_clears_reusable_session(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Check server status",
+            schedule="every 1h",
+            session="health-check",
+        )
+
+        updated = update_job(job["id"], {"session": ""})
+
+        assert updated["session"] is None
+        assert get_job(job["id"])["session"] is None
+
+    def test_update_rejects_invalid_reusable_session(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="every 1h")
+
+        with pytest.raises(ValueError, match="Cron session"):
+            update_job(job["id"], {"session": "bad/session"})
 
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")

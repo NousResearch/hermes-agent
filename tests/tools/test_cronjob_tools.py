@@ -1,6 +1,8 @@
 """Tests for tools/cronjob_tools.py — prompt scanning, schedule/list/remove dispatchers."""
 
 import json
+from unittest.mock import patch
+
 import pytest
 
 from tools.cronjob_tools import (
@@ -263,6 +265,48 @@ class TestUnifiedCronjobTool:
         assert listing["count"] == 1
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
+
+    def test_create_and_update_reusable_session(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check server status",
+                schedule="every 1h",
+                session="gateway_health_monitor",
+            )
+        )
+        assert created["success"] is True
+        assert created["job"]["session"] == "gateway_health_monitor"
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["jobs"][0]["session"] == "gateway_health_monitor"
+
+        updated = json.loads(
+            cronjob(
+                action="update",
+                job_id=created["job_id"],
+                session="",
+            )
+        )
+        assert updated["success"] is True
+        assert "session" not in updated["job"]
+
+    def test_registry_forwards_session_and_attach_to_session_together(self):
+        from tools.registry import registry
+
+        entry = registry.get_entry("cronjob")
+        with patch("tools.cronjob_tools.cronjob", return_value='{"success": true}') as call:
+            result = entry.handler(
+                {
+                    "action": "create",
+                    "session": "daily_brief",
+                    "attach_to_session": True,
+                }
+            )
+
+        assert json.loads(result)["success"] is True
+        assert call.call_args.kwargs["session"] == "daily_brief"
+        assert call.call_args.kwargs["attach_to_session"] is True
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

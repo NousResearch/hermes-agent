@@ -50,7 +50,7 @@ def test_cron_create_options():
         "cron", "create", "0 9 * * *", "daily task prompt",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
-        "--workdir", "/tmp/x",
+        "--workdir", "/tmp/x", "--session", "daily-session",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "daily task prompt"
@@ -60,6 +60,7 @@ def test_cron_create_options():
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
+    assert ns.session == "daily-session"
 
 
 def test_cron_edit_no_agent_tristate():
@@ -68,6 +69,14 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
+
+
+def test_cron_edit_session_option():
+    parser = _build()
+
+    ns = parser.parse_args(["cron", "edit", "j", "--session", "health-check"])
+
+    assert ns.session == "health-check"
 
 
 def test_cron_dispatch_func_is_injected_handler():

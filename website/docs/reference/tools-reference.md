@@ -54,7 +54,7 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
+| `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, `skills=[]` on update, and optional cron-owned `session` ids for recurring jobs that should reuse conversation history. Existing CLI/gateway sessions are rejected. Cron runs use fresh sessions unless `session` is set. | — |
 
 ## `delegation` toolset
 

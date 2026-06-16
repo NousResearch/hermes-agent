@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _prepare_cron_session
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -958,6 +958,61 @@ class TestDeliverResultErrorReturns:
 
 
 class TestRunJobSessionPersistence:
+    def test_prepare_reusable_session_follows_real_compression_chain(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("cron_health", source="cron")
+        db.append_message("cron_health", role="user", content="old status")
+        db.end_session("cron_health", "compression")
+        db.create_session(
+            "cron_health_mid",
+            source="cron",
+            parent_session_id="cron_health",
+        )
+        db.append_message("cron_health_mid", role="user", content="middle status")
+        db.end_session("cron_health_mid", "compression")
+        db.create_session(
+            "cron_health_tip",
+            source="cron",
+            parent_session_id="cron_health_mid",
+        )
+        db.append_message("cron_health_tip", role="user", content="latest status")
+        db.append_message("cron_health_tip", role="assistant", content="healthy")
+        db.end_session("cron_health_tip", "cron_complete")
+
+        session_id, history = _prepare_cron_session(
+            {"id": "health-job", "session": "cron_health"},
+            db,
+        )
+
+        assert session_id == "cron_health_tip"
+        assert [
+            {"role": message["role"], "content": message["content"]}
+            for message in history
+        ] == [
+            {"role": "user", "content": "latest status"},
+            {"role": "assistant", "content": "healthy"},
+        ]
+        assert db.get_session("cron_health")["end_reason"] == "compression"
+        assert db.get_session("cron_health_mid")["end_reason"] == "compression"
+        assert db.get_session("cron_health_tip")["ended_at"] is None
+        db.close()
+
+    @pytest.mark.parametrize("source", ["cli", "telegram", "gateway"])
+    def test_prepare_reusable_session_rejects_non_cron_runtime(self, tmp_path, source):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / f"{source}.db")
+        db.create_session("shared_session", source=source)
+
+        with pytest.raises(RuntimeError, match="not 'cron'"):
+            _prepare_cron_session(
+                {"id": "health-job", "session": "shared_session"},
+                db,
+            )
+        db.close()
+
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
         job = {
             "id": "test-job",
@@ -1002,6 +1057,58 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
+
+    def test_run_job_reuses_resolved_cron_session_history(self, tmp_path):
+        job = {
+            "id": "test-job",
+            "name": "Health check",
+            "prompt": "hello",
+            "session": "gateway_health_monitor",
+        }
+        history = [{"role": "user", "content": "previous status was down"}]
+        fake_db = MagicMock()
+        fake_db.get_compression_tip.return_value = "gateway_health_monitor_tip"
+        fake_db.get_session.side_effect = [
+            {"id": "gateway_health_monitor", "source": "cron", "ended_at": 1.0},
+            {"id": "gateway_health_monitor_tip", "source": "cron", "ended_at": 2.0},
+        ]
+        fake_db.get_messages_as_conversation.return_value = history
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.session_id = "gateway_health_monitor_tip"
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == "ok"
+        assert error is None
+        fake_db.get_compression_tip.assert_called_once_with("gateway_health_monitor")
+        fake_db.get_messages_as_conversation.assert_called_once_with(
+            "gateway_health_monitor_tip"
+        )
+        fake_db.reopen_session.assert_called_once_with("gateway_health_monitor_tip")
+        assert mock_agent_cls.call_args.kwargs["session_id"] == "gateway_health_monitor_tip"
+        assert mock_agent.run_conversation.call_args.kwargs["conversation_history"] == history
+        fake_db.end_session.assert_called_once_with(
+            "gateway_health_monitor_tip", "cron_complete"
+        )
 
     def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).

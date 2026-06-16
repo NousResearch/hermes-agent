@@ -17,6 +17,7 @@ Cron jobs can:
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
+- reuse a named cron-owned session across runs when a job needs continuity
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
@@ -49,6 +50,32 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
   --skill maps \
   --name "Skill combo"
+```
+
+## Reusing a named session
+
+By default, each cron invocation creates a fresh timestamped `cron_<job>_<time>` session. Use `--session` (CLI) or `session=` (tool call) when a recurring job should load prior conversation history and append each run to the same cron-owned SessionDB conversation. If compression has continued that session in a child row, the scheduler follows the chain to its live tip before loading history.
+
+```bash
+hermes cron create "every 20m" "Check whether the gateway is healthy" \
+  --name "Gateway Health Monitor" \
+  --session gateway_health_monitor
+```
+
+```python
+cronjob(
+    action="create",
+    schedule="every 20m",
+    prompt="Check whether the gateway is healthy",
+    name="Gateway Health Monitor",
+    session="gateway_health_monitor",
+)
+```
+
+Session ids must be 1-64 characters, start with a letter or digit, and contain only letters, digits, `_`, or `-`. A new id becomes cron-owned on its first run; an existing session must already have `source="cron"`. CLI, gateway, and other non-cron sessions are rejected because their system prompts and tool contracts differ from cron. To restore the old fresh-session-per-run behavior:
+
+```bash
+hermes cron edit <job_id> --session ""
 ```
 
 ### Through natural conversation
@@ -152,6 +179,7 @@ hermes cron edit <job_id> --skill blogwatcher --skill maps
 hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
+hermes cron edit <job_id> --session gateway_health_monitor
 ```
 
 Notes:
@@ -160,6 +188,7 @@ Notes:
 - `--add-skill` appends to the existing list without replacing it
 - `--remove-skill` removes specific attached skills
 - `--clear-skills` removes all attached skills
+- `--session ""` clears reusable-session mode
 
 ## Lifecycle actions
 
@@ -217,8 +246,8 @@ On each tick Hermes:
 
 1. loads jobs from `~/.hermes/cron/jobs.json`
 2. checks `next_run_at` against the current time
-3. starts a fresh `AIAgent` session for each due job
-4. optionally injects one or more attached skills into that fresh session
+3. starts a fresh `AIAgent` session for each due job, or reuses the configured `session`
+4. optionally injects one or more attached skills into that agent run
 5. runs the prompt to completion
 6. delivers the final response
 7. updates run metadata and the next scheduled time
@@ -457,7 +486,7 @@ See the [Script-Only Cron Jobs guide](/guides/cron-script-only) for worked examp
 
 ## Chaining jobs with `context_from`
 
-Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
+By default, cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
 
 ```python
 # Job 1: Collect raw data
@@ -592,7 +621,7 @@ For `update`, pass `skills=[]` to remove all attached skills.
 
 ## Toolsets available to cron jobs
 
-Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
+Cron runs each job in a fresh agent session by default, or its configured cron-owned reusable session, with no chat platform attached. The cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
 
 ```bash
 hermes tools
@@ -743,7 +772,7 @@ The storage uses atomic file writes so interrupted writes do not leave a partial
 ## Self-contained prompts still matter
 
 :::warning Important
-Cron jobs run in a completely fresh agent session. The prompt must contain everything the agent needs that is not already provided by attached skills.
+Cron jobs run in a completely fresh agent session unless a cron-owned reusable `session` is configured. Without one, the prompt must contain everything the agent needs that is not already provided by attached skills.
 :::
 
 **BAD:** `"Check on that server issue"`

@@ -1,0 +1,11 @@
+name: multi-agent
+version: 1.0.0
+description: >
+  Single-daemon multi-agent routing hook.
+  On agent:start, resolves the active agent from the routing table
+  and loads/activates its AgentContext (CICS TCB model).
+  On agent:end, snapshots pseudo-conversational state to disk.
+  Implements the #9514 architecture proposal.
+events:
+  - agent:start
+  - agent:end

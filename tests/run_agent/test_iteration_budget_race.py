@@ -104,3 +104,50 @@ def test_iteration_budget_remaining():
     assert budget.remaining == 2
     budget.refund()
     assert budget.remaining == 3
+
+
+def test_iteration_budget_ratio_used_tracks_consumed_fraction():
+    """ratio_used must report used/max_total without mutating budget state."""
+    from run_agent import IterationBudget
+
+    budget = IterationBudget(max_total=4)
+
+    assert budget.ratio_used == 0.0
+    budget.consume()
+    assert budget.ratio_used == 0.25
+    budget.consume()
+    budget.consume()
+    assert budget.ratio_used == 0.75
+    assert budget.used == 3
+
+
+def test_iteration_budget_threshold_state_reports_lifecycle_states():
+    """threshold_state must classify normal/warning/checkpoint/exhausted bands."""
+    from run_agent import IterationBudget
+
+    budget = IterationBudget(max_total=10)
+    assert budget.threshold_state(warning_ratio=0.75, checkpoint_ratio=0.9) == "normal"
+
+    for _ in range(7):
+        budget.consume()
+    assert budget.threshold_state(warning_ratio=0.75, checkpoint_ratio=0.9) == "normal"
+
+    budget.consume()
+    assert budget.threshold_state(warning_ratio=0.75, checkpoint_ratio=0.9) == "warning"
+
+    budget.consume()
+    assert budget.threshold_state(warning_ratio=0.75, checkpoint_ratio=0.9) == "checkpoint"
+
+    budget.consume()
+    assert budget.threshold_state(warning_ratio=0.75, checkpoint_ratio=0.9) == "exhausted"
+
+
+def test_iteration_budget_threshold_state_validates_ratios():
+    """threshold_state must reject invalid threshold ordering."""
+    from run_agent import IterationBudget
+
+    budget = IterationBudget(max_total=10)
+
+    import pytest
+    with pytest.raises(ValueError, match="warning_ratio"):
+        budget.threshold_state(warning_ratio=0.95, checkpoint_ratio=0.9)

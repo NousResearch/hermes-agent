@@ -1302,6 +1302,165 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 
+_CONTINUATION_PACKET_FIELDS = [
+    "issue",
+    "lane",
+    "owner",
+    "task class",
+    "budget state",
+    "last completed phase",
+    "current phase",
+    "repo/worktree/branch",
+    "commit SHA",
+    "PR URL/state",
+    "merge state",
+    "package path",
+    "Drive target",
+    "Obsidian target",
+    "Linear state",
+    "validation",
+    "remaining actions",
+    "forbidden actions",
+    "do-not-repeat list",
+    "next safe resume packet",
+    "FGD-21 footer",
+]
+
+
+def _build_budget_checkpoint_request(
+    *,
+    api_call_count: int,
+    max_iterations: int,
+    budget_state: str = "checkpoint",
+    task_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Build the dormant continuation-packet prompt for budget checkpoints."""
+    task_metadata = task_metadata or {}
+    metadata_lines = []
+    for key in ("issue", "lane", "owner", "task_class", "last_completed_phase", "current_phase"):
+        if task_metadata.get(key):
+            metadata_lines.append(f"- {key.replace('_', ' ')}: {task_metadata[key]}")
+    metadata_block = "\n".join(metadata_lines) if metadata_lines else "- none supplied; infer only from accepted conversation evidence"
+    fields = "\n".join(f"- {field}" for field in _CONTINUATION_PACKET_FIELDS)
+    return (
+        "Budget checkpoint threshold reached before iteration exhaustion. "
+        "Do not call tools. Return a structured CONTINUATION PACKET only; "
+        "do not provide a generic summary.\n\n"
+        f"Budget state: {budget_state} ({api_call_count}/{max_iterations} API/tool iterations).\n"
+        "Known task metadata:\n"
+        f"{metadata_block}\n\n"
+        "The continuation packet must preserve these fields exactly where known, "
+        "using 'unknown' when evidence is missing:\n"
+        f"{fields}\n\n"
+        "The FGD-21 footer must include Worker used, Worker suitable, "
+        "Jimmy review result, and Next handover type."
+    )
+
+
+def _build_no_tools_finalizer_messages(agent, messages: list) -> list:
+    """Prepare sanitized messages for a no-tools finalizer request."""
+    _needs_sanitize = agent._should_sanitize_tool_calls()
+    api_messages = []
+    for msg in messages:
+        api_msg = msg.copy()
+        agent._copy_reasoning_content_for_api(msg, api_msg)
+        for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+            api_msg.pop(internal_field, None)
+        for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items"):
+            api_msg.pop(schema_foreign, None)
+        for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+            api_msg.pop(internal_key, None)
+        if _needs_sanitize:
+            agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
+        api_messages.append(api_msg)
+
+    effective_system = agent._cached_system_prompt or ""
+    if agent.ephemeral_system_prompt:
+        effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+    if effective_system:
+        api_messages = [{"role": "system", "content": effective_system}] + api_messages
+    if agent.prefill_messages:
+        sys_offset = 1 if effective_system else 0
+        for idx, pfm in enumerate(agent.prefill_messages):
+            api_messages.insert(sys_offset + idx, pfm.copy())
+
+    api_messages = agent._sanitize_api_messages(api_messages)
+    api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+    return api_messages
+
+
+def handle_budget_checkpoint(
+    agent,
+    messages: list,
+    api_call_count: int,
+    *,
+    budget_state: str = "checkpoint",
+    task_metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Request a structured no-tools continuation packet before exhaustion.
+
+    Dormant helper only: no production call site is wired in this gate.
+    """
+    checkpoint_request = _build_budget_checkpoint_request(
+        api_call_count=api_call_count,
+        max_iterations=agent.max_iterations,
+        budget_state=budget_state,
+        task_metadata=task_metadata,
+    )
+    messages.append({"role": "user", "content": checkpoint_request})
+
+    try:
+        api_messages = _build_no_tools_finalizer_messages(agent, messages)
+
+        if agent.api_mode == "codex_responses":
+            codex_kwargs = agent._build_api_kwargs(api_messages)
+            codex_kwargs.pop("tools", None)
+            checkpoint_response = agent._run_codex_stream(codex_kwargs)
+            checkpoint_result = agent._get_transport().normalize_response(checkpoint_response)
+            final_response = (checkpoint_result.content or "").strip()
+        elif agent.api_mode == "anthropic_messages":
+            transport = agent._get_transport()
+            ant_kwargs = transport.build_kwargs(
+                model=agent.model,
+                messages=api_messages,
+                tools=None,
+                max_tokens=agent.max_tokens,
+                reasoning_config=agent.reasoning_config,
+                is_oauth=agent._is_anthropic_oauth,
+                preserve_dots=agent._anthropic_preserve_dots(),
+            )
+            checkpoint_response = agent._anthropic_messages_create(ant_kwargs)
+            checkpoint_result = transport.normalize_response(
+                checkpoint_response,
+                strip_tool_prefix=agent._is_anthropic_oauth,
+            )
+            final_response = (checkpoint_result.content or "").strip()
+        else:
+            checkpoint_kwargs = {
+                "model": agent.model,
+                "messages": api_messages,
+            }
+            if agent.max_tokens is not None:
+                checkpoint_kwargs.update(agent._max_tokens_param(agent.max_tokens))
+            checkpoint_response = agent._ensure_primary_openai_client(
+                reason="budget_checkpoint_continuation"
+            ).chat.completions.create(**checkpoint_kwargs)
+            checkpoint_result = agent._get_transport().normalize_response(checkpoint_response)
+            final_response = (checkpoint_result.content or "").strip()
+
+        if final_response:
+            if "<think>" in final_response:
+                final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+            if final_response:
+                messages.append({"role": "assistant", "content": final_response})
+                return final_response
+
+        return "Budget checkpoint reached, but no continuation packet was generated."
+    except Exception as e:
+        logger.warning(f"Failed to get budget checkpoint continuation response: {e}")
+        return f"Budget checkpoint reached but continuation packet generation failed. Error: {str(e)}"
+
+
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")

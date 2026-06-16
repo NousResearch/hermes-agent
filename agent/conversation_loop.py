@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from agent.chat_completion_helpers import handle_budget_checkpoint
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -549,6 +550,38 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+
+        if getattr(agent, "_budget_checkpointing_enabled", False):
+            try:
+                _budget_state = agent.iteration_budget.threshold_state(
+                    warning_ratio=getattr(agent, "_budget_checkpoint_warning_ratio", 0.75),
+                    checkpoint_ratio=getattr(agent, "_budget_checkpoint_checkpoint_ratio", 0.88),
+                )
+            except Exception as _budget_err:
+                logger.debug("budget checkpoint threshold check failed: %s", _budget_err)
+                _budget_state = "normal"
+
+            if _budget_state == "warning" and not getattr(agent, "_budget_checkpoint_warning_emitted", False):
+                agent._budget_checkpoint_warning_emitted = True
+                agent._emit_status(
+                    f"⚠️ Budget checkpoint warning ({agent.iteration_budget.used}/{agent.iteration_budget.max_total})"
+                )
+            elif (
+                _budget_state == "checkpoint"
+                and getattr(agent, "_budget_checkpoint_mode", "continuation_packet") == "continuation_packet"
+                and not getattr(agent, "_budget_checkpoint_emitted", False)
+            ):
+                agent._budget_checkpoint_emitted = True
+                _turn_exit_reason = "budget_checkpoint"
+                failed = True
+                final_response = handle_budget_checkpoint(
+                    agent,
+                    messages,
+                    api_call_count,
+                    budget_state=_budget_state,
+                    task_metadata={},
+                )
+                break
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:

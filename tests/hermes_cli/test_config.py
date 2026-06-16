@@ -73,6 +73,19 @@ class TestLoadConfigDefaults:
             assert config["terminal"]["backend"] == "local"
             assert config["display"]["interim_assistant_messages"] is True
 
+    def test_budget_checkpointing_defaults_are_disabled(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            budget_cfg = config["agent"]["budget_checkpointing"]
+
+            assert budget_cfg == {
+                "enabled": False,
+                "warning_ratio": 0.75,
+                "checkpoint_ratio": 0.88,
+                "mode": "continuation_packet",
+            }
+            assert DEFAULT_CONFIG["agent"]["budget_checkpointing"] == budget_cfg
+
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config_path = tmp_path / "config.yaml"

@@ -58,5 +58,41 @@ class IterationBudget:
         with self._lock:
             return max(0, self.max_total - self._used)
 
+    @property
+    def ratio_used(self) -> float:
+        """Fraction of the total iteration budget already consumed."""
+        with self._lock:
+            if self.max_total <= 0:
+                return 1.0
+            return min(1.0, self._used / self.max_total)
+
+    def threshold_state(
+        self,
+        *,
+        warning_ratio: float = 0.75,
+        checkpoint_ratio: float = 0.88,
+    ) -> str:
+        """Classify current budget pressure without changing runtime behavior.
+
+        Returns one of: ``normal``, ``warning``, ``checkpoint``, or
+        ``exhausted``. This is scaffolding for callers that may later choose to
+        emit warnings or continuation checkpoints; the helper itself has no side
+        effects.
+        """
+        if not (0 <= warning_ratio < checkpoint_ratio <= 1):
+            raise ValueError(
+                "warning_ratio must be >= 0 and less than checkpoint_ratio, "
+                "and checkpoint_ratio must be <= 1"
+            )
+
+        ratio = self.ratio_used
+        if ratio >= 1.0:
+            return "exhausted"
+        if ratio >= checkpoint_ratio:
+            return "checkpoint"
+        if ratio >= warning_ratio:
+            return "warning"
+        return "normal"
+
 
 __all__ = ["IterationBudget"]

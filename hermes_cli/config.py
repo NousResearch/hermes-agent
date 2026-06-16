@@ -816,6 +816,15 @@ DEFAULT_CONFIG = {
     "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
+        # Budget checkpointing scaffolding is disabled by default. Future
+        # gates may use these thresholds to emit continuation packets before
+        # max-turn exhaustion; this gate only records non-active defaults.
+        "budget_checkpointing": {
+            "enabled": False,
+            "warning_ratio": 0.75,
+            "checkpoint_ratio": 0.88,
+            "mode": "continuation_packet",
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

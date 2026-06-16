@@ -511,6 +511,30 @@ def init_agent(
     except Exception:
         pass
 
+    # Budget checkpointing scaffolding is dormant by default. When explicitly
+    # enabled in config.yaml, conversation_loop may request one structured,
+    # no-tools continuation packet before max-turn exhaustion.
+    agent._budget_checkpointing_enabled = False
+    agent._budget_checkpoint_warning_ratio = 0.75
+    agent._budget_checkpoint_checkpoint_ratio = 0.88
+    agent._budget_checkpoint_mode = "continuation_packet"
+    agent._budget_checkpoint_warning_emitted = False
+    agent._budget_checkpoint_emitted = False
+    try:
+        from hermes_cli.config import load_config as _load_budget_cfg
+
+        _budget_cfg = (
+            (_load_budget_cfg().get("agent") or {}).get("budget_checkpointing")
+            or {}
+        )
+        if isinstance(_budget_cfg, dict):
+            agent._budget_checkpointing_enabled = bool(_budget_cfg.get("enabled", False))
+            agent._budget_checkpoint_warning_ratio = float(_budget_cfg.get("warning_ratio", 0.75))
+            agent._budget_checkpoint_checkpoint_ratio = float(_budget_cfg.get("checkpoint_ratio", 0.88))
+            agent._budget_checkpoint_mode = str(_budget_cfg.get("mode", "continuation_packet") or "continuation_packet")
+    except Exception:
+        pass
+
     # Iteration budget: the LLM is only notified when it actually exhausts
     # the iteration budget (api_call_count >= max_iterations).  At that
     # point we inject ONE message, allow one final API call, and if the

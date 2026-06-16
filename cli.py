@@ -5958,6 +5958,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         old_session_id = self.session_id
         if self._session_db and old_session_id:
             try:
+                # Flush un-persisted messages before rotating session_id (#47202)
+                if self.agent and hasattr(self.agent, '_flush_messages_to_session_db'):
+                    self.agent._flush_messages_to_session_db(self.conversation_history)
+            except Exception:
+                pass
+            try:
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
                 pass

@@ -1095,11 +1095,30 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
         # Other container runtimes (or containers built before Phase 2)
         # still get the original "docker (foreground)" label.
         try:
-            from hermes_cli.service_manager import detect_service_manager
+            from hermes_cli.service_manager import detect_service_manager, get_service_manager
             if detect_service_manager() == "s6":
+                profile = _profile_suffix() or "default"
+                service_name = f"gateway-{profile}"
+                mgr = get_service_manager()
+                service_installed = False
+                service_running = False
+                try:
+                    service_dir = getattr(mgr, "scandir", None)
+                    if service_dir is not None:
+                        service_installed = (service_dir / service_name).is_dir()
+                except Exception:
+                    service_installed = False
+                if service_installed:
+                    try:
+                        service_running = bool(mgr.is_running(service_name))
+                    except Exception:
+                        service_running = False
                 return GatewayRuntimeSnapshot(
                     manager="s6 (container supervisor)",
+                    service_installed=service_installed,
+                    service_running=service_running,
                     gateway_pids=gateway_pids,
+                    service_scope="s6",
                 )
         except Exception:
             pass  # Fall through to the legacy label on any detection error.
@@ -3776,6 +3795,101 @@ def _is_official_docker_checkout() -> bool:
     )
 
 
+def _running_under_gateway_supervisor() -> bool:
+    """Return True when this process IS the gateway a service manager launched.
+
+    The conflict guard below must never fire on the service's own startup, or
+    it would wedge the unit into a respawn/refuse loop. Each supervisor exports
+    a reliable marker into the child's environment:
+
+      - systemd sets ``INVOCATION_ID`` for every unit it launches (the same
+        marker ``gateway/run.py`` already uses to pick the restart path).
+      - launchd sets ``XPC_SERVICE_NAME`` to the job label for jobs it spawns;
+        interactive shells inherit the sentinel ``"0"`` instead.
+      - the s6-overlay container longrun exports ``HERMES_S6_SUPERVISED_CHILD``.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        return True
+    xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
+    if xpc_service and xpc_service != "0":
+        return True
+    return False
+
+
+def _guard_supervised_gateway_conflict(force: bool = False) -> None:
+    """Refuse a foreground gateway when a service manager already supervises one.
+
+    Running ``hermes gateway run [--replace]`` (or the manual-restart fallback)
+    from a shell on a systemd/launchd host spawns a second, long-lived
+    dispatcher that escapes the service cgroup, survives
+    ``systemctl restart``, and becomes a silent concurrent writer on the shared
+    kanban DB — the documented root cause of multi-writer SQLite WAL corruption
+    (issue #35240). Pass ``--force`` to start anyway.
+    """
+    if force or _running_under_gateway_supervisor():
+        return
+    try:
+        snapshot = get_gateway_runtime_snapshot()
+    except Exception:
+        # Best-effort guard: a probe failure must never block a real startup.
+        logger.debug("Supervised-gateway conflict probe failed", exc_info=True)
+        return
+    if not (snapshot.service_installed and snapshot.service_running):
+        return
+
+    print_error(
+        f"A gateway is already running under {snapshot.manager} for this profile."
+    )
+    print(
+        "  Starting another one from a shell leaves an orphan dispatcher that\n"
+        "  escapes the service, survives restarts, and writes to the same kanban\n"
+        "  DB concurrently — which can corrupt it. Restart the supervised gateway\n"
+        "  instead:"
+    )
+    print()
+    print("    hermes gateway restart")
+    print()
+    print(
+        "  Pass --force to start a foreground gateway anyway (not recommended\n"
+        "  while the service is running)."
+    )
+    sys.exit(1)
+
+
+def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
+    """Refuse duplicate foreground startup before importing gateway.run.
+
+    ``gateway.run`` performs the authoritative PID/lock check, but importing it
+    is expensive: it pulls in model_tools/plugin discovery first. On small
+    instances, a supervisor or dashboard loop repeatedly running bare
+    ``hermes gateway run`` can burn memory/CPU just to fail with "already
+    running" after plugin discovery. This cheap PID-file preflight preserves the
+    same user-facing contract while avoiding that startup work without scanning
+    unrelated gateway processes from other HERMES_HOME roots.
+    """
+    if replace or _running_under_gateway_supervisor():
+        return
+    try:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid()
+    except Exception:
+        logger.debug("Existing-gateway process probe failed", exc_info=True)
+        return
+    if pid is None:
+        return
+
+    print_error(
+        f"Another gateway instance is already running (PID {pid})."
+    )
+    print("  Use 'hermes gateway restart' to replace it,")
+    print("  or 'hermes gateway stop' first.")
+    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    sys.exit(1)
+
+
 def _guard_official_docker_root_gateway() -> None:
     """Refuse gateway startup when the official Docker privilege drop was bypassed."""
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -3803,7 +3917,7 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
-def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
+def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, force: bool = False):
     """Run the gateway in foreground.
 
     Args:
@@ -3812,8 +3926,12 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
+        force: Skip the supervised-gateway conflict guard and start even when a
+               systemd/launchd service is already supervising this profile.
     """
     _guard_official_docker_root_gateway()
+    _guard_supervised_gateway_conflict(force=force)
+    _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # Detached Windows gateway runs must ignore console-control broadcasts
@@ -6359,7 +6477,8 @@ def _gateway_command_inner(args):
         verbose = getattr(args, "verbose", 0)
         quiet = getattr(args, "quiet", False)
         replace = getattr(args, "replace", False)
-        run_gateway(verbose, quiet=quiet, replace=replace)
+        force = getattr(args, "force", False)
+        run_gateway(verbose, quiet=quiet, replace=replace, force=force)
         return
 
     if subcmd == "setup":

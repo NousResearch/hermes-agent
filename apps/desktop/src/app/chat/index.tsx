@@ -42,6 +42,7 @@ import {
   $sessions,
   sessionPinId
 } from '@/store/session'
+import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
@@ -122,7 +123,7 @@ function ChatHeader({
   // A brand-new session has no session to pin/delete/rename, so the header is
   // just a dead "New session" label + chevron. Drop it (and its border)
   // entirely until there's a real session to act on.
-  if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+  if (isNewSessionWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
     return null
   }
 
@@ -302,7 +303,10 @@ export function ChatView({
   // waiting for the resume effect (which paints a frame later) to clear them.
   const routeSessionMismatch = isRoutedSessionView && routedSessionId !== selectedSessionId
 
-  const showIntro = freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
+  // The compact new-session pop-out skips the wordmark/tagline intro — it's a
+  // scratch window, not the full-height empty state.
+  const showIntro =
+    !isSecondaryWindow() && freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the

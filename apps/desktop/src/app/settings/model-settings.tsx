@@ -3,11 +3,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import {
   getAuxiliaryModels,
   getGlobalModelInfo,
   getGlobalModelOptions,
+  getHermesConfigRecord,
   getRecommendedDefaultModel,
+  saveHermesConfig,
   setEnvVar,
   setModelAssignment
 } from '@/hermes'
@@ -15,10 +18,25 @@ import type { AuxiliaryModelsResponse, ModelOptionProvider, StaleAuxAssignment }
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
+import { getNested, setNested } from './helpers'
 import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
+
+// Hermes' reasoning levels (VALID_REASONING_EFFORTS); `none` = thinking off.
+// Empty config = Hermes default (medium), shown as Medium.
+const EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
+
+// agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
+// normal (mirrors tui_gateway _load_service_tier).
+const isFastTier = (tier: unknown): boolean =>
+  ['fast', 'priority', 'on'].includes(String(tier ?? '').trim().toLowerCase())
+
+// Reuse the composer's effort labels (`xhigh` shows as "Max", else 1:1).
+const effortLabelKey = (v: string) => (v === 'xhigh' ? 'max' : v) as 'high' | 'low' | 'max' | 'medium' | 'minimal'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -97,6 +115,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
   const [auxiliary, setAuxiliary] = useState<AuxiliaryModelsResponse | null>(null)
+  // Full profile config, kept so the reasoning/speed defaults round-trip
+  // (read agent.* → write back the whole record) like the generic config page.
+  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
@@ -113,10 +134,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const [modelInfo, modelOptions, auxiliaryModels] = await Promise.all([
+      const [modelInfo, modelOptions, auxiliaryModels, cfg] = await Promise.all([
         getGlobalModelInfo(),
         getGlobalModelOptions(),
-        getAuxiliaryModels()
+        getAuxiliaryModels(),
+        getHermesConfigRecord()
       ])
 
       setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
@@ -124,6 +146,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       setSelectedProvider(prev => prev || modelInfo.provider)
       setSelectedModel(prev => prev || modelInfo.model)
       setAuxiliary(auxiliaryModels)
+      setConfig(cfg)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -180,6 +203,42 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       })
       .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
   }, [auxiliary, mainModel])
+
+  // Capabilities of the APPLIED main model — gates the profile-default
+  // reasoning/speed controls the same way the composer picker gates per-model
+  // edits (reasoning defaults on, fast defaults off when unreported).
+  const mainCaps = useMemo(() => {
+    const row = providers.find(provider => provider.slug === mainModel?.provider)
+
+    return mainModel ? row?.capabilities?.[mainModel.model] : undefined
+  }, [providers, mainModel])
+
+  const reasoningSupported = mainCaps?.reasoning ?? true
+  const fastSupported = mainCaps?.fast ?? false
+  const effortValue = String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '').trim().toLowerCase() || 'medium'
+  const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
+
+  // Persist a single agent.* default by round-tripping the whole config record
+  // (PUT /api/config replaces it) — optimistic, with rollback on failure.
+  const writeAgentDefault = useCallback(
+    async (key: string, value: string) => {
+      if (!config) {
+        return
+      }
+
+      const prev = config
+      const next = setNested(config, key, value)
+      setConfig(next)
+
+      try {
+        await saveHermesConfig(next)
+      } catch (err) {
+        setConfig(prev)
+        notifyError(err, m.defaultsFailed)
+      }
+    },
+    [config, m.defaultsFailed]
+  )
 
   // Paste an API key for the selected `api_key` provider, persist it, then
   // refresh so the now-authenticated provider's models populate. Auto-selects
@@ -432,6 +491,38 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               ? `${selectedProviderRow?.name} needs an API key — set it up to choose a model.`
               : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
           </p>
+        )}
+        {config && mainModel && (reasoningSupported || fastSupported) && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+            <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
+            {reasoningSupported && (
+              <div className="flex items-center gap-2 text-xs">
+                {m.reasoning}
+                <Select onValueChange={value => void writeAgentDefault('agent.reasoning_effort', value)} value={effortValue}>
+                  <SelectTrigger className={cn('min-w-28', CONTROL_TEXT)}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {EFFORT_VALUES.map(value => (
+                      <SelectItem key={value} value={value}>
+                        {value === 'none' ? m.reasoningOff : t.shell.modelOptions[effortLabelKey(value)]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {fastSupported && (
+              <label className="flex items-center gap-2 text-xs">
+                {t.shell.modelOptions.fast}
+                <Switch
+                  checked={fastOn}
+                  onCheckedChange={checked => void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')}
+                  size="xs"
+                />
+              </label>
+            )}
+          </div>
         )}
         {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
         {switchStaleAux.length > 0 && (

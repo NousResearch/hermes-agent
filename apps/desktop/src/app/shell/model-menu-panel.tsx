@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -84,8 +84,12 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     }
   })
 
-  const optionsModel = String(modelOptions.data?.model ?? currentModel ?? '')
-  const optionsProvider = String(modelOptions.data?.provider ?? currentProvider ?? '')
+  const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
+    !!activeSessionId,
+    { model: currentModel, provider: currentProvider },
+    modelOptions.data
+  )
+
   const loading = modelOptions.isPending && !modelOptions.data
 
   const error = modelOptions.error

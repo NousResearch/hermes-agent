@@ -28,6 +28,7 @@ export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onResume: () => void
   reorderable?: boolean
   dragging?: boolean
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
   nativeDraggable?: boolean
   onSessionDragEnd?: () => void
   onSessionDragStart?: (payload: SessionDragPayload) => void
@@ -86,6 +87,7 @@ export function SidebarSessionRow({
   presence,
   reorderable = false,
   dragging = false,
+  dragHandleProps,
   nativeDraggable = !reorderable,
   onSessionDragEnd,
   onSessionDragStart,
@@ -186,6 +188,7 @@ export function SidebarSessionRow({
         onDragStart={nativeDraggable ? handleSessionDragStart : undefined}
         ref={ref}
         style={style}
+        {...dragHandleProps}
         {...rest}
       >
         <motion.div

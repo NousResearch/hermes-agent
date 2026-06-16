@@ -1344,6 +1344,59 @@ class GatewaySlashCommandsMixin:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_handoff_command(self, event: MessageEvent):
+        """Handle gateway-facing ``/handoff`` document workflows.
+
+        Gateway sessions support the document submodes directly:
+          - /handoff inline [mission]
+          - /handoff save [path] [mission]
+          - /handoff consume <path>
+
+        The legacy ``/handoff <platform>`` live-session transfer remains a CLI
+        operation because a gateway session is already on a platform.
+        """
+        from gateway.run import _hermes_home
+
+        raw_args = event.get_command_args().strip()
+        if not raw_args:
+            prefix = self._typed_command_prefix_for(getattr(event.source, "platform", None))
+            return (
+                f"Usage: {prefix}handoff inline [mission]\n"
+                f"       {prefix}handoff save [path] [mission]\n"
+                f"       {prefix}handoff consume <path>\n\n"
+                "On gateway platforms, /handoff is for the portable markdown handoff workflow. "
+                "The live CLI-to-platform transfer form (/handoff <platform>) is only available from the CLI."
+            )
+
+        first_arg = raw_args.split(maxsplit=1)[0].strip().lower()
+        if first_arg not in {"inline", "save", "consume"}:
+            return (
+                "Live session transfer to another platform is a CLI-only /handoff mode. "
+                "From Telegram/Discord/Slack and other gateway platforms, use /handoff inline, /handoff save, or /handoff consume instead."
+            )
+
+        session_entry = self.session_store.get_or_create_session(event.source)
+        session_id = getattr(session_entry, "session_id", None)
+        history = []
+        try:
+            if getattr(self, "_session_db", None) and session_id:
+                history = self._session_db.get_messages(session_id)
+        except Exception:
+            history = []
+
+        try:
+            from hermes_cli.handoff_doc_cmd import handle_handoff_document_command
+            result = handle_handoff_document_command(
+                cmd=event.text,
+                conversation_history=history,
+                session_id=session_id,
+                workdir=os.getenv("TERMINAL_CWD", os.getcwd()),
+                hermes_home=_hermes_home,
+            )
+        except Exception as exc:
+            return f"Handoff command failed: {exc}"
+        return result
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         from hermes_cli.banner import format_banner_version_label

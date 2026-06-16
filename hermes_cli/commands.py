@@ -84,8 +84,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
-    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
-               args_hint="<platform>", cli_only=True),
+    CommandDef("handoff", "Create/consume a scoped handoff document, or hand off a CLI session to a messaging platform", "Session",
+               args_hint="[inline|save|consume|<platform>] [args...]",
+               subcommands=("inline", "save", "consume")),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)", "Session",
@@ -1167,7 +1168,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug"})
+#   - handoff: portable markdown handoffs still work on Slack via /hermes handoff
+#     (Slack's native 50-slash cap is too tight to guarantee a dedicated /handoff slot).
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "handoff"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1874,41 +1877,67 @@ class SlashCommandCompleter(Completer):
 
     @staticmethod
     def _handoff_completions(sub_text: str, sub_lower: str):
-        """Yield platform completions for /handoff.
+        """Yield completions for /handoff.
 
-        Offers connected (enabled + configured) gateway platforms. A recorded
-        home channel is NOT required to list a platform — it's often learned at
-        runtime — so the meta hints whether one is set yet. Completes only the
-        first arg (the platform); once one is chosen, stop.
+        `/handoff` has two roles:
+        - legacy session transfer to a configured gateway platform
+        - document workflows via `inline|save|consume`
+
+        First-token completion shows both subcommands and connected platforms.
+        For `save`/`consume`, later path-like tokens delegate to filesystem
+        completion when possible.
         """
+        subcommands = ("inline", "save", "consume")
         parts = sub_text.split()
         trailing_space = sub_text.endswith(" ")
-        if len(parts) > 1 or (len(parts) == 1 and trailing_space):
-            return
-        partial = "" if (not parts or trailing_space) else parts[-1]
-        partial_lower = partial.lower()
-        try:
-            from gateway.config import load_gateway_config
 
-            gw = load_gateway_config()
-            platforms = gw.get_connected_platforms()
-        except Exception:
-            return
-        for platform in platforms:
-            name = platform.value
-            if not name.startswith(partial_lower):
-                continue
+        if len(parts) == 0 or (len(parts) == 1 and not trailing_space):
+            partial = "" if (not parts or trailing_space) else parts[-1]
+            partial_lower = partial.lower()
+            for sub in subcommands:
+                if sub.startswith(partial_lower) and sub != partial_lower:
+                    yield Completion(
+                        sub,
+                        start_position=-len(partial),
+                        display=sub,
+                        display_meta="handoff document",
+                    )
             try:
-                home = gw.get_home_channel(platform)
+                from gateway.config import load_gateway_config
+
+                gw = load_gateway_config()
+                platforms = gw.get_connected_platforms()
             except Exception:
-                home = None
-            meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
-            yield Completion(
-                name,
-                start_position=-len(partial),
-                display=name,
-                display_meta=meta,
-            )
+                platforms = []
+            for platform in platforms:
+                name = platform.value
+                if not name.startswith(partial_lower):
+                    continue
+                try:
+                    home = gw.get_home_channel(platform)
+                except Exception:
+                    home = None
+                meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
+                yield Completion(
+                    name,
+                    start_position=-len(partial),
+                    display=name,
+                    display_meta=meta,
+                )
+            return
+
+        mode = parts[0].lower() if parts else ""
+        if mode not in subcommands:
+            return
+
+        if mode == "inline":
+            return
+
+        current = "" if trailing_space else parts[-1]
+        if not current:
+            return
+        if current.startswith(("/", "./", "../", "~/")) or "/" in current:
+            yield from SlashCommandCompleter._path_completions(current)
 
     @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):

@@ -443,8 +443,59 @@ class GatewayKanbanWatchersMixin:
                                         "kanban notifier: artifact delivery for %s failed: %s",
                                         sub["task_id"], art_exc,
                                     )
+
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            
+                            # Auto-react: feed interesting events into
+                            # the per-session-key debouncer so the agent
+                            # gets a turn about them (batched). Filtered
+                            # to REACT_KINDS inside the coordinator.
+                            try:
+                                from gateway.kanban_react import (
+                                    KanbanReactEvent as _KRE,
+                                    REACT_KINDS as _REACT_KINDS,
+                                )
+                                if kind in _REACT_KINDS:
+                                    react_source = SessionSource(
+                                        platform=plat,
+                                        chat_id=str(sub["chat_id"]),
+                                        chat_name=sub.get("chat_name") or "",
+                                        chat_type=(
+                                            "thread" if sub.get("thread_id")
+                                            else "group"
+                                        ),
+                                        user_id="system:kanban-react",
+                                        user_name="Kanban",
+                                        thread_id=sub.get("thread_id") or "",
+                                    )
+                                    react_session_key = (
+                                        self._session_key_for_source(react_source)
+                                    )
+                                    # Strip the platform-emoji prefix and
+                                    # "Kanban <id>" header — we re-render
+                                    # in the preamble. Keep just the
+                                    # tail (reason / error / summary).
+                                    raw_summary = msg.split(":", 2)[-1].strip()
+                                    react_ev = _KRE(
+                                        task_id=str(sub["task_id"]),
+                                        kind=str(kind),
+                                        board=str(board_slug or ""),
+                                        summary=raw_summary,
+                                        received_at=time.monotonic(),
+                                    )
+                                    await getattr(self, "_kanban_react").record_event(
+                                        react_session_key,
+                                        react_ev,
+                                        source_proto=react_source.to_dict(),
+                                    )
+                            except Exception as _react_exc:
+                                logger.debug(
+                                    "kanban-react: record_event failed "
+                                    "(non-fatal): %s",
+                                    _react_exc,
+                                )
+
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails
@@ -741,7 +792,63 @@ class GatewayKanbanWatchersMixin:
                     path, exc,
                 )
 
+
+    async def _kanban_react_flush(
+        self,
+        session_key: str,
+        events: list,
+        source_proto: Optional[dict],
+    ) -> None:
+        """Coordinator callback: dispatch a batched react as a synthetic
+        internal MessageEvent into the normal gateway pipeline.
+
+        ``source_proto`` is the SessionSource.to_dict() snapshot captured
+        when the first event in the batch was recorded. We rehydrate it
+        here so the synthetic turn lands on the correct (platform, chat,
+        thread) destination.
+        """
+        if not events or not source_proto:
+            return
+        try:
+            from gateway.platforms.base import MessageEvent
+            from gateway.kanban_react import render_events_preamble
+            from hermes_cli.session_source import SessionSource
+            try:
+                source = SessionSource.from_dict(source_proto)
+            except Exception as exc:
+                logger.warning(
+                    "kanban-react: failed to rehydrate source for sk=%s: %s",
+                    session_key, exc,
+                )
+                return
+            preamble = render_events_preamble(events)
+            # Internal flag bypasses auth checks. The trailing prompt
+            # tells the agent what's expected — react, don't just narrate.
+            synthetic_text = (
+                f"{preamble}\n\n"
+                "[Auto-react: these events came in while you were idle. "
+                "Investigate, take action where appropriate (unblock, "
+                "retry, escalate, document), and reply briefly summarizing "
+                "what you did. If no action is needed, say so.]"
+            )
+            synthetic_event = MessageEvent(
+                text=synthetic_text,
+                source=source,
+                internal=True,
+            )
+            logger.info(
+                "kanban-react: dispatching synthetic turn sk=%s events=%d",
+                session_key, len(events),
+            )
+            await self._handle_message(synthetic_event)
+        except Exception as exc:
+            logger.warning(
+                "kanban-react: synthetic dispatch failed sk=%s: %s",
+                session_key, exc, exc_info=True,
+            )
+
     async def _kanban_dispatcher_watcher(self) -> None:
+
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
         Gated by `kanban.dispatch_in_gateway` in config.yaml (default True).

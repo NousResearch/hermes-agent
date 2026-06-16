@@ -261,10 +261,16 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
 interface CronViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
+  onOpenSession?: (sessionId: string) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: CronViewProps) {
+export function CronView({
+  onClose,
+  onOpenSession: _onOpenSession,
+  setStatusbarItemGroup: _setStatusbarItemGroup,
+  ...props
+}: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
   const [jobs, setJobs] = useState<CronJob[] | null>(null)

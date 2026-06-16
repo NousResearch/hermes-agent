@@ -4,7 +4,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
-import type { SessionInfo, UsageStats } from '@/types/hermes'
+import type { SessionInfo, SessionPresenceRecord, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
@@ -399,5 +399,133 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     if (wasWorking) {
       markSessionSettled(sessionId)
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Channels / archived / presence atoms (restored 2026-06-15).
+//
+// These producers were dropped from main when the cloud-channels + upstream
+// fork-ship merges (#220-#224) landed their consumer components without the
+// store plumbing; the desktop self-update rebuild (`tsc -b`) then failed. The
+// implementations below are the coherent versions the feature branches carry.
+// ---------------------------------------------------------------------------
+
+// Archived conversations, fetched as their own slice (archived='only') for the
+// sidebar's collapsed Archived section. Rows load lazily on first expand; the
+// boot refresh only resolves the TOTAL (cheap limit-1 probe) so the section
+// header can show an honest count without paying for rows nobody opened.
+export const $archivedSessions = atom<SessionInfo[]>([])
+export const $archivedSessionsTotal = atom<number>(0)
+export const $archivedSessionsLoading = atom(false)
+
+export const DEFAULT_DESKTOP_YOLO_ACTIVE = true
+// Desktop new-chat default. The backend approval bypass remains session-scoped;
+// this preference decides whether desktop applies that bypass to new sessions.
+export const $desktopYoloDefault = atom(DEFAULT_DESKTOP_YOLO_ACTIVE)
+
+// Live sessions discovered across devices/clients (session.presence_list).
+export const $sessionPresence = atom<SessionPresenceRecord[]>([])
+
+// Transient gateway lifecycle status for the ACTIVE session (auto-compression
+// progress, background-process notices). Mirrors `status.update` events and is
+// cleared by the next stream activity, so it only shows while nothing else
+// (deltas, tool events) is moving.
+export interface SessionActivityStatus {
+  kind: string
+  text: string
+}
+export const $sessionActivityStatus = atom<SessionActivityStatus | null>(null)
+
+// THIS device's resolved name (config → MeshBoard → Tailscale → hostname),
+// captured from the FIRST gateway.ready frame — the primary local gateway
+// connects at boot before any remote backend can exist. Used as the
+// sender_device on prompts sent to REMOTE gateways (channels Phase 2b).
+export const $localDeviceName = atom('')
+
+// One viewer device in a session's channel roster (deduped, with a live-client
+// count when the same device watches from more than one window).
+export interface SessionParticipant {
+  device: string
+  count: number
+}
+
+// Channel presence (channels Phase 3): who is currently viewing each session,
+// keyed by session id. Fed by `session.participants` gateway events; the header
+// renders co-viewer chips for the active session (filtering out THIS device).
+// Empty/solo-local sessions simply hold no entry, so the chip row is absent
+// with no mesh/tailnet involved.
+export const $sessionParticipants = atom<Record<string, SessionParticipant[]>>({})
+
+export const setArchivedSessions = (next: Updater<SessionInfo[]>) => updateAtom($archivedSessions, next)
+export const setArchivedSessionsTotal = (next: Updater<number>) => updateAtom($archivedSessionsTotal, next)
+export const setArchivedSessionsLoading = (next: Updater<boolean>) => updateAtom($archivedSessionsLoading, next)
+
+/** Shift one profile's listable-count by `delta`, clamped at zero. Only known
+ *  keys move: when the aggregator hasn't reported a profile yet, the sidebar
+ *  already falls back to the loaded row count, so inventing an entry here
+ *  would replace an honest fallback with a guess. */
+export const adjustSessionProfileTotal = (profileKey: string, delta: number) =>
+  $sessionProfileTotals.set(
+    profileKey in $sessionProfileTotals.get()
+      ? {
+          ...$sessionProfileTotals.get(),
+          [profileKey]: Math.max(0, ($sessionProfileTotals.get()[profileKey] ?? 0) + delta)
+        }
+      : $sessionProfileTotals.get()
+  )
+
+/** Same contract as {@link adjustSessionProfileTotal} for a messaging
+ *  platform's resolved total: adjust only once a per-platform fetch has
+ *  established the real number. */
+export const adjustMessagingPlatformTotal = (sourceId: string, delta: number) =>
+  $messagingPlatformTotals.set(
+    sourceId in $messagingPlatformTotals.get()
+      ? {
+          ...$messagingPlatformTotals.get(),
+          [sourceId]: Math.max(0, ($messagingPlatformTotals.get()[sourceId] ?? 0) + delta)
+        }
+      : $messagingPlatformTotals.get()
+  )
+
+export const setDesktopYoloDefaultActive = (next: Updater<boolean>) => updateAtom($desktopYoloDefault, next)
+export const setSessionPresence = (next: Updater<SessionPresenceRecord[]>) => updateAtom($sessionPresence, next)
+
+export const setSessionActivityStatus = (next: Updater<SessionActivityStatus | null>) =>
+  updateAtom($sessionActivityStatus, next)
+export const setLocalDeviceName = (next: Updater<string>) => updateAtom($localDeviceName, next)
+
+// Replace the channel roster for one session. An empty roster drops the key so
+// the map doesn't accumulate stale entries as the user moves between sessions.
+export const setSessionParticipants = (sessionId: string, participants: SessionParticipant[]) => {
+  if (!sessionId) {
+    return
+  }
+
+  const current = $sessionParticipants.get()
+
+  if (participants.length === 0) {
+    if (!(sessionId in current)) {
+      return
+    }
+
+    const next = { ...current }
+    delete next[sessionId]
+    $sessionParticipants.set(next)
+
+    return
+  }
+
+  $sessionParticipants.set({ ...current, [sessionId]: participants })
+}
+
+/** Shield a row from the next refresh's page-merge eviction for the settle
+ *  grace window. A just-restored (unarchived) conversation usually has old
+ *  activity timestamps, so it sits outside the recency page the next refresh
+ *  fetches — without a grace entry, mergeSessionPage() would evict the row the
+ *  user just brought back while they're looking at it. */
+export function shieldSessionFromMerge(sessionId: string) {
+  if (sessionId) {
+    markSessionSettled(sessionId)
   }
 }

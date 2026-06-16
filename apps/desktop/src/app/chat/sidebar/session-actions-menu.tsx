@@ -36,19 +36,39 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
+import { clearSidebarSelection } from '@/store/sidebar-selection'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
+
+import { BulkRuntimeTextDialog, type BulkRuntimeTextMode } from './bulk-runtime-text-dialog'
 
 interface SessionActions {
   sessionId: string
   title: string
   pinned?: boolean
   profile?: string
+  archived?: boolean
   onPin?: () => void
   onArchive?: () => void
+  onRestore?: () => void
   onDelete?: () => void
+  onSelect?: () => void
+}
+
+type BulkSessionHandler = (sessionIds: string[]) => Promise<unknown> | void
+
+export interface SessionBulkContextActions {
+  archived?: boolean
+  onArchiveSessions?: BulkSessionHandler
+  onDeleteSessions?: BulkSessionHandler
+  onHaltSessions?: BulkSessionHandler
+  onPromptSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
+  onRestoreSessions?: BulkSessionHandler
+  onSteerSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
+  sessionIds: readonly string[]
 }
 
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
+type PendingBulkAction = 'archive' | 'delete' | 'halt' | 'prompt' | 'restore' | 'steer' | null
 
 interface ItemSpec {
   className?: string
@@ -59,13 +79,49 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onArchive, onDelete }: SessionActions) {
+function useSessionActions({
+  sessionId,
+  title,
+  pinned = false,
+  profile,
+  archived = false,
+  onPin,
+  onArchive,
+  onRestore,
+  onDelete,
+  onSelect
+}: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
   const [deleteCloudOpen, setDeleteCloudOpen] = useState(false)
+
+  const selectItem: ItemSpec[] = onSelect
+    ? [
+        {
+          disabled: !sessionId,
+          icon: 'checklist',
+          label: r.select,
+          onSelect: () => {
+            onSelect()
+          }
+        }
+      ]
+    : []
+
+  const deleteItem: ItemSpec = {
+    className: 'text-destructive focus:text-destructive',
+    disabled: !onDelete,
+    icon: 'trash',
+    label: t.common.delete,
+    onSelect: () => {
+      triggerHaptic('warning')
+      onDelete?.()
+    },
+    variant: 'destructive'
+  }
 
   const copyIdItem: ItemSpec = {
     disabled: !sessionId,
@@ -142,73 +198,80 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
     }
   }
 
-  const items: ItemSpec[] = [
-    {
-      disabled: !onPin,
-      icon: 'pin',
-      label: pinned ? r.unpin : r.pin,
-      onSelect: () => {
-        triggerHaptic('selection')
-        onPin?.()
-      }
-    },
-    {
-      disabled: !sessionId,
-      icon: 'edit',
-      label: r.rename,
-      onSelect: () => {
-        triggerHaptic('selection')
-        setRenameOpen(true)
-      }
-    },
-    copyIdItem,
-    copyCloudIdItem,
-    ...(canOpenSessionWindow()
-      ? [
-          {
-            disabled: !sessionId,
-            icon: 'link-external',
-            label: r.newWindow,
-            onSelect: () => {
-              triggerHaptic('selection')
-              void openSessionInNewWindow(sessionId)
-            }
+  const items: ItemSpec[] = archived
+    ? [
+        ...selectItem,
+        {
+          disabled: !onRestore,
+          icon: 'history',
+          label: r.restore,
+          onSelect: () => {
+            triggerHaptic('selection')
+            onRestore?.()
           }
-        ]
-      : []),
-    exportItem,
-    {
-      disabled: !sessionId,
-      icon: 'cloud-upload',
-      label: r.shareToCloud,
-      onSelect: () => {
-        guardedCloudAction(r.shareToCloud, false, () => void shareSessionToCloud(sessionId))
-      }
-    },
-    inviteToCloudItem,
-    cloudMembersItem,
-    {
-      disabled: !onArchive,
-      icon: 'archive',
-      label: r.archive,
-      onSelect: () => {
-        triggerHaptic('selection')
-        onArchive?.()
-      }
-    },
-    deleteCloudItem,
-    {
-      className: 'text-destructive focus:text-destructive',
-      disabled: !onDelete,
-      icon: 'trash',
-      label: t.common.delete,
-      onSelect: () => {
-        triggerHaptic('warning')
-        onDelete?.()
-      },
-      variant: 'destructive'
-    }
-  ]
+        },
+        copyIdItem,
+        exportItem,
+        deleteItem
+      ]
+    : [
+        ...selectItem,
+        {
+          disabled: !onPin,
+          icon: 'pin',
+          label: pinned ? r.unpin : r.pin,
+          onSelect: () => {
+            triggerHaptic('selection')
+            onPin?.()
+          }
+        },
+        {
+          disabled: !sessionId,
+          icon: 'edit',
+          label: r.rename,
+          onSelect: () => {
+            triggerHaptic('selection')
+            setRenameOpen(true)
+          }
+        },
+        copyIdItem,
+        copyCloudIdItem,
+        ...(canOpenSessionWindow()
+          ? [
+              {
+                disabled: !sessionId,
+                icon: 'link-external',
+                label: r.newWindow,
+                onSelect: () => {
+                  triggerHaptic('selection')
+                  void openSessionInNewWindow(sessionId)
+                }
+              }
+            ]
+          : []),
+        exportItem,
+        {
+          disabled: !sessionId,
+          icon: 'cloud-upload',
+          label: r.shareToCloud,
+          onSelect: () => {
+            guardedCloudAction(r.shareToCloud, false, () => void shareSessionToCloud(sessionId))
+          }
+        },
+        inviteToCloudItem,
+        cloudMembersItem,
+        {
+          disabled: !onArchive,
+          icon: 'archive',
+          label: r.archive,
+          onSelect: () => {
+            triggerHaptic('selection')
+            onArchive?.()
+          }
+        },
+        deleteCloudItem,
+        deleteItem
+      ]
 
   const renderItems = (Item: MenuItem) =>
     items.map(({ className, disabled, icon, label, onSelect, variant }) => (
@@ -243,18 +306,188 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
   return { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems }
 }
 
+function useBulkSessionActions({
+  archived = false,
+  onArchiveSessions,
+  onDeleteSessions,
+  onHaltSessions,
+  onPromptSessions,
+  onRestoreSessions,
+  onSteerSessions,
+  sessionIds
+}: SessionBulkContextActions) {
+  const { t } = useI18n()
+  const s = t.sidebar.bulk
+  const [pending, setPending] = useState<PendingBulkAction>(null)
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [runtimeTextMode, setRuntimeTextMode] = useState<BulkRuntimeTextMode | null>(null)
+
+  const count = sessionIds.length
+
+  const runBulk = async (action: Exclude<PendingBulkAction, null>, run?: BulkSessionHandler) => {
+    if (pending || !run) {
+      return
+    }
+
+    setPending(action)
+
+    try {
+      await run([...sessionIds])
+      clearSidebarSelection()
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const deleteSelected = () => {
+    triggerHaptic('warning')
+    setConfirmDeleteOpen(false)
+    void runBulk('delete', onDeleteSessions)
+  }
+
+  const haltSelected = () => {
+    triggerHaptic('warning')
+    void runBulk('halt', onHaltSessions)
+  }
+
+  const submitRuntimeText = (mode: BulkRuntimeTextMode, text: string) => {
+    setRuntimeTextMode(null)
+    triggerHaptic('submit')
+
+    void runBulk(mode, ids => (mode === 'prompt' ? onPromptSessions?.(ids, text) : onSteerSessions?.(ids, text)))
+  }
+
+  const items: ItemSpec[] = archived
+    ? [
+        {
+          disabled: pending !== null || !onRestoreSessions,
+          icon: 'history',
+          label: s.restoreCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            void runBulk('restore', onRestoreSessions)
+          }
+        },
+        {
+          className: 'text-destructive focus:text-destructive',
+          disabled: pending !== null || !onDeleteSessions,
+          icon: 'trash',
+          label: s.deleteCount(count),
+          onSelect: () => {
+            triggerHaptic('warning')
+            setConfirmDeleteOpen(true)
+          },
+          variant: 'destructive'
+        }
+      ]
+    : [
+        {
+          disabled: pending !== null || !onPromptSessions,
+          icon: 'arrow-up',
+          label: s.promptCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            setRuntimeTextMode('prompt')
+          }
+        },
+        {
+          disabled: pending !== null || !onSteerSessions,
+          icon: 'comment-discussion',
+          label: s.steerCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            setRuntimeTextMode('steer')
+          }
+        },
+        {
+          className: 'text-destructive focus:text-destructive',
+          disabled: pending !== null || !onHaltSessions,
+          icon: 'debug-stop',
+          label: s.haltCount(count),
+          onSelect: haltSelected,
+          variant: 'destructive'
+        },
+        {
+          disabled: pending !== null || !onArchiveSessions,
+          icon: 'archive',
+          label: s.archiveCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            void runBulk('archive', onArchiveSessions)
+          }
+        },
+        {
+          className: 'text-destructive focus:text-destructive',
+          disabled: pending !== null || !onDeleteSessions,
+          icon: 'trash',
+          label: s.deleteCount(count),
+          onSelect: () => {
+            triggerHaptic('warning')
+            setConfirmDeleteOpen(true)
+          },
+          variant: 'destructive'
+        }
+      ]
+
+  const deleteDialog = (
+    <Dialog onOpenChange={setConfirmDeleteOpen} open={confirmDeleteOpen}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{s.deleteDialogTitle(count)}</DialogTitle>
+          <DialogDescription>{s.deleteDialogDesc}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button disabled={pending !== null} onClick={() => setConfirmDeleteOpen(false)} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={pending !== null} onClick={deleteSelected} type="button" variant="destructive">
+            {s.deleteConfirm}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
+  const runtimeTextDialog = (
+    <BulkRuntimeTextDialog
+      count={count}
+      mode={runtimeTextMode}
+      onOpenChange={open => setRuntimeTextMode(open ? runtimeTextMode : null)}
+      onSubmit={submitRuntimeText}
+      pending={pending !== null}
+    />
+  )
+
+  const renderItems = (Item: MenuItem) =>
+    items.map(({ className, disabled, icon, label, onSelect, variant }) => (
+      <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
+        <Codicon name={icon} size="0.875rem" />
+        <span>{label}</span>
+      </Item>
+    ))
+
+  return { count, deleteDialog, renderItems, runtimeTextDialog }
+}
+
 interface SessionActionsMenuProps
   extends SessionActions, Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
   children: React.ReactNode
+  onOpenChange?: (open: boolean) => void
 }
 
-export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
+export function SessionActionsMenu({
+  children,
+  align = 'end',
+  onOpenChange,
+  sideOffset = 6,
+  ...actions
+}: SessionActionsMenuProps) {
   const { t } = useI18n()
   const { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu onOpenChange={onOpenChange}>
         <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
         <DropdownMenuContent
           align={align}
@@ -274,25 +507,44 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
 }
 
 interface SessionContextMenuProps extends SessionActions {
+  bulkActions?: SessionBulkContextActions
   children: React.ReactNode
 }
 
-export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
+export function SessionContextMenu({ bulkActions, children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
+  const bulk = useBulkSessionActions({
+    archived: actions.archived,
+    ...bulkActions,
+    sessionIds: bulkActions?.sessionIds ?? []
+  })
+  const showBulkMenu = Boolean(bulkActions && bulkActions.sessionIds.length > 1)
 
   return (
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-48">
-          {renderItems(ContextMenuItem)}
+        <ContextMenuContent
+          aria-label={showBulkMenu ? t.sidebar.bulk.selectedCount(bulk.count) : t.sidebar.row.actionsFor(actions.title)}
+          className="w-48"
+        >
+          {showBulkMenu ? bulk.renderItems(ContextMenuItem) : renderItems(ContextMenuItem)}
         </ContextMenuContent>
       </ContextMenu>
-      {deleteCloudDialog}
-      {inviteDialog}
-      {membersDialog}
-      {renameDialog}
+      {showBulkMenu ? (
+        <>
+          {bulk.deleteDialog}
+          {bulk.runtimeTextDialog}
+        </>
+      ) : (
+        <>
+          {deleteCloudDialog}
+          {inviteDialog}
+          {membersDialog}
+          {renameDialog}
+        </>
+      )}
     </>
   )
 }

@@ -47,6 +47,7 @@ interface VirtualSessionListProps {
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   reorderable?: boolean
+  sortable?: boolean
   sessions: SessionInfo[]
   workingSessionIdSet: Set<string>
   draggingSessionId?: string
@@ -102,6 +103,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onTogglePin,
   pinned,
   reorderable = false,
+  sortable = false,
   sessions,
   workingSessionIdSet,
   draggingSessionId,
@@ -183,7 +185,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     const crossSectionPreview =
       sessionDragEnabled && dropActive && draggingSessionId === session.id && sourceSectionKey !== sectionKey
 
-    return sessionDragEnabled && !crossSectionPreview ? (
+    return (sessionDragEnabled || sortable) && !crossSectionPreview ? (
       <VirtualSortableSessionRow
         archived={archived}
         commonProps={commonProps}

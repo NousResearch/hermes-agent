@@ -48,6 +48,8 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
 
+export { isSessionGoneError } from '../session-bulk-actions'
+
 interface SessionActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>

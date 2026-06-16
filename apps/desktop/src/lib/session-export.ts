@@ -5,6 +5,7 @@ import { notify, notifyError } from '@/store/notifications'
 
 interface ExportSessionParams {
   sessionId: string
+  profile?: string | null
   title?: string | null
   session?: SessionInfo
 }
@@ -35,6 +36,7 @@ export async function exportSession(sessionId: string, params: Omit<ExportSessio
 
     const payload = {
       exported_at: new Date().toISOString(),
+      profile: params.profile ?? null,
       session_id: sessionId,
       title: params.title ?? null,
       session: params.session ?? null,

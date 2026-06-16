@@ -29,10 +29,12 @@ interface AppShellProps {
   children: ReactNode
   leftStatusbarItems?: readonly StatusbarItem[]
   leftTitlebarTools?: readonly TitlebarTool[]
+  mainOverlays?: ReactNode
   onOpenSettings: () => void
   overlays?: ReactNode
   previewPaneOpen?: boolean
   statusbarItems?: readonly StatusbarItem[]
+  terminalPaneOpen?: boolean
   titlebarTools?: readonly TitlebarTool[]
 }
 
@@ -55,10 +57,12 @@ export function AppShell({
   children,
   leftStatusbarItems,
   leftTitlebarTools,
+  mainOverlays,
   onOpenSettings,
   overlays,
   previewPaneOpen = false,
   statusbarItems,
+  terminalPaneOpen = false,
   titlebarTools
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
@@ -81,7 +85,7 @@ export function AppShell({
   // Flipped layout: the file browser does instead. Both force-collapse below
   // the breakpoint, so they no longer cover the edge in narrow windows.
   const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
-  const persistentLeftPaneOpen = panesFlipped && previewPaneOpen
+  const persistentLeftPaneOpen = panesFlipped && (previewPaneOpen || terminalPaneOpen)
   const leftEdgePaneOpen =
     !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)
 
@@ -160,6 +164,7 @@ export function AppShell({
           />
 
           {children}
+          {mainOverlays}
         </PaneShell>
 
         <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />

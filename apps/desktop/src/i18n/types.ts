@@ -247,6 +247,8 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
+      rebuildNeeded: string
+      rebuildNow: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string
@@ -720,6 +722,8 @@ export interface Translations {
   cron: {
     close: string
     search: string
+    refresh: string
+    refreshing: string
     loading: string
     states: Record<string, string>
     deliveryLabels: Record<string, string>
@@ -740,6 +744,8 @@ export interface Translations {
     emptyTitleSearch: string
     last: string
     next: string
+    active: (enabled: number, total: number) => string
+    createFirst: string
     noRuns: string
     manage: string
     showRuns: string
@@ -873,6 +879,37 @@ export interface Translations {
     loading: string
     loadMore: string
     loadCount: (step: number) => string
+    archived: string
+    archivedEmpty: string
+    bulk: {
+      selectedCount: (count: number) => string
+      pin: string
+      unpin: string
+      prompt: string
+      steer: string
+      halt: string
+      archive: string
+      restore: string
+      delete: string
+      promptCount: (count: number) => string
+      steerCount: (count: number) => string
+      haltCount: (count: number) => string
+      archiveCount: (count: number) => string
+      restoreCount: (count: number) => string
+      deleteCount: (count: number) => string
+      promptDialogTitle: (count: number) => string
+      promptDialogDesc: string
+      promptPlaceholder: string
+      promptSubmit: string
+      steerDialogTitle: (count: number) => string
+      steerDialogDesc: string
+      steerPlaceholder: string
+      steerSubmit: string
+      clearSelection: string
+      deleteDialogTitle: (count: number) => string
+      deleteDialogDesc: string
+      deleteConfirm: string
+    }
     row: {
       pin: string
       unpin: string
@@ -885,11 +922,16 @@ export interface Translations {
       deleteCloudChannel: string
       rename: string
       archive: string
+      restore: string
+      select: string
       newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
+      sessionStarting: string
+      nextAction: string
+      waitingForNextAction: string
       needsInput: string
       waitingForAnswer: string
       handoffOrigin: (platform: string) => string
@@ -970,9 +1012,13 @@ export interface Translations {
     editingInComposer: string
     editingQueuedInComposer: string
     queueEdit: string
+    editQueued: string
     queueSendNext: string
     queueSend: string
+    sendQueuedNext: string
+    sendQueuedNow: string
     queueDelete: string
+    deleteQueued: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -1020,6 +1066,8 @@ export interface Translations {
     notAvailableTitle: string
     unsupportedMessage: string
     connectionRetry: string
+    rebuildTitle: string
+    rebuildBody: string
     latestBody: string
     latestBodyBackend: string
     allSetTitle: string
@@ -1208,6 +1256,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      rebuildNeeded: string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
@@ -1374,6 +1423,7 @@ export interface Translations {
       readAloud: string
       editMessage: string
       stop: string
+      editableCheckpoint: string
       restorePrevious: string
       restoreCheckpoint: string
       restoreFromHere: string
@@ -1404,6 +1454,7 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
+      shortcut: string
       shortcutSuffix: string
       back: string
       skip: string

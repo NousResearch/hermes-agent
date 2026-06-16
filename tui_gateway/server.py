@@ -574,6 +574,11 @@ def _close_sessions_for_transport(
 
 
 def _shutdown_sessions() -> None:
+    try:
+        from tools.async_delegation import interrupt_all
+        interrupt_all(reason="tui_shutdown")
+    except Exception:
+        pass
     with _sessions_lock:
         sids = list(_sessions)
     for sid in sids:

@@ -50,16 +50,16 @@ def _voice_modules():
     try:
         import cartesia_tts
         import daily_transport
-        import deepgram_flux_stt
+        import stt as stt_mod
         import turn_loop
     except ImportError:
         from . import (
             cartesia_tts,
             daily_transport,
-            deepgram_flux_stt,
             turn_loop,
         )
-    return (daily_transport, turn_loop, cartesia_tts, deepgram_flux_stt)
+        from . import stt as stt_mod
+    return (daily_transport, turn_loop, cartesia_tts, stt_mod)
 
 
 def _daily_available() -> bool:
@@ -181,31 +181,30 @@ class VoiceAdapter(BasePlatformAdapter):
         return True
 
     async def _start_call(self, room_url: str, token: str) -> None:
-        daily_transport, turn_loop, cartesia_tts, deepgram_flux_stt = _voice_modules()
+        daily_transport, turn_loop, cartesia_tts, stt_mod = _voice_modules()
         async with self._call_lock:
             if self._active_call is not None:
                 await self._end_call_locked("replaced-by-new-call")
             loop = asyncio.get_running_loop()
             extra = self.config.extra or {}
 
-            # STT: Deepgram Flux — streaming ASR + model-integrated turn
-            # detection (start/eager-end/resumed/end-of-turn events the turn
-            # loop reacts to). Inbound caller audio is 24 kHz; Flux resamples
-            # 24k->16k internally.
-            dg_key = os.getenv("DEEPGRAM_API_KEY", "").strip()
-            if not dg_key:
-                raise RuntimeError("DEEPGRAM_API_KEY is not set")
-            stt = deepgram_flux_stt.DeepgramFluxSTT(
-                dg_key,
+            # STT: streaming ASR + model-integrated turn detection
+            # (start/eager-end/resumed/end-of-turn events the turn loop reacts
+            # to). Deepgram Flux is the default; the make_stt factory is the
+            # seam so another provider (e.g. Cartesia Ink-2) can be A/B'd
+            # behind the same port. Inbound caller audio is at the Daily
+            # SPEAKER_RATE; each adapter handles its own rate (Flux resamples
+            # 24k->16k internally; Ink-2 accepts the native rate). The factory
+            # resolves the provider's API key and raises if it's missing.
+            stt_provider = (extra.get("stt_provider")
+                            or "deepgram_flux").strip().lower()
+            stt = stt_mod.make_stt(
+                stt_provider,
                 input_rate=daily_transport.SPEAKER_RATE,
-                eot_threshold=_resolve_float_extra(
-                    extra, "eot_threshold",
-                    deepgram_flux_stt.DEFAULT_EOT_THRESHOLD),
-                eager_eot_threshold=_resolve_float_extra(
-                    extra, "eager_eot_threshold",
-                    deepgram_flux_stt.DEFAULT_EAGER_EOT_THRESHOLD),
+                extra=extra,
             )
             await stt.start()
+            logger.info("voice: STT provider=%s", stt.provider)
 
             async def on_audio_in(pcm: bytes) -> None:
                 await stt.send_audio(pcm)
@@ -345,6 +344,7 @@ class VoiceAdapter(BasePlatformAdapter):
             "room_url": call.get("room_url"),
             "call_s": round(time.monotonic() - call["started_at"], 1),
             "asr_seconds_est": round(call["stt"].asr_seconds_est, 1),
+            "stt_provider": call["stt"].provider,
         }
         # Durable + WARNING-level emit: this is the per-call cost record; it
         # must survive log levels/rotation on the agent volume.

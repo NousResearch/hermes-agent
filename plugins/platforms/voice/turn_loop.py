@@ -295,7 +295,8 @@ class VoiceTurnLoop:
             "turn": self._turn_seq,
             "status": status,
             "eager_start": bool(tel.get("eager_start")),
-            "turn_detector": tel.get("turn_detector", "flux"),
+            "turn_detector": tel.get("turn_detector", self._stt.provider),
+            "stt_provider": self._stt.provider,
             "eot_reason": tel.get("eot_reason"),
             "vad_end_ms": off(tel.get("vad_end")),
             "agent_start_ms": off(tel.get("agent_start")),
@@ -329,6 +330,7 @@ class VoiceTurnLoop:
             "event": "voice_call_summary",
             "session": self._session_id,
             "turns": len(turns),
+            "stt_provider": self._stt.provider,
             "model_override": _voice_model_name(),
             "reasoning_effort": (str(raw_effort).strip()
                                  if raw_effort is not None
@@ -478,7 +480,7 @@ class VoiceTurnLoop:
         self._t_ref = time.monotonic()
         self._tel_set("vad_end", self._t_ref)
         self._tel["speech_end"] = self._t_ref
-        self._tel_set("turn_detector", "flux")
+        self._tel_set("turn_detector", self._stt.provider)
         self._tel_set("eot_reason", reason)
         if eager:
             self._tel_set("eager_start", True)

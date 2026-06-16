@@ -22,9 +22,17 @@ _VOICE_DIR = _REPO_ROOT / "plugins" / "platforms" / "voice"
 
 
 def _load_voice_module(name: str):
-    """Load a sibling voice module (turn_loop, deepgram_flux_stt) the same
-    isolated way load_plugin_adapter loads adapter.py — by explicit file path
-    under a unique module name, no sys.path mutation."""
+    """Load a sibling voice module (turn_loop, deepgram_flux_stt, stt,
+    cartesia_ink_stt) the same isolated way load_plugin_adapter loads
+    adapter.py — by explicit file path under a unique module name, no sys.path
+    mutation.
+
+    Cross-sibling imports: deepgram_flux_stt / cartesia_ink_stt import EV_* from
+    the ``stt`` port via the discord dual-import (flat ``import stt`` in the test
+    loader, relative ``from .stt`` in the production package). To make the flat
+    ``import stt`` resolve under this isolated loader, each module is ALSO
+    registered under its bare flat name in sys.modules. Production is unaffected
+    (there the real package names apply)."""
     mod_name = f"voice_mod_{name}"
     cached = sys.modules.get(mod_name)
     if cached is not None:
@@ -33,13 +41,17 @@ def _load_voice_module(name: str):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = module
+    # Expose the bare flat name so a sibling's `import <name>` resolves here.
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
 _adapter = load_plugin_adapter("voice")
+stt_port = _load_voice_module("stt")
 turn_loop = _load_voice_module("turn_loop")
 flux = _load_voice_module("deepgram_flux_stt")
+ink = _load_voice_module("cartesia_ink_stt")
 daily_transport = _load_voice_module("daily_transport")
 cartesia = _load_voice_module("cartesia_tts")
 
@@ -51,6 +63,8 @@ cartesia = _load_voice_module("cartesia_tts")
 class _FakeFluxSTT:
     """Yields a fixed list of normalized Flux events, then ends (so the
     turn loop's `async for` over events() returns)."""
+
+    provider = "deepgram_flux"   # the STT port surface the turn loop tags
 
     def __init__(self, events):
         self._events = events
@@ -405,3 +419,141 @@ def test_cartesia_request_carries_generation_config():
 def test_cartesia_requires_a_voice_id():
     with pytest.raises(ValueError):
         cartesia.CartesiaTTSClient("k", "")
+
+
+# --------------------------------------------------------------------------- #
+# Cartesia Ink-2 wire-message normalization (the A/B adapter's event contract)
+# --------------------------------------------------------------------------- #
+
+def test_ink_normalize_maps_every_turn_event():
+    # The whole point of the seam: Ink-2's turn.* events normalize onto the
+    # SAME EV_* contract Flux produces, so the turn loop drives both identically.
+    cases = {
+        "turn.start": stt_port.EV_START,
+        "turn.update": stt_port.EV_UPDATE,
+        "turn.eager_end": stt_port.EV_EAGER_EOT,
+        "turn.resume": stt_port.EV_RESUMED,
+        "turn.end": stt_port.EV_END,
+    }
+    for raw_type, expected in cases.items():
+        out = ink._normalize_ink_message({"type": raw_type})
+        assert out is not None
+        assert out["event"] == expected
+
+
+def test_ink_normalize_resume_is_turn_resumed():
+    # Explicit: the resume event must map to turn_resumed so the loop cancels
+    # the speculative (eager) turn — the trickiest mapping to get right.
+    out = ink._normalize_ink_message({"type": "turn.resume"})
+    assert out["event"] == "turn_resumed"
+
+
+def test_ink_normalize_transcript_field_fallbacks():
+    # transcript field name is assumed; defensive extraction tries text ->
+    # transcript -> transcript_text.
+    assert ink._normalize_ink_message(
+        {"type": "turn.end", "text": "hello"})["transcript"] == "hello"
+    assert ink._normalize_ink_message(
+        {"type": "turn.end", "transcript": "hi there"})["transcript"] == "hi there"
+    assert ink._normalize_ink_message(
+        {"type": "turn.end", "transcript_text": "yo"})["transcript"] == "yo"
+
+
+def test_ink_normalize_defaults_missing_fields():
+    out = ink._normalize_ink_message({"type": "turn.start"})
+    assert out["transcript"] == ""
+    assert out["confidence"] is None
+    assert out["words"] == []
+    assert out["turn_index"] is None
+
+
+def test_ink_normalize_carries_optional_fields():
+    out = ink._normalize_ink_message({
+        "type": "turn.update", "text": "partial",
+        "confidence": 0.42, "words": [{"w": "partial"}], "turn_index": 3})
+    assert out["confidence"] == 0.42
+    assert out["words"] == [{"w": "partial"}]
+    assert out["turn_index"] == 3
+
+
+def test_ink_normalize_drops_unknown_types():
+    assert ink._normalize_ink_message({"type": "metadata"}) is None
+    assert ink._normalize_ink_message({"type": "error", "error": "x"}) is None
+    assert ink._normalize_ink_message({}) is None
+
+
+def test_ink_requires_api_key():
+    with pytest.raises(ValueError):
+        ink.CartesiaInkSTT("")
+
+
+# --------------------------------------------------------------------------- #
+# STT port surface + factory (both providers behind one seam)
+# --------------------------------------------------------------------------- #
+
+def test_both_providers_expose_provider_tag():
+    dg = flux.DeepgramFluxSTT("dg-key")
+    ck = ink.CartesiaInkSTT("ck-key")
+    assert dg.provider == "deepgram_flux"
+    assert ck.provider == "cartesia_ink"
+
+
+def test_both_providers_satisfy_the_port_surface():
+    dg = flux.DeepgramFluxSTT("dg-key")
+    ck = ink.CartesiaInkSTT("ck-key")
+    for obj in (dg, ck):
+        for attr in ("start", "send_audio", "events", "configure", "stop"):
+            assert callable(getattr(obj, attr))
+        assert isinstance(obj.asr_seconds_est, float)
+        assert isinstance(obj.provider, str)
+        # runtime_checkable Protocol: both adapters are STT instances.
+        assert isinstance(obj, stt_port.STT)
+
+
+def test_ev_constants_reexported_from_flux():
+    # Existing `from deepgram_flux_stt import EV_*` imports must keep working
+    # even though the canonical home moved to stt.py.
+    assert flux.EV_START == stt_port.EV_START == "start_of_turn"
+    assert flux.EV_RESUMED == stt_port.EV_RESUMED == "turn_resumed"
+    assert flux.EV_END == stt_port.EV_END == "end_of_turn"
+
+
+def test_make_stt_defaults_to_flux(monkeypatch):
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg")
+    stt = stt_port.make_stt("deepgram_flux", input_rate=24000, extra={})
+    assert stt.provider == "deepgram_flux"
+
+
+def test_make_stt_builds_cartesia_ink(monkeypatch):
+    monkeypatch.setenv("CARTESIA_API_KEY", "ck")
+    stt = stt_port.make_stt("cartesia_ink", input_rate=24000, extra={})
+    assert stt.provider == "cartesia_ink"
+
+
+def test_make_stt_passes_flux_thresholds(monkeypatch):
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg")
+    stt = stt_port.make_stt(
+        "deepgram_flux", input_rate=24000,
+        extra={"eot_threshold": "0.8", "eager_eot_threshold": "0.4"})
+    assert stt._eot_threshold == 0.8
+    assert stt._eager_eot_threshold == 0.4
+
+
+def test_make_stt_unknown_provider_raises(monkeypatch):
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg")
+    with pytest.raises(RuntimeError, match="unknown stt_provider"):
+        stt_port.make_stt("whisper-x", input_rate=24000, extra={})
+
+
+def test_make_stt_missing_key_raises_clear(monkeypatch):
+    monkeypatch.delenv("CARTESIA_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="CARTESIA_API_KEY is not set"):
+        stt_port.make_stt("cartesia_ink", input_rate=24000, extra={})
+
+
+@pytest.mark.asyncio
+async def test_ink_configure_is_noop():
+    ck = ink.CartesiaInkSTT("ck-key")
+    # No socket open; must not raise, and must do nothing harmful.
+    await ck.configure(eot_threshold=0.9)
+    await ck.configure()

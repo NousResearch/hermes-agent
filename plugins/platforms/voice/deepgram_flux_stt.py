@@ -43,12 +43,13 @@ DEFAULT_EOT_THRESHOLD = 0.7
 DEFAULT_EAGER_EOT_THRESHOLD = 0.5
 DEFAULT_EOT_TIMEOUT_MS = 5000
 
-# Normalized event names the turn loop consumes (provider-agnostic).
-EV_START = "start_of_turn"
-EV_UPDATE = "update"
-EV_EAGER_EOT = "eager_end_of_turn"
-EV_RESUMED = "turn_resumed"
-EV_END = "end_of_turn"
+# Normalized event names the turn loop consumes (provider-agnostic). Their
+# canonical home is stt.py (the port); re-exported here so existing
+# `from deepgram_flux_stt import EV_*` imports keep working.
+try:
+    from stt import EV_EAGER_EOT, EV_END, EV_RESUMED, EV_START, EV_UPDATE
+except ImportError:
+    from .stt import EV_EAGER_EOT, EV_END, EV_RESUMED, EV_START, EV_UPDATE
 
 _FLUX_EVENT_MAP = {
     "StartOfTurn": EV_START,
@@ -116,6 +117,8 @@ def _resample_to_16k(pcm: bytes, in_rate: int) -> bytes:
 class DeepgramFluxSTT:
     """One Flux websocket for a call. ``events()`` yields normalized turn
     events; ``send_audio`` streams the (resampled) mic audio."""
+
+    provider = "deepgram_flux"   # telemetry tag (the STT port surface)
 
     def __init__(
         self,

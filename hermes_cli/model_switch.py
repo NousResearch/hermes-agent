@@ -1199,6 +1199,73 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
+def _provider_cfg_model_ids(ep_cfg: dict) -> list[str]:
+    """Model ids declared under a ``providers:`` config entry."""
+    models_list: list[str] = []
+    default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
+    if default_model:
+        models_list.append(str(default_model))
+    cfg_models = ep_cfg.get("models", [])
+    if isinstance(cfg_models, dict):
+        for model_id in cfg_models:
+            if model_id and model_id not in models_list:
+                models_list.append(str(model_id))
+    elif isinstance(cfg_models, list):
+        for model_id in cfg_models:
+            if model_id and model_id not in models_list:
+                models_list.append(str(model_id))
+    return models_list
+
+
+def _union_preserve_order_model_ids(primary: list[str], extra: list[str]) -> list[str]:
+    """Append ``extra`` model ids not already present (case-insensitive)."""
+    seen = {m.lower() for m in primary if m}
+    merged = list(primary)
+    for model_id in extra:
+        if not model_id:
+            continue
+        key = model_id.lower()
+        if key in seen:
+            continue
+        merged.append(model_id)
+        seen.add(key)
+    return merged
+
+
+def _merge_user_provider_models_into_results(
+    results: list[dict], user_providers: dict | None
+) -> None:
+    """Fold explicit ``providers:`` model lists into already-emitted rows.
+
+    Canonical rows (e.g. opencode-go from HERMES_OVERLAYS) are emitted before
+    section 3 walks ``providers:``. Section 3 skips duplicate slugs, which left
+    config-only models like minimax-m3 invisible in GUI pickers when the live
+    /v1/models probe returned a smaller catalog.
+    """
+    if not user_providers or not isinstance(user_providers, dict):
+        return
+
+    for ep_name, ep_cfg in user_providers.items():
+        if not isinstance(ep_cfg, dict):
+            continue
+        cfg_models = _provider_cfg_model_ids(ep_cfg)
+        if not cfg_models:
+            continue
+        slug_lower = str(ep_name).lower()
+        existing = next(
+            (r for r in results if str(r.get("slug", "")).lower() == slug_lower),
+            None,
+        )
+        if existing is None:
+            continue
+        before = list(existing.get("models") or [])
+        merged = _union_preserve_order_model_ids(before, cfg_models)
+        if merged == before:
+            continue
+        existing["models"] = merged
+        existing["total_models"] = len(merged)
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -1704,27 +1771,7 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
-            # ``default_model`` is the legacy key; ``model`` matches what
-            # custom_providers entries use, so accept either.
-            default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
-
-            # Build models list from both default_model and full models array
-            models_list = []
-            if default_model:
-                models_list.append(default_model)
-            # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id
-            # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
-            cfg_models = ep_cfg.get("models", [])
-            if isinstance(cfg_models, dict):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
-            elif isinstance(cfg_models, list):
-                for m in cfg_models:
-                    if m and m not in models_list:
-                        models_list.append(m)
+            models_list = _provider_cfg_model_ids(ep_cfg)
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
@@ -1751,7 +1798,9 @@ def list_authenticated_providers(
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)
                     if live_models:
-                        models_list = live_models
+                        models_list = _union_preserve_order_model_ids(
+                            live_models, models_list
+                        )
                 except Exception:
                     pass
 
@@ -2019,6 +2068,8 @@ def list_authenticated_providers(
             })
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
+
+    _merge_user_provider_models_into_results(results, user_providers)
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

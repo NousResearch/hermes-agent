@@ -153,6 +153,25 @@ def _xai_curated_models() -> list[str]:
     return list(_XAI_STATIC_FALLBACK)
 
 
+# Official OpenCode Go catalog — https://opencode.ai/docs/go
+OPENCODE_GO_OFFICIAL_MODELS: list[str] = [
+    "glm-5.1",
+    "glm-5",
+    "kimi-k2.7-code",
+    "kimi-k2.6",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+    "minimax-m3",
+    "minimax-m2.7",
+    "minimax-m2.5",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+]
+
+
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         # Anthropic
@@ -406,21 +425,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen3-coder",
         "big-pickle",
     ],
-    "opencode-go": [
-        "kimi-k2.6",
-        "kimi-k2.5",
-        "glm-5.1",
-        "glm-5",
-        "mimo-v2.5-pro",
-        "mimo-v2.5",
-        "mimo-v2-pro",
-        "mimo-v2-omni",
-        "minimax-m2.7",
-        "minimax-m2.5",
-        "qwen3.7-max",
-        "qwen3.6-plus",
-        "qwen3.5-plus",
-    ],
+    "opencode-go": list(OPENCODE_GO_OFFICIAL_MODELS),
     "kilocode": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",

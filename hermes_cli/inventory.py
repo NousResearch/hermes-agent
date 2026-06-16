@@ -108,6 +108,39 @@ def load_picker_context() -> ConfigContext:
 # ─── Public: payload builder ────────────────────────────────────────────
 
 
+def _apply_opencode_go_official_catalog(rows: list[dict]) -> None:
+    """Ensure the OpenCode Go row exposes the official subscription catalog.
+
+    Unions the docs list with any live/config IDs, orders official models
+    first, and normalizes the display name for GUI pickers.
+    """
+    from hermes_cli.models import OPENCODE_GO_OFFICIAL_MODELS
+    from hermes_cli.model_switch import _union_preserve_order_model_ids
+
+    for row in rows:
+        if str(row.get("slug", "")).lower() != "opencode-go":
+            continue
+        row["name"] = "OpenCode Go"
+        before = list(row.get("models") or [])
+        merged = _union_preserve_order_model_ids(
+            OPENCODE_GO_OFFICIAL_MODELS, before
+        )
+        present = {m.lower(): m for m in merged}
+        ordered: list[str] = []
+        for mid in OPENCODE_GO_OFFICIAL_MODELS:
+            key = mid.lower()
+            if key in present:
+                ordered.append(present[key])
+        seen = {m.lower() for m in ordered}
+        for m in merged:
+            lk = m.lower()
+            if lk not in seen:
+                ordered.append(m)
+                seen.add(lk)
+        row["models"] = ordered
+        row["total_models"] = len(ordered)
+
+
 def build_models_payload(
     ctx: ConfigContext,
     *,
@@ -171,6 +204,11 @@ def build_models_payload(
     except Exception:
         _is_aggregator = None  # type: ignore[assignment]
 
+    # OpenCode Zen + Go are sibling subscriptions users configure together;
+    # cross-deduping them hid every Go-only model (e.g. minimax-m3) once Zen's
+    # live catalog overlapped the Go tier.
+    _opencode_sibling_slugs = frozenset({"opencode-zen", "opencode-go"})
+
     if _is_aggregator is not None:
         for row in rows:
             slug = str(row.get("slug", "") or "")
@@ -184,12 +222,21 @@ def build_models_payload(
             # marked is_user_defined but must not compete with themselves —
             # that erased every model and hid the row from GUI pickers (#45954).
             slug_lower = slug.lower()
+            # OpenCode Zen/Go are curated subscriptions — never strip their
+            # catalogs when another provider (e.g. Ollama) serves the same ID.
+            if slug_lower in _opencode_sibling_slugs:
+                continue
             competing_models: set[str] = set()
             for other in rows:
                 if not other.get("is_user_defined"):
                     continue
                 other_slug = str(other.get("slug", "") or "").lower()
                 if not other_slug or other_slug == slug_lower:
+                    continue
+                if (
+                    slug_lower in _opencode_sibling_slugs
+                    and other_slug in _opencode_sibling_slugs
+                ):
                     continue
                 competing_models.update(
                     m.lower() for m in (other.get("models") or [])
@@ -200,6 +247,11 @@ def build_models_payload(
             if len(filtered) < len(original):
                 row["models"] = filtered
                 row["total_models"] = len(filtered)
+
+    from hermes_cli.model_switch import _merge_user_provider_models_into_results
+
+    _merge_user_provider_models_into_results(rows, ctx.user_providers)
+    _apply_opencode_go_official_catalog(rows)
 
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)

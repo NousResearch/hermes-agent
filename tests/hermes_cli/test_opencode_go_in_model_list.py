@@ -11,14 +11,17 @@ from hermes_cli.model_switch import list_authenticated_providers
 # The curated list in hermes_cli/models.py defines the floor; models.dev only
 # ever adds names on top of it via _merge_with_models_dev.
 _OPENCODE_GO_REQUIRED = {
-    "kimi-k2.6",
-    "kimi-k2.5",
     "glm-5.1",
     "glm-5",
-    "mimo-v2-pro",
-    "mimo-v2-omni",
+    "kimi-k2.7-code",
+    "kimi-k2.6",
+    "mimo-v2.5",
+    "mimo-v2.5-pro",
+    "minimax-m3",
     "minimax-m2.7",
     "minimax-m2.5",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
 }
 
 

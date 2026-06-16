@@ -627,9 +627,9 @@ def test_aggregator_dedup_does_not_strip_self_configured_provider():
     assert zen_row["total_models"] == 3
 
 
-def test_aggregator_dedup_still_dedupes_across_distinct_providers():
-    """Cross-provider overlap dedup remains: opencode-go loses models that
-    opencode-zen already exposes via providers: config."""
+def test_aggregator_dedup_skips_opencode_sibling_overlap():
+    """OpenCode Zen and Go are sibling subscriptions — keep both rows even
+    when their live catalogs overlap."""
     rows = [
         _user_provider_row("opencode-zen", ["deepseek-v4-flash", "glm-5"]),
         _aggregator_row("opencode-go", [
@@ -642,6 +642,39 @@ def test_aggregator_dedup_still_dedupes_across_distinct_providers():
         payload = build_models_payload(ctx)
 
     go_row = next(r for r in payload["providers"] if r["slug"] == "opencode-go")
-    assert go_row["models"] == ["kimi-k2.6"]
-    assert go_row["total_models"] == 1
+    assert "deepseek-v4-flash" in go_row["models"]
+    assert "kimi-k2.6" in go_row["models"]
+    assert go_row["name"] == "OpenCode Go"
+    assert go_row["total_models"] >= 14
+
+
+def test_build_models_payload_preserves_opencode_go_after_aggregator_dedup():
+    """Ollama may share bare model IDs with OpenCode Go — dedup must not
+    strip Go models; config + official catalog must restore minimax-m3."""
+    from dataclasses import replace
+
+    rows = [
+        _user_provider_row("ollama", ["minimax-m3", "glm-5.1", "kimi-k2.6"]),
+        _aggregator_row("opencode-go", ["qwen3.7-max", "mimo-v2.5"]),
+    ]
+    ctx = replace(
+        _empty_ctx(),
+        user_providers={
+            "opencode-go": {
+                "models": {
+                    "minimax-m3": {"context_length": 131072},
+                    "deepseek-v4-pro": {"context_length": 1000000},
+                },
+            },
+        },
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    go_row = next(r for r in payload["providers"] if r["slug"] == "opencode-go")
+    assert go_row["name"] == "OpenCode Go"
+    assert "minimax-m3" in go_row["models"]
+    assert "deepseek-v4-pro" in go_row["models"]
+    assert "qwen3.7-max" in go_row["models"]
+    assert go_row["total_models"] >= 14
 

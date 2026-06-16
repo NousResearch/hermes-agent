@@ -1620,6 +1620,13 @@ DEFAULT_CONFIG = {
         # falls through to request reconstruction rather than breaking
         # the login flow.
         "public_url": "",
+        # Hostnames to additionally accept on loopback binds
+        # (127.0.0.1 / localhost) — useful for Cloudflare Tunnel and
+        # other reverse-proxy setups that forward WS connections to a
+        # loopback-bound dashboard with a non-loopback Host header.
+        # Each entry is matched case-insensitively.  Default empty list
+        # keeps the existing loopback-only behavior.
+        "allowed_external_hosts": [],
     },
 
     # Privacy settings
@@ -6018,6 +6025,36 @@ def get_env_value(key: str) -> Optional[str]:
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
+
+
+def push_env_into_os_environ() -> int:
+    """Push .env file entries into os.environ for code that reads
+    os.environ at import time instead of calling get_env_value().
+
+    Only sets keys that are NOT already present in the process
+    environment — the live environment always wins over the .env file.
+
+    Returns the number of keys pushed (0 on missing/empty .env or any
+    parse error).
+    """
+    try:
+        env_path = get_env_path()
+        if not env_path.is_file():
+            return 0
+    except Exception:
+        return 0
+
+    try:
+        env_vars = load_env()
+    except Exception:
+        return 0
+
+    pushed = 0
+    for key, value in env_vars.items():
+        if key and key not in os.environ:
+            os.environ[key] = value
+            pushed += 1
+    return pushed
 
 
 # =============================================================================

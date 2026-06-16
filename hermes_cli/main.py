@@ -10989,6 +10989,15 @@ def cmd_dashboard(args):
             exc_info=True,
         )
 
+    # Push .env entries into os.environ so the dashboard web server's
+    # module-level defaults (e.g. HERMES_DASHBOARD_SESSION_TOKEN in
+    # web_server.py) see values persisted in the .env file.
+    from hermes_cli.config import push_env_into_os_environ
+
+    _dotenv_pushed = push_env_into_os_environ()
+    if _dotenv_pushed:
+        logger.debug("Pushed %d .env entry(s) into os.environ", _dotenv_pushed)
+
     from hermes_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always

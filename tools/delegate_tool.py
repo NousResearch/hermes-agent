@@ -1148,9 +1148,12 @@ def _build_child_agent(
 
     if override_acp_command:
         # Detect whether the ACP command targets Claude Code or Copilot.
+        # Tightened match: only route to claude-code-acp when the command name
+        # explicitly contains "claude-code-acp". The prior broader match on
+        # "claude" would misroute any claude-prefixed command (e.g. the bare
+        # "claude" CLI) to the claude-code-acp provider.
         _cmd_lower = (override_acp_command or "").lower()
-        _args_str = " ".join(override_acp_args or []).lower()
-        if "claude" in _cmd_lower or "claude-agent-acp" in _args_str:
+        if "claude-code-acp" in _cmd_lower:
             effective_provider = "claude-code-acp"
             effective_api_mode = "chat_completions"
         else:

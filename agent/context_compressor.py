@@ -314,6 +314,45 @@ def _strip_image_parts_from_parts(parts: Any) -> Any:
     return out if had_image else None
 
 
+def evict_images_for_413(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip image/base64 payloads from ALL messages to reduce HTTP body size.
+    Called as a first-pass when a 413 (Payload Too Large) error occurs.
+    Unlike ``_prune_old_tool_results`` which only strips images from old
+    tool results (before the compression boundary), this function walks
+    the entire message list and strips images from any message -- including
+    protected tail messages -- because 413 is a byte-size limit, not a
+    token limit.  A single 2MB base64 screenshot in the tail is enough
+    to trigger 413 even if the token count is well within bounds.
+
+    Returns the original list if no images were evicted (identity check
+    by callers), or a new list with images replaced by text placeholders.
+    """
+    evicted = 0
+    out = []
+    for msg in messages:
+        content = msg.get("content")
+        # Multimodal dict envelope (browser_vision, vision_analyze, etc.)
+        if isinstance(content, dict) and content.get("_multimodal"):
+            summary = content.get("text_summary") or "[screenshot removed to save context]"
+            out.append({**msg, "content": f"[image removed for 413 recovery] {summary[:300]}"})
+            evicted += 1
+            continue
+        # OpenAI-style content-parts list with image_url / image / input_image
+        if isinstance(content, list):
+            stripped = _strip_image_parts_from_parts(content)
+            if stripped is not None:
+                out.append({**msg, "content": stripped})
+                evicted += 1
+                continue
+        out.append(msg)
+    if evicted:
+        logger.info("413 image eviction: stripped images from %d message(s)", evicted)
+        return out
+    return messages
+
+
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string values inside a tool-call arguments JSON blob while
     preserving JSON validity.

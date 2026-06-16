@@ -110,6 +110,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "kimi-for-coding": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
+        extra_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
     ),
     "stepfun": HermesOverlay(
         transport="openai_chat",
@@ -120,6 +121,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
+        extra_env_vars=("MINIMAX_API_KEY",),
     ),
     "minimax-oauth": HermesOverlay(
         transport="anthropic_messages",
@@ -129,66 +131,80 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_CN_BASE_URL",
+        extra_env_vars=("MINIMAX_CN_API_KEY",),
     ),
     "deepseek": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DEEPSEEK_BASE_URL",
+        extra_env_vars=("DEEPSEEK_API_KEY",),
     ),
     "alibaba": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
+        extra_env_vars=("DASHSCOPE_API_KEY",),
     ),
     "alibaba-coding-plan": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
+        extra_env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
     ),
     "opencode": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="OPENCODE_ZEN_BASE_URL",
+        extra_env_vars=("OPENCODE_ZEN_API_KEY",),
     ),
     "opencode-go": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="OPENCODE_GO_BASE_URL",
+        extra_env_vars=("OPENCODE_GO_API_KEY",),
     ),
     "kilo": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="KILOCODE_BASE_URL",
+        extra_env_vars=("KILOCODE_API_KEY",),
     ),
     "huggingface": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
+        extra_env_vars=("HF_TOKEN",),
     ),
     "novita": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="NOVITA_BASE_URL",
+        extra_env_vars=("NOVITA_API_KEY",),
     ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
+        extra_env_vars=("XAI_API_KEY",),
     ),
     "nvidia": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://integrate.api.nvidia.com/v1",
         base_url_env_var="NVIDIA_BASE_URL",
+        extra_env_vars=("NVIDIA_API_KEY",),
     ),
     "xiaomi": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
+        extra_env_vars=("XIAOMI_API_KEY",),
     ),
     "tencent-tokenhub": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="TOKENHUB_BASE_URL",
+        extra_env_vars=("TOKENHUB_API_KEY",),
     ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
         base_url_env_var="ARCEE_BASE_URL",
+        extra_env_vars=("ARCEEAI_API_KEY",),
     ),
     "gmi": HermesOverlay(
         transport="openai_chat",
@@ -200,12 +216,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
         base_url_env_var="OLLAMA_BASE_URL",
+        extra_env_vars=("OLLAMA_API_KEY",),
     ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
     # The transport is determined at runtime from config.yaml model.api_mode.
     "azure-foundry": HermesOverlay(
         transport="openai_chat",  # default; overridden by api_mode in config
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
+        extra_env_vars=("AZURE_FOUNDRY_API_KEY",),
     ),
     "bedrock": HermesOverlay(
         transport="bedrock_converse",

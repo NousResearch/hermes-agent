@@ -67,6 +67,14 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_TELEGRAM_UNSUPPORTED_MESSAGE_PLACEHOLDER = (
+    "This message is not supported in your version of Telegram. "
+    "Please update to the latest version."
+)
+
+
+def _is_telegram_unsupported_message_placeholder(text: Optional[str]) -> bool:
+    return bool(text and str(text).strip() == _TELEGRAM_UNSUPPORTED_MESSAGE_PLACEHOLDER)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -3676,7 +3684,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
 
             reply_anchor = self._reply_anchor_for_event(event)
-            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+            thread_meta = self._thread_metadata_for_source(event.source, reply_anchor, event.text)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
@@ -3882,7 +3890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
         reply_anchor = self._reply_anchor_for_event(event)
-        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor, event.text)
         try:
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -7807,14 +7815,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 context_note = _build_document_context_note(display_name, agent_path, mtype)
                 message_text = f"{context_note}\n\n{message_text}"
 
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
+        reply_to_text = getattr(event, "reply_to_text", None)
+        if _is_telegram_unsupported_message_placeholder(reply_to_text):
+            logger.debug(
+                "Dropping Telegram unsupported-message placeholder before prompt injection "
+                "for message %s replying to %s",
+                getattr(event, "message_id", None),
+                getattr(event, "reply_to_message_id", None),
+            )
+            reply_to_text = None
+
+        if reply_to_text and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's
             # disambiguation: it tells the agent *which* prior message the user
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            reply_snippet = reply_to_text[:500]
             message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
@@ -9907,7 +9925,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await adapter.play_in_voice_channel(guild_id, actual_path)
             elif adapter and hasattr(adapter, "send_voice"):
                 reply_anchor = self._reply_anchor_for_event(event)
-                thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+                thread_meta = self._thread_metadata_for_source(event.source, reply_anchor, event.text)
                 # Mark the auto voice reply as notify-worthy.  Mirrors the
                 # final-text path in gateway/platforms/base.py which sets
                 # ``notify=True`` so platform adapters that gate push
@@ -9973,7 +9991,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event), event.text)
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -10079,7 +10097,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata = self._thread_metadata_for_source(source, event_message_id, message_text)
 
         try:
             user_config = _load_gateway_config()
@@ -10993,6 +11011,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         source,
         reply_to_message_id: Optional[str] = None,
+        reply_quote_text: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
         return self._thread_metadata_for_target(
@@ -11001,6 +11020,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             getattr(source, "thread_id", None),
             chat_type=getattr(source, "chat_type", None),
             reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None),
+            reply_quote_text=reply_quote_text,
         )
 
     def _thread_metadata_for_target(
@@ -11011,6 +11031,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         *,
         chat_type: Optional[str] = None,
         reply_to_message_id: Optional[str] = None,
+        reply_quote_text: Optional[str] = None,
         adapter: Optional[Any] = None,
     ) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
@@ -11033,6 +11054,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 metadata["direct_messages_topic_id"] = tid
             if reply_to_message_id is not None:
                 metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+            if reply_quote_text:
+                metadata["telegram_reply_quote"] = str(reply_quote_text)
+        elif platform == Platform.TELEGRAM and reply_quote_text:
+            if reply_to_message_id is not None:
+                metadata["telegram_reply_to_message_id"] = str(reply_to_message_id)
+                metadata["telegram_reply_quote"] = str(reply_quote_text)
         return metadata
 
     @staticmethod
@@ -12891,7 +12918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else bool(_plat_streaming)
         )
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
+        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id, message)
 
         if _streaming_enabled:
             try:
@@ -13442,7 +13469,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = (
-            self._thread_metadata_for_source(source, event_message_id)
+            self._thread_metadata_for_source(source, event_message_id, message)
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None

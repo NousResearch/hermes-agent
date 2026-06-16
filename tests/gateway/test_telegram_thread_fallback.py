@@ -68,6 +68,13 @@ class _FakeInputMediaPhoto:
         self.kwargs = kwargs
 
 
+class _FakeReplyParameters:
+    def __init__(self, message_id, quote=None, **kwargs):
+        self.message_id = message_id
+        self.quote = quote
+        self.kwargs = kwargs
+
+
 _fake_telegram = types.ModuleType("telegram")
 _fake_telegram.Update = object
 _fake_telegram.Bot = object
@@ -75,6 +82,7 @@ _fake_telegram.Message = object
 _fake_telegram.InlineKeyboardButton = _FakeInlineKeyboardButton
 _fake_telegram.InlineKeyboardMarkup = _FakeInlineKeyboardMarkup
 _fake_telegram.InputMediaPhoto = _FakeInputMediaPhoto
+_fake_telegram.ReplyParameters = _FakeReplyParameters
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
 _fake_telegram_error.BadRequest = FakeBadRequest
@@ -566,6 +574,7 @@ async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegra
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "463",
+        "telegram_reply_quote": "busy follow-up",
     }
 
 
@@ -624,6 +633,75 @@ async def test_send_uses_reply_anchor_when_direct_topic_fallback_metadata_exists
     assert call_log[0]["reply_to_message_id"] == 462
     assert call_log[0]["message_thread_id"] == 20197
     assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_explicit_quote_for_dm_topic_when_reply_to_mode_off(monkeypatch):
+    """reply_to_mode=off should not let Telegram infer an unsupported preview."""
+    from gateway.platforms import telegram as telegram_mod
+
+    monkeypatch.setattr(telegram_mod, "ReplyParameters", _FakeReplyParameters)
+    adapter = _make_adapter()
+    adapter._reply_to_mode = "off"
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=777)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+        metadata={
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "462",
+            "telegram_reply_quote": "what did I ask Eve to do?",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["reply_parameters"].message_id == 462
+    assert call_log[0]["reply_parameters"].quote == "what did I ask Eve to do?"
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_send_uses_explicit_quote_for_group_topic(monkeypatch):
+    """Forum-topic sends should quote the triggering user message, not the topic seed."""
+    from gateway.platforms import telegram as telegram_mod
+
+    monkeypatch.setattr(telegram_mod, "ReplyParameters", _FakeReplyParameters)
+    adapter = _make_adapter()
+    adapter._reply_to_mode = "off"
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(kwargs)
+        return SimpleNamespace(message_id=777)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="-100123",
+        content="test message",
+        metadata={
+            "thread_id": "20197",
+            "telegram_reply_to_message_id": "463",
+            "telegram_reply_quote": "Can this live in Drive?",
+        },
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] == 20197
+    assert call_log[0]["reply_parameters"].message_id == 463
+    assert call_log[0]["reply_parameters"].quote == "Can this live in Drive?"
 
 
 @pytest.mark.asyncio

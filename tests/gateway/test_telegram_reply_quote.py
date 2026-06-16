@@ -26,6 +26,7 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
+    telegram_mod.ChatType = telegram_mod.constants.ChatType
 
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
@@ -126,6 +127,26 @@ def test_caption_fallback_when_no_quote_and_no_text():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Photo caption from earlier"
+
+
+def test_unsupported_placeholder_is_not_used_as_reply_to_text():
+    """Telegram's unsupported-message placeholder is routing metadata, not quote context."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(
+        text="what did I ask?",
+        reply_to_text=(
+            "This message is not supported in your version of Telegram. "
+            "Please update to the latest version."
+        ),
+        quote_text=None,
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.reply_to_message_id == "42"
+    assert event.reply_to_text is None
 
 
 def test_empty_quote_text_falls_back_to_full_reply():

@@ -137,6 +137,29 @@ async def test_no_prefix_when_reply_to_text_is_empty():
 
 
 @pytest.mark.asyncio
+async def test_telegram_unsupported_placeholder_not_injected():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="Can this live in Drive?",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=(
+            "This message is not supported in your version of Telegram. "
+            "Please update to the latest version."
+        ),
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result == "Can this live in Drive?"
+
+
+@pytest.mark.asyncio
 async def test_reply_snippet_truncated_to_500_chars():
     runner = _make_runner()
     source = _source()
@@ -157,3 +180,28 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+def test_telegram_group_topic_metadata_keeps_trigger_quote():
+    runner = _make_runner()
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100123",
+        chat_name="Eve Engineering",
+        chat_type="group",
+        user_name="Alice",
+        thread_id="20197",
+        message_id="463",
+    )
+
+    metadata = runner._thread_metadata_for_source(
+        source,
+        reply_to_message_id=None,
+        reply_quote_text="Can this live in Drive?",
+    )
+
+    assert metadata == {
+        "thread_id": "20197",
+        "telegram_reply_to_message_id": "463",
+        "telegram_reply_quote": "Can this live in Drive?",
+    }

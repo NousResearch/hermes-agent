@@ -3742,6 +3742,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         untouched. Safe-by-default: returns False on any attribute or
         lock error so a missing/broken parent never blocks the existing
         interrupt path.
+
+        #46864 — ``_executing_tools`` is False when the agent's tool loop
+        has returned (i.e. the parent dispatched background subagents via
+        ``delegate_task(background=True)`` and is no longer actively
+        driving tool calls).  In that case any remaining ``_active_children``
+        are background subagents that should NOT block user interrupts.
+        Only demote when the parent is actively mid-tool-loop (sync children).
         """
         if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
             return False
@@ -3754,6 +3761,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(children, (list, tuple, set)):
             return False
         if not children:
+            return False
+        # #46864 — Background children (delegate_task background=True) remain
+        # in _active_children after the parent's tool loop finishes, but
+        # _executing_tools is False because the parent has returned. Only
+        # sync children (parent blocked mid-tool-loop) should trigger the
+        # demotion. Check _executing_tools to distinguish.
+        executing_tools = getattr(running_agent, "_executing_tools", True)
+        if not executing_tools:
             return False
         lock = getattr(running_agent, "_active_children_lock", None)
         try:

@@ -1261,14 +1261,13 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
-    # Register child for interrupt propagation
-    if hasattr(parent_agent, "_active_children"):
-        lock = getattr(parent_agent, "_active_children_lock", None)
-        if lock:
-            with lock:
-                parent_agent._active_children.append(child)
-        else:
-            parent_agent._active_children.append(child)
+    # NOTE: child is NOT registered for interrupt propagation here anymore.
+    # The caller decides whether the child is sync (registered) or background
+    # (async delegated). See the caller in delegate_tool._run() for the
+    # background/sync split — registering here introduces a race window where
+    # _active_children is non-empty before the caller removes it for background
+    # subagents, causing _agent_has_active_subagents() to demote user
+    # interrupts to queue (#46864).
 
     # Announce the spawn immediately — the child may sit in a queue
     # for seconds if max_concurrent_children is saturated, so the TUI
@@ -2316,10 +2315,36 @@ def delegate_task(
                 dispatch.get("error", "Async delegation could not be scheduled.")
             )
 
+        # Register the child for interrupt propagation (sync path).
+        # _build_child_agent no longer does this — background subagents must
+        # NEVER be added to _active_children (they're lifecycle-managed by the
+        # async-delegation registry). Only sync children need the parent's
+        # interrupt to cascade through them. See #46864.
+        if hasattr(parent_agent, "_active_children"):
+            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+            if _ac_lock:
+                with _ac_lock:
+                    parent_agent._active_children.append(child)
+            else:
+                parent_agent._active_children.append(child)
+
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
+        # Register ALL batch children for interrupt propagation before starting
+        # the thread pool, so interrupt cascades through every child even while
+        # others are still queued in the executor. _run_single_child removes
+        # each child when it finishes (in its finally block).
+        if hasattr(parent_agent, "_active_children"):
+            _ac_lock = getattr(parent_agent, "_active_children_lock", None)
+            for _i, _t, _child in children:
+                if _ac_lock:
+                    with _ac_lock:
+                        parent_agent._active_children.append(_child)
+                else:
+                    parent_agent._active_children.append(_child)
+
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 

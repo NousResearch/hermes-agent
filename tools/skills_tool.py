@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home, get_skills_dir, DynamicPathProxy
 import os
 import re
 from enum import Enum
@@ -87,8 +87,8 @@ logger = logging.getLogger(__name__)
 # All skills live in ~/.hermes/skills/ (seeded from bundled skills/ on install).
 # This is the single source of truth -- agent edits, hub installs, and bundled
 # skills all coexist here without polluting the git repo.
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
+HERMES_HOME = DynamicPathProxy(get_hermes_home)
+SKILLS_DIR = DynamicPathProxy(get_skills_dir)
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64

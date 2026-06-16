@@ -511,6 +511,89 @@ def get_env_path() -> Path:
     return get_hermes_home() / ".env"
 
 
+class DynamicPathProxy(type(Path())):
+    """A Path subclass that delegates all operations dynamically to a resolver.
+
+    This is used to bypass the static evaluation of paths (like SKILLS_DIR) at
+    module import time, allowing them to adapt when profile overrides change,
+    while maintaining full compatibility with all Path operations and isinstance checks.
+    """
+    def __new__(cls, resolver):
+        # Initialize the base class with a dummy path ('.') to create the internal pathlib
+        # state without triggering directory lookups during the import phase.
+        obj = super().__new__(cls, ".")
+        object.__setattr__(obj, "_resolver", resolver)
+        return obj
+
+    @property
+    def _resolved(self) -> Path:
+        """Dynamically resolve the underlying path using the resolver function."""
+        resolver = object.__getattribute__(self, "_resolver")
+        return Path(resolver())
+
+    def __getattribute__(self, name):
+        # 1. During the base class initialization (__new__ above), pathlib internals
+        # are accessed before `_resolver` is bound to the instance __dict__.
+        # We must bypass delegation during this phase to avoid infinite recursion.
+        try:
+            dct = object.__getattribute__(self, "__dict__")
+        except AttributeError:
+            dct = {}
+        if "_resolver" not in dct:
+            return object.__getattribute__(self, name)
+
+        # 2. Prevent infinite recursion by intercepting internal proxy attributes
+        # and returning them directly without delegation.
+        if name in ("_resolver", "_resolved", "__dict__", "__class__"):
+            return object.__getattribute__(self, name)
+
+        # 3. Delegate all other attribute/method lookups to the resolved Path object.
+        return getattr(self._resolved, name)
+
+    # Note: Special methods (magic methods) bypass __getattribute__ during lookup,
+    # so we must define them explicitly on the class to ensure correct behavior.
+
+    def __str__(self):
+        return str(self._resolved)
+
+    def __repr__(self):
+        return f"DynamicPathProxy({self._resolved!r})"
+
+    def __fspath__(self):
+        return os.fspath(self._resolved)
+
+    def __truediv__(self, other):
+        return self._resolved / other
+
+    def __rtruediv__(self, other):
+        return other / self._resolved
+
+    def __eq__(self, other):
+        return self._resolved == other
+
+    def __ne__(self, other):
+        return self._resolved != other
+
+    def __lt__(self, other):
+        return self._resolved < other
+
+    def __le__(self, other):
+        return self._resolved <= other
+
+    def __gt__(self, other):
+        return self._resolved > other
+
+    def __ge__(self, other):
+        return self._resolved >= other
+
+    def __hash__(self):
+        return hash(self._resolved)
+
+    def __bytes__(self):
+        return bytes(self._resolved)
+
+
+
 # ─── Network Preferences ─────────────────────────────────────────────────────
 
 

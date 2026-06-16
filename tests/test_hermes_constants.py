@@ -298,3 +298,42 @@ class TestSecureParentDir:
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
 
+
+class TestDynamicPathProxy:
+    """Tests for DynamicPathProxy — dynamic evaluation of path attributes/methods."""
+
+    def test_dynamic_resolution(self, tmp_path):
+        current_dir = tmp_path / "first"
+        current_dir.mkdir()
+
+        resolved_path = current_dir
+
+        def resolver():
+            return resolved_path
+
+        from hermes_constants import DynamicPathProxy
+        proxy = DynamicPathProxy(resolver)
+
+        # 1. Check isinstance behaves correctly (proxy is a Path subclass)
+        assert isinstance(proxy, Path)
+
+        # 2. Check operations delegate to "first"
+        assert proxy.exists()
+        assert proxy.resolve() == current_dir.resolve()
+        assert str(proxy) == str(current_dir)
+
+        # 3. Check division works and resolves dynamically
+        assert not (proxy / "test.txt").exists()
+
+        # 4. Change resolution destination
+        second_dir = tmp_path / "second"
+        second_dir.mkdir()
+        (second_dir / "test.txt").touch()
+
+        resolved_path = second_dir
+
+        # 5. Check proxy now points to "second" dynamically without re-instantiating
+        assert proxy.resolve() == second_dir.resolve()
+        assert (proxy / "test.txt").exists()
+
+

@@ -22,6 +22,9 @@ import contextlib
 import json
 import logging
 import os
+from pathlib import Path
+import re
+import shutil
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -231,12 +234,67 @@ _COMBINED_REVIEW_PROMPT = (
     "genuinely nothing stands out on either, say 'Nothing to save.' "
     "and stop — but don't reach for that conclusion as a default."
 )
+def _try_autocorrect_skill_path(
+    skill_name: str,
+    data: dict,
+    target_skills_dir: Path,
+) -> None:
+    """Attempt to copy/move a skill from the review agent's write path
+    to the correct active profile's skill directory when there is a mismatch.
+    """
+    source_path_str = data.get("skill_md") or data.get("path")
+    if not source_path_str:
+        return
 
+    src_path = Path(source_path_str)
+    if not src_path.exists():
+        return
+
+    parts = src_path.parts
+    if "skills" not in parts:
+        return
+
+    idx = parts.index("skills")
+    rel_path = Path(*parts[idx + 1:])
+    dest_path = target_skills_dir / rel_path
+
+    try:
+        src_resolved = src_path.resolve()
+        dest_resolved = dest_path.resolve()
+    except OSError:
+        src_resolved = src_path
+        dest_resolved = dest_path
+
+    if src_resolved == dest_resolved:
+        return
+
+    try:
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        if src_path.is_dir():
+            if dest_path.exists():
+                if dest_path.is_dir():
+                    shutil.rmtree(dest_path)
+                else:
+                    dest_path.unlink()
+            shutil.copytree(src_path, dest_path)
+        else:
+            shutil.copy2(src_path, dest_path)
+
+        logger.info(
+            "Auto-corrected background review skill path for '%s': copied from '%s' to '%s'",
+            skill_name, src_path, dest_path
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to copy/move skill '%s' from '%s' to '%s': %s",
+            skill_name, src_path, dest_path, e, exc_info=True
+        )
 
 
 def summarize_background_review_actions(
     review_messages: List[Dict],
     prior_snapshot: List[Dict],
+    target_skills_dir: Optional[Path] = None,
 ) -> List[str]:
     """Build the human-facing action summary for a background review pass.
 
@@ -249,6 +307,10 @@ def summarize_background_review_actions(
     Matching is by ``tool_call_id`` when available, with a content-equality
     fallback for tool messages that lack one.
     """
+    if target_skills_dir is None:
+        from hermes_constants import get_skills_dir
+        target_skills_dir = get_skills_dir()
+
     existing_tool_call_ids = set()
     existing_tool_contents = set()
     for prior in prior_snapshot or []:
@@ -281,6 +343,29 @@ def summarize_background_review_actions(
             continue
         message = data.get("message", "")
         target = data.get("target", "")
+        skill_match = re.search(r"[Ss]kill '([^']+)'", message)
+        if skill_match:
+            skill_name = skill_match.group(1)
+            try:
+                from tools.skill_manager_tool import _find_skill
+                if not _find_skill(skill_name):
+                    # Attempt auto-correction by copying/moving files
+                    _try_autocorrect_skill_path(skill_name, data, target_skills_dir)
+
+                    # Re-run loadability check after potential auto-correction
+                    if not _find_skill(skill_name):
+                        logger.warning(
+                            "Background review wrote skill '%s' but it is not loadable from the active session's skill search path even after auto-correction (target root: %s). Suppressing user notification.",
+                            skill_name, target_skills_dir
+                        )
+                        continue
+            except Exception as e:
+                logger.warning(
+                    "Error verifying reachability of skill '%s': %s. Suppressing notification.",
+                    skill_name, e
+                )
+                continue
+
         if "created" in message.lower():
             actions.append(message)
         elif "updated" in message.lower():
@@ -592,12 +677,13 @@ def spawn_background_review_thread(
     else:
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
+    import contextvars
+    ctx = contextvars.copy_context()
+
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        ctx.run(_run_review_in_thread, agent, messages_snapshot, prompt)
 
     return _target, prompt
-
-
 __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",

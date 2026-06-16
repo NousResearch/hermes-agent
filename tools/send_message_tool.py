@@ -1439,11 +1439,12 @@ async def _send_email(extra, chat_id, message):
         msg["Date"] = formatdate(localtime=True)
 
         # Port 465 requires implicit TLS (SMTP_SSL); other ports use STARTTLS.
-        if smtp_port == 465:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+        ctx = ssl.create_default_context()
+        if int(smtp_port) == 465:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30, context=ctx)
         else:
             server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
-            server.starttls(context=ssl.create_default_context())
+            server.starttls(context=ctx)
         server.login(address, password)
         server.send_message(msg)
         server.quit()

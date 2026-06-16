@@ -39,6 +39,55 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 logger = logging.getLogger(__name__)
 
 
+def _iteration_limit_closure_message(
+    agent,
+    api_call_count: int,
+    *,
+    summary_error: str | None = None,
+) -> str:
+    """User-facing closure when the budget is exhausted and summary fails."""
+    max_iterations = getattr(agent, "max_iterations", None)
+    if max_iterations:
+        budget_text = f"{api_call_count}/{max_iterations}"
+    else:
+        budget_text = str(api_call_count)
+
+    message = (
+        f"本轮诊断已达到迭代预算上限（{budget_text}），当前轮次已经结束。"
+        "\n\n"
+        "任务未完成或仅部分完成；普通聊天不会自动继续在后台执行。"
+        "\n\n"
+        "你可以选择：\n"
+        "- 发送 `/goal <目标>` 让 Hermes 跨轮持续推进\n"
+        "- 发送 `深诊断：<问题>` 进入更高预算路径\n"
+        "- 缩小问题范围后继续提问"
+    )
+    if summary_error:
+        message += f"\n\n总结生成也失败：{summary_error}"
+    return message
+
+
+def _is_invalid_iteration_summary(text: str) -> bool:
+    """Detect internal prompt fragments that are not useful final replies."""
+    if "[OUT-OF-BAND USER MESSAGE" in (text or ""):
+        return True
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return True
+    if len(text) > 12000:
+        return True
+    invalid_exact = {
+        "if you still need input from the user, ask for it in your final response.",
+    }
+    if normalized in invalid_exact:
+        return True
+    invalid_prefixes = (
+        "you've reached the maximum number of tool-calling iterations allowed",
+        "please provide a final response summarizing what you've found",
+    )
+    return any(normalized.startswith(prefix) for prefix in invalid_prefixes)
+
+
 def _ra():
     """Lazy ``run_agent`` reference.
 
@@ -1507,10 +1556,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if final_response:
             if "<think>" in final_response:
                 final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+            if _is_invalid_iteration_summary(final_response):
+                final_response = _iteration_limit_closure_message(agent, api_call_count)
             if final_response:
                 messages.append({"role": "assistant", "content": final_response})
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = _iteration_limit_closure_message(agent, api_call_count)
         else:
             # Retry summary generation
             if agent.api_mode == "codex_responses":
@@ -1550,16 +1601,22 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if final_response:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                if _is_invalid_iteration_summary(final_response):
+                    final_response = _iteration_limit_closure_message(agent, api_call_count)
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
-                    final_response = "I reached the iteration limit and couldn't generate a summary."
+                    final_response = _iteration_limit_closure_message(agent, api_call_count)
             else:
-                final_response = "I reached the iteration limit and couldn't generate a summary."
+                final_response = _iteration_limit_closure_message(agent, api_call_count)
 
     except Exception as e:
         logger.warning(f"Failed to get summary response: {e}")
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        final_response = _iteration_limit_closure_message(
+            agent,
+            api_call_count,
+            summary_error=str(e),
+        )
 
     return final_response
 

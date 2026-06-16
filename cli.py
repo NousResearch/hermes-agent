@@ -3513,6 +3513,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Safety net: register an atexit handler to end the session in SQLite
+        # when the process exits unexpectedly (e.g. killed by PTY bridge via
+        # SIGHUP/SIGTERM before the main-loop finally block runs).  Idempotent
+        # — end_session() no-ops when the session is already ended.
+        def _atexit_end_session():
+            try:
+                if (
+                    hasattr(self, '_session_db')
+                    and self._session_db
+                    and hasattr(self, 'session_id')
+                    and self.session_id
+                ):
+                    self._session_db.end_session(self.session_id, "atexit")
+            except Exception:
+                pass
+        atexit.register(_atexit_end_session)
         
         # History file for persistent input recall across sessions
         self._history_file = _hermes_home / ".hermes_history"

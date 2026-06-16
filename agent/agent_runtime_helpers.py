@@ -1873,6 +1873,19 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    _cc_base = str(client_kwargs.get("base_url", "") or "")
+    try:
+        from providers import build_custom_client
+        _cc = build_custom_client(
+            base_url=_cc_base, api_key=client_kwargs.get("api_key"), async_mode=False,
+            default_headers=client_kwargs.get("default_headers"),
+            timeout=client_kwargs.get("timeout"), http_client=client_kwargs.get("http_client"),
+        )
+    except Exception:
+        _cc = None
+    if _cc is not None:
+        _ra().logger.info("Custom native client created (%s, shared=%s) %s", reason, shared, agent._client_log_context())
+        return _cc
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

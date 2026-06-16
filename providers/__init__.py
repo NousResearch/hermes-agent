@@ -35,6 +35,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
 
@@ -86,6 +87,29 @@ def list_providers() -> list[ProviderProfile]:
             seen.add(pid)
             result.append(profile)
     return result
+
+
+def build_custom_client(*, base_url: str, api_key: str | None = None,
+                        async_mode: bool = False, **context: Any):
+    """Ask each registered provider profile to supply a custom client for
+    *base_url*; return the first non-None, else None (→ stock OpenAI()).
+
+    Provider-agnostic: profiles that don't own *base_url* return None. This is
+    the generic dispatch the client-construction sites call before falling back
+    to stock construction."""
+    if not _discovered:
+        _discover_providers()
+    for profile in list_providers():
+        try:
+            client = profile.build_client(
+                base_url=base_url, api_key=api_key, async_mode=async_mode, **context
+            )
+        except Exception:
+            logger.debug("build_client(%s) raised", getattr(profile, "name", "?"), exc_info=True)
+            client = None
+        if client is not None:
+            return client
+    return None
 
 
 def _user_plugins_dir() -> Path | None:

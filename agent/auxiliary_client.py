@@ -1625,6 +1625,10 @@ def _maybe_wrap_anthropic(
     # Other specialized adapters we should never re-dispatch.
     if _safe_isinstance(client_obj, CodexAuxiliaryClient):
         return client_obj
+    # `is True` on purpose: a MagicMock (or any auto-attribute object) returns
+    # a truthy stand-in for missing attributes, which must not read as native.
+    if getattr(client_obj, "_hermes_native", False) is True:
+        return client_obj
     try:
         from agent.gemini_native_adapter import GeminiNativeClient
         if _safe_isinstance(client_obj, GeminiNativeClient):
@@ -1963,6 +1967,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             if provider_id == "gemini":
+                from providers import build_custom_client
+                _cc = build_custom_client(base_url=base_url, api_key=api_key, async_mode=False)
+                if _cc is not None:
+                    return _cc, model
                 from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
                 if is_native_gemini_base_url(base_url):
@@ -2003,6 +2011,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         if provider_id == "gemini":
+            from providers import build_custom_client
+            _cc = build_custom_client(base_url=base_url, api_key=api_key, async_mode=False)
+            if _cc is not None:
+                return _cc, model
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):
@@ -4593,6 +4605,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
+    if getattr(sync_client, "_hermes_native", False) is True and hasattr(sync_client, "as_async_client"):
+        return sync_client.as_async_client(), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -5189,6 +5203,11 @@ def resolve_provider_client(
         default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
 
+        from providers import build_custom_client
+        _cc = build_custom_client(base_url=base_url, api_key=api_key, async_mode=async_mode)
+        if _cc is not None:
+            logger.debug("resolve_provider_client(custom native): %s", final_model)
+            return _cc, final_model
         if provider == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

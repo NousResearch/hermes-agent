@@ -3,7 +3,11 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.system_prompt import build_system_prompt_parts
+from agent.system_prompt import (
+    build_system_prompt,
+    build_system_prompt_parts,
+    restore_system_prompt_cache_parts,
+)
 
 
 def _make_agent(**overrides):
@@ -96,3 +100,63 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestSystemPromptCacheParts:
+    def test_build_records_cacheable_prefix_and_volatile_tail(self):
+        agent = _make_agent()
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value="Context file text"),
+        ):
+            prompt = build_system_prompt(agent, system_message="Custom instruction")
+
+        assert agent._cached_system_prompt_cacheable
+        assert "Custom instruction" in agent._cached_system_prompt_cacheable
+        assert "Context file text" in agent._cached_system_prompt_cacheable
+        assert "Conversation started:" not in agent._cached_system_prompt_cacheable
+        assert "Conversation started:" in agent._cached_system_prompt_volatile
+        assert prompt == "\n\n".join(
+            p
+            for p in (
+                agent._cached_system_prompt_cacheable,
+                agent._cached_system_prompt_volatile,
+            )
+            if p
+        )
+
+    def test_restore_recovers_split_from_stored_prompt_without_changing_prompt(self):
+        agent = _make_agent()
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value="Context file text"),
+        ):
+            stored = build_system_prompt(agent, system_message="Custom instruction")
+
+        restored = _make_agent()
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value="Context file text"),
+        ):
+            ok = restore_system_prompt_cache_parts(
+                restored,
+                stored,
+                system_message="Custom instruction",
+            )
+
+        assert ok is True
+        assert restored._cached_system_prompt_cacheable
+        assert stored == "\n\n".join(
+            p
+            for p in (
+                restored._cached_system_prompt_cacheable,
+                restored._cached_system_prompt_volatile,
+            )
+            if p
+        )

@@ -5442,6 +5442,22 @@ class TestBuildApiKwargsAnthropicMaxTokens:
             else:
                 assert call_args[0][3] is None
 
+    def test_native_prompt_cache_marks_tool_schema_without_mutating_agent_tools(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.max_tokens = 4096
+        agent.reasoning_config = None
+        agent._use_prompt_caching = True
+        agent._use_native_cache_layout = True
+        agent._cache_ttl = "1h"
+
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build:
+            mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": []}
+            agent._build_api_kwargs([{"role": "user", "content": "test"}])
+
+        sent_tools = mock_build.call_args.kwargs["tools"]
+        assert "cache_control" not in agent.tools[-1]
+        assert sent_tools[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
 
 class TestAnthropicImageFallback:
     def test_build_api_kwargs_converts_multimodal_user_image_to_text(self, agent):

@@ -33,6 +33,7 @@ from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
+from agent.prompt_caching import apply_anthropic_tool_cache_control
 from tools.terminal_tool import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_int
 
@@ -559,6 +560,15 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
+        if (
+            getattr(agent, "_use_prompt_caching", False)
+            and getattr(agent, "_use_native_cache_layout", False)
+            and tools_for_api
+        ):
+            tools_for_api = apply_anthropic_tool_cache_control(
+                tools_for_api,
+                cache_ttl=getattr(agent, "_cache_ttl", "5m"),
+            )
         ctx_len = getattr(agent, "context_compressor", None)
         ctx_len = ctx_len.context_length if ctx_len else None
         ephemeral_out = getattr(agent, "_ephemeral_max_output_tokens", None)

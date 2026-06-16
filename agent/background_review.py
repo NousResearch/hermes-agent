@@ -440,6 +440,12 @@ def _run_review_in_thread(
             # measured impact (~26% end-to-end cost reduction on
             # Sonnet 4.5).
             review_agent._cached_system_prompt = agent._cached_system_prompt
+            review_agent._cached_system_prompt_cacheable = getattr(
+                agent, "_cached_system_prompt_cacheable", None
+            )
+            review_agent._cached_system_prompt_volatile = getattr(
+                agent, "_cached_system_prompt_volatile", None
+            )
             # Defensive: pin session_start + session_id to the
             # parent's so any code path that re-renders parts of
             # the system prompt (compression, plugin hooks) still

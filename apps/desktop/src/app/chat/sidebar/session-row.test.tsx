@@ -380,8 +380,13 @@ describe('SidebarSessionRow gestures', () => {
   it('lets pointer-dnd own reorderable rows instead of native HTML5 drag', () => {
     const onSessionDragEnd = vi.fn()
     const onSessionDragStart = vi.fn()
+    const onPointerDown = vi.fn()
 
     const { container, rowButton } = renderRow({
+      dragHandleProps: {
+        'aria-label': 'Reorder session',
+        onPointerDown
+      },
       isPinned: true,
       onSessionDragEnd,
       onSessionDragStart,
@@ -393,12 +398,16 @@ describe('SidebarSessionRow gestures', () => {
     const transfer = fakeTransfer()
 
     expect(container.querySelector('[data-reorder-handle]')).toBeNull()
+    expect(dragAnchor.getAttribute('aria-label')).toBe('Reorder session')
     expect(dragAnchor.dataset.sessionDragSource).toBeUndefined()
     expect(dragAnchor.draggable).toBe(false)
     expect(dragAnchor.className).toContain('[-webkit-app-region:no-drag]')
     expect(dragSource.dataset.sessionDragSource).toBeUndefined()
     expect(dragSource.draggable).toBe(false)
     expect(rowButton.draggable).toBe(false)
+
+    fireEvent.pointerDown(dragAnchor)
+    expect(onPointerDown).toHaveBeenCalledTimes(1)
 
     fireEvent.dragStart(dragAnchor, { dataTransfer: transfer })
     fireEvent.dragEnd(dragAnchor)

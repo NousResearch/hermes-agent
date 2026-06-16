@@ -774,11 +774,18 @@ def get_active_skin() -> SkinConfig:
     return _active_skin
 
 
-def set_active_skin(name: str) -> SkinConfig:
-    """Switch the active skin. Returns the new SkinConfig."""
+def set_active_skin(name) -> SkinConfig:
+    """Switch the active skin. Returns the new SkinConfig.
+
+    Accepts either a skin name (str) or an already-loaded SkinConfig.
+    """
     global _active_skin, _active_skin_name
-    _active_skin_name = name
-    _active_skin = load_skin(name)
+    if isinstance(name, SkinConfig):
+        _active_skin = name
+        _active_skin_name = name.name
+    else:
+        _active_skin_name = str(name)
+        _active_skin = load_skin(str(name))
     return _active_skin
 
 
@@ -852,7 +859,15 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     try:
         skin = get_active_skin()
     except Exception:
-        return {}
+        # If the active skin is broken, try to reload from config
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            display = cfg.get("display") or {}
+            skin_name = display.get("skin", "default") if isinstance(display, dict) else "default"
+            skin = set_active_skin(skin_name)
+        except Exception:
+            return {}
 
     # Input/prompt: leave unset by default so the typed text inherits
     # the terminal's foreground color (readable in both light and dark

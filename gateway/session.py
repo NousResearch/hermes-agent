@@ -746,6 +746,17 @@ class SessionStore:
                         except (ValueError, KeyError):
                             # Skip entries with unknown/removed platform values
                             continue
+                        except TypeError:
+                            # entry_data is not a dict (e.g. a JSON bool from a
+                            # corrupted or schema-migrated sessions.json).  Skip
+                            # rather than aborting the entire load.
+                            logger.warning(
+                                "sessions.json: skipping malformed entry for key %r "
+                                "(expected dict, got %s)",
+                                key,
+                                type(entry_data).__name__,
+                            )
+                            continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 

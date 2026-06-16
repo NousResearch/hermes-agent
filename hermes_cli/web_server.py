@@ -5191,7 +5191,7 @@ def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, 
 
 
 @app.get("/api/providers/oauth")
-async def list_oauth_providers():
+async def list_oauth_providers(profile: Optional[str] = None):
     """Enumerate every OAuth-capable LLM provider with current status.
 
     Response shape (per provider):
@@ -5208,83 +5208,89 @@ async def list_oauth_providers():
           expires_at       ISO timestamp string or null
           has_refresh_token bool
     """
-    providers = []
-    for p in _OAUTH_PROVIDER_CATALOG:
-        status = _resolve_provider_status(p["id"], p.get("status_fn"))
-        disconnect_hint = _oauth_provider_disconnect_hint(p, status)
-        providers.append({
-            "id": p["id"],
-            "name": p["name"],
-            "flow": p["flow"],
-            "cli_command": p["cli_command"],
-            "docs_url": p["docs_url"],
-            "disconnect_hint": disconnect_hint,
-            "disconnectable": disconnect_hint is None,
-            "status": status,
-        })
-    return {"providers": providers}
+    with _profile_scope(profile):
+        providers = []
+        for p in _OAUTH_PROVIDER_CATALOG:
+            status = _resolve_provider_status(p["id"], p.get("status_fn"))
+            disconnect_hint = _oauth_provider_disconnect_hint(p, status)
+            providers.append({
+                "id": p["id"],
+                "name": p["name"],
+                "flow": p["flow"],
+                "cli_command": p["cli_command"],
+                "docs_url": p["docs_url"],
+                "disconnect_hint": disconnect_hint,
+                "disconnectable": disconnect_hint is None,
+                "status": status,
+            })
+        return {"providers": providers}
 
 
 @app.delete("/api/providers/oauth/{provider_id}")
-async def disconnect_oauth_provider(provider_id: str, request: Request):
+async def disconnect_oauth_provider(
+    provider_id: str,
+    request: Request,
+    profile: Optional[str] = None,
+):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
     _require_token(request)
 
-    catalog_by_id = {p["id"]: p for p in _OAUTH_PROVIDER_CATALOG}
-    provider = catalog_by_id.get(provider_id)
-    if provider is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown provider: {provider_id}. "
-                   f"Available: {', '.join(sorted(catalog_by_id))}",
-        )
+    with _profile_scope(profile):
+        catalog_by_id = {p["id"]: p for p in _OAUTH_PROVIDER_CATALOG}
+        provider = catalog_by_id.get(provider_id)
+        if provider is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown provider: {provider_id}. "
+                       f"Available: {', '.join(sorted(catalog_by_id))}",
+            )
 
-    disconnect_hint = _oauth_provider_disconnect_hint(provider, {})
-    if disconnect_hint:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
-        )
+        disconnect_hint = _oauth_provider_disconnect_hint(provider, {})
+        if disconnect_hint:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
+            )
 
-    status = _resolve_provider_status(provider_id, provider.get("status_fn"))
-    disconnect_hint = _oauth_provider_disconnect_hint(provider, status)
-    if disconnect_hint:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
-        )
+        status = _resolve_provider_status(provider_id, provider.get("status_fn"))
+        disconnect_hint = _oauth_provider_disconnect_hint(provider, status)
+        if disconnect_hint:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{provider['name']} cannot be disconnected automatically. {disconnect_hint}",
+            )
 
-    # Anthropic clears only the Hermes-managed PKCE file and auth-store entry.
-    # The separate claude-code catalog row is external/read-only and rejected
-    # above so we never pretend to remove ~/.claude/* credentials owned by the CLI.
-    if provider_id == "anthropic":
-        cleared = False
+        # Anthropic clears only the Hermes-managed PKCE file and auth-store entry.
+        # The separate claude-code catalog row is external/read-only and rejected
+        # above so we never pretend to remove ~/.claude/* credentials owned by the CLI.
+        if provider_id == "anthropic":
+            cleared = False
+            try:
+                from agent.anthropic_adapter import _HERMES_OAUTH_FILE
+                if _HERMES_OAUTH_FILE.exists():
+                    _HERMES_OAUTH_FILE.unlink()
+                    cleared = True
+            except Exception:
+                pass
+            # Also clear the credential pool entry if present.
+            try:
+                from hermes_cli.auth import clear_provider_auth
+                cleared = clear_provider_auth("anthropic") or cleared
+            except Exception:
+                pass
+            _log.info("oauth/disconnect: %s", provider_id)
+            return {"ok": bool(cleared), "provider": provider_id}
+
         try:
-            from agent.anthropic_adapter import _HERMES_OAUTH_FILE
-            if _HERMES_OAUTH_FILE.exists():
-                _HERMES_OAUTH_FILE.unlink()
-                cleared = True
-        except Exception:
-            pass
-        # Also clear the credential pool entry if present.
-        try:
-            from hermes_cli.auth import clear_provider_auth
-            cleared = clear_provider_auth("anthropic") or cleared
-        except Exception:
-            pass
-        _log.info("oauth/disconnect: %s", provider_id)
-        return {"ok": bool(cleared), "provider": provider_id}
-
-    try:
-        from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
-        cleared = clear_provider_auth(provider_id)
-        if provider_id == "nous":
-            invalidate_nous_auth_status_cache()
-        _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
-        return {"ok": bool(cleared), "provider": provider_id}
-    except Exception as e:
-        _log.exception("disconnect %s failed", provider_id)
-        raise HTTPException(status_code=500, detail=str(e))
+            from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
+            cleared = clear_provider_auth(provider_id)
+            if provider_id == "nous":
+                invalidate_nous_auth_status_cache()
+            _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
+            return {"ok": bool(cleared), "provider": provider_id}
+        except Exception as e:
+            _log.exception("disconnect %s failed", provider_id)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -5366,13 +5372,32 @@ def _gc_oauth_sessions() -> None:
             _oauth_sessions.pop(sid, None)
 
 
-def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, Dict[str, Any]]:
+def _oauth_profile_name(profile: Optional[str]) -> Optional[str]:
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return None
+    return requested
+
+
+def _validate_oauth_profile(profile: Optional[str]) -> None:
+    profile_name = _oauth_profile_name(profile)
+    if profile_name:
+        _resolve_profile_dir(profile_name)
+
+
+def _new_oauth_session(
+    provider_id: str,
+    flow: str,
+    profile: Optional[str] = None,
+) -> tuple[str, Dict[str, Any]]:
     """Create + register a new OAuth session, return (session_id, session_dict)."""
     sid = secrets.token_urlsafe(16)
+    profile_name = _oauth_profile_name(profile)
     sess = {
         "session_id": sid,
         "provider": provider_id,
         "flow": flow,
+        "profile": profile_name,
         "created_at": time.time(),
         "status": "pending",  # pending | approved | denied | expired | error
         "error_message": None,
@@ -5380,6 +5405,17 @@ def _new_oauth_session(provider_id: str, flow: str) -> tuple[str, Dict[str, Any]
     with _oauth_sessions_lock:
         _oauth_sessions[sid] = sess
     return sid, sess
+
+
+def _oauth_session_profile(
+    session_id: str,
+    fallback: Optional[str] = None,
+) -> Optional[str]:
+    """Return the profile that owns an OAuth session, if one was provided."""
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+        profile = sess.get("profile") if sess else None
+    return profile or _oauth_profile_name(fallback)
 
 
 def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
@@ -5449,12 +5485,12 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
         _log.warning("anthropic pool add (dashboard) failed: %s", e)
 
 
-def _start_anthropic_pkce() -> Dict[str, Any]:
+def _start_anthropic_pkce(profile: Optional[str] = None) -> Dict[str, Any]:
     """Begin PKCE flow. Returns the auth URL the UI should open."""
     if not _ANTHROPIC_OAUTH_AVAILABLE:
         raise HTTPException(status_code=501, detail="Anthropic OAuth not available (missing adapter)")
     verifier, challenge = _generate_pkce_pair()
-    sid, sess = _new_oauth_session("anthropic", "pkce")
+    sid, sess = _new_oauth_session("anthropic", "pkce", profile=profile)
     sess["verifier"] = verifier
     sess["state"] = verifier  # Anthropic round-trips verifier as state
     params = {
@@ -5476,7 +5512,11 @@ def _start_anthropic_pkce() -> Dict[str, Any]:
     }
 
 
-def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
+def _submit_anthropic_pkce(
+    session_id: str,
+    code_input: str,
+    profile: Optional[str] = None,
+) -> Dict[str, Any]:
     """Exchange authorization code for tokens. Persists on success."""
     with _oauth_sessions_lock:
         sess = _oauth_sessions.get(session_id)
@@ -5530,7 +5570,8 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
 
     expires_at_ms = int(time.time() * 1000) + (expires_in * 1000)
     try:
-        _save_anthropic_oauth_creds(access_token, refresh_token, expires_at_ms)
+        with _profile_scope(_oauth_session_profile(session_id, profile)):
+            _save_anthropic_oauth_creds(access_token, refresh_token, expires_at_ms)
     except Exception as e:
         with _oauth_sessions_lock:
             sess["status"] = "error"
@@ -5542,7 +5583,10 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
     return {"ok": True, "status": "approved"}
 
 
-async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
+async def _start_device_code_flow(
+    provider_id: str,
+    profile: Optional[str] = None,
+) -> Dict[str, Any]:
     """Initiate a device-code flow (Nous, OpenAI Codex, or MiniMax).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
@@ -5582,7 +5626,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         device_data, effective_scope = await asyncio.get_running_loop().run_in_executor(
             None, _do_nous_device_request
         )
-        sid, sess = _new_oauth_session("nous", "device_code")
+        sid, sess = _new_oauth_session("nous", "device_code", profile=profile)
         sess["device_code"] = str(device_data["device_code"])
         sess["interval"] = int(device_data["interval"])
         sess["expires_at"] = time.time() + int(device_data["expires_in"])
@@ -5603,7 +5647,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 
     if provider_id == "openai-codex":
         # Codex uses fixed OpenAI device-auth endpoints; reuse the helper.
-        sid, _ = _new_oauth_session("openai-codex", "device_code")
+        sid, _ = _new_oauth_session("openai-codex", "device_code", profile=profile)
         # Use the helper but in a thread because it polls inline.
         # We can't extract just the start step without refactoring auth.py,
         # so we run the full helper in a worker and proxy the user_code +
@@ -5670,7 +5714,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
         device_data = await asyncio.get_event_loop().run_in_executor(
             None, _do_minimax_request
         )
-        sid, sess = _new_oauth_session("minimax-oauth", "device_code")
+        sid, sess = _new_oauth_session("minimax-oauth", "device_code", profile=profile)
         # The CLI flow names this `interval_ms` because MiniMax's
         # `interval` field is in milliseconds (defensive default 2000ms
         # in _minimax_poll_token).
@@ -5724,7 +5768,7 @@ async def _start_device_code_flow(provider_id: str) -> Dict[str, Any]:
 _XAI_LOOPBACK_TIMEOUT_SECONDS = 300.0
 
 
-def _start_xai_loopback_flow() -> Dict[str, Any]:
+def _start_xai_loopback_flow(profile: Optional[str] = None) -> Dict[str, Any]:
     """Begin the xAI loopback PKCE flow.
 
     Binds the local callback server, builds the authorize URL, and spawns a
@@ -5763,7 +5807,7 @@ def _start_xai_loopback_flow() -> Dict[str, Any]:
             pass
         raise
 
-    sid, sess = _new_oauth_session("xai-oauth", "loopback")
+    sid, sess = _new_oauth_session("xai-oauth", "loopback", profile=profile)
     sess["server"] = server
     sess["thread"] = thread
     sess["callback_result"] = callback_result
@@ -5866,13 +5910,14 @@ def _xai_loopback_worker(session_id: str) -> None:
         }
         if _cancelled():
             return
-        hauth._save_xai_oauth_tokens(
-            tokens,
-            discovery=sess.get("discovery"),
-            redirect_uri=sess["redirect_uri"],
-            last_refresh=last_refresh,
-        )
-        _add_xai_oauth_pool_entry(access_token, refresh_token, base_url, last_refresh)
+        with _profile_scope(_oauth_session_profile(session_id)):
+            hauth._save_xai_oauth_tokens(
+                tokens,
+                discovery=sess.get("discovery"),
+                redirect_uri=sess["redirect_uri"],
+                last_refresh=last_refresh,
+            )
+            _add_xai_oauth_pool_entry(access_token, refresh_token, base_url, last_refresh)
     except Exception as exc:
         _fail(f"xAI token exchange failed: {exc}")
         return
@@ -5975,13 +6020,14 @@ def _nous_poller(session_id: str) -> None:
             ),
             "expires_in": token_ttl,
         }
-        full_state = refresh_nous_oauth_from_state(
-            auth_state,
-            timeout_seconds=15.0,
-            force_refresh=False,
-        )
-        from hermes_cli.auth import persist_nous_credentials
-        persist_nous_credentials(full_state)
+        with _profile_scope(_oauth_session_profile(session_id)):
+            full_state = refresh_nous_oauth_from_state(
+                auth_state,
+                timeout_seconds=15.0,
+                force_refresh=False,
+            )
+            from hermes_cli.auth import persist_nous_credentials
+            persist_nous_credentials(full_state)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: nous login completed (session=%s)", session_id)
@@ -6064,7 +6110,8 @@ def _minimax_poller(session_id: str) -> None:
             ).isoformat(),
             "expires_in": expires_in_s,
         }
-        _minimax_save_auth_state(auth_state)
+        with _profile_scope(_oauth_session_profile(session_id)):
+            _minimax_save_auth_state(auth_state)
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: minimax login completed (session=%s)", session_id)
@@ -6177,10 +6224,11 @@ def _codex_full_login_worker(session_id: str) -> None:
 
         from hermes_cli.auth import _save_codex_tokens
 
-        _save_codex_tokens({
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-        })
+        with _profile_scope(_oauth_session_profile(session_id)):
+            _save_codex_tokens({
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+            })
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
@@ -6194,10 +6242,15 @@ def _codex_full_login_worker(session_id: str) -> None:
 
 
 @app.post("/api/providers/oauth/{provider_id}/start")
-async def start_oauth_login(provider_id: str, request: Request):
+async def start_oauth_login(
+    provider_id: str,
+    request: Request,
+    profile: Optional[str] = None,
+):
     """Initiate an OAuth login flow. Token-protected."""
     _require_token(request)
     _gc_oauth_sessions()
+    _validate_oauth_profile(profile)
     valid = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown provider {provider_id}")
@@ -6215,12 +6268,12 @@ async def start_oauth_login(provider_id: str, request: Request):
         # change for MiniMax). New PKCE providers must add their own
         # start function and an explicit branch here.
         if catalog_entry["flow"] == "pkce" and provider_id == "anthropic":
-            return _start_anthropic_pkce()
+            return _start_anthropic_pkce(profile=profile)
         if catalog_entry["flow"] == "device_code":
-            return await _start_device_code_flow(provider_id)
+            return await _start_device_code_flow(provider_id, profile=profile)
         if catalog_entry["flow"] == "loopback" and provider_id == "xai-oauth":
             return await asyncio.get_running_loop().run_in_executor(
-                None, _start_xai_loopback_flow
+                None, _start_xai_loopback_flow, profile,
             )
     except HTTPException:
         raise
@@ -6236,18 +6289,27 @@ class OAuthSubmitBody(BaseModel):
 
 
 @app.post("/api/providers/oauth/{provider_id}/submit")
-async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Request):
+async def submit_oauth_code(
+    provider_id: str,
+    body: OAuthSubmitBody,
+    request: Request,
+    profile: Optional[str] = None,
+):
     """Submit the auth code for PKCE flows. Token-protected."""
     _require_token(request)
     if provider_id == "anthropic":
         return await asyncio.get_running_loop().run_in_executor(
-            None, _submit_anthropic_pkce, body.session_id, body.code,
+            None, _submit_anthropic_pkce, body.session_id, body.code, profile,
         )
     raise HTTPException(status_code=400, detail=f"submit not supported for {provider_id}")
 
 
 @app.get("/api/providers/oauth/{provider_id}/poll/{session_id}")
-async def poll_oauth_session(provider_id: str, session_id: str):
+async def poll_oauth_session(
+    provider_id: str,
+    session_id: str,
+    profile: Optional[str] = None,
+):
     """Poll a session's status (no auth — read-only state).
 
     Shared by the device-code flows (Nous, OpenAI Codex, MiniMax) and the
@@ -6270,7 +6332,11 @@ async def poll_oauth_session(provider_id: str, session_id: str):
 
 
 @app.delete("/api/providers/oauth/sessions/{session_id}")
-async def cancel_oauth_session(session_id: str, request: Request):
+async def cancel_oauth_session(
+    session_id: str,
+    request: Request,
+    profile: Optional[str] = None,
+):
     """Cancel a pending OAuth session. Token-protected."""
     _require_token(request)
     with _oauth_sessions_lock:

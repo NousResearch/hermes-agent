@@ -5763,18 +5763,24 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 # subscription-feature checks) call it many times per render — `hermes tools` → "All Platforms"
 # was firing the refresh ~31× during one menu paint, racking up >13s of HTTP and burning
 # single-use refresh tokens. Cache the snapshot for a few seconds, keyed on the auth.json
-# mtime so that `hermes auth login/logout/add/remove` invalidate naturally on the next call.
+# path + mtime so that profile switches do not share a process memo and
+# `hermes auth login/logout/add/remove` invalidate naturally on the next call.
 _NOUS_AUTH_STATUS_CACHE_TTL = 15.0  # seconds
-_nous_auth_status_cache: Optional[Tuple[float, Optional[float], Dict[str, Any]]] = None
+_nous_auth_status_cache: Optional[Tuple[float, str, Optional[float], Dict[str, Any]]] = None
 
 
-def _auth_file_mtime() -> Optional[float]:
+def _auth_file_cache_key() -> Tuple[str, Optional[float]]:
+    auth_file = _auth_file_path()
     try:
-        return _auth_file_path().stat().st_mtime
-    except FileNotFoundError:
-        return None
+        auth_file_key = str(auth_file.resolve(strict=False))
     except Exception:
-        return None
+        auth_file_key = str(auth_file)
+    try:
+        return auth_file_key, auth_file.stat().st_mtime
+    except FileNotFoundError:
+        return auth_file_key, None
+    except Exception:
+        return auth_file_key, None
 
 
 def invalidate_nous_auth_status_cache() -> None:
@@ -5806,18 +5812,19 @@ def get_nous_auth_status() -> Dict[str, Any]:
     """
     global _nous_auth_status_cache
     now = time.monotonic()
-    mtime = _auth_file_mtime()
+    auth_file_key, mtime = _auth_file_cache_key()
     cached = _nous_auth_status_cache
     if cached is not None:
-        cached_at, cached_mtime, cached_status = cached
+        cached_at, cached_auth_file_key, cached_mtime, cached_status = cached
         if (
-            cached_mtime == mtime
+            cached_auth_file_key == auth_file_key
+            and cached_mtime == mtime
             and (now - cached_at) < _NOUS_AUTH_STATUS_CACHE_TTL
         ):
             return dict(cached_status)
 
     status = _compute_nous_auth_status()
-    _nous_auth_status_cache = (now, mtime, dict(status))
+    _nous_auth_status_cache = (now, auth_file_key, mtime, dict(status))
     return status
 
 

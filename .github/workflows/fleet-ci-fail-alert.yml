@@ -1,0 +1,76 @@
+# Fleet-added (Apollo). NOT upstream — do not expect on NousResearch/hermes-agent.
+# Fires a single LOUD ping to the fleet #alerts channel ONLY when a real CI
+# workflow concludes in failure. The failure-filter lives HERE (`if: failure`)
+# because the Hermes webhook adapter filters by event TYPE only, not payload
+# conclusion — a deliver_only route on raw check_suite/status would also fire on
+# SUCCESS and re-create the flood this replaces. Zero-LLM: the receiver route is
+# deliver_only, so this is a pure notification, never an agent run.
+name: Fleet CI-fail alert
+
+on:
+  workflow_run:
+    workflows:
+      - "Tests"
+      - "Lint (ruff + ty)"
+      - "Fleet SAST (semgrep)"
+      - "Fleet Secret Scan (gitleaks)"
+      - "OSV-Scanner"
+      - "Supply Chain Audit"
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  notify-on-failure:
+    name: notify-on-failure
+    runs-on: ubuntu-latest
+    # Only on a genuine failure of the upstream workflow. Success/cancelled/skipped → no-op.
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Sign and POST CI-failure event
+        env:
+          CI_FAIL_WEBHOOK_SECRET: ${{ secrets.CI_FAIL_WEBHOOK_SECRET }}
+          WEBHOOK_URL: https://hooks.angventures.io/webhooks/ci-fail
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          WF_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WF_SHA: ${{ github.event.workflow_run.head_sha }}
+          WF_URL: ${{ github.event.workflow_run.html_url }}
+          WF_ACTOR: ${{ github.event.workflow_run.actor.login }}
+          REPO: ${{ github.repository }}
+          WF_EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CI_FAIL_WEBHOOK_SECRET:-}" ]; then
+            echo "::error::CI_FAIL_WEBHOOK_SECRET is not set; cannot sign the alert." >&2
+            exit 1
+          fi
+          # Build the JSON body. event_type=ci_failure is what the receiver route
+          # filters on (X-GitHub-Event header is also set to the same value).
+          BODY="$(jq -nc \
+            --arg event_type "ci_failure" \
+            --arg repo "$REPO" \
+            --arg workflow "$WF_NAME" \
+            --arg branch "$WF_BRANCH" \
+            --arg sha "$WF_SHA" \
+            --arg run_url "$WF_URL" \
+            --arg actor "$WF_ACTOR" \
+            --arg trigger "$WF_EVENT" \
+            '{event_type:$event_type, repo:$repo, workflow:$workflow, branch:$branch, sha:$sha, run_url:$run_url, actor:$actor, trigger:$trigger}')"
+          # Generic HMAC-SHA256 hex over the raw body → X-Webhook-Signature.
+          SIG="$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$CI_FAIL_WEBHOOK_SECRET" | sed 's/^.* //')"
+          CODE="$(curl -sS -o /tmp/resp.txt -w '%{http_code}' \
+            -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: ci_failure" \
+            -H "X-GitHub-Delivery: ci-fail-${WF_SHA}-${GITHUB_RUN_ID}" \
+            -H "X-Webhook-Signature: ${SIG}" \
+            --data "$BODY")"
+          echo "Receiver responded HTTP $CODE"
+          cat /tmp/resp.txt || true
+          # 2xx = delivered/accepted. Non-2xx fails the step so the miss is visible.
+          case "$CODE" in
+            2*) echo "CI-failure alert delivered." ;;
+            *) echo "::error::CI-fail alert POST returned HTTP $CODE" >&2; exit 1 ;;
+          esac

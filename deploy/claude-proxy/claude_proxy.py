@@ -741,20 +741,53 @@ def _classify_by_keywords(prompt: str) -> str:
     return "sonnet"
 
 
-def build_prompt(messages: list) -> tuple[str, str]:
-    """Extract system prompt and build conversation text from OpenAI-format messages."""
+def _extract_data_url_image(part: dict) -> dict | None:
+    """Parse an OpenAI ``image_url`` content part into a base64 image dict.
+
+    Returns ``{"data": <base64>, "media_type": <mime>}`` for ``data:`` URLs, or
+    ``None`` for remote URLs (the sandboxed CLI has no network to fetch them)
+    and malformed parts."""
+    url = (part.get("image_url") or {}).get("url", "")
+    if not url.startswith("data:"):
+        return None  # remote images unsupported in the sandboxed path
+    try:
+        header, b64data = url.split(",", 1)
+    except ValueError:
+        return None
+    media_type = "image/jpeg"
+    if ":" in header and ";" in header:
+        media_type = header.split(":", 1)[1].split(";", 1)[0] or media_type
+    if not b64data:
+        return None
+    return {"data": b64data, "media_type": media_type}
+
+
+def build_prompt(messages: list) -> tuple[str, str, list]:
+    """Extract system prompt and build conversation text from OpenAI-format messages.
+
+    Returns ``(system, prompt, images)`` where ``images`` is a list of
+    ``{"data": <base64>, "media_type": <mime>}`` dicts pulled from any
+    multimodal ``image_url`` parts (data: URLs only)."""
     system = ""
     conversation = []
-    
+    images = []
+
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
-        
+
         if isinstance(content, list):
-            # Multimodal — extract text parts
-            text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
+            # Multimodal — extract text parts and any inline images
+            text_parts = []
+            for p in content:
+                if p.get("type") == "text":
+                    text_parts.append(p.get("text", ""))
+                elif p.get("type") == "image_url":
+                    img = _extract_data_url_image(p)
+                    if img is not None:
+                        images.append(img)
             content = "\n".join(text_parts)
-        
+
         if role == "system":
             system = content
         elif role == "user":
@@ -774,13 +807,39 @@ def build_prompt(messages: list) -> tuple[str, str]:
             conversation.append(f"[Tool result from {tool_name}: {str(content)[:500]}]")
     
     prompt = "\n\n".join(conversation)
-    return system, prompt
+    return system, prompt, images
 
 
-def _run_claude_once(cmd: list, prompt: str, env: dict, timeout: int = 300) -> dict:
+def build_stream_json_input(system_prompt: str, prompt: str, images: list) -> str:
+    """Build ``--input-format stream-json`` stdin for a vision request.
+
+    Emits JSON-lines: an optional system-as-user primer line, then one user
+    message whose ``content`` interleaves the text prompt with base64 image
+    blocks. (System is passed via ``--system-prompt`` on the CLI; the primer
+    line is only used when a backend cannot take a separate system flag.)"""
+    content = []
+    if prompt:
+        content.append({"type": "text", "text": prompt})
+    for img in images:
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": img["media_type"],
+                "data": img["data"],
+            },
+        })
+    message = {"type": "user", "message": {"role": "user", "content": content}}
+    return json.dumps(message) + "\n"
+
+
+def _run_claude_once(cmd: list, prompt: str, env: dict, timeout: int = 300,
+                     stream_mode: bool = False) -> dict:
     """Spawn ``claude -p`` once and return the parsed JSON result dict, or a
     proxy error dict (``{"error": True, ...}``) on no-output / parse-fail /
-    timeout / exception.  ``timeout`` is the per-call hang watchdog."""
+    timeout / exception.  ``timeout`` is the per-call hang watchdog.  When
+    ``stream_mode`` is True the output is stream-json (one JSON object per
+    line) and we return the last ``{"type": "result", ...}`` object."""
     try:
         proc = subprocess.run(
             cmd,
@@ -804,24 +863,50 @@ def _run_claude_once(cmd: list, prompt: str, env: dict, timeout: int = 300) -> d
                 "code": proc.returncode,
             }
 
-        # Parse JSON — might be multiple lines, take the last valid JSON
-        result = None
-        for line in reversed(stdout.splitlines()):
-            line = line.strip()
-            if line.startswith("{"):
+        # Parse output — mode-dependent
+        if stream_mode:
+            # Stream-json output: one JSON object per line. Find the last
+            # line with {"type":"result",...} — this is Claude's final answer.
+            result = None
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line.startswith("{"):
+                    continue
                 try:
-                    result = json.loads(line)
-                    break
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if obj.get("type") == "result":
+                    result = obj
+            if result is None:
+                print(f"[proxy] Claude STREAM_PARSE_FAIL (no result object). "
+                      f"returncode={proc.returncode} lines={len(stdout.splitlines())} "
+                      f"stderr={stderr[:200]}", flush=True)
+                return {
+                    "error": True,
+                    "message": f"Stream-json output missing result object. Stderr: {stderr[:500]}",
+                    "code": proc.returncode,
+                }
+        else:
+            # Text mode: might be multiple lines, take the last valid JSON
+            result = None
+            for line in reversed(stdout.splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        result = json.loads(line)
+                        break
+                    except json.JSONDecodeError:
+                        continue
 
-        if result is None:
-            print(f"[proxy] Claude PARSE FAIL. returncode={proc.returncode} stdout_preview={stdout[:200]} stderr={stderr[:200]}", flush=True)
-            return {
-                "error": True,
-                "message": f"Failed to parse Claude output: {stdout[:500]}",
-                "code": proc.returncode,
-            }
+            if result is None:
+                print(f"[proxy] Claude PARSE FAIL. returncode={proc.returncode} "
+                      f"stdout_preview={stdout[:200]} stderr={stderr[:200]}", flush=True)
+                return {
+                    "error": True,
+                    "message": f"Failed to parse Claude output: {stdout[:500]}",
+                    "code": proc.returncode,
+                }
 
         return result
 
@@ -846,7 +931,7 @@ def _log_claude_call(meta: dict) -> None:
 
 # ── Pluggable generation backends ──
 #
-# A backend's ``complete(system, prompt, tier, tenant) -> result_dict`` returns
+# A backend's ``complete(system, prompt, tier, tenant, images=None) -> result_dict`` returns
 # the SAME claude -p-shaped dict the rest of the pipeline consumes
 # (``result``/``is_error``/``subtype``/``usage``/...), so cache, negative cache,
 # breaker, _is_bad_result and claude_to_openai all keep working unchanged.
@@ -858,7 +943,8 @@ class ClaudeCliBackend:
 
     name = "cli"
 
-    def complete(self, system: str, prompt: str, tier: str, tenant: str) -> dict:
+    def complete(self, system: str, prompt: str, tier: str, tenant: str,
+                 images: list = None) -> dict:
         model_flag = []
         if "opus" in tier:
             model_flag = ["--model", "opus"]
@@ -866,20 +952,37 @@ class ClaudeCliBackend:
             model_flag = ["--model", "haiku"]
         # sonnet: no flag needed (default)
 
-        cmd = [
-            CLAUDE_BIN,
-            "-p",
-            "--output-format", "json",
-            "--no-session-persistence",
-            *_sandbox_flags(),
-        ]
+        images = images or []
+        stream_mode = bool(images)
+
+        if stream_mode:
+            cmd = [
+                CLAUDE_BIN,
+                "-p",
+                "--input-format", "stream-json",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--no-session-persistence",
+                *_sandbox_flags(),
+            ]
+            stdin_input = build_stream_json_input(system, prompt, images)
+        else:
+            cmd = [
+                CLAUDE_BIN,
+                "-p",
+                "--output-format", "json",
+                "--no-session-persistence",
+                *_sandbox_flags(),
+            ]
+            stdin_input = prompt
+
         if system:
             cmd.extend(["--system-prompt", system])
         cmd.extend(model_flag)
 
         env = os.environ.copy()
         env["HOME"] = HOME
-        return _run_claude_once(cmd, prompt, env)
+        return _run_claude_once(cmd, stdin_input, env, stream_mode=stream_mode)
 
 
 class AnthropicApiBackend:
@@ -889,17 +992,32 @@ class AnthropicApiBackend:
 
     name = "anthropic"
 
-    def complete(self, system: str, prompt: str, tier: str, tenant: str) -> dict:
+    def complete(self, system: str, prompt: str, tier: str, tenant: str,
+                 images: list = None) -> dict:
         if not ANTHROPIC_API_KEY:
             return {"error": True, "message": "ANTHROPIC_API_KEY not set for anthropic backend", "code": 500}
         model = TIER_MODEL_MAP.get(
             "opus" if "opus" in tier else "haiku" if "haiku" in tier else "sonnet",
             TIER_MODEL_MAP["sonnet"],
         )
+        images = images or []
+        # Build content: text + optional images in Anthropic format
+        content = []
+        if prompt:
+            content.append({"type": "text", "text": prompt})
+        for img in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img["media_type"],
+                    "data": img["data"],
+                },
+            })
         payload = {
             "model": model,
             "max_tokens": ANTHROPIC_MAX_TOKENS,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
         if system:
             payload["system"] = system
@@ -965,7 +1083,8 @@ BACKEND = _make_backend(BACKEND_NAME)
 
 
 def call_claude(system_prompt: str, prompt: str, model: str = None,
-                no_cache: bool = False, tenant: str = ANON_TENANT) -> dict:
+                no_cache: bool = False, tenant: str = ANON_TENANT,
+                images: list = None) -> dict:
     """Call Claude Code in -p mode and return a parsed JSON result.
 
     Pipeline: daily budget → 24h cache (good results only) → negative cache
@@ -975,7 +1094,11 @@ def call_claude(system_prompt: str, prompt: str, model: str = None,
     burst retries don't respawn the backend, while a fresh attempt can still run
     seconds later.  Cache keys are tenant-scoped; the breaker stays GLOBAL (it
     measures backend health, not tenant behavior).  Emits a structured
-    ``claude_call:`` log line (with the tenant) on every path."""
+    ``claude_call:`` log line (with the tenant) on every path.
+
+    When ``images`` is non-empty, the text-based cache is skipped (image content
+    is not reflected in the cache key), and the backend is called with the
+    images for multimodal processing."""
     t0 = time.time()
 
     # Auto-classify if no explicit model
@@ -983,6 +1106,9 @@ def call_claude(system_prompt: str, prompt: str, model: str = None,
         tier = classify_model(prompt)
     else:
         tier = model.lower()
+
+    images = images or []
+    no_cache = no_cache or bool(images)  # text-based cache key can't reflect images
 
     key = _cache_key(tenant, system_prompt, prompt, tier)
     meta = {
@@ -1030,7 +1156,7 @@ def call_claude(system_prompt: str, prompt: str, model: str = None,
     result: dict = {}
     for attempt in range(EMPTY_RETRIES + 1):
         attempts += 1
-        result = BACKEND.complete(system_prompt, prompt, tier, tenant)
+        result = BACKEND.complete(system_prompt, prompt, tier, tenant, images=images)
         if not _is_bad_result(result):
             break
         if attempt < EMPTY_RETRIES:
@@ -1263,15 +1389,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         # Build prompt
-        system, prompt = build_prompt(messages)
+        system, prompt, images = build_prompt(messages)
 
-        # Determine model: if explicit tier in name, use it; otherwise auto-classify
+        # Determine model: if explicit tier in name, use it; otherwise auto-classify.
+        # When images are present, default to sonnet (or explicit model) — haiku
+        # lacks vision and would fail.
         if any(t in model_name.lower() for t in ["opus", "haiku", "sonnet"]):
             tier = model_name.lower()
-            print(f"[proxy] explicit: {tier} | tenant={tenant} | prompt: {prompt[:80]}...")
+        elif images:
+            tier = "sonnet"
         else:
             tier = classify_model(prompt)
-            print(f"[proxy] auto: {tier} | tenant={tenant} | prompt: {prompt[:80]}...")
+        print(f"[proxy] {'explicit' if any(t in model_name.lower() for t in ['opus', 'haiku', 'sonnet']) else 'images' if images else 'auto'}: {tier} | tenant={tenant} | prompt: {prompt[:80]}...")
 
         request_count += 1
 
@@ -1288,7 +1417,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         try:
             # Call Claude with selected tier
-            claude_result = call_claude(system, prompt, tier, no_cache=no_cache, tenant=tenant)
+            claude_result = call_claude(system, prompt, tier, no_cache=no_cache, tenant=tenant,
+                                        images=images)
         finally:
             if _worker_sem is not None:
                 _worker_sem.release()

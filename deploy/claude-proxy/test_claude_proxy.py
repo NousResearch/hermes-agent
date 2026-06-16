@@ -256,7 +256,7 @@ def test_sandbox_flags_strip_tools():
 
 def test_cli_backend_drops_bypass_and_sandboxes(monkeypatch):
     captured = {}
-    def fake_run(cmd, prompt, env, timeout=300):
+    def fake_run(cmd, prompt, env, timeout=300, stream_mode=False):
         captured["cmd"] = cmd
         return GOOD
     monkeypatch.setattr(cp, "_run_claude_once", fake_run)

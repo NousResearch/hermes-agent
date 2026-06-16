@@ -1150,7 +1150,7 @@ def _build_child_agent(
         # Detect whether the ACP command targets Claude Code or Copilot.
         _cmd_lower = (override_acp_command or "").lower()
         _args_str = " ".join(override_acp_args or []).lower()
-        if "claude-code-acp" in _cmd_lower:
+        if "claude" in _cmd_lower or "claude-agent-acp" in _args_str:
             effective_provider = "claude-code-acp"
             effective_api_mode = "chat_completions"
         else:
@@ -3062,8 +3062,10 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Override ACP command for child agents (e.g. 'copilot', 'claude-code-acp'). "
                     "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI installed and configured. "
-                    "For details on ACP parameters and usage, see the 'claude-code-acp-delegate' skill. "
+                    "the parent's transport. Requires an ACP-compatible CLI "
+                    "(e.g. GitHub Copilot CLI via 'copilot --acp --stdio'). "
+                    "See agent/copilot_acp_client.py for the implementation. "
+                    "For ACP parameter details and usage, see the 'claude-code-acp-delegate' skill. "
                     "IMPORTANT: Do NOT set this unless the user has explicitly told you "
                     "a specific ACP-compatible CLI is installed and configured. "
                     "Leave empty to use the parent's default transport (Hermes subagents)."
@@ -3073,7 +3075,7 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command. "
+                    "Arguments for the ACP command (default: ['--acp', '--stdio'] for copilot). "
                     "Only used when acp_command is set. "
                     "For supported arguments by each ACP provider, see the 'claude-code-acp-delegate' skill. "
                     "Leave empty unless acp_command is explicitly provided."

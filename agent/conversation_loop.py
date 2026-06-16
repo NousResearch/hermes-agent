@@ -1202,7 +1202,11 @@ def run_conversation(
                             }
 
                     # Backoff before retry — use policy's backoff calculation
-                    wait_time = calculate_backoff(retry_count, base=5.0, max_delay=120.0)
+                    # For server errors (5xx), use 60s extended delay instead of exponential backoff
+                    # This gives overloaded servers time to recover without hammering them
+                    is_server_error = classified.category.value == "server_error"
+                    extended_delay = 60.0 if is_server_error else 0.0
+                    wait_time = calculate_backoff(retry_count, base=5.0, max_delay=120.0, extended_delay=extended_delay)
                     agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({classified.reason})...")
                     logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {classified.reason} | Provider: {getattr(agent, 'provider', 'Unknown')}")
 

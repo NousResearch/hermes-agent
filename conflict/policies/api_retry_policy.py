@@ -212,9 +212,32 @@ class APIRetryPolicy:
 
 # ─── Backoff Calculator ────────────────────────────────────────────────────────
 
-def calculate_backoff(retry_count: int, base: float = 1.0, max_delay: float = 60.0) -> float:
-    """Calculate exponential backoff delay with jitter."""
+def calculate_backoff(
+    retry_count: int,
+    base: float = 1.0,
+    max_delay: float = 60.0,
+    extended_delay: float = 0.0,
+) -> float:
+    """
+    Calculate backoff delay with optional extended delay for server errors.
+
+    Args:
+        retry_count: Current retry attempt number
+        base: Base delay multiplier (default 1.0s)
+        max_delay: Maximum delay cap (default 60s)
+        extended_delay: If > 0, override with fixed long delay (e.g., 60s for 5xx errors)
+                       This is used for server errors where exponential backoff is
+                       inappropriate and a longer fixed wait is more effective.
+
+    Returns:
+        Delay in seconds before next retry attempt
+    """
     import random
+    if extended_delay > 0:
+        # Fixed extended delay for server errors — 60s default, configurable
+        # Avoids exponential backoff which prolongs already-overloaded servers
+        jitter = extended_delay * 0.05 * random.random()  # 5% max jitter
+        return extended_delay + jitter
     delay = min(base * (2 ** retry_count), max_delay)
     jitter = delay * 0.1 * random.random()
     return delay + jitter

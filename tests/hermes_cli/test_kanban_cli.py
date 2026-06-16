@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,45 @@ def test_run_slash_link_unlink(kanban_home):
     show = kc.run_slash(f"show {tb}")
     assert "todo" in show
     assert "Unlinked" in kc.run_slash(f"unlink {ta} {tb}")
+
+
+def test_run_slash_diagnostics_separates_active_and_stale_counts(kanban_home):
+    conn = kb.connect()
+    try:
+        active = kb.create_task(conn, title="active", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, active, summary="phantom",
+                created_cards=[real, "t_deadbeef1234"],
+            )
+
+        stale = kb.create_task(conn, title="stale", assignee="builder")
+        conn.execute(
+            "UPDATE tasks SET status='todo', consecutive_failures=2, "
+            "last_failure_error='No Codex credentials stored' WHERE id=?",
+            (stale,),
+        )
+        for run_id in range(1, 3):
+            conn.execute(
+                "INSERT INTO task_runs (id, task_id, status, outcome, error, started_at, ended_at) "
+                "VALUES (?, ?, 'spawn_failed', 'spawn_failed', ?, ?, ?)",
+                (
+                    8000 + run_id,
+                    stale,
+                    "No Codex credentials stored",
+                    int(time.time()) - 100,
+                    int(time.time()) - 50,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kc.run_slash("diagnostics")
+    assert "1 active blocker(s), 1 stale diagnostic(s) across 2 task(s)" in out
+    assert "[stale warning]" in out
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):

@@ -1751,6 +1751,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
             {
                 "task_id": tid,
                 **meta.get(tid, {}),
+                "active_diagnostic_count": len(kd.split_diagnostics(dl)[0]),
+                "stale_diagnostic_count": len(kd.split_diagnostics(dl)[1]),
                 "diagnostics": [d.to_dict() for d in dl],
             }
             for tid, dl in diags_by_task.items()
@@ -1765,9 +1767,14 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     # Human-readable summary: grouped by task, severity-marked, with
     # suggested actions inline.
     sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
-    total = sum(len(dl) for dl in diags_by_task.values())
+    active_total = 0
+    stale_total = 0
+    for dl in diags_by_task.values():
+        active, stale = kd.split_diagnostics(dl)
+        active_total += len(active)
+        stale_total += len(stale)
     print(
-        f"{total} active diagnostic(s) across "
+        f"{active_total} active blocker(s), {stale_total} stale diagnostic(s) across "
         f"{len(diags_by_task)} task(s):\n"
     )
     for tid, dl in diags_by_task.items():
@@ -1777,7 +1784,11 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
         assignee = m.get("assignee") or "(unassigned)"
         print(f"  {tid}  {status:8s}  @{assignee:18s}  {title}")
         for d in dl:
-            print(f"    {sev_marker.get(d.severity, '?')} [{d.severity}] {d.kind}: {d.title}")
+            stale_prefix = "stale " if d.stale else ""
+            print(
+                f"    {sev_marker.get(d.severity, '?')} "
+                f"[{stale_prefix}{d.severity}] {d.kind}: {d.title}"
+            )
             if d.data:
                 # Compact key:value pairs on one line.
                 bits = []

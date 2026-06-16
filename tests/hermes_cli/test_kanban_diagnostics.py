@@ -342,6 +342,46 @@ def test_repeated_failures_surfaces_actual_error_in_title():
     assert "insufficient_quota" in d.detail
 
 
+def test_repeated_failures_on_todo_task_are_marked_stale():
+    task = _task(
+        status="todo",
+        consecutive_failures=3,
+        last_failure_error="No Codex credentials stored",
+    )
+    runs = [
+        _run(outcome="spawn_failed", run_id=1, error="No Codex credentials stored"),
+        _run(outcome="spawn_failed", run_id=2, error="No Codex credentials stored"),
+        _run(outcome="spawn_failed", run_id=3, error="No Codex credentials stored"),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "repeated_failures"
+    assert d.stale is True
+    assert d.stale_reason == "source_task_reset_to_todo"
+    assert d.severity == "warning"
+
+
+def test_repeated_failures_become_stale_after_later_success():
+    task = _task(
+        status="ready",
+        consecutive_failures=3,
+        last_failure_error="No Codex credentials stored",
+    )
+    runs = [
+        _run(outcome="spawn_failed", run_id=1, error="No Codex credentials stored"),
+        _run(outcome="spawn_failed", run_id=2, error="No Codex credentials stored"),
+        _run(outcome="completed", run_id=3),
+    ]
+    diags = kd.compute_task_diagnostics(task, [], runs)
+    assert len(diags) == 1
+    d = diags[0]
+    assert d.kind == "repeated_failures"
+    assert d.stale is True
+    assert d.stale_reason == "later_success_after_failure"
+    assert d.severity == "warning"
+
+
 def test_repeated_crashes_truncates_huge_tracebacks():
     """Full Python tracebacks can be tens of KB. The title stays one
     line (≤160 chars); the detail caps at 500 chars + ellipsis so the
@@ -369,7 +409,7 @@ def test_repeated_crashes_truncates_huge_tracebacks():
 def test_diagnostics_sorted_critical_first():
     """A task with both a critical (many spawn failures) and a warning
     (prose phantoms) diagnostic should list the critical one first."""
-    task = _task(status="done", consecutive_failures=10,
+    task = _task(status="blocked", consecutive_failures=10,
                  last_failure_error="nope")
     events = [
         _event("completed", ts=100, summary="referenced t_missing"),
@@ -380,6 +420,26 @@ def test_diagnostics_sorted_critical_first():
     kinds = [d.kind for d in diags]
     assert kinds[0] == "repeated_failures"  # critical
     assert "prose_phantom_refs" in kinds
+
+
+def test_split_diagnostics_separates_active_and_stale_entries():
+    active = kd.Diagnostic(
+        kind="repeated_crashes",
+        severity="error",
+        title="Agent crashed",
+        detail="boom",
+    )
+    stale = kd.Diagnostic(
+        kind="repeated_failures",
+        severity="warning",
+        title="Historical agent spawn x3",
+        detail="old auth outage",
+        stale=True,
+        stale_reason="source_task_reset_to_todo",
+    )
+    active_diags, stale_diags = kd.split_diagnostics([active, stale])
+    assert active_diags == [active]
+    assert stale_diags == [stale]
 
 
 # ---------------------------------------------------------------------------

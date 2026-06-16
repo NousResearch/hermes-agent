@@ -2031,6 +2031,55 @@ def test_diagnostics_endpoint_severity_filter(client):
     assert data["diagnostics"][0]["task_id"] == p2
 
 
+def test_diagnostics_endpoint_separates_active_and_stale_counts(client):
+    conn = kb.connect()
+    try:
+        active = kb.create_task(conn, title="active", assignee="alice")
+        real = kb.create_task(conn, title="real", assignee="x", created_by="alice")
+        import pytest as _pytest
+        with _pytest.raises(kb.HallucinatedCardsError):
+            kb.complete_task(
+                conn, active, summary="phantom",
+                created_cards=[real, "t_deadbeef1234"],
+            )
+
+        stale = kb.create_task(conn, title="stale", assignee="builder")
+        conn.execute(
+            "UPDATE tasks SET status='todo', consecutive_failures=2, "
+            "last_failure_error='No Codex credentials stored' WHERE id=?",
+            (stale,),
+        )
+        for run_id in range(1, 3):
+            conn.execute(
+                "INSERT INTO task_runs (id, task_id, status, outcome, error, started_at, ended_at) "
+                "VALUES (?, ?, 'spawn_failed', 'spawn_failed', ?, ?, ?)",
+                (
+                    9000 + run_id,
+                    stale,
+                    "No Codex credentials stored",
+                    int(time.time()) - 100,
+                    int(time.time()) - 50,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/diagnostics")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    assert data["total_diagnostic_count"] == 2
+    assert data["stale_diagnostic_count"] == 1
+
+    rows = {row["task_id"]: row for row in data["diagnostics"]}
+    assert rows[active]["active_diagnostic_count"] == 1
+    assert rows[active]["stale_diagnostic_count"] == 0
+    assert rows[stale]["active_diagnostic_count"] == 0
+    assert rows[stale]["stale_diagnostic_count"] == 1
+    assert rows[stale]["diagnostics"][0]["stale"] is True
+
+
 def test_board_exposes_diagnostics_list_and_summary(client):
     """/board should attach both the full diagnostics list AND the
     compact warnings summary (with highest_severity) on each task

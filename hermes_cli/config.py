@@ -6527,6 +6527,7 @@ def _is_inside_env_quote(text: str, index: int) -> bool:
     """Return True when ``index`` falls inside a quoted .env value."""
     quote: Optional[str] = None
     escaped = False
+    maybe_quoted_value = False
 
     for pos, char in enumerate(text):
         if pos >= index:
@@ -6543,8 +6544,16 @@ def _is_inside_env_quote(text: str, index: int) -> bool:
                 quote = None
             continue
 
-        if char in {"'", '"'}:
+        if char == "=":
+            maybe_quoted_value = True
+            continue
+        if maybe_quoted_value and char.isspace():
+            continue
+        if maybe_quoted_value and char in {"'", '"'}:
             quote = char
+            maybe_quoted_value = False
+            continue
+        maybe_quoted_value = False
 
     return quote is not None
 

@@ -2239,6 +2239,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+        # /after queue: stores (turn_number, content) tuples for precise
+        # conversation followup targeting.  /after N <content> means the
+        # content should be delivered as context after N AI replies.
+        self._after_queue: Dict[str, List[tuple[int, str]]] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -7650,6 +7654,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "after":
+            # /after N <content>: deliver <content> as context after N AI replies.
+            # Stores the content in _after_queue and returns ack.
+            # Works both with and without an active agent.
+            after_args = event.get_command_args().strip()
+            if not after_args:
+                return "Usage: /after <N> <content>  (deliver the content after N AI replies)"
+            # Parse N and content
+            match = re.match(r"^\s*(\d+)\s+(.+)$", after_args, re.DOTALL)
+            if not match:
+                return "Usage: /after <N> <content>  (N must be a positive integer)"
+            after_turn_n = int(match.group(1))
+            after_content = match.group(2).strip()
+            if not after_content or after_turn_n < 1:
+                return "Usage: /after <N> <content>  (N >= 1, content must not be empty)"
+            # Store in _after_queue for this session
+            self._after_queue.setdefault(session_key, []).append((after_turn_n, after_content))
+            return (
+                f"✅ /after {after_turn_n}: \"{after_content[:60]}{'...' if len(after_content) > 60 else ''}\" "
+                f"queued for delivery after {after_turn_n} AI reply(ies)."
+            )
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -8872,6 +8898,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Run the agent
+            # Inject /after queue content into context_prompt if any entries
+            # target the current run_generation
+            _after_entries = self._after_queue.get(session_key, [])
+            if _after_entries:
+                _remaining = []
+                for _turn, _content in _after_entries:
+                    if _turn <= 1:
+                        # Content targeted at this or an earlier turn — inject now
+                        _note = f"[User-queued after-hint: {_content}]"
+                        context_prompt += "\n\n" + _note
+                        logger.info(
+                            "Injected /after hint into session %s run %s: %s",
+                            session_key, run_generation, _content[:60],
+                        )
+                    else:
+                        # Decrement and keep for future turns
+                        _remaining.append((_turn - 1, _content))
+                self._after_queue[session_key] = _remaining
+                if not _remaining:
+                    self._after_queue.pop(session_key, None)
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,

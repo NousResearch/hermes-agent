@@ -7,6 +7,8 @@ from tools.budget_config import (
     DEFAULT_RESULT_SIZE_CHARS,
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
+    FEISHU_BUDGET,
+    FEISHU_DEEP_BUDGET,
 )
 from tools.tool_result_storage import (
     HEREDOC_MARKER,
@@ -279,6 +281,31 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG not in result
         assert "Truncated" in result
         assert len(result) < len(content)
+
+    def test_feishu_budget_truncates_medium_tool_output_without_env(self):
+        content = "x" * 12_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="execute_code",
+            tool_use_id="tc_feishu",
+            env=None,
+            config=FEISHU_BUDGET,
+        )
+
+        assert "Truncated" in result
+        assert len(result) < 2_000
+
+    def test_feishu_deep_budget_allows_medium_tool_output(self):
+        content = "x" * 12_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="execute_code",
+            tool_use_id="tc_feishu_deep",
+            env=None,
+            config=FEISHU_DEEP_BUDGET,
+        )
+
+        assert result == content
 
     def test_env_write_failure_falls_back_to_truncation(self):
         env = MagicMock()

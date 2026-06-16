@@ -1,0 +1,9 @@
+name: openclaw-vendor
+version: 0.1.0
+description: "Link OpenClaw vendor mirror (extensions + packages) into Hermes skills and report tool readiness."
+author: "Hermes Agent"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows

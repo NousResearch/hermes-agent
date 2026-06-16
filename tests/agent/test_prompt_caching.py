@@ -4,6 +4,8 @@
 from agent.prompt_caching import (
     _apply_cache_marker,
     apply_anthropic_cache_control,
+    apply_anthropic_tool_cache_control,
+    build_cacheable_system_content,
 )
 
 
@@ -139,3 +141,70 @@ class TestApplyAnthropicCacheControl:
             elif "cache_control" in msg:
                 count += 1
         assert count <= 4
+
+    def test_respects_reserved_tool_breakpoint_budget(self):
+        msgs = [
+            {"role": "system", "content": "System"},
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "msg2"},
+            {"role": "user", "content": "msg3"},
+            {"role": "assistant", "content": "msg4"},
+        ]
+        result = apply_anthropic_cache_control(msgs, max_breakpoints=3)
+
+        marked = []
+        for idx, msg in enumerate(result):
+            content = msg.get("content")
+            if isinstance(content, list) and any(
+                isinstance(item, dict) and "cache_control" in item for item in content
+            ):
+                marked.append(idx)
+        assert marked == [0, 3, 4]
+
+    def test_can_skip_system_when_already_marked(self):
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "cached", "cache_control": MARKER}]},
+            {"role": "user", "content": "msg1"},
+            {"role": "assistant", "content": "msg2"},
+            {"role": "user", "content": "msg3"},
+        ]
+        result = apply_anthropic_cache_control(
+            msgs,
+            max_breakpoints=2,
+            cache_system=False,
+        )
+        assert result[0]["content"][0]["cache_control"] == MARKER
+        assert isinstance(result[1]["content"], str)
+        assert result[2]["content"][0]["cache_control"]["type"] == "ephemeral"
+        assert result[3]["content"][0]["cache_control"]["type"] == "ephemeral"
+
+
+class TestSystemAndToolCaching:
+    def test_cacheable_system_content_keeps_volatile_after_checkpoint(self):
+        result = build_cacheable_system_content(
+            "stable guidance",
+            volatile_text="memory snapshot",
+            ephemeral_text="one-call instruction",
+            cache_ttl="1h",
+        )
+        assert result == [
+            {
+                "type": "text",
+                "text": "stable guidance",
+                "cache_control": {"type": "ephemeral", "ttl": "1h"},
+            },
+            {"type": "text", "text": "memory snapshot"},
+            {"type": "text", "text": "one-call instruction"},
+        ]
+
+    def test_tool_cache_control_marks_last_tool_without_mutating_original(self):
+        tools = [
+            {"type": "function", "function": {"name": "alpha"}},
+            {"type": "function", "function": {"name": "omega"}},
+        ]
+        result = apply_anthropic_tool_cache_control(tools, cache_ttl="1h")
+
+        assert result is not tools
+        assert "cache_control" not in tools[-1]
+        assert "cache_control" not in result[0]
+        assert result[1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

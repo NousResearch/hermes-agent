@@ -25,6 +25,11 @@ def _bytes(s: str) -> int:
     return len(s.encode("utf-8"))
 
 
+def _approx_tokens(chars: int) -> int:
+    """Cheap prompt-size estimate for diagnostics only."""
+    return (chars + 3) // 4
+
+
 def _build_inspection_agent(platform: str) -> Any:
     """Construct an offline AIAgent for prompt inspection.
 
@@ -66,6 +71,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     stable = parts.get("stable", "")
     context = parts.get("context", "")
     volatile = parts.get("volatile", "")
+    cacheable_system = "\n\n".join(p for p in (stable, context) if p)
 
     # Skills index — the <available_skills> block (the largest single block
     # when many skills are installed). Measured inside the stable tier.
@@ -90,6 +96,8 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     # Tool-schema JSON — the other half of the fixed per-call payload.
     tools = getattr(agent, "tools", None) or []
     tools_json = json.dumps(tools, ensure_ascii=False)
+    cacheable_prefix_bytes = _bytes(cacheable_system) + _bytes(tools_json)
+    cacheable_prefix_chars = len(cacheable_system) + len(tools_json)
 
     sections: List[Tuple[str, int, int]] = [
         ("stable (identity/guidance/skills)", len(stable), _bytes(stable)),
@@ -100,11 +108,46 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
     return {
         "platform": platform,
         "model": getattr(agent, "model", "") or "",
-        "system_prompt": {"chars": len(full), "bytes": _bytes(full)},
-        "skills_index": {"chars": len(skills_index), "bytes": _bytes(skills_index)},
-        "memory": {"chars": len(memory_block), "bytes": _bytes(memory_block)},
-        "user_profile": {"chars": len(user_block), "bytes": _bytes(user_block)},
-        "tools": {"count": len(tools), "json_bytes": _bytes(tools_json)},
+        "system_prompt": {
+            "chars": len(full),
+            "bytes": _bytes(full),
+            "approx_tokens": _approx_tokens(len(full)),
+        },
+        "cacheable_system": {
+            "chars": len(cacheable_system),
+            "bytes": _bytes(cacheable_system),
+            "approx_tokens": _approx_tokens(len(cacheable_system)),
+        },
+        "volatile_tail": {
+            "chars": len(volatile),
+            "bytes": _bytes(volatile),
+            "approx_tokens": _approx_tokens(len(volatile)),
+        },
+        "cacheable_prefix": {
+            "chars": cacheable_prefix_chars,
+            "bytes": cacheable_prefix_bytes,
+            "approx_tokens": _approx_tokens(cacheable_prefix_chars),
+        },
+        "skills_index": {
+            "chars": len(skills_index),
+            "bytes": _bytes(skills_index),
+            "approx_tokens": _approx_tokens(len(skills_index)),
+        },
+        "memory": {
+            "chars": len(memory_block),
+            "bytes": _bytes(memory_block),
+            "approx_tokens": _approx_tokens(len(memory_block)),
+        },
+        "user_profile": {
+            "chars": len(user_block),
+            "bytes": _bytes(user_block),
+            "approx_tokens": _approx_tokens(len(user_block)),
+        },
+        "tools": {
+            "count": len(tools),
+            "json_bytes": _bytes(tools_json),
+            "approx_tokens": _approx_tokens(len(tools_json)),
+        },
         "sections": sections,
     }
 
@@ -120,6 +163,12 @@ def render_breakdown(data: Dict[str, Any]) -> str:
     lines.append(f"Prompt-size breakdown (platform={data['platform']}, model={data['model'] or 'unset'})")
     lines.append("")
     lines.append(f"  System prompt total : {sp['bytes']:>8,} B  ({_fmt_kb(sp['bytes'])}, {sp['chars']:,} chars)")
+    cs = data["cacheable_system"]
+    vt = data["volatile_tail"]
+    cp = data["cacheable_prefix"]
+    lines.append(f"  Cacheable system    : {cs['bytes']:>8,} B  ({_fmt_kb(cs['bytes'])}, ~{cs['approx_tokens']:,} tokens)")
+    lines.append(f"  Volatile tail       : {vt['bytes']:>8,} B  ({_fmt_kb(vt['bytes'])}, ~{vt['approx_tokens']:,} tokens)")
+    lines.append(f"  Cacheable + tools   : {cp['bytes']:>8,} B  ({_fmt_kb(cp['bytes'])}, ~{cp['approx_tokens']:,} tokens)")
     lines.append("")
     lines.append("  Major blocks:")
     si = data["skills_index"]
@@ -134,7 +183,7 @@ def render_breakdown(data: Dict[str, Any]) -> str:
         lines.append(f"    {label:<36}: {byts:>8,} B  ({_fmt_kb(byts)})")
     lines.append("")
     tools = data["tools"]
-    lines.append(f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, {tools['count']} tools)")
+    lines.append(f"  Tool schemas         : {tools['json_bytes']:>8,} B  ({_fmt_kb(tools['json_bytes'])}, ~{tools['approx_tokens']:,} tokens, {tools['count']} tools)")
     return "\n".join(lines)
 
 

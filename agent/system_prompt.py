@@ -7,7 +7,9 @@ upstream prefix cache warm.  See ``hermes-agent-dev``'s
 ``references/self-improvement-loop.md`` for how the background-review
 fork inherits the cached prompt verbatim.
 
-Three tiers are joined with ``\\n\\n``:
+Three tiers are joined with ``\\n\\n`` for persistence, but native
+Anthropic/Bedrock requests split the persisted string back into a
+cacheable prefix and volatile tail at API time:
 
 * ``stable``   — identity (SOUL.md or DEFAULT_AGENT_IDENTITY), tool
   guidance, computer-use guidance, nous subscription block, tool-use
@@ -42,6 +44,73 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
 )
 from agent.runtime_cwd import resolve_context_cwd
+
+
+def _join_nonempty(*parts: str) -> str:
+    """Join prompt parts exactly like ``build_system_prompt``."""
+    return "\n\n".join(p for p in parts if p)
+
+
+def _cacheable_prompt_from_parts(parts: Dict[str, str]) -> str:
+    """Return the prefix safe to cache across turns and sessions."""
+    return _join_nonempty(parts.get("stable", ""), parts.get("context", ""))
+
+
+def _record_system_prompt_cache_parts(
+    agent: Any,
+    cacheable: str,
+    volatile: str,
+) -> None:
+    """Store API-time split metadata on the agent when possible."""
+    try:
+        agent._cached_system_prompt_cacheable = cacheable
+        agent._cached_system_prompt_volatile = volatile
+    except Exception:
+        pass
+
+
+def clear_system_prompt_cache_parts(agent: Any) -> None:
+    """Clear cached prompt split metadata."""
+    _record_system_prompt_cache_parts(agent, "", "")
+
+
+def restore_system_prompt_cache_parts(
+    agent: Any,
+    full_prompt: str,
+    system_message: Optional[str] = None,
+) -> bool:
+    """Recover cacheable/volatile split metadata for a stored system prompt.
+
+    Gateway turns often restore ``system_prompt`` from SQLite into a fresh
+    AIAgent.  Rebuilding the full prompt would defeat the byte-stability
+    invariant, but rebuilding only the stable/context prefix lets us split
+    the stored prompt at the same boundary and keep volatile content after
+    the cache checkpoint.  If the current prefix does not match the stored
+    bytes, leave the prompt intact and let the caller fall back to legacy
+    whole-system caching.
+    """
+    try:
+        if not isinstance(full_prompt, str) or not full_prompt:
+            clear_system_prompt_cache_parts(agent)
+            return False
+        parts = build_system_prompt_parts(agent, system_message=system_message)
+        cacheable = _cacheable_prompt_from_parts(parts)
+        if not cacheable:
+            clear_system_prompt_cache_parts(agent)
+            return False
+        volatile = ""
+        if full_prompt == cacheable:
+            volatile = ""
+        elif full_prompt.startswith(cacheable + "\n\n"):
+            volatile = full_prompt[len(cacheable) + 2:]
+        else:
+            clear_system_prompt_cache_parts(agent)
+            return False
+        _record_system_prompt_cache_parts(agent, cacheable, volatile)
+        return True
+    except Exception:
+        clear_system_prompt_cache_parts(agent)
+        return False
 
 
 def _ra():
@@ -394,13 +463,16 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
 
     Layers are ordered cache-friendly: stable identity/guidance first,
     then session-stable context files, then per-call volatile content
-    (memory, USER profile, timestamp).  The whole string is treated as
-    one cached block — Hermes never rebuilds or reinjects parts of it
-    mid-session, which is the only way to keep upstream prompt caches
-    warm across turns.
+    (memory, USER profile, timestamp).  Native Anthropic/Bedrock calls
+    cache only the stable/context prefix and append volatile content after
+    the checkpoint; the persisted full string remains byte-stable for DB
+    restore paths.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    cacheable = _cacheable_prompt_from_parts(parts)
+    volatile = parts["volatile"]
+    _record_system_prompt_cache_parts(agent, cacheable, volatile)
+    return _join_nonempty(cacheable, volatile)
 
 
 def invalidate_system_prompt(agent: Any) -> None:
@@ -410,6 +482,7 @@ def invalidate_system_prompt(agent: Any) -> None:
     so the rebuilt prompt captures any writes from this session.
     """
     agent._cached_system_prompt = None
+    clear_system_prompt_cache_parts(agent)
     if agent._memory_store:
         agent._memory_store.load_from_disk()
 
@@ -441,6 +514,8 @@ def format_tools_for_system_message(agent: Any) -> str:
 __all__ = [
     "build_system_prompt_parts",
     "build_system_prompt",
+    "clear_system_prompt_cache_parts",
     "invalidate_system_prompt",
+    "restore_system_prompt_cache_parts",
     "format_tools_for_system_message",
 ]

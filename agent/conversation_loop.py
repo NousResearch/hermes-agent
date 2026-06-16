@@ -54,7 +54,10 @@ from agent.model_metadata import (
     save_context_length,
 )
 from agent.process_bootstrap import _install_safe_stdio
-from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_caching import (
+    apply_anthropic_cache_control,
+    build_cacheable_system_content,
+)
 from agent.retry_utils import jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -304,6 +307,20 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        if (
+            getattr(agent, "_use_prompt_caching", False) is True
+            and getattr(agent, "_use_native_cache_layout", False) is True
+        ):
+            try:
+                from agent.system_prompt import restore_system_prompt_cache_parts
+
+                restore_system_prompt_cache_parts(
+                    agent,
+                    stored_prompt,
+                    system_message=system_message,
+                )
+            except Exception:
+                pass
         return
 
     if conversation_history and stored_state in ("null", "empty"):
@@ -729,11 +746,29 @@ def run_conversation(
         #
         # Hermes invariant: the system prompt is built ONCE per session
         # (cached on ``_cached_system_prompt``) and replayed verbatim on
-        # every turn.  We send it as a single content string so the
-        # bytes are byte-stable across turns and upstream prompt caches
-        # stay warm.
+        # every turn.  For native Anthropic/Bedrock caching, send it as
+        # cacheable prefix blocks plus a volatile tail so memory/session/time
+        # changes do not rewrite the reusable cache entry.
         effective_system = active_system_prompt or ""
-        if agent.ephemeral_system_prompt:
+        system_cache_split = False
+        system_cacheable = getattr(agent, "_cached_system_prompt_cacheable", "") or ""
+        system_volatile = getattr(agent, "_cached_system_prompt_volatile", "") or ""
+        if (
+            agent._use_prompt_caching
+            and agent._use_native_cache_layout
+            and system_cacheable
+            and active_system_prompt == "\n\n".join(
+                p for p in (system_cacheable, system_volatile) if p
+            )
+        ):
+            effective_system = build_cacheable_system_content(
+                system_cacheable,
+                volatile_text=system_volatile,
+                ephemeral_text=agent.ephemeral_system_prompt or "",
+                cache_ttl=agent._cache_ttl,
+            )
+            system_cache_split = bool(effective_system)
+        elif agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
@@ -748,14 +783,27 @@ def run_conversation(
         # Apply Anthropic prompt caching for Claude models on native
         # Anthropic, OpenRouter, and third-party Anthropic-compatible
         # gateways. Auto-detected: if ``_use_prompt_caching`` is set,
-        # inject cache_control breakpoints (system + last 3 messages)
+        # inject cache_control breakpoints (stable system/tools + recent messages)
         # to reduce input token costs by ~75% on multi-turn
         # conversations.
         if agent._use_prompt_caching:
+            tool_breakpoints = (
+                1
+                if agent._use_native_cache_layout and getattr(agent, "tools", None)
+                else 0
+            )
+            if system_cache_split:
+                max_message_breakpoints = max(0, 4 - tool_breakpoints - 1)
+                cache_system = False
+            else:
+                max_message_breakpoints = max(0, 4 - tool_breakpoints)
+                cache_system = True
             api_messages = apply_anthropic_cache_control(
                 api_messages,
                 cache_ttl=agent._cache_ttl,
                 native_anthropic=agent._use_native_cache_layout,
+                max_breakpoints=max_message_breakpoints,
+                cache_system=cache_system,
             )
 
         # Safety net: strip orphaned tool results / add stubs for missing
@@ -2004,6 +2052,8 @@ def run_conversation(
                             if _sanitized_system != active_system_prompt:
                                 active_system_prompt = _sanitized_system
                                 agent._cached_system_prompt = _sanitized_system
+                                agent._cached_system_prompt_cacheable = None
+                                agent._cached_system_prompt_volatile = None
                                 _system_sanitized = True
                         if isinstance(getattr(agent, "ephemeral_system_prompt", None), str):
                             _sanitized_ephemeral = _strip_non_ascii(agent.ephemeral_system_prompt)

@@ -17,6 +17,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
+def _close_session_db(db):
+    close = getattr(db, "close", None)
+    if callable(close):
+        close()
+
 
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
@@ -38,57 +43,60 @@ class TestCompressionBoundaryHook:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(db)
+            try:
+                agent = self._make_agent(db)
 
-            # Stub the context compressor: we only need to observe the hook.
-            compressor = MagicMock()
-            compressor.compress.return_value = [
-                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-                {"role": "user", "content": "tail question"},
-            ]
-            compressor.compression_count = 1
-            compressor.last_prompt_tokens = 0
-            compressor.last_completion_tokens = 0
-            # Avoid the summary-error warning path
-            compressor._last_summary_error = None
-            # MagicMock auto-creates truthy attrs; explicitly clear the abort
-            # flag so the post-compress abort branch in
-            # conversation_compression.py does not short-circuit before the
-            # session-id rotation we are asserting on.
-            compressor._last_compress_aborted = False
-            agent.context_compressor = compressor
+                # Stub the context compressor: we only need to observe the hook.
+                compressor = MagicMock()
+                compressor.compress.return_value = [
+                    {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                    {"role": "user", "content": "tail question"},
+                ]
+                compressor.compression_count = 1
+                compressor.last_prompt_tokens = 0
+                compressor.last_completion_tokens = 0
+                # Avoid the summary-error warning path
+                compressor._last_summary_error = None
+                # MagicMock auto-creates truthy attrs; explicitly clear the abort
+                # flag so the post-compress abort branch in
+                # conversation_compression.py does not short-circuit before the
+                # session-id rotation we are asserting on.
+                compressor._last_compress_aborted = False
+                agent.context_compressor = compressor
 
-            original_sid = agent.session_id
-            messages = [
-                {"role": "user", "content": f"m{i}"} for i in range(10)
-            ]
+                original_sid = agent.session_id
+                messages = [
+                    {"role": "user", "content": f"m{i}"} for i in range(10)
+                ]
 
-            agent._compress_context(messages, "sys", approx_tokens=10_000)
+                agent._compress_context(messages, "sys", approx_tokens=10_000)
 
-            # Session_id rotated
-            assert agent.session_id != original_sid, \
-                "compression should rotate session_id when session_db is set"
+                # Session_id rotated
+                assert agent.session_id != original_sid, \
+                    "compression should rotate session_id when session_db is set"
 
-            # Hook fired with boundary_reason="compression" and old_session_id
-            calls = [
-                c for c in compressor.on_session_start.call_args_list
-            ]
-            assert calls, "on_session_start was never called on the context engine"
-            # Find the compression boundary call (there may be others from init)
-            comp_calls = [
-                c for c in calls
-                if c.kwargs.get("boundary_reason") == "compression"
-            ]
-            assert comp_calls, (
-                f"Expected an on_session_start call with "
-                f"boundary_reason='compression', got {calls!r}"
-            )
-            call = comp_calls[-1]
-            # Positional new session_id
-            assert call.args and call.args[0] == agent.session_id, \
-                f"Expected new session_id as first positional arg, got {call!r}"
-            assert call.kwargs.get("old_session_id") == original_sid, \
-                f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+                # Hook fired with boundary_reason="compression" and old_session_id
+                calls = [
+                    c for c in compressor.on_session_start.call_args_list
+                ]
+                assert calls, "on_session_start was never called on the context engine"
+                # Find the compression boundary call (there may be others from init)
+                comp_calls = [
+                    c for c in calls
+                    if c.kwargs.get("boundary_reason") == "compression"
+                ]
+                assert comp_calls, (
+                    f"Expected an on_session_start call with "
+                    f"boundary_reason='compression', got {calls!r}"
+                )
+                call = comp_calls[-1]
+                # Positional new session_id
+                assert call.args and call.args[0] == agent.session_id, \
+                    f"Expected new session_id as first positional arg, got {call!r}"
+                assert call.kwargs.get("old_session_id") == original_sid, \
+                    f"Expected old_session_id={original_sid!r}, got {call.kwargs!r}"
+            finally:
+                _close_session_db(db)
 
     def test_no_hook_when_no_session_db(self):
         """Without session_db, session_id does not rotate and the hook is not fired."""
@@ -168,32 +176,35 @@ class TestCompressionBoundaryHook:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(db)
+            try:
+                agent = self._make_agent(db)
 
-            compressor = MagicMock()
-            compressor.compress.return_value = [{"role": "user", "content": "summary"}]
-            compressor.compression_count = 1
-            compressor.last_prompt_tokens = 0
-            compressor.last_completion_tokens = 0
-            compressor._last_summary_error = None
-            compressor._last_compress_aborted = False
+                compressor = MagicMock()
+                compressor.compress.return_value = [{"role": "user", "content": "summary"}]
+                compressor.compression_count = 1
+                compressor.last_prompt_tokens = 0
+                compressor.last_completion_tokens = 0
+                compressor._last_summary_error = None
+                compressor._last_compress_aborted = False
 
-            # Raise only on the compression-boundary call, not on earlier calls.
-            def _raise_on_compression(*args, **kwargs):
-                if kwargs.get("boundary_reason") == "compression":
-                    raise RuntimeError("plugin exploded")
-                return None
-            compressor.on_session_start.side_effect = _raise_on_compression
-            agent.context_compressor = compressor
+                # Raise only on the compression-boundary call, not on earlier calls.
+                def _raise_on_compression(*args, **kwargs):
+                    if kwargs.get("boundary_reason") == "compression":
+                        raise RuntimeError("plugin exploded")
+                    return None
+                compressor.on_session_start.side_effect = _raise_on_compression
+                agent.context_compressor = compressor
 
-            original_sid = agent.session_id
+                original_sid = agent.session_id
 
-            # Must not raise
-            compressed, _prompt = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
-            )
-            assert compressed
-            assert agent.session_id != original_sid
+                # Must not raise
+                compressed, _prompt = agent._compress_context(
+                    [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+                )
+                assert compressed
+                assert agent.session_id != original_sid
+            finally:
+                _close_session_db(db)
 
 
 class TestSessionCompressEvent:
@@ -233,24 +244,27 @@ class TestSessionCompressEvent:
         events = []
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(
-                db, event_callback=lambda et, ctx: events.append((et, ctx))
-            )
-            original_sid = agent.session_id
-            agent.context_compressor = self._stub_compressor()
+            try:
+                agent = self._make_agent(
+                    db, event_callback=lambda et, ctx: events.append((et, ctx))
+                )
+                original_sid = agent.session_id
+                agent.context_compressor = self._stub_compressor()
 
-            agent._compress_context(
-                [{"role": "user", "content": f"m{i}"} for i in range(10)],
-                "sys",
-                approx_tokens=10_000,
-            )
+                agent._compress_context(
+                    [{"role": "user", "content": f"m{i}"} for i in range(10)],
+                    "sys",
+                    approx_tokens=10_000,
+                )
 
-            compress_events = [e for e in events if e[0] == "session:compress"]
-            assert compress_events, f"session:compress not emitted, got {events!r}"
-            _, ctx = compress_events[-1]
-            assert ctx["session_id"] == agent.session_id
-            assert ctx["old_session_id"] == original_sid
-            assert ctx["compression_count"] == 1
+                compress_events = [e for e in events if e[0] == "session:compress"]
+                assert compress_events, f"session:compress not emitted, got {events!r}"
+                _, ctx = compress_events[-1]
+                assert ctx["session_id"] == agent.session_id
+                assert ctx["old_session_id"] == original_sid
+                assert ctx["compression_count"] == 1
+            finally:
+                _close_session_db(db)
 
     def test_no_callback_is_safe(self):
         """Compression must work when no event_callback is wired."""
@@ -258,12 +272,15 @@ class TestSessionCompressEvent:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(db, event_callback=None)
-            agent.context_compressor = self._stub_compressor()
-            compressed, _ = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
-            )
-            assert compressed
+            try:
+                agent = self._make_agent(db, event_callback=None)
+                agent.context_compressor = self._stub_compressor()
+                compressed, _ = agent._compress_context(
+                    [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+                )
+                assert compressed
+            finally:
+                _close_session_db(db)
 
     def test_callback_exception_does_not_break_compression(self):
         from hermes_state import SessionDB
@@ -273,12 +290,15 @@ class TestSessionCompressEvent:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
-            agent = self._make_agent(db, event_callback=_boom)
-            original_sid = agent.session_id
-            agent.context_compressor = self._stub_compressor()
+            try:
+                agent = self._make_agent(db, event_callback=_boom)
+                original_sid = agent.session_id
+                agent.context_compressor = self._stub_compressor()
 
-            compressed, _ = agent._compress_context(
-                [{"role": "user", "content": "m"}], "sys", approx_tokens=100
-            )
-            assert compressed
-            assert agent.session_id != original_sid
+                compressed, _ = agent._compress_context(
+                    [{"role": "user", "content": "m"}], "sys", approx_tokens=100
+                )
+                assert compressed
+                assert agent.session_id != original_sid
+            finally:
+                _close_session_db(db)

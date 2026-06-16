@@ -1,8 +1,8 @@
 import { DndContext } from '@dnd-kit/core'
+import { SortableContext } from '@dnd-kit/sortable'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { readSessionDrag } from '@/app/chat/composer/inline-refs'
 import type { SessionInfo } from '@/types/hermes'
 
 import { VirtualSessionList } from './virtual-session-list'
@@ -45,70 +45,46 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo
 }
 
-function fakeTransfer(data: Record<string, string> = {}) {
-  const store = { ...data }
-
-  return {
-    dropEffect: 'none',
-    effectAllowed: 'uninitialized',
-    getData: (type: string) => store[type] ?? '',
-    setData: (type: string, value: string) => {
-      store[type] = value
-    },
-    get types() {
-      return Object.keys(store)
-    }
-  } as unknown as DataTransfer
-}
-
 afterEach(() => {
   cleanup()
 })
 
 describe('VirtualSessionList drag behavior', () => {
-  it('keeps virtual sortable rows available for cross-section session drags', () => {
+  it('lets pointer-dnd own virtual sortable rows instead of native HTML5 drag', () => {
     const onSessionDragStart = vi.fn()
+    const onPointerDown = vi.fn()
 
     render(
       <DndContext>
-        <VirtualSessionList
-          activeSessionId={null}
-          onArchiveSession={vi.fn()}
-          onDeleteSession={vi.fn()}
-          onResumeSession={vi.fn()}
-          onSessionDragStart={onSessionDragStart}
-          onTogglePin={vi.fn()}
-          pinned={false}
-          sectionKey="sessions"
-          sessionDragEnabled
-          sessions={[session()]}
-          sortable
-          workingSessionIdSet={new Set()}
-        />
+        <SortableContext items={['s1']}>
+          <VirtualSessionList
+            activeSessionId={null}
+            onArchiveSession={vi.fn()}
+            onDeleteSession={vi.fn()}
+            onResumeSession={vi.fn()}
+            onSessionDragStart={onSessionDragStart}
+            onTogglePin={vi.fn()}
+            pinned={false}
+            sectionKey="sessions"
+            sessionDragEnabled
+            sessions={[session()]}
+            sortable
+            workingSessionIdSet={new Set()}
+          />
+        </SortableContext>
       </DndContext>
     )
 
     const row = screen.getByText('First session').closest('[data-session-id]') as HTMLElement
-    const transfer = fakeTransfer()
 
-    expect(row.draggable).toBe(true)
-    expect(row.dataset.sessionDragSource).toBe('true')
+    row.addEventListener('pointerdown', onPointerDown)
 
-    fireEvent.dragStart(row, { dataTransfer: transfer })
+    expect(row.draggable).toBe(false)
+    expect(row.dataset.sessionDragSource).toBeUndefined()
 
-    expect(readSessionDrag(transfer)).toMatchObject({
-      archived: false,
-      id: 's1',
-      pinId: 's1',
-      pinned: false,
-      profile: 'default',
-      title: 'First session'
-    })
-    expect(onSessionDragStart).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 's1',
-        pinned: false
-      })
-    )
+    fireEvent.pointerDown(row)
+
+    expect(onPointerDown).toHaveBeenCalledTimes(1)
+    expect(onSessionDragStart).not.toHaveBeenCalled()
   })
 })

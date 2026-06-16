@@ -1033,8 +1033,19 @@ class TestNormalizationBypass:
             '$(printf %b "\\x72m") -rf /home/victim',
             "$(printf rm | cat) -rf /home/victim",
             "$(printf rm;) -rf /home/victim",
+            "r$(printf m) -rf /home/victim",
+            "r${unset:-m} -rf /home/victim",
             "${0/x/r}m -rf /home/victim",
             "${unset:-rm} -rf /home/victim",
+            "( $(printf \"\\162m\") -rf /home/victim )",
+            "$(printf \"\\162m\") -rf /home/victim)",
+            "FOO=1 $(printf \"\\162m\") -rf /home/victim",
+            "sudo FOO=1 $(printf \"\\162m\") -rf /home/victim",
+            "env -i FOO=1 $(printf \"\\162m\") -rf /home/victim",
+            "command $(printf \"\\162m\") -rf /home/victim",
+            "{ $(printf \"\\162m\") -rf /home/victim; }",
+            '"$(printf "\\162m")" -rf /home/victim',
+            '"${unset:-rm}" -rf /home/victim',
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is True, f"dynamic argv[0] bypass was not caught: {cmd!r}"
@@ -1047,6 +1058,9 @@ class TestNormalizationBypass:
             "echo $(echo rm) -rf /",
             'echo $(printf "\\162m") -rf /',
             "echo ${unset:-rm} -rf /",
+            'echo "( $(echo rm) -rf / )"',
+            "echo FOO=1 $(echo rm) -rf /",
+            "'$(printf \"\\162m\")' -rf /",
         ):
             dangerous, key, desc = detect_dangerous_command(cmd)
             assert dangerous is False, f"ordinary argument was promoted: {cmd!r}"

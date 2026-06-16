@@ -10,6 +10,7 @@ const SOURCE_LABELS: Record<string, string> = {
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
+  photon: 'Photon',
   qqbot: 'QQ',
   signal: 'Signal',
   slack: 'Slack',
@@ -24,6 +25,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const SOURCE_ALIASES: Record<string, string[]> = {
   bluebubbles: ['apple messages', 'imessage'],
+  photon: ['imessage', 'messages'],
   cli: ['terminal'],
   desktop: ['app', 'gui'],
   local: ['machine'],
@@ -53,6 +55,7 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'signal',
   'whatsapp',
   'bluebubbles',
+  'photon',
   'homeassistant',
   'email',
   'sms',

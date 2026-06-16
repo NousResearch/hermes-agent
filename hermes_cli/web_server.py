@@ -63,6 +63,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli.mobile_bridge import run_mobile_dashboard_chat_turn as _run_mobile_dashboard_chat_turn
 from utils import env_var_enabled
 
 try:
@@ -6456,6 +6457,51 @@ async def cancel_oauth_session(
 # Session detail endpoints
 # ---------------------------------------------------------------------------
 
+
+_MOBILE_GATEWAY_SESSION_KEY_MAX_LEN = 256
+
+
+def _mobile_gateway_session_key(request: Request, session_id: str) -> str:
+    raw = request.headers.get("X-Hermes-Session-Key", "").strip()
+    if not raw:
+        return session_id
+    if re.search(r"[\r\n\x00]", raw):
+        raise HTTPException(status_code=400, detail="Invalid session key")
+    if len(raw) > _MOBILE_GATEWAY_SESSION_KEY_MAX_LEN:
+        raise HTTPException(status_code=400, detail="Session key too long")
+    return raw
+
+
+class MobileDashboardChatRequest(BaseModel):
+    message: str
+    system_message: Optional[str] = None
+    conversation_history: Optional[List[Dict[str, Any]]] = None
+
+
+@app.post("/api/mobile/sessions/{session_id}/chat")
+async def mobile_dashboard_chat_endpoint(
+    session_id: str,
+    body: MobileDashboardChatRequest,
+    request: Request,
+):
+    """Authenticated dashboard BFF route for one mobile/native chat turn.
+
+    This route deliberately stays under ``/api`` so existing dashboard auth
+    middleware remains the trust boundary.  The helper returns a browser-safe
+    redacted envelope and owns the per-turn soft cleanup contract.
+    """
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    gateway_session_key = _mobile_gateway_session_key(request, session_id)
+    return await _run_mobile_dashboard_chat_turn(
+        session_id=session_id,
+        user_message=message,
+        conversation_history=body.conversation_history or [],
+        system_message=body.system_message,
+        gateway_session_key=gateway_session_key,
+    )
 
 
 def _session_latest_descendant(session_id: str):

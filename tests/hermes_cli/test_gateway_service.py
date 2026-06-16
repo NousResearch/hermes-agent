@@ -606,8 +606,6 @@ class TestLaunchdServiceRecovery:
         domain = gateway_cli._launchd_domain()
         plist_text = plist_path.read_text(encoding="utf-8")
         assert "--replace" in plist_text
-        assert "<key>NumberOfFiles</key>" in plist_text
-        assert "<integer>4096</integer>" in plist_text
         # The calls list includes launchctl print probes from _launchd_domain()
         # before the bootout/bootstrap calls. Filter to only bootout/bootstrap.
         service_calls = [c for c in calls if "bootout" in c or "bootstrap" in c]

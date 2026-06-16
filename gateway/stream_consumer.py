@@ -510,23 +510,35 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit, len_fn=_len_fn,
                         )
-                        chunks_delivered = False
+                        any_chunks_delivered = False
+                        all_chunks_delivered = True
                         reply_to = self._message_id or self._initial_reply_to_id
                         for chunk in chunks:
-                            new_id = await self._send_new_chunk(chunk, reply_to)
-                            if new_id is not None and new_id != reply_to:
-                                chunks_delivered = True
+                            previous_reply_to = reply_to
+                            new_id = await self._send_new_chunk(chunk, previous_reply_to)
+                            chunk_delivered = (
+                                new_id is not None and new_id != previous_reply_to
+                            )
+                            if chunk_delivered:
+                                any_chunks_delivered = True
+                                reply_to = new_id
+                            else:
+                                all_chunks_delivered = False
+                                break
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
-                            # Only claim final delivery if THESE chunks actually
-                            # landed.  ``_already_sent`` may be True from prior
-                            # tool-progress edits or fallback-mode promotion (#10748)
-                            # — that doesn't mean the final answer reached the user.
-                            self._final_response_sent = chunks_delivered
-                            if chunks_delivered:
+                            # Only claim final delivery if EVERY split chunk
+                            # landed. A single successful chunk is partial
+                            # content, not final delivery; otherwise run.py
+                            # suppresses the normal final-send fallback and the
+                            # user can lose later chunks of the answer.
+                            self._final_response_sent = all_chunks_delivered
+                            if all_chunks_delivered:
                                 self._final_content_delivered = True
+                            elif not any_chunks_delivered:
+                                self._already_sent = False
                             return
                         if got_segment_break:
                             self._message_id = None

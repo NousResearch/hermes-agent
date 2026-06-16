@@ -934,12 +934,10 @@ class TestFinalResponseDeliveryGuard:
         consumer._already_sent = True
 
         # Long text > MAX_MESSAGE_LENGTH, no existing message id (fresh send path)
-        long_text = "x" * 200
+        long_text = "x" * 1000
         consumer.on_delta(long_text)
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
         consumer.finish()
-        await task
+        await consumer.run()
 
         assert consumer._final_response_sent is False, (
             "_already_sent leaked into _final_response_sent — gateway will "
@@ -947,9 +945,9 @@ class TestFinalResponseDeliveryGuard:
         )
 
     @pytest.mark.asyncio
-    async def test_split_overflow_partial_send_marks_final_sent(self):
-        """Split-overflow path: if at least one chunk lands on done frame,
-        we did deliver the final answer — _final_response_sent must be True."""
+    async def test_split_overflow_all_chunks_sent_marks_final_sent(self):
+        """Split-overflow path may claim final delivery only when every
+        chunk lands. A partial split send must leave the gateway fallback live."""
         adapter = MagicMock()
         adapter.send = AsyncMock(side_effect=[
             SimpleNamespace(success=True, message_id="msg_1"),
@@ -960,20 +958,48 @@ class TestFinalResponseDeliveryGuard:
         )
         adapter.MAX_MESSAGE_LENGTH = 100
         adapter.truncate_message = MagicMock(
-            side_effect=lambda text, limit: [text[:limit], text[limit:]],
+            side_effect=lambda text, limit, **kwargs: [text[:limit], text[limit:]],
         )
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        long_text = "x" * 200
+        long_text = "x" * 1000
         consumer.on_delta(long_text)
-        task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.05)
         consumer.finish()
-        await task
+        await consumer.run()
 
         assert consumer._final_response_sent is True
+        assert consumer._final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_split_overflow_partial_chunk_failure_does_not_mark_final_delivered(self):
+        """If only chunk 1 of an overflow split lands, do not suppress the
+        normal final-send fallback; chunk 2 still needs delivery."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="flood_control:13.0"),
+        ])
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit, **kwargs: [text[:limit], text[limit:]],
+        )
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        long_text = "x" * 1000
+        consumer.on_delta(long_text)
+        consumer.finish()
+        await consumer.run()
+
+        assert consumer._already_sent is True
+        assert consumer._final_response_sent is False
+        assert consumer._final_content_delivered is False
 
 
 class TestFinalContentDeliveredGuard:

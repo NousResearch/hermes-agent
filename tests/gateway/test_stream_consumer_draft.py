@@ -181,6 +181,41 @@ class TestDraftStreamingHappyPath:
         adapter.send.assert_awaited()
 
 
+class TestDraftOverflowSplitDelivery:
+    """Draft previews are not final delivery; overflow split chunks still
+    need all real sendMessage chunks to land before suppressing fallback."""
+
+    @pytest.mark.asyncio
+    async def test_partial_overflow_split_after_draft_does_not_mark_final_delivered(self):
+        adapter = _make_draft_capable_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 100
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit, **kwargs: [text[:limit], text[limit:]],
+        )
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=False, error="flood_control:13.0"),
+        ])
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=5, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        consumer.on_delta("preview")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("x" * 1000)
+        consumer.finish()
+        await task
+
+        assert len(adapter.draft_calls) >= 1
+        assert adapter.send.await_count == 2
+        assert consumer._already_sent is True
+        assert consumer._final_response_sent is False
+        assert consumer._final_content_delivered is False
+
+
 class TestDraftFallbackOnFailure:
     """When a draft frame fails, the consumer disables drafts for the rest
     of the response and continues via the edit-based path."""

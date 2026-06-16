@@ -2525,6 +2525,27 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Re-apply the ``!cmd`` → ``/cmd`` rewrite after stripping the bot
+            # mention.  When a user types ``@bot !model ...`` the original text
+            # starts with ``<@...>`` so the earlier bang-rewrite pass (which
+            # only fires when the text starts with ``!``) is skipped.  After
+            # mention-stripping the leading ``!`` is visible, so we run the
+            # same logic again here to normalise it to a slash command.
+            if text.startswith("!"):
+                try:
+                    from hermes_cli.commands import is_gateway_known_command
+
+                    first_token = text[1:].split(maxsplit=1)[0]
+                    cmd_name = first_token.split("@", 1)[0].lower()
+                    if (
+                        cmd_name
+                        and "/" not in cmd_name
+                        and is_gateway_known_command(cmd_name)
+                    ):
+                        text = "/" + text[1:]
+                        original_text = text  # keep original_text in sync for MessageType detection
+                except Exception:  # pragma: no cover - defensive
+                    pass
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would

@@ -5784,21 +5784,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent local sessions (CLI + TUI) for in-chat browsing/resume."""
         if not self._session_db:
             return []
         try:
             from hermes_cli.session_listing import query_session_listing
 
-            return query_session_listing(
+            all_sessions = query_session_listing(
                 self._session_db,
-                source="cli",
+                source=None,
                 current_session_id=self.session_id,
-                include_all_sources=False,
+                include_all_sources=True,
                 include_unnamed=True,
-                limit=limit,
+                limit=limit * 3,
                 exclude_sources=["tool"],
             )
+            # Include both CLI and TUI (desktop app) sessions — both are
+            # local interactive terminals.  Gateway sources (telegram,
+            # discord, etc.) are excluded.
+            local_sources = {"cli", "tui"}
+            return [
+                s for s in all_sessions if s.get("source", "cli") in local_sources
+            ][:limit]
         except Exception:
             return []
 

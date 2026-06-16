@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
+    ProviderDef,
     custom_provider_slug,
     determine_api_mode,
     get_label,
@@ -46,6 +47,23 @@ from agent.models_dev import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
+    """ProviderDef for a direct ``model.provider: custom`` endpoint."""
+    base_url = str(current_base_url or "").strip()
+    if not base_url:
+        return None
+    return ProviderDef(
+        id="custom",
+        name="Custom endpoint",
+        transport="openai_chat",
+        api_key_env_vars=(),
+        base_url=base_url,
+        is_aggregator=False,
+        auth_type="api_key",
+        source="model-config",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -807,6 +825,8 @@ def switch_model(
             user_providers,
             custom_providers,
         )
+        if pdef is None and explicit_provider.strip().lower() == "custom":
+            pdef = _bare_custom_provider_def(current_base_url)
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{provider_to_resolve}'. "
@@ -1012,6 +1032,8 @@ def switch_model(
 
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
+    if target_provider == "custom" and current_base_url:
+        provider_label = "Custom endpoint"
     if target_provider.startswith("custom:"):
         custom_pdef = resolve_provider_full(
             target_provider,
@@ -1063,6 +1085,10 @@ def switch_model(
                 api_key = _ukey
                 base_url = _user_pdef.base_url
                 api_mode = ""
+        elif target_provider == "custom" and current_base_url:
+            api_key = current_api_key
+            base_url = current_base_url
+            api_mode = determine_api_mode(target_provider, base_url)
         else:
             try:
                 runtime = resolve_runtime_provider(
@@ -1309,6 +1335,8 @@ def list_authenticated_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    *,
+    force_fresh_nous_tier: bool = False,
     max_models: int = 8,
     current_model: str = "",
 ) -> List[dict]:
@@ -1328,6 +1356,9 @@ def list_authenticated_providers(
       - source: str — "built-in", "models.dev", "user-config"
 
     Only includes providers that have API keys set or are user-defined endpoints.
+    ``force_fresh_nous_tier`` bypasses the short Nous tier cache for explicit
+    account-sensitive flows. UI picker opens should leave it false so they do
+    not block on fresh Portal/account checks every time.
     """
     import os
     from agent.models_dev import (
@@ -1670,7 +1701,7 @@ def list_authenticated_providers(
                     _portal = _st.get("portal_base_url", "") or ""
                 except Exception:
                     _portal = ""
-                if _nous_free(force_fresh=True):
+                if _nous_free(force_fresh=force_fresh_nous_tier):
                     model_ids, _ = _union_free(model_ids, _pricing, _portal)
                 else:
                     model_ids, _ = _union_paid(model_ids, _pricing, _portal)
@@ -1873,6 +1904,43 @@ def list_authenticated_providers(
             )
             if _pair[0] and _pair[1]:
                 _section3_emitted_pairs.add(_pair)
+
+    # --- 3b. Active bare custom endpoint from model config ---
+    # A config can still use the direct one-off form:
+    #   model.provider: custom
+    #   model.base_url: https://some-openai-compatible/v1
+    # In that shape there is no named providers:/custom_providers row for the
+    # picker to render, but the gateway only passes this current model slice to
+    # list_authenticated_providers(). Surface the active endpoint explicitly so
+    # /model does not look like it ignored config.yaml.
+    _current_provider_norm = str(current_provider or "").strip().lower()
+    if (
+        _current_provider_norm == "custom"
+        and current_base_url
+        and "custom" not in seen_slugs
+        and not any(
+            isinstance(_cp, dict)
+            and str(
+                _cp.get("base_url", "")
+                or _cp.get("url", "")
+                or _cp.get("api", "")
+            ).strip().rstrip("/").lower()
+            == str(current_base_url).strip().rstrip("/").lower()
+            for _cp in (custom_providers or [])
+        )
+    ):
+        _models = [current_model] if current_model else []
+        results.append({
+            "slug": "custom",
+            "name": "Custom endpoint",
+            "is_current": True,
+            "is_user_defined": True,
+            "models": _models[:max_models] if max_models else _models,
+            "total_models": len(_models),
+            "source": "model-config",
+            "api_url": str(current_base_url).strip().rstrip("/"),
+        })
+        seen_slugs.add("custom")
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named

@@ -66,141 +66,20 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .filter(([, v]) => v)
   )
 
-const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: string; placeholder?: string }> = {
-  TELEGRAM_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create a bot with @BotFather, then paste the token it gives you.',
-    placeholder: 'Paste Telegram bot token'
-  },
-  TELEGRAM_ALLOWED_USERS: {
-    label: 'Allowed Telegram user IDs',
-    help: 'Recommended. Comma-separated numeric IDs from @userinfobot. Without this, anyone can DM your bot.'
-  },
-  TELEGRAM_PROXY: {
-    label: 'Proxy URL',
-    help: 'Only needed on networks where Telegram is blocked.',
-    advanced: true
-  },
-  DISCORD_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
-  },
-  DISCORD_ALLOWED_USERS: {
-    label: 'Allowed Discord user IDs',
-    help: 'Recommended. Comma-separated Discord user IDs.'
-  },
-  DISCORD_REPLY_TO_MODE: {
-    label: 'Reply style',
-    help: 'first, all, or off.',
-    advanced: true
-  },
-  DISCORD_ALLOW_ALL_USERS: {
-    label: 'Allow all Discord users',
-    help: 'Development only. When true, anyone can DM the bot without an allowlist.',
-    advanced: true
-  },
-  DISCORD_HOME_CHANNEL: {
-    label: 'Home channel ID',
-    help: 'Channel where the bot sends proactive messages (cron output, reminders).',
-    advanced: true
-  },
-  DISCORD_HOME_CHANNEL_NAME: {
-    label: 'Home channel name',
-    help: 'Display name for the home channel in logs and status output.',
-    advanced: true
-  },
-  BLUEBUBBLES_ALLOW_ALL_USERS: {
-    label: 'Allow all iMessage users',
-    help: 'When true, skip the BlueBubbles allowlist.',
-    advanced: true
-  },
-  MATTERMOST_ALLOW_ALL_USERS: {
-    label: 'Allow all Mattermost users',
-    advanced: true
-  },
-  MATTERMOST_HOME_CHANNEL: {
-    label: 'Home channel',
-    advanced: true
-  },
-  QQ_ALLOW_ALL_USERS: {
-    label: 'Allow all QQ users',
-    advanced: true
-  },
-  QQBOT_HOME_CHANNEL: {
-    label: 'QQ home channel',
-    help: 'Default channel or group for cron delivery.',
-    advanced: true
-  },
-  QQBOT_HOME_CHANNEL_NAME: {
-    label: 'QQ home channel name',
-    advanced: true
-  },
-  SLACK_BOT_TOKEN: {
-    label: 'Slack bot token',
-    help: 'Use the bot token from OAuth & Permissions after installing your Slack app.',
-    placeholder: 'Paste Slack bot token'
-  },
-  SLACK_APP_TOKEN: {
-    label: 'Slack app token',
-    help: 'Use the app-level token required for Socket Mode.',
-    placeholder: 'Paste Slack app token'
-  },
-  SLACK_ALLOWED_USERS: {
-    label: 'Allowed Slack user IDs',
-    help: 'Recommended. Comma-separated Slack user IDs.'
-  },
-  MATTERMOST_URL: {
-    label: 'Server URL',
-    placeholder: 'https://mattermost.example.com'
-  },
-  MATTERMOST_TOKEN: {
-    label: 'Bot token'
-  },
-  MATTERMOST_ALLOWED_USERS: {
-    label: 'Allowed user IDs',
-    help: 'Recommended. Comma-separated Mattermost user IDs.'
-  },
-  MATRIX_HOMESERVER: {
-    label: 'Homeserver URL',
-    placeholder: 'https://matrix.org'
-  },
-  MATRIX_ACCESS_TOKEN: {
-    label: 'Access token'
-  },
-  MATRIX_USER_ID: {
-    label: 'Bot user ID',
-    placeholder: '@hermes:example.org'
-  },
-  MATRIX_ALLOWED_USERS: {
-    label: 'Allowed Matrix user IDs',
-    help: 'Recommended. Comma-separated user IDs in @user:server format.'
-  },
-  SIGNAL_HTTP_URL: {
-    label: 'Signal bridge URL',
-    placeholder: 'http://127.0.0.1:8080',
-    help: 'URL of a running signal-cli REST bridge.'
-  },
-  SIGNAL_ACCOUNT: {
-    label: 'Phone number',
-    help: 'The number registered with your signal-cli bridge.'
-  },
-  SIGNAL_ALLOWED_USERS: {
-    label: 'Allowed Signal users',
-    help: 'Recommended. Comma-separated Signal identifiers.'
-  },
-  WHATSAPP_ENABLED: {
-    label: 'Enable WhatsApp bridge',
-    help: 'Set automatically by the toggle below. Leave alone unless you know you need it.',
-    advanced: true
-  },
-  WHATSAPP_MODE: {
-    label: 'Bridge mode',
-    advanced: true
-  },
-  WHATSAPP_ALLOWED_USERS: {
-    label: 'Allowed WhatsApp users',
-    help: 'Recommended. Comma-separated phone numbers or WhatsApp IDs.'
-  }
+const FIELD_COPY: Record<string, { advanced?: boolean }> = {
+  TELEGRAM_PROXY: { advanced: true },
+  DISCORD_REPLY_TO_MODE: { advanced: true },
+  DISCORD_ALLOW_ALL_USERS: { advanced: true },
+  DISCORD_HOME_CHANNEL: { advanced: true },
+  DISCORD_HOME_CHANNEL_NAME: { advanced: true },
+  BLUEBUBBLES_ALLOW_ALL_USERS: { advanced: true },
+  MATTERMOST_ALLOW_ALL_USERS: { advanced: true },
+  MATTERMOST_HOME_CHANNEL: { advanced: true },
+  QQ_ALLOW_ALL_USERS: { advanced: true },
+  QQBOT_HOME_CHANNEL: { advanced: true },
+  QQBOT_HOME_CHANNEL_NAME: { advanced: true },
+  WHATSAPP_ENABLED: { advanced: true },
+  WHATSAPP_MODE: { advanced: true }
 }
 
 function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
@@ -208,9 +87,9 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   const localized = m.fieldCopy[field.key] || {}
 
   return {
-    label: localized.label || copy.label || field.prompt || field.key,
-    help: localized.help || copy.help || field.description,
-    placeholder: localized.placeholder || copy.placeholder || field.prompt,
+    label: localized.label || field.prompt || field.key,
+    help: localized.help || field.description,
+    placeholder: localized.placeholder || field.prompt,
     advanced: Boolean(copy.advanced || field.advanced)
   }
 }
@@ -570,7 +449,7 @@ function PlatformDetail({
           {hiddenCount > 0 && (
             <section>
               <button
-                className="flex w-full items-center justify-between gap-2 rounded-lg px-1 py-1 text-left text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground"
+                className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >
@@ -598,17 +477,13 @@ function PlatformDetail({
 
       <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? m.enabled : m.disabled}
-            </span>
-          </label>
+          <Switch
+            aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+            checked={platform.enabled}
+            disabled={saving === `enabled:${platform.id}`}
+            onCheckedChange={onToggle}
+            size="xs"
+          />
 
           <div className="ml-auto flex items-center gap-2">
             {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
@@ -652,7 +527,7 @@ const PLATFORM_INTRO: Record<string, string> = {
   wecom_callback:
     'Set up a WeCom self-built app, expose its callback URL, and provide the corp ID, secret, agent ID, and AES key.',
   weixin:
-    'Sign in to the WeChat Official Account platform, copy the AppID and Token, and point the message callback URL at Hermes.',
+    'Run `hermes gateway setup`, select Weixin, then scan and confirm the QR code with a personal WeChat account. Hermes connects through Tencent\'s iLink Bot API and saves the credentials.',
   qqbot: 'Register an app on the QQ Open Platform (q.qq.com) and copy the App ID and Client Secret.',
   api_server:
     'Expose Hermes as an OpenAI-compatible API. Set an auth key, then point Open WebUI / LobeChat / etc. at the host:port.',

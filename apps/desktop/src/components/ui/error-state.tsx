@@ -1,7 +1,14 @@
 import type { ReactNode } from 'react'
 
-import { AlertCircle } from '@/lib/icons'
+import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
+
+// The single canonical error glyph (codicon's filled error mark). Use this
+// everywhere an error is surfaced (boundaries, dialogs, banners) so failures
+// read identically — one icon, one color, no background chip.
+export function ErrorIcon({ className, size = '1.75rem' }: { className?: string; size?: string }) {
+  return <Codicon className={cn('text-destructive', className)} name="error" size={size} />
+}
 
 export interface ErrorStateProps {
   /** Optional actions row/stack rendered below the copy. */
@@ -13,18 +20,16 @@ export interface ErrorStateProps {
   title: ReactNode
 }
 
-// Shared, presentation-only error layout: a destructive icon chip over a
-// centered title + body, with an optional actions stack. Used by both the
-// top-level React error boundary and the in-dialog update error so every
-// failure state reads the same. Title/description accept nodes so callers in a
-// Radix Dialog can pass DialogTitle/DialogDescription for accessibility.
+// Shared, presentation-only error layout: the canonical ErrorIcon (no bg chip)
+// over a centered title + body, with an optional actions stack. Used by the
+// React error boundary, the in-dialog update error, and the boot-failure banner
+// so every failure reads the same. Title/description accept nodes so Radix
+// Dialog callers can pass DialogTitle/DialogDescription for accessibility.
 export function ErrorState({ children, className, description, icon, title }: ErrorStateProps) {
   return (
     <div className={cn('grid gap-5', className)}>
       <div className="flex flex-col items-center gap-3 text-center">
-        <span className="flex size-14 items-center justify-center rounded-2xl bg-destructive/10 text-destructive">
-          {icon ?? <AlertCircle className="size-7" />}
-        </span>
+        {icon ?? <ErrorIcon />}
 
         {typeof title === 'string' ? (
           <h2 className="text-center text-xl font-semibold tracking-tight">{title}</h2>

@@ -109,6 +109,7 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
             "capture_output": True,
             "text": True,
             "timeout": 5,
+            "stdin": subprocess.DEVNULL,
         })
     ]
 

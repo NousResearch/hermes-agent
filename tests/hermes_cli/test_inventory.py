@@ -141,6 +141,18 @@ def _list_auth_returning(rows: list[dict]):
     )
 
 
+def _nous_row(model: str = "openai/gpt-5.5") -> dict:
+    return {
+        "slug": "nous",
+        "name": "Nous",
+        "models": [model],
+        "total_models": 1,
+        "is_current": True,
+        "is_user_defined": False,
+        "source": "built-in",
+    }
+
+
 def test_build_models_payload_returns_expected_shape():
     rows = [
         {"slug": "openrouter", "name": "OpenRouter", "models": ["m1"],
@@ -171,6 +183,98 @@ def test_build_models_payload_does_not_call_provider_model_ids():
          patch("hermes_cli.models.provider_model_ids") as mock_pm:
         build_models_payload(ctx)
     mock_pm.assert_not_called()
+
+
+def test_build_models_payload_uses_cached_nous_tier_by_default():
+    """Picker payloads should not force fresh Nous account checks.
+
+    Desktop/status picker opens are request/response UI paths. They can hit
+    the short free-tier cache; explicit model/auth flows can still opt into a
+    fresh account check when needed.
+    """
+    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+    rows = [_nous_row()]
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=rows,
+    ) as mock_list:
+        build_models_payload(ctx)
+
+    mock_list.assert_called_once()
+    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is False
+
+
+def test_build_models_payload_can_force_fresh_nous_tier():
+    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+    rows = [_nous_row()]
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=rows,
+    ) as mock_list:
+        build_models_payload(ctx, force_fresh_nous_tier=True)
+
+    mock_list.assert_called_once()
+    assert mock_list.call_args.kwargs["force_fresh_nous_tier"] is True
+
+
+def test_list_authenticated_providers_force_fresh_is_keyword_only():
+    """``force_fresh_nous_tier`` must be keyword-only on the public listing API.
+
+    It was inserted between ``custom_providers`` and ``max_models``; making it
+    keyword-only ensures no positional caller passing ``max_models`` as the 5th
+    arg silently mis-binds it to the tier-refresh flag. Pin the contract so a
+    future signature edit that drops the ``*`` separator is caught.
+    """
+    import inspect
+
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    sig = inspect.signature(list_authenticated_providers)
+    param = sig.parameters["force_fresh_nous_tier"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is False
+
+
+def test_pricing_uses_cached_nous_tier_by_default():
+    rows = [_nous_row()]
+    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+    with (
+        _list_auth_returning(rows),
+        patch(
+            "hermes_cli.models.get_pricing_for_provider",
+            return_value={
+                "openai/gpt-5.5": {
+                    "prompt": "0.000001",
+                    "completion": "0.000002",
+                },
+            },
+        ),
+        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
+    ):
+        build_models_payload(ctx, pricing=True)
+
+    mock_free.assert_called_once_with(force_fresh=False)
+
+
+def test_pricing_can_force_fresh_nous_tier():
+    rows = [_nous_row()]
+    ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
+    with (
+        _list_auth_returning(rows),
+        patch(
+            "hermes_cli.models.get_pricing_for_provider",
+            return_value={
+                "openai/gpt-5.5": {
+                    "prompt": "0.000001",
+                    "completion": "0.000002",
+                },
+            },
+        ),
+        patch("hermes_cli.models.check_nous_free_tier", return_value=False) as mock_free,
+    ):
+        build_models_payload(ctx, pricing=True, force_fresh_nous_tier=True)
+
+    mock_free.assert_called_once_with(force_fresh=True)
 
 
 def test_include_unconfigured_appends_canonical_skeletons():
@@ -378,3 +482,127 @@ def test_payload_shape_compatible_with_modelpickerdialog_frontend():
     for row in payload["providers"]:
         missing = required_keys - row.keys()
         assert not missing, f"row {row['slug']} missing keys: {missing}"
+
+
+# ─── Aggregator dedup (issue #45954) ───────────────────────────────────
+
+
+def _user_provider_row(slug: str, models: list[str]) -> dict:
+    return {
+        "slug": slug,
+        "name": slug.title(),
+        "models": models,
+        "total_models": len(models),
+        "is_current": False,
+        "is_user_defined": True,
+        "source": "user-config",
+    }
+
+
+def _aggregator_row(slug: str, models: list[str]) -> dict:
+    return {
+        "slug": slug,
+        "name": slug.title(),
+        "models": models,
+        "total_models": len(models),
+        "is_current": False,
+        "is_user_defined": False,
+        "source": "built-in",
+    }
+
+
+def test_aggregator_dedup_removes_overlapping_models():
+    """Models served by a user-defined provider are removed from
+    aggregator rows so the picker doesn't show them under the wrong
+    provider.  (#45954)"""
+    rows = [
+        _user_provider_row("litellm-proxy", [
+            "nvidia/nim/minimax-m3",
+            "nvidia/nim/kimi-k2.6",
+        ]),
+        _aggregator_row("openrouter", [
+            "minimax/minimax-m3",
+            "nvidia/nim/minimax-m3",  # overlaps with litellm-proxy
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    proxy_row = next(r for r in payload["providers"] if r["slug"] == "litellm-proxy")
+
+    # User-defined provider keeps all its models
+    assert proxy_row["models"] == ["nvidia/nim/minimax-m3", "nvidia/nim/kimi-k2.6"]
+
+    # Aggregator lost the overlapping model but kept the rest
+    assert "nvidia/nim/minimax-m3" not in or_row["models"]
+    assert "minimax/minimax-m3" in or_row["models"]
+    assert "anthropic/claude-sonnet-4.6" in or_row["models"]
+    assert or_row["total_models"] == 2
+
+
+def test_aggregator_dedup_case_insensitive():
+    """Dedup uses case-insensitive matching.  (#45954)"""
+    rows = [
+        _user_provider_row("my-proxy", ["NVIDIA/NIM/MiniMax-M3"]),
+        _aggregator_row("openrouter", ["nvidia/nim/minimax-m3", "other/model"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert "nvidia/nim/minimax-m3" not in or_row["models"]
+    assert or_row["total_models"] == 1
+
+
+def test_aggregator_dedup_no_overlap_unchanged():
+    """When there's no overlap, aggregator models are untouched.  (#45954)"""
+    rows = [
+        _user_provider_row("litellm-proxy", ["custom/model-a"]),
+        _aggregator_row("openrouter", ["anthropic/claude-sonnet-4.6"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert or_row["models"] == ["anthropic/claude-sonnet-4.6"]
+    assert or_row["total_models"] == 1
+
+
+def test_aggregator_dedup_no_user_providers_unchanged():
+    """When there are no user-defined providers, nothing is filtered.
+    (#45954)"""
+    rows = [
+        _aggregator_row("openrouter", [
+            "nvidia/nim/minimax-m3",
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = payload["providers"][0]
+    assert len(or_row["models"]) == 2
+
+
+def test_aggregator_dedup_multiple_user_providers():
+    """Models from all user-defined providers are excluded from aggregators.
+    (#45954)"""
+    rows = [
+        _user_provider_row("proxy-a", ["model-x"]),
+        _user_provider_row("proxy-b", ["model-y"]),
+        _aggregator_row("openrouter", ["model-x", "model-y", "model-z"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert or_row["models"] == ["model-z"]
+    assert or_row["total_models"] == 1
+

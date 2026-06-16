@@ -219,11 +219,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     agentsNudgedThisTurn = false
   }
 
-  // Kick off the config fetch eagerly at handler creation so the flag is
-  // resolved well before the first delegation of any real session (which
-  // only happens after gateway.ready + a user turn).
-  ensureAgentsNudgeConfig()
-
   const refreshDelegationStatus = (force = false) => {
     const now = Date.now()
 
@@ -311,6 +306,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    // Kick off the config fetch once the gateway is actually ready. If handler
+    // construction does this during React render, a startup transport error can
+    // report through sys(), mutate transcript state, and trip React's
+    // "too many re-renders" guard in embedded dashboard PTYs.
+    ensureAgentsNudgeConfig()
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
@@ -503,6 +504,35 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'notification.show': {
+        // Credits/usage notice from the gateway. Payload is snake_case on the
+        // wire and stays snake_case in UiState.notice (no mapping layer). The
+        // text already carries its own glyph; turnController decides whether to
+        // show now or hold until turn end (FaceTicker wins while busy).
+        const p = ev.payload
+
+        if (!p?.text) {
+          return
+        }
+
+        turnController.showNotice({
+          id: p.id,
+          key: p.key,
+          kind: p.kind ?? 'sticky',
+          level: p.level ?? 'info',
+          text: p.text,
+          ttl_ms: p.ttl_ms ?? null
+        })
+
+        return
+      }
+
+      case 'notification.clear':
+        // Key-matched clear only — a stale/late clear must not wipe a newer
+        // notice (turnController guards the key match).
+        turnController.clearNotice(ev.payload?.key)
+
+        return
       case 'gateway.stderr': {
         const line = String(ev.payload.line).slice(0, 120)
 
@@ -699,8 +729,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
+        // Only an explicit false (tirith warning) drops the permanent-allow option.
+        const allowPermanent = ev.payload.allow_permanent !== false
 
-        patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
+        patchOverlayState({
+          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+        })
         setStatus('approval needed')
 
         return

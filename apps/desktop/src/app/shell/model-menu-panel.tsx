@@ -17,12 +17,14 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
   $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
+  effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
   setModelVisibilityOpen
@@ -50,6 +52,8 @@ interface ProviderGroup {
 }
 
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
   const [search, setSearch] = useState('')
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
@@ -83,21 +87,25 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+  const effectiveVisibleModels = useMemo(
+    () => effectiveVisibleKeys(visibleModels, providers ?? []),
+    [visibleModels, providers]
+  )
 
   const switchTo = (model: string, provider: string) =>
     onSelectModel({ model, persistGlobal: !activeSessionId, provider })
 
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, visibleModels),
-    [providers, search, optionsModel, optionsProvider, visibleModels]
+    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (
     <>
       <DropdownMenuSearch
-        aria-label="Search models"
+        aria-label={copy.search}
         onValueChange={setSearch}
-        placeholder="Search models"
+        placeholder={copy.search}
         value={search}
       />
 
@@ -122,7 +130,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         </DropdownMenuItem>
       ) : groups.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
-          No models found
+          {copy.noModels}
         </DropdownMenuItem>
       ) : (
         <div className="max-h-80 overflow-y-auto py-0.5">
@@ -154,18 +162,17 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   currentFastMode
                 )
 
-                // Grayed text: active row shows live state (Fast + effort);
-                // others show a fast-capability hint.
+                // Grayed text is live session state only. Do not label inactive
+                // rows as "Fast" just because they have a fast-capable sibling:
+                // that makes an off Fast toggle look like it is already on.
                 const meta = isCurrent
                   ? [
-                      fastControl.kind !== 'none' && fastControl.on ? 'Fast' : null,
-                      reasoningEffortLabel(currentReasoningEffort) || 'Med'
+                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
                     ]
                       .filter(Boolean)
                       .join(' ')
-                  : caps?.fast || family.fastId
-                    ? 'Fast'
-                    : ''
+                  : ''
 
                 // Every row is a hover-Edit submenu trigger. Activating it
                 // (pointer or keyboard) switches to the family's base model;
@@ -218,7 +225,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
       >
-        Edit Models…
+        {copy.editModels}
       </DropdownMenuItem>
     </>
   )

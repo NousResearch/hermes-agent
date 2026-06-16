@@ -137,6 +137,26 @@ export const removeQueuedPrompt = (key: string | null | undefined, id: string): 
   return true
 }
 
+export const promoteQueuedPrompt = (key: string | null | undefined, id: string): boolean => {
+  const sid = sidOf(key)
+
+  if (!sid) {
+    return false
+  }
+
+  const queue = queueFor(sid)
+  const index = queue.findIndex(e => e.id === id)
+
+  if (index <= 0) {
+    return false
+  }
+
+  const entry = queue[index]!
+  writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+
+  return true
+}
+
 export const updateQueuedPrompt = (
   key: string | null | undefined,
   id: string,
@@ -189,38 +209,58 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
   writeSession(sid, [])
 }
 
-/** Inputs to {@link shouldAutoDrainOnSettle}, captured at a `busy` transition. */
-export interface AutoDrainSettleInput {
-  wasBusy: boolean
+/**
+ * Move pending entries from a dead session key onto a live one, preserving FIFO
+ * (existing target entries first, migrated entries appended). A backend bounce /
+ * resume can mint a fresh runtime session id for the *same* conversation; the
+ * entries enqueued under the old id would otherwise be stranded under a key
+ * nothing reads anymore. No-op unless both keys resolve and differ.
+ */
+export const migrateQueuedPrompts = (
+  fromKey: string | null | undefined,
+  toKey: string | null | undefined
+): boolean => {
+  const from = sidOf(fromKey)
+  const to = sidOf(toKey)
+
+  if (!from || !to || from === to) {
+    return false
+  }
+
+  const pending = queueFor(from)
+
+  if (pending.length === 0) {
+    return false
+  }
+
+  const next = { ...$queuedPromptsBySession.get() }
+  delete next[from]
+  next[to] = [...queueFor(to), ...pending]
+
+  $queuedPromptsBySession.set(next)
+  save(next)
+
+  return true
+}
+
+/** Inputs to {@link shouldAutoDrain}. */
+export interface AutoDrainInput {
   isBusy: boolean
   queueLength: number
-  userInterrupted: boolean
 }
 
 /**
- * Decide whether the composer should auto-drain the next queued prompt when a
- * turn settles (busy transitions true → false).
+ * Decide whether the composer should auto-drain the next queued prompt.
  *
- * The queue auto-advances when a turn *completes naturally*, but must NOT
- * advance when the user *explicitly interrupted* the turn via the Stop button.
- * Conflating the two made the Stop button appear to "never work": cancelling a
- * turn flipped busy → false, the queue immediately re-fired its head, and the
- * agent kept running. An explicit interrupt means stop — the queued turns are
- * preserved and the user resumes them deliberately (Cmd/Ctrl+K, Enter, or the
- * per-row "send now" arrow).
+ * Edge-independent on purpose: the queue must advance whenever the session is
+ * idle and has pending entries, NOT only on an observed busy true → false edge.
+ * A backend bounce / websocket reconnect remounts the composer and resets the
+ * busy ref to the current value, swallowing the settle edge — an edge-gated
+ * drain would then strand the entry forever. The caller's drain lock
+ * (`drainingQueueRef`) serializes sends so being edge-free can't double-submit.
  */
-export const shouldAutoDrainOnSettle = (params: AutoDrainSettleInput): boolean => {
-  const { isBusy, queueLength, userInterrupted, wasBusy } = params
+export const shouldAutoDrain = ({ isBusy, queueLength }: AutoDrainInput): boolean => !isBusy && queueLength > 0
 
-  // Only react to a true → false transition; ignore steady state and entry.
-  if (isBusy || !wasBusy) {
-    return false
-  }
-
-  // An explicit Stop suppresses exactly one auto-drain.
-  if (userInterrupted) {
-    return false
-  }
-
-  return queueLength > 0
-}
+/** Auto-drain attempts for one entry before we stop retrying and toast. The
+ * entry stays queued for a manual send; a remount/reconnect resets the count. */
+export const MAX_AUTO_DRAIN_ATTEMPTS = 4

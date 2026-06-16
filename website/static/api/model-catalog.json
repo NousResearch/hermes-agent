@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-04T23:57:51Z",
+  "updated_at": "2026-06-13T08:41:46Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -81,6 +81,10 @@
           "description": "recommended"
         },
         {
+          "id": "moonshotai/kimi-k2.7-code",
+          "description": ""
+        },
+        {
           "id": "minimax/minimax-m3",
           "description": ""
         },
@@ -117,11 +121,19 @@
           "description": "free"
         },
         {
+          "id": "poolside/laguna-m.1:free",
+          "description": "free"
+        },
+        {
           "id": "tencent/hy3-preview:free",
           "description": "free"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "description": "free"
         },
         {
@@ -183,6 +195,9 @@
         },
         {
           "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "moonshotai/kimi-k2.7-code"
         },
         {
           "id": "minimax/minimax-m3"

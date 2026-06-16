@@ -305,7 +305,7 @@ web:
 web:
   backend: "xai"
   xai:
-    model: grok-4.3              # reasoning model required by web_search (default)
+    model: grok-build-0.1        # reasoning model required by web_search (default)
     allowed_domains:             # optional, max 5 — mutex with excluded_domains
       - arxiv.org
     excluded_domains:            # optional, max 5

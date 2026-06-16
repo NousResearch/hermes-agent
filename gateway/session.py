@@ -743,8 +743,9 @@ class SessionStore:
                     for key, entry_data in data.items():
                         try:
                             self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
+                        except (ValueError, KeyError, TypeError):
                             # Skip entries with unknown/removed platform values
+                            # or corrupted type fields (e.g. bool where dict expected)
                             continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")

@@ -9,6 +9,7 @@ Batch delays are read from ``config.extra`` (config.yaml), not env vars.
 """
 
 import asyncio
+from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
@@ -105,3 +106,95 @@ def test_lone_message_dispatched_alone():
 
     asyncio.run(_drive())
     assert dispatched == ["solo"]
+
+async def _flush_with_recorded_delay(monkeypatch, adapter, event):
+    sleeps = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr("gateway.platforms.whatsapp.asyncio.sleep", fake_sleep)
+    adapter.handle_message = AsyncMock()
+    key = adapter._text_batch_key(event)
+    event._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
+    adapter._pending_text_batches[key] = event
+
+    await adapter._flush_text_batch(key)
+
+    adapter.handle_message.assert_awaited_once_with(event)
+    return sleeps
+
+
+def test_adaptive_batch_tiers_mirror_telegram_ordering():
+    assert WhatsAppAdapter._TEXT_BATCH_FAST_LEN < WhatsAppAdapter._TEXT_BATCH_SHORT_LEN
+    assert WhatsAppAdapter._TEXT_BATCH_FAST_DELAY_S < WhatsAppAdapter._TEXT_BATCH_SHORT_DELAY_S
+    assert WhatsAppAdapter._TEXT_BATCH_FAST_DELAY_S > 0
+    assert WhatsAppAdapter._TEXT_BATCH_SHORT_DELAY_S > 0
+
+
+def test_short_text_batch_uses_telegram_fast_delay(monkeypatch):
+    adapter = _make_adapter(text_batch_delay_seconds=5.0)
+
+    async def _drive():
+        sleeps = await _flush_with_recorded_delay(monkeypatch, adapter, _event("short message"))
+        assert sleeps == [WhatsAppAdapter._TEXT_BATCH_FAST_DELAY_S]
+
+    asyncio.run(_drive())
+
+
+def test_medium_text_batch_uses_telegram_short_delay(monkeypatch):
+    adapter = _make_adapter(text_batch_delay_seconds=5.0)
+
+    async def _drive():
+        sleeps = await _flush_with_recorded_delay(
+            monkeypatch,
+            adapter,
+            _event("m" * (WhatsAppAdapter._TEXT_BATCH_FAST_LEN + 1)),
+        )
+        assert sleeps == [WhatsAppAdapter._TEXT_BATCH_SHORT_DELAY_S]
+
+    asyncio.run(_drive())
+
+
+def test_configured_delay_can_cap_adaptive_tiers(monkeypatch):
+    adapter = _make_adapter(text_batch_delay_seconds=0.1)
+
+    async def _drive():
+        short_sleeps = await _flush_with_recorded_delay(monkeypatch, adapter, _event("short"))
+        medium_sleeps = await _flush_with_recorded_delay(
+            monkeypatch,
+            adapter,
+            _event("m" * (WhatsAppAdapter._TEXT_BATCH_FAST_LEN + 1)),
+        )
+        assert short_sleeps == [0.1]
+        assert medium_sleeps == [0.1]
+
+    asyncio.run(_drive())
+
+
+def test_long_text_batch_uses_configured_delay(monkeypatch):
+    adapter = _make_adapter(text_batch_delay_seconds=0.5)
+
+    async def _drive():
+        sleeps = await _flush_with_recorded_delay(
+            monkeypatch,
+            adapter,
+            _event("m" * (WhatsAppAdapter._TEXT_BATCH_SHORT_LEN + 1)),
+        )
+        assert sleeps == [0.5]
+
+    asyncio.run(_drive())
+
+
+def test_near_split_text_batch_uses_split_delay(monkeypatch):
+    adapter = _make_adapter(text_batch_delay_seconds=0.5, text_batch_split_delay_seconds=1.5)
+
+    async def _drive():
+        sleeps = await _flush_with_recorded_delay(
+            monkeypatch,
+            adapter,
+            _event("m" * WhatsAppAdapter._SPLIT_THRESHOLD),
+        )
+        assert sleeps == [1.5]
+
+    asyncio.run(_drive())

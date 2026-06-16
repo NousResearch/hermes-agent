@@ -691,6 +691,7 @@ def classify_api_error(
 
     classified = _classify_by_message(
         error_msg, error_type,
+        provider=provider_lower,
         approx_tokens=approx_tokens,
         context_length=context_length,
         result_fn=_result,
@@ -1145,6 +1146,7 @@ def _classify_by_message(
     error_msg: str,
     error_type: str,
     *,
+    provider: str = "",
     approx_tokens: int,
     context_length: int,
     result_fn,
@@ -1257,6 +1259,20 @@ def _classify_by_message(
     # model response.
     if any(p in error_msg for p in _TIMEOUT_MESSAGE_PATTERNS):
         return result_fn(FailoverReason.timeout, retryable=True)
+
+    # OpenRouter sometimes wraps upstream provider failures as a status-less
+    # generic "Provider returned error". Specific inner messages from
+    # metadata.raw are appended to error_msg earlier and win above; when only
+    # the generic wrapper remains, treat it like a transient provider-side
+    # rate limit so fallback cooldown keeps the next turn off the failing
+    # primary path.
+    if provider == "openrouter" and "provider returned error" in error_msg:
+        return result_fn(
+            FailoverReason.rate_limit,
+            retryable=True,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
 
     return None
 

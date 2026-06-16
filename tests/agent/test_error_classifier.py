@@ -1326,6 +1326,19 @@ class TestAdversarialEdgeCases:
         result = classify_api_error(e, provider="openrouter")
         assert result.reason == FailoverReason.rate_limit
 
+    def test_openrouter_provider_returned_error_without_status_is_rate_limit(self):
+        e = MockAPIError("Provider returned error")
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_generic_provider_returned_error_without_openrouter_stays_unknown(self):
+        e = MockAPIError("Provider returned error")
+        result = classify_api_error(e, provider="custom")
+        assert result.reason == FailoverReason.unknown
+
     def test_thinking_signature_via_openrouter(self):
         """Thinking signature errors proxied through OpenRouter must be caught."""
         e = MockAPIError(

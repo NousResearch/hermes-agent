@@ -1589,6 +1589,15 @@ async function readCommitLog(cwd, branch) {
 
 let updateInFlight = false
 
+// Set to true when the desktop is about to quit so a detached swap/install
+// script can take over. On macOS, app.quit() closes windows but
+// window-all-closed deliberately keeps the process alive (standard Electron
+// macOS convention). Without this flag the process never exits — the detached
+// swapper spins its PID-wait for the full timeout, and the user sees a blank
+// app with no window. When set, window-all-closed calls app.quit() on every
+// platform so the process actually dies and the hand-off script can proceed.
+let isQuittingForHandoff = false
+
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
@@ -1836,6 +1845,7 @@ async function applyUpdates(opts = {}) {
 
     // Give the OS a beat to register the new process, then quit. The updater
     // rebuilds and relaunches us when it's done.
+    isQuittingForHandoff = true
     setTimeout(() => {
       app.quit()
     }, 600)
@@ -1877,6 +1887,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
   child.unref()
 
   rememberLog(`[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`)
+  isQuittingForHandoff = true
   setTimeout(() => {
     app.quit()
   }, 600)
@@ -2079,6 +2090,7 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
+  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
@@ -6356,6 +6368,7 @@ async function runDesktopUninstall(mode) {
 
   // Give the renderer a beat to show its "uninstalling…" state, then quit so
   // the venv python shim + app bundle unlock and the cleanup script can run.
+  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 800)
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
@@ -6550,5 +6563,10 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // macOS convention: keep the process alive in the Dock when the user closes
+  // the last window. But when we're handing off to a detached updater / swap
+  // script, the process MUST exit so the script can replace the bundle and
+  // relaunch — without this the swapper's PID-wait spins to its full timeout
+  // and the user is left with an invisible app.
+  if (process.platform !== 'darwin' || isQuittingForHandoff) app.quit()
 })

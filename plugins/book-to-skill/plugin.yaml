@@ -1,0 +1,9 @@
+name: book-to-skill
+version: 0.1.0
+description: "Convert books and documents into structured Hermes skills (upstream virgiliojr94/book-to-skill)."
+author: "virgiliojr94 (upstream), Hermes integration"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows

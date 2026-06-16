@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections import OrderedDict
 from datetime import datetime
@@ -71,6 +72,8 @@ _PHONE_RE = re.compile(r"\+?\d{7,15}")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
+_MESSAGE_GUID_DEDUP_TTL_SECONDS = 60.0
+_MESSAGE_GUID_DEDUP_CACHE_SIZE = 1000
 
 
 def _redact(text: str) -> str:
@@ -150,6 +153,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._recent_message_guids: OrderedDict[str, float] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -860,6 +864,30 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _is_duplicate_message_guid(
+        self,
+        msg_guid: Optional[str],
+        now: Optional[float] = None,
+    ) -> bool:
+        """Track recently seen inbound iMessage GUIDs."""
+        if not msg_guid:
+            return False
+        now = time.monotonic() if now is None else now
+        expired = [
+            guid
+            for guid, seen_at in self._recent_message_guids.items()
+            if now - seen_at > _MESSAGE_GUID_DEDUP_TTL_SECONDS
+        ]
+        for guid in expired:
+            self._recent_message_guids.pop(guid, None)
+        if msg_guid in self._recent_message_guids:
+            self._recent_message_guids.move_to_end(msg_guid)
+            return True
+        self._recent_message_guids[msg_guid] = now
+        while len(self._recent_message_guids) > _MESSAGE_GUID_DEDUP_CACHE_SIZE:
+            self._recent_message_guids.popitem(last=False)
+        return False
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -912,6 +940,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             **_TAPBACK_ADDED,
             **_TAPBACK_REMOVED,
         }:
+            return web.Response(text="ok")
+
+        msg_guid = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("originalGuid"),
+        )
+        if self._is_duplicate_message_guid(msg_guid):
+            logger.debug(
+                "[bluebubbles] dropping duplicate webhook for guid %s (event=%s)",
+                _redact(msg_guid or ""),
+                event_type or "<none>",
+            )
             return web.Response(text="ok")
 
         text = (

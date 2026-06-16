@@ -263,6 +263,81 @@ class TestBlueBubblesMentionGating:
         assert [event.text for event in handled] == ["hello from a dm"]
 
 
+class TestBlueBubblesWebhookDedup:
+    @pytest.mark.asyncio
+    async def test_duplicate_message_guid_is_acknowledged_and_skipped(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "message-guid-1",
+                "text": "hello once",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest(payload))
+        duplicate = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            **payload,
+            "type": "updated-message",
+        }))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert duplicate.status == 200
+        assert [event.text for event in handled] == ["hello once"]
+
+    @pytest.mark.asyncio
+    async def test_distinct_message_guids_in_same_chat_are_dispatched(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        base = {
+            "type": "new-message",
+            "data": {
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }
+
+        first = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            **base,
+            "data": {**base["data"], "guid": "message-guid-1", "text": "first"},
+        }))
+        second = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            **base,
+            "data": {**base["data"], "guid": "message-guid-2", "text": "second"},
+        }))
+        await asyncio.sleep(0)
+
+        assert first.status == 200
+        assert second.status == 200
+        assert [event.text for event in handled] == ["first", "second"]
+
+    def test_message_guid_dedup_expires_after_ttl(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        assert adapter._is_duplicate_message_guid("message-guid-1", now=100.0) is False
+        assert adapter._is_duplicate_message_guid("message-guid-1", now=101.0) is True
+        assert adapter._is_duplicate_message_guid("message-guid-1", now=161.1) is False
+
+
 class TestBlueBubblesWebhookParsing:
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

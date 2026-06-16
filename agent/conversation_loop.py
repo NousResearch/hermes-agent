@@ -5062,8 +5062,11 @@ def run_conversation(
                 # Reset retry counter/signature on successful content
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                # Successful content reached — drop any buffered retry
-                # status from earlier failed attempts in this turn.
+                # Successful content reached — surface the one-shot fallback
+                # switch notice (if a fallback activated this turn) before
+                # dropping the noisy retry buffer, so a provider/model switch
+                # stays visible even when the fallback succeeds.
+                agent._emit_pending_fallback_notice()
                 agent._clear_status_buffer()
 
                 from agent.agent_runtime_helpers import (

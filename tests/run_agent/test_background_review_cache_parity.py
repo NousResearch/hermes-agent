@@ -135,9 +135,11 @@ def test_review_fork_pins_session_start_and_session_id():
     """Defensive complement to cached-system-prompt inheritance.
 
     Even though ``_cached_system_prompt`` inheritance short-circuits the
-    normal rebuild path, pinning ``session_start`` and ``session_id`` to
-    the parent's guarantees byte-identical output from any code path that
-    re-renders parts of the system prompt (compression, plugin hooks).
+    normal rebuild path, pinning ``session_start`` to the parent's
+    guarantees byte-identical output from any code path that re-renders
+    parts of the system prompt (compression, plugin hooks).  ``session_id``
+    is deliberately isolated with a ``_bg_review`` suffix to prevent
+    session-keyed collisions during review (issue #47268).
     """
     import run_agent
 
@@ -182,9 +184,10 @@ def test_review_fork_pins_session_start_and_session_id():
         "Review fork did not inherit parent's session_start — "
         "system-prompt rebuild paths would diverge."
     )
-    assert captured.get("session_id") == agent.session_id, (
-        "Review fork did not inherit parent's session_id — "
-        "system-prompt rebuild paths would diverge."
+    assert captured.get("session_id") == f"{agent.session_id}_bg_review", (
+        "Review fork did not get isolated session_id with _bg_review suffix. "
+        "Without separation, session-keyed collisions pollute the parent's "
+        "session during review (issue #47268)."
     )
 
 

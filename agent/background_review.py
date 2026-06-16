@@ -324,6 +324,36 @@ def build_memory_write_metadata(
     return {k: v for k, v in metadata.items() if v not in {None, ""}}
 
 
+def _merge_review_memories(
+    review_agent: Any,
+    parent_agent: Any,
+) -> None:
+    """Merge new memory/user entries from review's ephemeral store into parent's store.
+
+    Deduplicates by string equality so the same entry written during review
+    and already present in the parent's store is not duplicated. Only calls
+    save_to_disk() on the parent store when new entries were actually added.
+    """
+    review_store = getattr(review_agent, "_memory_store", None)
+    parent_store = getattr(parent_agent, "_memory_store", None)
+    if not review_store or not parent_store:
+        return
+
+    changed = False
+    for target, attr in [("memory", "memory_entries"), ("user", "user_entries")]:
+        review_entries = getattr(review_store, attr, [])
+        parent_entries = getattr(parent_store, attr, [])
+        existing = set(parent_entries)
+        for entry in review_entries:
+            if entry not in existing:
+                parent_entries.append(entry)
+                existing.add(entry)
+                changed = True
+    if changed:
+        parent_store.save_to_disk("memory")
+        parent_store.save_to_disk("user")
+
+
 def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
@@ -337,6 +367,7 @@ def _run_review_in_thread(
     """
     # Local import to avoid a hard circular dep at module load.
     from run_agent import AIAgent
+    from tools.memory_tool import MemoryStore
     from tools.terminal_tool import set_approval_callback as _set_approval_callback
 
     # Install a non-interactive approval callback on this worker
@@ -416,7 +447,13 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
-            review_agent._memory_store = agent._memory_store
+            review_agent._memory_store = MemoryStore(
+                memory_char_limit=getattr(agent._memory_store, "memory_char_limit", 2200),
+                user_char_limit=getattr(agent._memory_store, "user_char_limit", 1375),
+                ephemeral=True,
+            )
+            if agent._memory_store:
+                review_agent._memory_store.load_from_disk()
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled
             review_agent._memory_nudge_interval = 0
@@ -440,15 +477,24 @@ def _run_review_in_thread(
             # measured impact (~26% end-to-end cost reduction on
             # Sonnet 4.5).
             review_agent._cached_system_prompt = agent._cached_system_prompt
-            # Defensive: pin session_start + session_id to the
-            # parent's so any code path that re-renders parts of
-            # the system prompt (compression, plugin hooks) still
-            # produces byte-identical output. The cached-prompt
-            # assignment above already short-circuits the normal
-            # rebuild path, but these pins guarantee parity even
-            # if a future code path bypasses the cache.
+            # Defensive: pin session_start to the parent's so any code path
+            # that re-renders parts of the system prompt (compression,
+            # plugin hooks) still produces byte-identical output.  The
+            # cached-prompt assignment above already short-circuits the
+            # normal rebuild path, but this pin guarantees parity even
+            # if a future code path bypasses the cache.  session_id is
+            # deliberately ISOLATED (_bg_review suffix) to prevent
+            # session-keyed collisions during review.
             review_agent.session_start = agent.session_start
-            review_agent.session_id = agent.session_id
+            review_agent.session_id = f"{agent.session_id}_bg_review"
+            # Never let the review fork compress.  With a separate session_id
+            # (_bg_review suffix), a compression race would create a child under
+            # that isolated ID — orphaned and harmless — but the review fork
+            # also needs full context to produce a good memory/skill summary;
+            # compressing would strip detail.  Both compression triggers in
+            # conversation_loop.py gate on agent.compression_enabled, so this
+            # short-circuits both paths.
+            review_agent.compression_enabled = False
 
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (
@@ -487,6 +533,12 @@ def _run_review_in_thread(
             # clean per-session state, but the user-visible self-improvement
             # summary still needs the completed review agent's tool results.
             review_messages = list(getattr(review_agent, "_session_messages", []))
+
+            # Merge any new memory/user entries from the review's ephemeral
+            # store into the parent's store so review-discovered memories
+            # persist across sessions.  Deduplication is handled inside
+            # _merge_review_memories.
+            _merge_review_memories(review_agent, agent)
 
             # Tear down memory providers while stdout is still
             # redirected so background thread teardown (Honcho flush,

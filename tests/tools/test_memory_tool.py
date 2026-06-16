@@ -376,6 +376,58 @@ class TestMemoryStorePersistence:
         assert len(store.memory_entries) == 2
 
 
+class TestMemoryStoreEphemeral:
+    """Tests for MemoryStore(ephemeral=True) — review-scoped in-memory store."""
+
+    def test_ephemeral_save_to_disk_noop(self, tmp_path, monkeypatch):
+        """Ephemeral store's save_to_disk() must not write to disk."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(ephemeral=True)
+        store.load_from_disk()
+        store.add("memory", "ephemeral entry")
+        store.save_to_disk("memory")
+
+        # Verify nothing was written to disk
+        mem_file = tmp_path / "MEMORY.md"
+        assert not mem_file.exists(), "ephemeral store wrote to disk"
+
+    def test_ephemeral_load_from_disk_still_works(self, tmp_path, monkeypatch):
+        """Ephemeral store's load_from_disk() still reads from disk (read-only path)."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        # Write a real entry first
+        real_store = MemoryStore()
+        real_store.load_from_disk()
+        real_store.add("memory", "persistent entry")
+        real_store.save_to_disk("memory")
+
+        # Now create an ephemeral store that loads the same file
+        ephem_store = MemoryStore(ephemeral=True)
+        ephem_store.load_from_disk()
+        assert "persistent entry" in ephem_store.memory_entries
+
+    def test_ephemeral_add_does_not_write_to_disk(self, tmp_path, monkeypatch):
+        """Even add + save_to_disk on ephemeral store should not persist."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(ephemeral=True)
+        store.load_from_disk()
+        store.add("memory", "only in memory")
+        store.save_to_disk("memory")
+        store.save_to_disk("user")
+
+        mem_file = tmp_path / "MEMORY.md"
+        user_file = tmp_path / "USER.md"
+        assert not mem_file.exists(), "ephemeral wrote MEMORY.md to disk"
+        assert not user_file.exists(), "ephemeral wrote USER.md to disk"
+
+    def test_ephemeral_entries_are_in_memory(self, tmp_path, monkeypatch):
+        """Entries added to ephemeral store must be accessible in-memory."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        store = MemoryStore(ephemeral=True)
+        store.load_from_disk()
+        store.add("memory", "in-memory entry")
+        assert "in-memory entry" in store.memory_entries
+
+
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")

@@ -53,6 +53,8 @@ export function createClientSessionState(
     sawAssistantPayload: false,
     pendingBranchGroup: null,
     interrupted: false,
+    activeTurnId: null,
+    completedTurnId: null,
     needsInput: false,
     turnStartedAt: null
   }

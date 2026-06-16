@@ -4099,6 +4099,7 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
     session["inflight_turn"] = {
         "assistant": "",
+        "id": uuid.uuid4().hex[:12],
         "started_at": now,
         "streaming": True,
         "updated_at": now,
@@ -4123,6 +4124,13 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _inflight_turn_id(session: dict) -> str:
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return ""
+    return str(turn.get("id") or "")
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -4134,6 +4142,7 @@ def _inflight_snapshot(session: dict) -> dict | None:
         return None
     return {
         "assistant": assistant,
+        "id": str(turn.get("id") or ""),
         "streaming": streaming,
         "user": user,
     }
@@ -6325,8 +6334,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
+        turn_id = _inflight_turn_id(session)
     agent = session["agent"]
-    _emit("message.start", sid)
+    _emit("message.start", sid, {"turn_id": turn_id})
 
     def run():
         approval_token = None
@@ -6379,6 +6389,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             "kind": "heartbeat",
                             "running": True,
                             "text": "Still working",
+                            "turn_id": turn_id,
                         },
                     )
 
@@ -6561,6 +6572,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
+            if turn_id:
+                payload["turn_id"] = turn_id
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered

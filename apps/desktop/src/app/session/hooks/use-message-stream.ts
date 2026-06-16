@@ -132,6 +132,10 @@ function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
   return Object.keys(patch).length > 0
 }
 
+function eventTurnId(payload: GatewayEventPayload | undefined): string | null {
+  return typeof payload?.turn_id === 'string' && payload.turn_id ? payload.turn_id : null
+}
+
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
@@ -529,7 +533,7 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, turnId: string | null = null) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -545,6 +549,8 @@ export function useMessageStream({
             needsInput: false,
             pendingBranchGroup: null,
             streamId: null,
+            activeTurnId: null,
+            completedTurnId: turnId ?? state.activeTurnId ?? state.completedTurnId,
             turnStartedAt: null
           }
         }
@@ -635,6 +641,8 @@ export function useMessageStream({
           messages: nextMessages,
           streamId: null,
           pendingBranchGroup: null,
+          activeTurnId: null,
+          completedTurnId: turnId ?? state.activeTurnId ?? state.completedTurnId,
           awaitingResponse: false,
           busy: false,
           needsInput: false,
@@ -704,6 +712,7 @@ export function useMessageStream({
           awaitingResponse: false,
           busy: false,
           needsInput: false,
+          activeTurnId: null,
           turnStartedAt: null
         }
       })
@@ -835,6 +844,7 @@ export function useMessageStream({
           return
         }
 
+        const turnId = eventTurnId(payload)
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
@@ -851,6 +861,7 @@ export function useMessageStream({
           awaitingResponse: true,
           sawAssistantPayload: false,
           interrupted: false,
+          activeTurnId: turnId,
           turnStartedAt: Date.now()
         }))
 
@@ -891,7 +902,7 @@ export function useMessageStream({
         playCompletionSound()
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
-        completeAssistantMessage(sessionId, finalText)
+        completeAssistantMessage(sessionId, finalText, eventTurnId(payload))
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -1084,13 +1095,20 @@ export function useMessageStream({
           // Long-running tool turns may not emit tokens/tool progress for a
           // while. Treat the backend heartbeat as authoritative liveness so the
           // composer/status bar stays in "working" instead of appearing frozen.
-          updateSessionState(sessionId, state => ({
-            ...state,
-            awaitingResponse: state.interrupted ? false : state.awaitingResponse,
-            busy: state.interrupted ? false : true,
-            turnStartedAt: state.interrupted ? null : (state.turnStartedAt ?? Date.now())
-          }))
-          if (isActiveEvent) {
+          const turnId = eventTurnId(payload)
+          const nextState = updateSessionState(sessionId, state => {
+            const staleTurn =
+              !!turnId &&
+              (state.completedTurnId === turnId || (!!state.activeTurnId && state.activeTurnId !== turnId))
+
+            return {
+              ...state,
+              awaitingResponse: state.interrupted ? false : state.awaitingResponse,
+              busy: state.interrupted || staleTurn ? false : true,
+              turnStartedAt: state.interrupted || staleTurn ? null : (state.turnStartedAt ?? Date.now())
+            }
+          })
+          if (isActiveEvent && nextState.busy) {
             setTurnStartedAt(current => current ?? Date.now())
           }
         }

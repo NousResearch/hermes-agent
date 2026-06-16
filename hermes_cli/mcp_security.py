@@ -77,17 +77,19 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
         return []
 
     script = _inline_script(entry.get("args"))
-    if not script:
+    command_script = _inline_script(command)
+    combined = f"{command_script} {script}".strip()
+    if not combined:
         return []
 
-    if not _EGRESS_PATTERN.search(script):
+    if not _EGRESS_PATTERN.search(combined):
         return []
 
     issue = (
         f"MCP server '{name}' uses shell interpreter '{command}' with network "
-        "egress in args"
+        "egress in command or args"
     )
-    if _EXFIL_HINT_PATTERN.search(script):
+    if _EXFIL_HINT_PATTERN.search(combined):
         issue += " and exfiltration-shaped arguments"
     return [issue]
 

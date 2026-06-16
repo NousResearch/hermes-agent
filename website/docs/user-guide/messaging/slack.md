@@ -350,22 +350,22 @@ platforms:
 
 ### Rich Markdown Output
 
-Slack uses legacy `mrkdwn` text by default. That path is stable, but Slack's newer markdown Block Kit block renders more GitHub-style Markdown in the client, including tables and checklists.
+Slack final assistant responses use Slack's newer `markdown` Block Kit block by default, which renders GitHub-style Markdown in the client — including tables and checklists — more faithfully than legacy `mrkdwn` text.
 
-Rich output is opt-in:
+Rich output is enabled by default. To restore the legacy `mrkdwn` path, opt out explicitly:
 
 ```yaml
 platforms:
   slack:
     extra:
-      rich_output: "markdown_block"
+      rich_output: "legacy"   # or "off" / "mrkdwn" to disable rich output
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `platforms.slack.extra.rich_output` | unset | Set to `"markdown_block"` to send final assistant responses as Slack `markdown` blocks. Any other value keeps the legacy `mrkdwn` path. |
+| `platforms.slack.extra.rich_output` | `"markdown_block"` (rich, when unset) | Rich Block Kit `markdown` output is on by default. Set to `"legacy"`, `"off"`, `"mrkdwn"`, `"none"`, or `"false"` to restore the legacy `mrkdwn` path. |
 
-Behavior when enabled:
+Default behavior:
 
 - Final assistant responses are sent with a Block Kit `markdown` block plus a top-level `text` fallback for notifications, accessibility, and older clients.
 - Legacy `mrkdwn` remains the fallback path for streaming previews, non-final edits, blank messages, and long content that exceeds Slack's markdown block limit.
@@ -381,15 +381,15 @@ Limits and caveats:
 - Very long responses still use the existing legacy message splitting behavior.
 - Native Slack table blocks are not used; this option relies on Slack's `markdown` block renderer.
 
-Local validation checklist before enabling broadly:
+Validation checklist (e.g. after upgrading, or when verifying a workspace):
 
-1. Enable `platforms.slack.extra.rich_output: "markdown_block"` in a dev profile or dev channel only.
-2. Send a response containing a heading, table, checklist, fenced code block, bold text, and a Markdown link.
-3. Confirm the rendered Slack message shows the rich Markdown and still has usable notification text.
-4. Send text containing literal Slack entity tokens such as `<@U123>` and `<!channel>` and confirm they render as text, not mentions.
-5. Test a streaming response and confirm preview edits stay legacy while the final edit switches to rich output.
-6. Test a response over the rich block limit and confirm Hermes sends the legacy fallback instead of failing.
-7. Temporarily force a block validation error in local tests or a dev harness and confirm the fallback clears stale blocks on update.
+1. Send a response containing a heading, table, checklist, fenced code block, bold text, and a Markdown link.
+2. Confirm the rendered Slack message shows the rich Markdown and still has usable notification text.
+3. Send text containing literal Slack entity tokens such as `<@U123>` and `<!channel>` and confirm they render as text, not mentions.
+4. Test a streaming response and confirm preview edits stay legacy while the final edit switches to rich output.
+5. Test a response over the rich block limit and confirm Hermes sends the legacy fallback instead of failing.
+6. Temporarily force a block validation error in local tests or a dev harness and confirm the fallback clears stale blocks on update.
+7. To revert to legacy rendering, set `platforms.slack.extra.rich_output: "legacy"` and confirm messages send as `mrkdwn` with no blocks.
 
 ### Session Isolation
 
@@ -511,7 +511,9 @@ platforms:
     extra:
       reply_in_thread: true
       reply_broadcast: false
-      rich_output: "markdown_block"   # Optional rich Slack markdown blocks
+      # Rich Slack markdown blocks are ON by default.
+      # Set to "legacy" (or "off"/"mrkdwn") to restore legacy mrkdwn output.
+      rich_output: "markdown_block"
 ```
 
 ---

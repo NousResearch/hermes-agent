@@ -322,6 +322,12 @@ class SlackAdapter(BasePlatformAdapter):
     MARKDOWN_BLOCK_TEXT_LIMIT = 12000
     MARKDOWN_BLOCKS_PER_MESSAGE_LIMIT = 50
     MARKDOWN_BLOCK_MODE = "markdown_block"
+    # Explicit opt-out values for platforms.slack.extra.rich_output that force
+    # the legacy mrkdwn path.  Rich Block Kit markdown output is the default;
+    # set rich_output to any of these to restore the pre-rich behavior.
+    RICH_OUTPUT_DISABLED_VALUES = frozenset(
+        {"legacy", "mrkdwn", "off", "none", "false", "no", "0", "disabled", "plain"}
+    )
     MARKDOWN_BLOCK_FALLBACK_ERRORS = {
         "invalid_blocks",
         "markdown_text_too_long",
@@ -391,11 +397,23 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
     def _slack_rich_output_mode(self) -> Optional[str]:
+        """Resolve the effective Slack rich-output mode.
+
+        Rich Block Kit ``markdown`` output is the DEFAULT.  ``rich_output`` is
+        only consulted to opt OUT (via RICH_OUTPUT_DISABLED_VALUES, e.g.
+        ``legacy`` / ``off`` / ``mrkdwn``) or to name a future non-default
+        mode explicitly.  When unset, returns the markdown-block mode so the
+        adapter renders rich output without configuration.
+        """
         raw = self.config.extra.get("rich_output")
         if raw is None:
-            return None
+            return self.MARKDOWN_BLOCK_MODE
         mode = str(raw).strip().lower().replace("-", "_")
-        return mode or None
+        if not mode:
+            return self.MARKDOWN_BLOCK_MODE
+        if mode in self.RICH_OUTPUT_DISABLED_VALUES:
+            return None
+        return mode
 
     def _sanitize_slack_rich_entities(self, text: str) -> str:
         """Render Slack entity-like tokens literally in rich block payloads."""

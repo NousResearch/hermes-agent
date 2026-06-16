@@ -1956,6 +1956,7 @@ class TestSendTyping:
             channel="C123",
             ts="reply_ts",
             text="done",
+            blocks=[{"type": "markdown", "text": "done"}],
         )
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
@@ -3082,10 +3083,13 @@ class TestMessageSplitting:
 
     @pytest.mark.asyncio
     async def test_send_explicitly_enables_mrkdwn(self, adapter):
+        # Legacy mrkdwn path is now opt-out; verify it still sets mrkdwn=True.
+        adapter.config.extra["rich_output"] = "legacy"
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
         await adapter.send("C123", "**hello**")
         kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert kwargs.get("mrkdwn") is True
+        assert "blocks" not in kwargs
 
     @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
@@ -3127,9 +3131,20 @@ class TestSlackRichMarkdownBlocks:
         a.handle_message = AsyncMock()
         return a
 
-    def test_rich_output_is_disabled_by_default(self, adapter):
-        assert adapter.REQUIRES_EDIT_FINALIZE is False
-        assert adapter._should_attempt_markdown_block("## Title") is False
+    def test_rich_output_is_enabled_by_default(self, adapter):
+        # Rich Block Kit markdown output is now the default (no config needed).
+        assert adapter.REQUIRES_EDIT_FINALIZE is True
+        assert adapter._should_attempt_markdown_block("## Title") is True
+
+    def test_rich_output_opt_out_restores_legacy(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"rich_output": "legacy"},
+        )
+        a = SlackAdapter(config)
+        assert a.REQUIRES_EDIT_FINALIZE is False
+        assert a._should_attempt_markdown_block("## Title") is False
 
     def test_markdown_block_payload_preserves_rich_markdown(self):
         adapter = self._rich_adapter()
@@ -3160,6 +3175,7 @@ class TestSlackRichMarkdownBlocks:
 
     @pytest.mark.asyncio
     async def test_send_legacy_path_when_disabled(self, adapter):
+        adapter.config.extra["rich_output"] = "legacy"
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
 
         await adapter.send("C123", "## Title\n**bold**")
@@ -3187,6 +3203,20 @@ class TestSlackRichMarkdownBlocks:
         assert kwargs["blocks"] == [
             {"type": "markdown", "text": "## Title\n**bold**"}
         ]
+        assert "mrkdwn" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_send_uses_markdown_block_by_default(self, adapter):
+        # Default adapter (no rich_output config) now emits rich blocks.
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+
+        await adapter.send("C123", "## Title\n**bold**")
+
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["blocks"] == [
+            {"type": "markdown", "text": "## Title\n**bold**"}
+        ]
+        assert kwargs["text"].startswith("*Title*")
         assert "mrkdwn" not in kwargs
 
     @pytest.mark.asyncio

@@ -274,7 +274,7 @@ describe('saveOnboardingLocalEndpoint', () => {
     }
   }
 
-  it('errors when the endpoint advertises no models (nothing to route to)', async () => {
+  it('errors when the endpoint advertises no models and no manual fallback was provided', async () => {
     const calls: string[] = []
     installApiMock(async ({ path }: { path: string }) => {
       calls.push(path)
@@ -291,9 +291,47 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('no models')
+    expect(result.message).toContain('Enter a model name manually')
     // Must not attempt to persist an assignment without a model.
     expect(calls).not.toContain('/api/model/set')
+  })
+
+  it('accepts a manually entered model when the endpoint advertises none', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        return { ok: true, reachable: true, message: '', models: [] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'command-a-plus-05-2026', base_url: 'https://api.cohere.ai/compatibility/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'https://api.cohere.ai/compatibility/v1',
+      'sk-secret',
+      {
+        requestGateway: readyGateway()
+      },
+      'command-a-plus-05-2026'
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'command-a-plus-05-2026',
+      base_url: 'https://api.cohere.ai/compatibility/v1',
+      api_key: 'sk-secret'
+    })
   })
 
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {

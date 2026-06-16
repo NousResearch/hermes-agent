@@ -735,7 +735,8 @@ export async function saveOnboardingApiKey(
   // Optional endpoint key — only meaningful for the "Local / custom endpoint"
   // option, whose primary `value` is the base URL. Ignored for plain API-key
   // providers (their key IS `value`).
-  endpointApiKey?: string
+  endpointApiKey?: string,
+  manualModelName?: string
 ) {
   const trimmed = value.trim()
 
@@ -748,7 +749,7 @@ export async function saveOnboardingApiKey(
   // base_url + model + api_key), not dropped into .env — runtime resolution
   // ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx, manualModelName?.trim() ?? '')
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -792,9 +793,15 @@ export async function saveOnboardingApiKey(
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
+export async function saveOnboardingLocalEndpoint(
+  baseUrl: string,
+  apiKey: string,
+  ctx: OnboardingContext,
+  manualModelName = ''
+) {
   const url = baseUrl.trim()
   const key = apiKey.trim()
+  const manualModel = manualModelName.trim()
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -816,7 +823,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
       return { ok: false, message: probe.message || `Could not reach ${url}.` }
     }
 
-    model = (probe.models?.[0] ?? '').trim()
+    model = (probe.models?.[0] ?? '').trim() || manualModel
   } catch {
     return { ok: false, message: `Could not reach ${url}.` }
   }
@@ -824,7 +831,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   if (!model) {
     return {
       ok: false,
-      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+      message: `Connected to ${url}, but it advertised no models. Enter a model name manually and try again.`
     }
   }
 

@@ -46,7 +46,6 @@ import time
 import threading
 import uuid
 from typing import List, Dict, Any, Optional, Callable
-from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
 # that imports the SDK on first call/isinstance check. This preserves:

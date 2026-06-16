@@ -72,6 +72,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # NVIDIA
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     # OpenRouter routers
+    ("openrouter/fusion",                      "multi-model deliberation with web search/fetch"),
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
@@ -1306,15 +1307,25 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     so the picker doesn't silently empty for those users. Only hide models
     whose ``supported_parameters`` is an explicit list that omits ``tools``.
 
+    **OpenRouter routers are allowed even when they don't expose parameters.**
+    Router models such as ``openrouter/fusion`` and ``openrouter/pareto-code``
+    own their own routing/search behavior and may publish an empty
+    ``supported_parameters`` list while still being valid curated selections.
+
     Ported from Kilo-Org/kilocode#9068.
     """
     if not isinstance(item, dict):
+        return True
+    if str(item.get("id") or "") in _OPENROUTER_ROUTER_MODELS:
         return True
     params = item.get("supported_parameters")
     if not isinstance(params, list):
         # Field absent / malformed / None — be permissive.
         return True
     return "tools" in params
+
+
+_OPENROUTER_ROUTER_MODELS = {"openrouter/fusion", "openrouter/pareto-code"}
 
 
 def fetch_openrouter_models(

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-16T18:04:33Z",
+  "updated_at": "2026-06-16T22:33:14Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -111,6 +111,10 @@
         {
           "id": "nvidia/nemotron-3-super-120b-a12b",
           "description": ""
+        },
+        {
+          "id": "openrouter/fusion",
+          "description": "multi-model deliberation with web search/fetch"
         },
         {
           "id": "openrouter/pareto-code",

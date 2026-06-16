@@ -509,8 +509,7 @@ const BRIDGE_API_KEY = process.env.BRIDGE_API_KEY || '';
 function requireApiKey(req, res, next) {
   if (req.path === '/health') return next();
   if (!BRIDGE_API_KEY) {
-    console.warn('⚠️  BRIDGE_API_KEY not set — HTTP API is unauthenticated');
-    return next();
+    return res.status(401).json({ error: 'Unauthorized: BRIDGE_API_KEY not set' });
   }
   const authHeader = req.headers['authorization'];
   const apiKeyHeader = req.headers['x-api-key'];

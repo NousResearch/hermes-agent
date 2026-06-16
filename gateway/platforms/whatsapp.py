@@ -287,6 +287,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._bridge_api_key: str = ""
         # Set to True by disconnect() before we SIGTERM our child bridge so
         # _check_managed_bridge_exit() can distinguish an intentional
         # shutdown-time exit (returncode -15 / -2 / 0) from a real crash.
@@ -332,10 +333,28 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return float(default)
         return parsed
 
+    def _load_or_create_bridge_api_key(self) -> str:
+        import secrets
+        key_file = self._session_path / ".bridge_api_key"
+        try:
+            key = key_file.read_text().strip()
+            if key:
+                return key
+        except OSError:
+            pass
+        key = secrets.token_hex(32)
+        self._session_path.mkdir(parents=True, exist_ok=True)
+        key_file.write_text(key)
+        try:
+            key_file.chmod(0o600)
+        except OSError:
+            pass
+        return key
+
     def _make_http_session(self) -> "aiohttp.ClientSession":
         """Return an aiohttp.ClientSession pre-configured with bridge auth headers."""
         import aiohttp
-        api_key = os.environ.get("BRIDGE_API_KEY", "")
+        api_key = self._bridge_api_key
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         return aiohttp.ClientSession(headers=headers)
 
@@ -444,7 +463,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
             # Ensure session directory exists
             self._session_path.mkdir(parents=True, exist_ok=True)
-            
+
+            # Load (or generate) a per-session API key shared with the bridge.
+            self._bridge_api_key = self._load_or_create_bridge_api_key()
+
             # Check if bridge is already running and connected
             import aiohttp
             try:
@@ -502,6 +524,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # can use it without the user needing to set a separate env var.
             # with_hermes_node_path() copies os.environ when called with no arg.
             bridge_env = with_hermes_node_path()
+            bridge_env["BRIDGE_API_KEY"] = self._bridge_api_key
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             # Pass the profile-aware cache directories so the bridge writes

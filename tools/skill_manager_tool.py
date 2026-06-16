@@ -134,6 +134,80 @@ def _containing_skills_root(skill_path: Path) -> Path:
     return SKILLS_DIR
 
 
+def _is_path_redirect(path: Path) -> bool:
+    """True when ``path`` is a symlink or (on Windows) a directory junction.
+
+    Either form lets a poisoned skills tree redirect a subsequent
+    ``shutil.rmtree`` to content outside the skills root. ``is_junction``
+    only exists on Python 3.12+ Windows; gate with ``hasattr``.
+    """
+    try:
+        return path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction())
+    except OSError:
+        return False
+
+
+def _validate_delete_target(skill_dir: Path) -> Optional[str]:
+    """Last-line guard before ``shutil.rmtree(skill_dir)`` in ``_delete_skill``.
+
+    ``_find_skill`` already restricts ``skill_dir`` to a real ``SKILL.md``
+    parent discovered by walking the skills roots, so the agent cannot inject
+    an arbitrary path the way Kilo Code's HTTP endpoint could (their issue
+    #11227: a built-in-skill sentinel resolved to the server cwd and a
+    recursive delete wiped the user's entire working directory). This is the
+    matching defense-in-depth for our agent-facing ``skill_manage`` delete
+    path: even if discovery or a poisoned tree hands us a bad directory, never
+    recursively delete
+
+      1. a path that is not strictly *inside* one of the known skills roots,
+      2. a skills root itself (would wipe every installed skill), or
+      3. a directory reached via a symlink / junction (``rmtree`` would follow
+         it into content outside the skills tree).
+
+    Returns an error string to refuse on, or ``None`` when the delete is safe.
+    """
+    from agent.skill_utils import get_all_skills_dirs
+
+    # (3) Reject symlink/junction redirects on the skill directory itself.
+    if _is_path_redirect(skill_dir):
+        return (
+            f"Refusing to delete '{skill_dir}': the skill directory is a "
+            f"symlink/junction. Remove the link target manually if intended."
+        )
+
+    try:
+        resolved = skill_dir.resolve()
+    except OSError as exc:
+        return f"Refusing to delete '{skill_dir}': could not resolve path ({exc})."
+
+    roots = []
+    for root in get_all_skills_dirs():
+        try:
+            roots.append(root.resolve())
+        except OSError:
+            continue
+
+    for root in roots:
+        # (2) Never rmtree a skills root itself.
+        if resolved == root:
+            return (
+                f"Refusing to delete '{skill_dir}': resolves to the skills root "
+                f"itself, which would remove every installed skill."
+            )
+        # (1) Must be strictly inside a known root.
+        try:
+            rel = resolved.relative_to(root)
+        except ValueError:
+            continue
+        if rel.parts:  # at least one component below the root
+            return None
+
+    return (
+        f"Refusing to delete '{skill_dir}': path does not resolve inside any "
+        f"known skills root."
+    )
+
+
 def _pinned_guard(name: str) -> Optional[str]:
     """Return a refusal message if *name* is pinned, else None.
 
@@ -706,6 +780,12 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
     skill_dir = existing["path"]
     skills_root = _containing_skills_root(skill_dir)
+
+    # Defense-in-depth before the recursive delete (port of Kilo Code #11240).
+    unsafe = _validate_delete_target(skill_dir)
+    if unsafe:
+        return {"success": False, "error": unsafe}
+
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove the skills root itself)

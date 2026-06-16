@@ -15121,8 +15121,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                # Tool-gate approvals carry kind="tool" + tool_name; render a
+                # tool-flavoured header instead of "Dangerous command" so the
+                # prompt matches what's actually being approved (§6a).
+                if approval_data.get("kind") == "tool":
+                    _tool_name = approval_data.get("tool_name", "this tool")
+                    _header = f"⚠️ **Approval required to run `{_tool_name}`:**"
+                else:
+                    _header = "⚠️ **Dangerous command requires approval:**"
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{_header}\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "

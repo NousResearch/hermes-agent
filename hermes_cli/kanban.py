@@ -1347,6 +1347,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            board=kb.get_current_board(),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

@@ -14,7 +14,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
 )
-from gateway.platforms.homeassistant import (
+from plugins.platforms.homeassistant.adapter import (
     HomeAssistantAdapter,
     check_ha_requirements,
 )
@@ -34,7 +34,7 @@ class TestCheckRequirements:
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is True
 
-    @patch("gateway.platforms.homeassistant.AIOHTTP_AVAILABLE", False)
+    @patch("plugins.platforms.homeassistant.adapter.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is False
@@ -469,18 +469,6 @@ class TestConfigIntegration:
         assert ha.extra["watch_domains"] == ["climate"]
         assert ha.extra["cooldown_seconds"] == 45
 
-    def test_connected_platforms_includes_ha(self):
-        config = GatewayConfig(
-            platforms={
-                Platform.HOMEASSISTANT: PlatformConfig(enabled=True, token="tok"),
-                Platform.TELEGRAM: PlatformConfig(enabled=False, token="t"),
-            },
-        )
-        connected = config.get_connected_platforms()
-        assert Platform.HOMEASSISTANT in connected
-        assert Platform.TELEGRAM not in connected
-
-
 # ---------------------------------------------------------------------------
 # send() via REST API
 # ---------------------------------------------------------------------------
@@ -516,7 +504,7 @@ class TestSendViaRestApi:
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(200)
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -535,7 +523,7 @@ class TestSendViaRestApi:
         adapter = _make_adapter()
         mock_session = self._mock_aiohttp_session(401, "Unauthorized")
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -550,7 +538,7 @@ class TestSendViaRestApi:
         mock_session = self._mock_aiohttp_session(200)
         long_message = "x" * 10000
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -566,7 +554,7 @@ class TestSendViaRestApi:
         adapter._ws = AsyncMock()  # Simulate an active WS
         mock_session = self._mock_aiohttp_session(200)
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
@@ -580,27 +568,6 @@ class TestSendViaRestApi:
 # ---------------------------------------------------------------------------
 # Toolset integration
 # ---------------------------------------------------------------------------
-
-
-class TestToolsetIntegration:
-    def test_homeassistant_toolset_resolves(self):
-        from toolsets import resolve_toolset
-
-        tools = resolve_toolset("homeassistant")
-        assert set(tools) == {"ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"}
-
-    def test_gateway_toolset_includes_ha_tools(self):
-        from toolsets import resolve_toolset
-
-        gateway_tools = resolve_toolset("hermes-gateway")
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"):
-            assert tool in gateway_tools
-
-    def test_hermes_core_tools_includes_ha(self):
-        from toolsets import _HERMES_CORE_TOOLS
-
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service", "ha_list_services"):
-            assert tool in _HERMES_CORE_TOOLS
 
 
 # ---------------------------------------------------------------------------

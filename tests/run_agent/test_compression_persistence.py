@@ -19,9 +19,8 @@ Bug scenario (pre-fix):
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +36,8 @@ class TestFlushAfterCompression:
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
             from run_agent import AIAgent
             agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
                 model="test/model",
                 quiet_mode=True,
                 session_db=session_db,
@@ -100,7 +101,7 @@ class TestFlushAfterCompression:
             )
 
     def test_flush_with_stale_history_loses_messages(self):
-        """Demonstrates the bug condition: stale conversation_history causes data loss."""
+        """Stale conversation_history no longer causes data loss."""
         from hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -119,17 +120,14 @@ class TestFlushAfterCompression:
                 {"role": "assistant", "content": "continuing..."},
             ]
 
-            # Bug: passing a conversation_history longer than compressed messages
+            # Stale history longer than messages: the old positional flush
+            # sliced past the end and dropped both messages (#46053).
             stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
             agent._flush_messages_to_session_db(compressed, stale_history)
 
             rows = db.get_messages("new-session")
-            # With the stale history, flush_from = max(100, 0) = 100
-            # But compressed only has 2 entries → messages[100:] = empty
-            assert len(rows) == 0, (
-                "Expected 0 messages with stale conversation_history "
-                "(this test verifies the bug condition exists)"
-            )
+            assert len(rows) == 2
+            assert [row["content"] for row in rows] == ["summary", "continuing..."]
 
 
 # ---------------------------------------------------------------------------

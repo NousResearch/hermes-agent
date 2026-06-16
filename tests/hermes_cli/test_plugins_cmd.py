@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-import types
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -12,12 +12,14 @@ import pytest
 import yaml
 
 from hermes_cli.plugins_cmd import (
+    PluginOperationError,
     _copy_example_files,
     _read_manifest,
     _repo_name_from_url,
+    _resolve_git_executable,
     _resolve_git_url,
+    _resolve_subdir_within,
     _sanitize_plugin_name,
-    plugins_command,
 )
 
 
@@ -63,40 +65,273 @@ class TestSanitizePluginName:
         with pytest.raises(ValueError, match="must not be empty"):
             _sanitize_plugin_name("", tmp_path)
 
+    # ── allow_subdir=True ──
+
+    def test_allow_subdir_accepts_single_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "observability/langfuse", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "observability" / "langfuse").resolve()
+
+    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "/image_gen/openai/", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "image_gen" / "openai").resolve()
+
+    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
+        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
+        assert target.is_relative_to(tmp_path.resolve())
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 
 
 class TestResolveGitUrl:
-    """Shorthand and full-URL resolution."""
+    """Shorthand and full-URL resolution, with optional subdirectory."""
 
     def test_owner_repo_shorthand(self):
-        url = _resolve_git_url("owner/repo")
+        url, subdir = _resolve_git_url("owner/repo")
         assert url == "https://github.com/owner/repo.git"
+        assert subdir is None
 
     def test_https_url_passthrough(self):
-        url = _resolve_git_url("https://github.com/x/y.git")
+        url, subdir = _resolve_git_url("https://github.com/x/y.git")
         assert url == "https://github.com/x/y.git"
+        assert subdir is None
 
     def test_ssh_url_passthrough(self):
-        url = _resolve_git_url("git@github.com:x/y.git")
+        url, subdir = _resolve_git_url("git@github.com:x/y.git")
         assert url == "git@github.com:x/y.git"
+        assert subdir is None
 
     def test_http_url_passthrough(self):
-        url = _resolve_git_url("http://example.com/repo.git")
+        url, subdir = _resolve_git_url("http://example.com/repo.git")
         assert url == "http://example.com/repo.git"
+        assert subdir is None
 
     def test_file_url_passthrough(self):
-        url = _resolve_git_url("file:///tmp/repo")
+        url, subdir = _resolve_git_url("file:///tmp/repo")
         assert url == "file:///tmp/repo"
+        assert subdir is None
 
     def test_invalid_single_word_raises(self):
         with pytest.raises(ValueError, match="Invalid plugin identifier"):
             _resolve_git_url("justoneword")
 
-    def test_invalid_three_parts_raises(self):
-        with pytest.raises(ValueError, match="Invalid plugin identifier"):
-            _resolve_git_url("a/b/c")
+    def test_shorthand_with_subdir(self):
+        url, subdir = _resolve_git_url("owner/repo/my-plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_shorthand_with_nested_subdir(self):
+        url, subdir = _resolve_git_url("owner/repo/path/to/plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "path/to/plugin"
+
+    def test_shorthand_with_subdir_trailing_slash(self):
+        url, subdir = _resolve_git_url("owner/repo/my-plugin/")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_https_url_with_subdir(self):
+        url, subdir = _resolve_git_url("https://github.com/owner/repo.git/my-plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_https_url_with_nested_subdir(self):
+        url, subdir = _resolve_git_url(
+            "https://github.com/owner/repo.git/path/to/plugin"
+        )
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "path/to/plugin"
+
+    def test_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("https://github.com/owner/repo.git#my-plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_file_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("file:///tmp/repo#path/to/plugin")
+        assert url == "file:///tmp/repo"
+        assert subdir == "path/to/plugin"
+
+    def test_ssh_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("git@github.com:owner/repo.git#sub")
+        assert url == "git@github.com:owner/repo.git"
+        assert subdir == "sub"
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo/tree/main",
+            "https://github.com/owner/repo/blob/main/README.md",
+            "https://github.com/owner/repo/pull/123",
+            "https://github.com/owner/repo/commit/abc123def",
+            "https://github.com/owner/repo/releases/tag/v1.0",
+            "https://github.com/owner/repo/issues/42",
+        ],
+    )
+    def test_github_browser_url_normalized_to_repo(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir is None
+
+    @pytest.mark.parametrize(
+        ("identifier", "expected_subdir"),
+        [
+            ("https://github.com/owner/repo/tree/main/plugins/foo", "plugins/foo"),
+            ("https://github.com/owner/repo/tree/feature-branch/plugin", "plugin"),
+            ("https://github.com/owner/repo/tree/main/plugins/foo?plain=1", "plugins/foo"),
+            ("https://github.com/owner/repo.git/tree/main/plugins/foo", "plugins/foo"),
+        ],
+    )
+    def test_github_tree_browser_url_preserves_subdir(self, identifier, expected_subdir):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == expected_subdir
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/branches",
+            "https://github.com/owner//tree/main",
+            "https://gitlab.com/owner/repo/tree/main",
+            "git@github.com:owner/repo.git",
+            "file:///tmp/repo/tree/main",
+        ],
+    )
+    def test_non_browser_urls_passthrough(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == identifier
+        assert subdir is None
+
+
+# ── _resolve_subdir_within ──────────────────────────────────────────────────
+
+
+class TestResolveSubdirWithin:
+    """Subdirectory resolution stays within the clone and rejects traversal."""
+
+    def test_valid_subdir(self, tmp_path):
+        (tmp_path / "my-plugin").mkdir()
+        result = _resolve_subdir_within(tmp_path, "my-plugin")
+        assert result == (tmp_path / "my-plugin").resolve()
+
+    def test_valid_nested_subdir(self, tmp_path):
+        (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+        result = _resolve_subdir_within(tmp_path, "a/b/c")
+        assert result == (tmp_path / "a" / "b" / "c").resolve()
+
+    def test_rejects_dot_dot_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        (tmp_path / "secret").mkdir()
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "../secret")
+
+    def test_rejects_absolute_path_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        # An absolute path resolves outside the clone root.
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "/etc")
+
+    def test_rejects_symlink_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (clone / "link").symlink_to(outside)
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "link")
+
+    def test_rejects_missing_subdir(self, tmp_path):
+        with pytest.raises(PluginOperationError, match="does not exist"):
+            _resolve_subdir_within(tmp_path, "nope")
+
+    def test_rejects_file_not_dir(self, tmp_path):
+        (tmp_path / "afile").write_text("x")
+        with pytest.raises(PluginOperationError, match="not a directory"):
+            _resolve_subdir_within(tmp_path, "afile")
+
+
+# ── _resolve_git_executable ─────────────────────────────────────────────────
+
+
+class TestResolveGitExecutable:
+    """Fallback resolution when bare ``git`` is not discoverable via ``PATH``."""
+
+    def teardown_method(self):
+        _resolve_git_executable.cache_clear()
+
+    def test_prefers_shutil_which(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value="/usr/local/bin/git"):
+            assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_fallback_posix_first_matching_path(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+
+        def _isfile(p: str) -> bool:
+            return p == "/usr/local/bin/git"
+
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", side_effect=_isfile):
+                    assert pc._resolve_git_executable() == "/usr/local/bin/git"
+
+    def test_returns_none_when_unavailable(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc.shutil, "which", return_value=None):
+            with patch.object(pc.os, "name", "posix"):
+                with patch.object(pc.os.path, "isfile", return_value=False):
+                    assert pc._resolve_git_executable() is None
+
+    def test_git_pull_uses_resolved_executable(self, tmp_path):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(
+            pc,
+            "_resolve_git_executable",
+            return_value="/resolved/git",
+        ):
+            with patch.object(pc.subprocess, "run") as run:
+                run.return_value = MagicMock(returncode=0, stdout="Already up to date\n", stderr="")
+                ok, msg = pc._git_pull_plugin_dir(tmp_path)
+        assert ok is True
+        run.assert_called_once()
+        assert run.call_args[0][0][0] == "/resolved/git"
+
+    def test_install_core_raises_when_git_unresolved(self):
+        import hermes_cli.plugins_cmd as pc
+
+        _resolve_git_executable.cache_clear()
+        with patch.object(pc, "_resolve_git_executable", return_value=None):
+            with pytest.raises(PluginOperationError, match="git is not installed"):
+                pc._install_plugin_core("owner/repo", force=True)
 
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
@@ -124,59 +359,6 @@ class TestRepoNameFromUrl:
 
 
 # ── plugins_command dispatch ──────────────────────────────────────────────
-
-
-class TestPluginsCommandDispatch:
-    """Verify alias routing in plugins_command()."""
-
-    def _make_args(self, action, **extras):
-        args = MagicMock()
-        args.plugins_action = action
-        for k, v in extras.items():
-            setattr(args, k, v)
-        return args
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_rm_alias(self, mock_remove):
-        args = self._make_args("rm", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_uninstall_alias(self, mock_remove):
-        args = self._make_args("uninstall", name="some-plugin")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("some-plugin")
-
-    @patch("hermes_cli.plugins_cmd.cmd_list")
-    def test_ls_alias(self, mock_list):
-        args = self._make_args("ls")
-        plugins_command(args)
-        mock_list.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_toggle")
-    def test_none_falls_through_to_toggle(self, mock_toggle):
-        args = self._make_args(None)
-        plugins_command(args)
-        mock_toggle.assert_called_once()
-
-    @patch("hermes_cli.plugins_cmd.cmd_install")
-    def test_install_dispatches(self, mock_install):
-        args = self._make_args("install", identifier="owner/repo", force=False)
-        plugins_command(args)
-        mock_install.assert_called_once_with("owner/repo", force=False)
-
-    @patch("hermes_cli.plugins_cmd.cmd_update")
-    def test_update_dispatches(self, mock_update):
-        args = self._make_args("update", name="foo")
-        plugins_command(args)
-        mock_update.assert_called_once_with("foo")
-
-    @patch("hermes_cli.plugins_cmd.cmd_remove")
-    def test_remove_dispatches(self, mock_remove):
-        args = self._make_args("remove", name="bar")
-        plugins_command(args)
-        mock_remove.assert_called_once_with("bar")
 
 
 # ── _read_manifest ────────────────────────────────────────────────────────
@@ -217,7 +399,6 @@ class TestCmdInstall:
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install
-        import argparse
 
         with pytest.raises(SystemExit):
             cmd_install("")
@@ -391,7 +572,6 @@ class TestCopyExampleFiles:
     """Test example file copying."""
 
     def test_copies_example_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -407,7 +587,6 @@ class TestCopyExampleFiles:
         console.print.assert_called()
 
     def test_skips_existing_files(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock
 
         console = MagicMock()
@@ -424,7 +603,6 @@ class TestCopyExampleFiles:
         assert real_file.read_text() == "existing: true"
 
     def test_handles_copy_error_gracefully(self, tmp_path):
-        from hermes_cli.plugins_cmd import _copy_example_files
         from unittest.mock import MagicMock, patch
 
         console = MagicMock()
@@ -510,7 +688,7 @@ class TestPromptPluginEnvVars:
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "langfuse.com" in printed
 
-    def test_secret_uses_getpass(self):
+    def test_secret_uses_masked_prompt(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
         from unittest.mock import MagicMock, patch
 
@@ -521,11 +699,11 @@ class TestPromptPluginEnvVars:
         }
 
         with patch("hermes_cli.config.get_env_value", return_value=None), \
-             patch("getpass.getpass", return_value="s3cret") as mock_gp, \
+             patch("hermes_cli.plugins_cmd.masked_secret_prompt", return_value="s3cret") as mock_prompt, \
              patch("hermes_cli.config.save_env_value"):
             _prompt_plugin_env_vars(manifest, console)
 
-        mock_gp.assert_called_once()
+        mock_prompt.assert_called_once()
 
     def test_empty_input_skips(self):
         from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
@@ -561,7 +739,7 @@ class TestPromptPluginEnvVars:
 
 
 class TestCursesRadiolist:
-    """Test the curses_radiolist function (non-TTY fallback path)."""
+    """Test the curses_radiolist function."""
 
     def test_non_tty_returns_default(self):
         from hermes_cli.curses_ui import curses_radiolist
@@ -576,6 +754,14 @@ class TestCursesRadiolist:
             mock_stdin.isatty.return_value = False
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
             assert result == 1
+
+    def test_keyboard_interrupt_returns_cancel_value(self):
+        from hermes_cli.curses_ui import curses_radiolist
+
+        with patch("sys.stdin") as mock_stdin, patch("curses.wrapper", side_effect=KeyboardInterrupt):
+            mock_stdin.isatty.return_value = True
+            result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=-1)
+            assert result == -1
 
 
 # ── Provider discovery helpers ───────────────────────────────────────────
@@ -655,3 +841,90 @@ class TestNoAutoActivation:
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source
+
+
+# ── End-to-end subdirectory install ──────────────────────────────────────────
+
+
+class TestSubdirInstallE2E:
+    """Install a plugin that lives in a subdirectory of a real local git repo."""
+
+    @staticmethod
+    def _make_repo_with_subdir_plugin(repo_root: Path) -> None:
+        """Create a git repo where the plugin lives in ``./my-plugin/`` and the
+        repo root holds unrelated docs/tests."""
+        import subprocess as sp
+
+        repo_root.mkdir(parents=True, exist_ok=True)
+        # Root-level noise: docs + tests that should NOT be installed.
+        (repo_root / "README.md").write_text("# Monorepo docs\n")
+        (repo_root / "tests").mkdir()
+        (repo_root / "tests" / "test_x.py").write_text("def test_x():\n    pass\n")
+        # The actual plugin in a subdirectory.
+        plugin_dir = repo_root / "my-plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: my-plugin\nmanifest_version: 1\ndescription: A subdir plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text("# plugin entry\n")
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=repo_root,
+            check=True,
+            env=env,
+        )
+
+    def test_installs_only_the_subdir_plugin(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        identifier = f"file://{repo_root}#my-plugin"
+        target, manifest, name = pc._install_plugin_core(identifier, force=False)
+
+        # Installed under the plugin's own name, not the repo name.
+        assert name == "my-plugin"
+        assert manifest.get("name") == "my-plugin"
+        assert target == (plugins_dir / "my-plugin").resolve()
+
+        # The plugin's files are present...
+        assert (target / "plugin.yaml").exists()
+        assert (target / "__init__.py").exists()
+        # ...and the repo-root noise is NOT.
+        assert not (target / "README.md").exists()
+        assert not (target / "tests").exists()
+
+    def test_missing_subdir_raises(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        identifier = f"file://{repo_root}#does-not-exist"
+        with pytest.raises(PluginOperationError, match="does not exist"):
+            pc._install_plugin_core(identifier, force=False)

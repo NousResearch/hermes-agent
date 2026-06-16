@@ -1,64 +1,27 @@
-#!/bin/bash
-# Docker entrypoint: bootstrap config files into the mounted volume, then run hermes.
-set -e
-
-HERMES_HOME="/opt/data"
-INSTALL_DIR="/opt/hermes"
-
-# --- Privilege dropping via gosu ---
-# When started as root (the default), optionally remap the hermes user/group
-# to match host-side ownership, fix volume permissions, then re-exec as hermes.
-if [ "$(id -u)" = "0" ]; then
-    if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
-        echo "Changing hermes UID to $HERMES_UID"
-        usermod -u "$HERMES_UID" hermes
-    fi
-
-    if [ -n "$HERMES_GID" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
-        echo "Changing hermes GID to $HERMES_GID"
-        groupmod -g "$HERMES_GID" hermes
-    fi
-
-    actual_hermes_uid=$(id -u hermes)
-    if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
-        echo "$HERMES_HOME is not owned by $actual_hermes_uid, fixing"
-        chown -R hermes:hermes "$HERMES_HOME"
-    fi
-
-    echo "Dropping root privileges"
-    exec gosu hermes "$0" "$@"
-fi
-
-# --- Running as hermes from here ---
-source "${INSTALL_DIR}/.venv/bin/activate"
-
-# Create essential directory structure.  Cache and platform directories
-# (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
-# demand by the application — don't pre-create them here so new installs
-# get the consolidated layout from get_hermes_dir().
-# The "home/" subdirectory is a per-profile HOME for subprocesses (git,
-# ssh, gh, npm …).  Without it those tools write to /root which is
-# ephemeral and shared across profiles.  See issue #4426.
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
-
-# .env
-if [ ! -f "$HERMES_HOME/.env" ]; then
-    cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
-fi
-
-# config.yaml
-if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-    cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-fi
-
-# SOUL.md
-if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
-fi
-
-# Sync bundled skills (manifest-based so user edits are preserved)
-if [ -d "$INSTALL_DIR/skills" ]; then
-    python3 "$INSTALL_DIR/tools/skills_sync.py"
-fi
-
-exec hermes "$@"
+#!/bin/sh
+# s6-overlay shim. The real logic lives in docker/stage2-hook.sh, invoked
+# by /etc/cont-init.d/01-hermes-setup (installed by the Dockerfile). This
+# file exists so external references to docker/entrypoint.sh still work,
+# but it's no longer the ENTRYPOINT — /init is.
+#
+# When called directly (e.g. by an old wrapper script that hard-coded
+# docker/entrypoint.sh as the container ENTRYPOINT, or by an external
+# orchestration script that invokes it inside the container), forward to
+# the stage2 hook for parity with the pre-s6 entrypoint behavior. The
+# stage2 hook only handles cont-init bootstrap (UID remap, chown, config
+# seed, skills sync); it does NOT exec the CMD. Callers that depended
+# on the pre-s6 contract "entrypoint.sh sets up state then execs hermes"
+# will see the bootstrap happen but the CMD will not run from this shim.
+#
+# Deprecation: this shim is preserved for one release cycle to give
+# downstream users time to migrate their wrappers to the image's real
+# ENTRYPOINT (`/init`). It will be removed in a future major release.
+# Surface a warning to stderr so anyone still invoking this path
+# sees the migration notice in their logs.
+echo "[hermes] WARNING: docker/entrypoint.sh is a deprecated shim under " \
+    "s6-overlay. The container's real ENTRYPOINT is /init + " \
+    "main-wrapper.sh; this script only runs the stage2 cont-init hook " \
+    "and does NOT exec the CMD. If you hard-coded docker/entrypoint.sh " \
+    "as your ENTRYPOINT, drop the override — docker will use the image's " \
+    "default ENTRYPOINT (/init), which handles bootstrap AND CMD." >&2
+exec /opt/hermes/docker/stage2-hook.sh "$@"

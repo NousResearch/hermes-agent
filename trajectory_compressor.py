@@ -37,9 +37,11 @@ import yaml
 import logging
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple, Callable
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from utils import base_url_host_matches, base_url_hostname
 import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
@@ -52,6 +54,29 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / ".env"
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+
+
+def _effective_temperature_for_model(
+    model: str,
+    requested_temperature: float,
+    base_url: Optional[str] = None,
+) -> Optional[float]:
+    """Apply fixed model temperature contracts to direct client calls.
+
+    Returns ``None`` when the model manages temperature server-side (Kimi);
+    callers must omit the ``temperature`` kwarg entirely in that case.
+    """
+    try:
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+    except Exception:
+        return requested_temperature
+
+    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    if fixed_temperature is OMIT_TEMPERATURE:
+        return None  # caller must omit temperature
+    if fixed_temperature is not None:
+        return fixed_temperature
+    return requested_temperature
 
 
 @dataclass
@@ -100,11 +125,11 @@ class CompressionConfig:
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "CompressionConfig":
         """Load configuration from YAML file."""
-        with open(yaml_path, 'r') as f:
-            data = yaml.safe_load(f)
-        
+        with open(yaml_path, 'r', encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
         config = cls()
-        
+
         # Tokenizer
         if 'tokenizer' in data:
             config.tokenizer_name = data['tokenizer'].get('name', config.tokenizer_name)
@@ -409,22 +434,29 @@ class TrajectoryCompressor:
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
-        url = (self.config.base_url or "").lower()
-        if "openrouter" in url:
+        url = self.config.base_url or ""
+        if base_url_host_matches(url, "openrouter.ai"):
             return "openrouter"
-        if "nousresearch.com" in url:
+        if base_url_host_matches(url, "nousresearch.com"):
             return "nous"
-        if "chatgpt.com/backend-api/codex" in url:
+        if (
+            base_url_hostname(url) == "chatgpt.com"
+            and "/backend-api/codex" in url.lower()
+        ):
             return "codex"
-        if "api.z.ai" in url:
+        if base_url_host_matches(url, "z.ai"):
             return "zai"
-        if "moonshot.ai" in url or "moonshot.cn" in url or "api.kimi.com" in url:
+        if (
+            base_url_host_matches(url, "moonshot.ai")
+            or base_url_host_matches(url, "moonshot.cn")
+            or base_url_host_matches(url, "api.kimi.com")
+        ):
             return "kimi-coding"
-        if "arcee.ai" in url:
+        if base_url_host_matches(url, "arcee.ai"):
             return "arcee"
-        if "minimaxi.com" in url:
+        if base_url_host_matches(url, "minimaxi.com"):
             return "minimax-cn"
-        if "minimax.io" in url:
+        if base_url_host_matches(url, "minimax.io"):
             return "minimax"
         # Unknown base_url — not a known provider
         return ""
@@ -492,9 +524,48 @@ class TrajectoryCompressor:
         
         compressible_start = max(head_protected) + 1 if head_protected else 0
         compressible_end = min(tail_protected) if tail_protected else n
-        
+
         return protected, compressible_start, compressible_end
-    
+
+    @staticmethod
+    def _is_boundary_clean(trajectory: List[Dict[str, str]], idx: int) -> bool:
+        """Return True if a region boundary at ``idx`` does not split a turn pair.
+
+        In the from/value trajectory format a ``tool`` turn (carrying
+        ``<tool_response>`` markers) is always emitted immediately after the
+        ``gpt`` turn whose ``<tool_call>`` it answers. A compression boundary
+        that lands *on* a ``tool`` turn therefore cuts between a tool call and
+        its response. A boundary is only clean when it sits at the very end of
+        the trajectory or on a non-``tool`` turn.
+        """
+        return idx >= len(trajectory) or trajectory[idx].get("from") != "tool"
+
+    @classmethod
+    def _snap_boundary(
+        cls,
+        trajectory: List[Dict[str, str]],
+        idx: int,
+        min_idx: int,
+        max_idx: int,
+    ) -> int:
+        """Move a compression boundary onto the nearest clean turn boundary.
+
+        Moving forward is preferred so that an orphaned ``tool`` turn is folded
+        into the region that already holds its ``gpt`` turn; if no clean
+        boundary exists ahead (for example the protected tail itself begins on a
+        ``tool`` turn) the boundary is moved backward instead. The result is
+        clamped to ``[min_idx, max_idx]``.
+        """
+        forward = idx
+        while forward < max_idx and not cls._is_boundary_clean(trajectory, forward):
+            forward += 1
+        if cls._is_boundary_clean(trajectory, forward):
+            return forward
+        backward = idx
+        while backward > min_idx and not cls._is_boundary_clean(trajectory, backward):
+            backward -= 1
+        return backward
+
     def _extract_turn_content_for_summary(self, trajectory: List[Dict[str, str]], start: int, end: int) -> str:
         """
         Extract content from turns to be summarized.
@@ -567,6 +638,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for attempt in range(self.config.max_retries):
             try:
                 metrics.summarization_api_calls += 1
+                summary_temperature = _effective_temperature_for_model(
+                    self.config.summarization_model,
+                    self.config.temperature,
+                    self.config.base_url,
+                )
                 
                 if getattr(self, '_use_call_llm', False):
                     from agent.auxiliary_client import call_llm
@@ -574,16 +650,18 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         provider=self._llm_provider,
                         model=self.config.summarization_model,
                         messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
+                        temperature=summary_temperature,
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
-                    response = self.client.chat.completions.create(
-                        model=self.config.summarization_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.summary_target_tokens * 2,
-                    )
+                    _create_kwargs = {
+                        "model": self.config.summarization_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": self.config.summary_target_tokens * 2,
+                    }
+                    if summary_temperature is not None:
+                        _create_kwargs["temperature"] = summary_temperature
+                    response = self.client.chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)
                 return self._ensure_summary_prefix(summary)
@@ -629,6 +707,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         for attempt in range(self.config.max_retries):
             try:
                 metrics.summarization_api_calls += 1
+                summary_temperature = _effective_temperature_for_model(
+                    self.config.summarization_model,
+                    self.config.temperature,
+                    self.config.base_url,
+                )
                 
                 if getattr(self, '_use_call_llm', False):
                     from agent.auxiliary_client import async_call_llm
@@ -636,16 +719,18 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         provider=self._llm_provider,
                         model=self.config.summarization_model,
                         messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
+                        temperature=summary_temperature,
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
-                    response = await self._get_async_client().chat.completions.create(
-                        model=self.config.summarization_model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=self.config.temperature,
-                        max_tokens=self.config.summary_target_tokens * 2,
-                    )
+                    _create_kwargs = {
+                        "model": self.config.summarization_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": self.config.summary_target_tokens * 2,
+                    }
+                    if summary_temperature is not None:
+                        _create_kwargs["temperature"] = summary_temperature
+                    response = await self._get_async_client().chat.completions.create(**_create_kwargs)
                 
                 summary = self._coerce_summary_content(response.choices[0].message.content)
                 return self._ensure_summary_prefix(summary)
@@ -700,7 +785,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         # Find protected regions
         protected, compress_start, compress_end = self._find_protected_indices(trajectory)
-        
+
+        # Snap the head boundary so the compressible region never *starts* on an
+        # orphaned <tool_response> whose <tool_call> lives in the protected head.
+        compress_start = self._snap_boundary(trajectory, compress_start, compress_start, compress_end)
+
         # Check if there's anything to compress
         if compress_start >= compress_end:
             # Nothing to compress, return as-is
@@ -734,17 +823,29 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if accumulated_tokens < target_tokens_to_compress and compress_until < compress_end:
             compress_until = compress_end
             accumulated_tokens = sum(turn_tokens[compress_start:compress_end])
-        
+
+        # Snap the tail boundary so we never cut between a <tool_call> and its
+        # <tool_response>: the summary replaces [compress_start, compress_until)
+        # and the remainder is kept verbatim, so a boundary on a tool turn would
+        # leave an orphaned marker and corrupt the training trajectory.
+        compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
+        if compress_until <= compress_start:
+            # Snapping collapsed the region; nothing can be safely compressed.
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
         # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
         metrics.turns_in_compressed_region = compress_until - compress_start
-        
+
         # Extract content for summary
         content_to_summarize = self._extract_turn_content_for_summary(
             trajectory, compress_start, compress_until
         )
-        
+
         # Generate summary
         summary = self._generate_summary(content_to_summarize, metrics)
         
@@ -807,7 +908,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         # Find protected regions
         protected, compress_start, compress_end = self._find_protected_indices(trajectory)
-        
+
+        # Snap the head boundary so the compressible region never *starts* on an
+        # orphaned <tool_response> whose <tool_call> lives in the protected head.
+        compress_start = self._snap_boundary(trajectory, compress_start, compress_start, compress_end)
+
         # Check if there's anything to compress
         if compress_start >= compress_end:
             metrics.compressed_tokens = total_tokens
@@ -833,17 +938,29 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if accumulated_tokens < target_tokens_to_compress and compress_until < compress_end:
             compress_until = compress_end
             accumulated_tokens = sum(turn_tokens[compress_start:compress_end])
-        
+
+        # Snap the tail boundary so we never cut between a <tool_call> and its
+        # <tool_response>: the summary replaces [compress_start, compress_until)
+        # and the remainder is kept verbatim, so a boundary on a tool turn would
+        # leave an orphaned marker and corrupt the training trajectory.
+        compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
+        if compress_until <= compress_start:
+            # Snapping collapsed the region; nothing can be safely compressed.
+            metrics.compressed_tokens = total_tokens
+            metrics.compressed_turns = len(trajectory)
+            metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+            return trajectory, metrics
+
         # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
         metrics.turns_in_compressed_region = compress_until - compress_start
-        
+
         # Extract content for summary
         content_to_summarize = self._extract_turn_content_for_summary(
             trajectory, compress_start, compress_until
         )
-        
+
         # Generate summary (ASYNC)
         summary = await self._generate_summary_async(content_to_summarize, metrics)
         
@@ -1128,7 +1245,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         # Save metrics
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
-            with open(metrics_path, 'w') as f:
+            with open(metrics_path, 'w', encoding="utf-8") as f:
                 json.dump(self.aggregate_metrics.to_dict(), f, indent=2)
             console.print(f"\n💾 Metrics saved to {metrics_path}")
     

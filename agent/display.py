@@ -12,8 +12,10 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
+from typing import Any
 
 from utils import safe_json_loads
+from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -167,6 +169,27 @@ def _oneline(text: str) -> str:
     return " ".join(text.split())
 
 
+def _truncate_preview(text: str, max_len: int | None) -> str:
+    if max_len and max_len > 0 and len(text) > max_len:
+        if max_len <= 3:
+            return "." * max_len
+        return text[:max_len - 3] + "..."
+    return text
+
+
+def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
+    if not isinstance(tasks, list):
+        return 0, []
+    goals: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        raw_goal = task.get("goal")
+        goal = "?" if raw_goal is None else _oneline(str(raw_goal))
+        goals.append(_truncate_preview(goal or "?", per_goal_len))
+    return len(goals), goals
+
+
 def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -> str | None:
     """Build a short preview of a tool call's primary argument for display.
 
@@ -189,6 +212,22 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "execute_code": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
     }
+
+    # delegate_task: show goal (single) or individual task goals (batch)
+    if tool_name == "delegate_task":
+        tasks = args.get("tasks")
+        if tasks and isinstance(tasks, list):
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=40)
+            preview = (
+                f"{task_count} tasks: " + " | ".join(goals)
+                if goals else f"{len(tasks)} parallel tasks"
+            )
+            return _truncate_preview(preview, max_len)
+        goal = args.get("goal", "")
+        if goal is None:
+            return None
+        preview = _oneline(str(goal))
+        return _truncate_preview(preview, max_len) if preview else None
 
     if tool_name == "process":
         action = args.get("action", "")
@@ -225,9 +264,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             content = _oneline(args.get("content", ""))
             return f"+{target}: \"{content[:25]}{'...' if len(content) > 25 else ''}\""
         elif action == "replace":
-            return f"~{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"~{target}: \"{old[:20]}\""
         elif action == "remove":
-            return f"-{target}: \"{_oneline(args.get('old_text', '')[:20])}\""
+            old = _oneline(args.get("old_text") or "") or "<missing old_text>"
+            return f"-{target}: \"{old[:20]}\""
         return action
 
     if tool_name == "send_message":
@@ -236,21 +277,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         if len(msg) > 20:
             msg = msg[:17] + "..."
         return f"to {target}: \"{msg}\""
-
-    if tool_name.startswith("rl_"):
-        rl_previews = {
-            "rl_list_environments": "listing envs",
-            "rl_select_environment": args.get("name", ""),
-            "rl_get_current_config": "reading config",
-            "rl_edit_config": f"{args.get('field', '')}={args.get('value', '')}",
-            "rl_start_training": "starting",
-            "rl_check_status": args.get("run_id", "")[:16],
-            "rl_stop_training": f"stopping {args.get('run_id', '')[:16]}",
-            "rl_get_results": args.get("run_id", "")[:16],
-            "rl_list_runs": "listing runs",
-            "rl_test_inference": f"{args.get('num_steps', 3)} steps",
-        }
-        return rl_previews.get(tool_name)
 
     key = primary_args.get(tool_name)
     if not key:
@@ -600,6 +626,45 @@ class KawaiiSpinner:
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
     ]
 
+    @classmethod
+    def get_waiting_faces(cls) -> list:
+        """Return waiting faces from the active skin, falling back to KAWAII_WAITING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("waiting_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_WAITING
+
+    @classmethod
+    def get_thinking_faces(cls) -> list:
+        """Return thinking faces from the active skin, falling back to KAWAII_THINKING."""
+        try:
+            skin = _get_skin()
+            if skin:
+                faces = skin.spinner.get("thinking_faces", [])
+                if faces:
+                    return faces
+        except Exception:
+            pass
+        return cls.KAWAII_THINKING
+
+    @classmethod
+    def get_thinking_verbs(cls) -> list:
+        """Return thinking verbs from the active skin, falling back to THINKING_VERBS."""
+        try:
+            skin = _get_skin()
+            if skin:
+                verbs = skin.spinner.get("thinking_verbs", [])
+                if verbs:
+                    return verbs
+        except Exception:
+            pass
+        return cls.THINKING_VERBS
+
     def __init__(self, message: str = "", spinner_type: str = 'dots', print_fn=None):
         self.message = message
         self.spinner_frames = self.SPINNERS.get(spinner_type, self.SPINNERS['dots'])
@@ -760,32 +825,70 @@ class KawaiiSpinner:
 # Cute tool message (completion line that replaces the spinner)
 # =========================================================================
 
+_ERROR_SUFFIX_MAX_LEN = 48
+
+
+def _trim_error(msg: str) -> str:
+    """Shrink an error message for inline display in a tool status line.
+
+    Strips overly long absolute paths down to just the filename so the
+    suffix stays readable on narrow terminals.
+    """
+    msg = msg.strip()
+    # Common case: "File not found: /very/long/absolute/path/foo.py"
+    if "File not found:" in msg:
+        _, _, tail = msg.partition("File not found:")
+        tail = tail.strip()
+        if "/" in tail:
+            msg = f"File not found: {tail.rsplit('/', 1)[-1]}"
+    if len(msg) > _ERROR_SUFFIX_MAX_LEN:
+        msg = msg[: _ERROR_SUFFIX_MAX_LEN - 3] + "..."
+    return msg
+
+
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
     """Inspect a tool result string for signs of failure.
 
-    Returns ``(is_failure, suffix)`` where *suffix* is an informational tag
-    like ``" [exit 1]"`` for terminal failures, or ``" [error]"`` for generic
-    failures.  On success, returns ``(False, "")``.
+    Returns ``(is_failure, suffix)`` where *suffix* is a short informational
+    tag like ``" [exit 1]"`` for terminal failures, ``" [full]"`` for memory
+    overflow, or a trimmed error message (``" [File not found: foo.py]"``).
+    On success returns ``(False, "")``.
     """
     if result is None:
         return False, ""
+    if file_mutation_result_landed(tool_name, result):
+        return False, ""
 
+    data = safe_json_loads(result)
+
+    # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
+                err_msg = data.get("error")
+                if err_msg:
+                    return True, f" [{_trim_error(str(err_msg))}]"
                 return True, f" [exit {exit_code}]"
         return False, ""
 
-    # Memory-specific: distinguish "full" from real errors
+    # Memory: distinguish "store full" from real errors.
     if tool_name == "memory":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
+    # Structured error in JSON result (any tool that surfaces {"error": ...}).
+    if isinstance(data, dict):
+        err = data.get("error") or data.get("message")
+        if err and (data.get("success") is False or "error" in data):
+            return True, f" [{_trim_error(str(err))}]"
+
     # Generic heuristic for non-terminal tools
+    # Multimodal tool results (dicts with _multimodal=True) are not strings —
+    # treat them as successes since failures would be JSON-encoded strings.
+    if not isinstance(result, str):
+        return False, ""
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
         return True, " [error]"
@@ -811,13 +914,15 @@ def get_cute_tool_message(
         s = str(s)
         if _tool_preview_max_len == 0:
             return s  # no limit
-        return (s[:n-3] + "...") if len(s) > n else s
+        limit = _tool_preview_max_len
+        return (s[:limit-3] + "...") if len(s) > limit else s
 
     def _path(p, n=35):
         p = str(p)
         if _tool_preview_max_len == 0:
             return p  # no limit
-        return ("..." + p[-(n-3):]) if len(p) > n else p
+        limit = _tool_preview_max_len
+        return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""
@@ -837,10 +942,6 @@ def get_cute_tool_message(
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
-    if tool_name == "web_crawl":
-        url = args.get("url", "")
-        domain = url.replace("https://", "").replace("http://", "").split("/")[0]
-        return _wrap(f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
@@ -886,11 +987,29 @@ def get_cute_tool_message(
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
+        # Parse result for completion progress
+        total = 0
+        done = 0
+        if result:
+            try:
+                data = safe_json_loads(result)
+                if data:
+                    s = data.get("summary", {})
+                    total = s.get("total", 0)
+                    done = s.get("completed", 0)
+            except Exception:
+                pass
         if todos_arg is None:
+            if total > 0:
+                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
             return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
         elif merge:
+            if total > 0 and done > 0:
+                return _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
             return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
         else:
+            if total > 0 and done > 0:
+                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
@@ -900,9 +1019,13 @@ def get_cute_tool_message(
         if action == "add":
             return _wrap(f"┊ 🧠 memory    +{target}: \"{_trunc(args.get('content', ''), 30)}\"  {dur}")
         elif action == "replace":
-            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    ~{target}: \"{_trunc(old, 20)}\"  {dur}")
         elif action == "remove":
-            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(args.get('old_text', ''), 20)}\"  {dur}")
+            old = args.get("old_text") or ""
+            old = old if old else "<missing old_text>"
+            return _wrap(f"┊ 🧠 memory    -{target}: \"{_trunc(old, 20)}\"  {dur}")
         return _wrap(f"┊ 🧠 memory    {action}  {dur}")
     if tool_name == "skills_list":
         return _wrap(f"┊ 📚 skills    list {args.get('category', 'all')}  {dur}")
@@ -927,15 +1050,6 @@ def get_cute_tool_message(
         if action == "list":
             return _wrap(f"┊ ⏰ cron      listing  {dur}")
         return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
-    if tool_name.startswith("rl_"):
-        rl = {
-            "rl_list_environments": "list envs", "rl_select_environment": f"select {args.get('name', '')}",
-            "rl_get_current_config": "get config", "rl_edit_config": f"set {args.get('field', '?')}",
-            "rl_start_training": "start training", "rl_check_status": f"status {args.get('run_id', '?')[:12]}",
-            "rl_stop_training": f"stop {args.get('run_id', '?')[:12]}", "rl_get_results": f"results {args.get('run_id', '?')[:12]}",
-            "rl_list_runs": "list runs", "rl_test_inference": "test inference",
-        }
-        return _wrap(f"┊ 🧪 rl        {rl.get(tool_name, tool_name.replace('rl_', ''))}  {dur}")
     if tool_name == "execute_code":
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
@@ -943,7 +1057,10 @@ def get_cute_tool_message(
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
-            return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
+            task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
+            detail = " | ".join(goals) if goals else "parallel"
+            count_label = task_count or len(tasks)
+            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
         return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
@@ -954,84 +1071,4 @@ def get_cute_tool_message(
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
 
-_DIM = "\033[2m"
-_SKY_BLUE = "\033[38;5;117m"
-_ANSI_RESET = "\033[0m"
 
-
-# =========================================================================
-# Context pressure display (CLI user-facing warnings)
-# =========================================================================
-
-# ANSI color codes for context pressure tiers
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
-_BOLD = "\033[1m"
-_DIM_ANSI = "\033[2m"
-
-# Bar characters
-_BAR_FILLED = "▰"
-_BAR_EMPTY = "▱"
-_BAR_WIDTH = 20
-
-
-def format_context_pressure(
-    compaction_progress: float,
-    threshold_tokens: int,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a formatted context pressure line for CLI display.
-
-    The bar and percentage show progress toward the compaction threshold,
-    NOT the raw context window.  100% = compaction fires.
-
-    Args:
-        compaction_progress: How close to compaction (0.0–1.0, 1.0 = fires).
-        threshold_tokens: Compaction threshold in tokens.
-        threshold_percent: Compaction threshold as a fraction of context window.
-        compression_enabled: Whether auto-compression is active.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
-    threshold_pct_int = int(threshold_percent * 100)
-
-    color = f"{_BOLD}{_YELLOW}"
-    icon = "⚠"
-    if compression_enabled:
-        hint = "compaction approaching"
-    else:
-        hint = "no auto-compaction"
-
-    return (
-        f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
-        f"  {_DIM_ANSI}{threshold_k} threshold ({threshold_pct_int}%) · {hint}{_ANSI_RESET}"
-    )
-
-
-def format_context_pressure_gateway(
-    compaction_progress: float,
-    threshold_percent: float,
-    compression_enabled: bool = True,
-) -> str:
-    """Build a plain-text context pressure notification for messaging platforms.
-
-    No ANSI — just Unicode and plain text suitable for Telegram/Discord/etc.
-    The percentage shows progress toward the compaction threshold.
-    """
-    pct_int = min(int(compaction_progress * 100), 100)
-    filled = min(int(compaction_progress * _BAR_WIDTH), _BAR_WIDTH)
-    bar = _BAR_FILLED * filled + _BAR_EMPTY * (_BAR_WIDTH - filled)
-
-    threshold_pct_int = int(threshold_percent * 100)
-
-    icon = "⚠️"
-    if compression_enabled:
-        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
-    else:
-        hint = "Auto-compaction is disabled — context may be truncated."
-
-    return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

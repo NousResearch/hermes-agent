@@ -1,9 +1,9 @@
-"""Anthropic prompt caching (system_and_3 strategy).
+"""Anthropic prompt caching strategy.
 
-Reduces input token costs by ~75% on multi-turn conversations by caching
-the conversation prefix. Uses 4 cache_control breakpoints (Anthropic max):
-  1. System prompt (stable across all turns)
-  2-4. Last 3 non-system messages (rolling window)
+Single layout: ``system_and_3``. 4 cache_control breakpoints — system
+prompt + last 3 non-system messages, all at the same TTL (5m or 1h).
+Reduces input token costs by ~75% on multi-turn conversations within a
+single session.
 
 Pure functions -- no class state, no AIAgent dependency.
 """
@@ -38,6 +38,14 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
             last["cache_control"] = cache_marker
 
 
+def _build_marker(ttl: str) -> Dict[str, str]:
+    """Build a cache_control marker dict for the given TTL ('5m' or '1h')."""
+    marker: Dict[str, str] = {"type": "ephemeral"}
+    if ttl == "1h":
+        marker["ttl"] = "1h"
+    return marker
+
+
 def apply_anthropic_cache_control(
     api_messages: List[Dict[str, Any]],
     cache_ttl: str = "5m",
@@ -45,7 +53,8 @@ def apply_anthropic_cache_control(
 ) -> List[Dict[str, Any]]:
     """Apply system_and_3 caching strategy to messages for Anthropic models.
 
-    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
+    Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
+    messages, all at the same TTL.
 
     Returns:
         Deep copy of messages with cache_control breakpoints injected.
@@ -54,9 +63,7 @@ def apply_anthropic_cache_control(
     if not messages:
         return messages
 
-    marker = {"type": "ephemeral"}
-    if cache_ttl == "1h":
-        marker["ttl"] = "1h"
+    marker = _build_marker(cache_ttl)
 
     breakpoints_used = 0
 

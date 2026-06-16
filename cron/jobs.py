@@ -5,21 +5,38 @@ Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
+import contextlib
 import copy
 import json
 import logging
+import shutil
 import tempfile
+import threading
 import os
 import re
 import uuid
+
+# Cross-process advisory file locking for jobs.json critical sections.
+# fcntl is Unix-only; on Windows fall back to msvcrt. Either may be absent,
+# in which case _jobs_lock() degrades to in-process locking only (the old
+# behaviour) rather than failing.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-Unix
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - non-Windows
+    msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from utils import atomic_replace
 
 try:
     from croniter import croniter
@@ -34,8 +51,104 @@ except ImportError:
 HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+
+# In-process lock protecting load_jobs→modify→save_jobs cycles.
+# Required when tick() runs jobs in parallel threads — without this,
+# concurrent mark_job_run / advance_next_run calls can clobber each other.
+_jobs_file_lock = threading.RLock()
+_jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+def _jobs_lock_file() -> Path:
+    """Return the advisory lock path for the current cron directory."""
+    return CRON_DIR / ".jobs.lock"
+
+
+@contextlib.contextmanager
+def _jobs_lock():
+    """Serialize a load_jobs→modify→save_jobs critical section.
+
+    Combines the in-process threading lock (cheap mutual exclusion between
+    the gateway's parallel tick threads) with a cross-process advisory file
+    lock on ``<cron dir>/.jobs.lock`` (mutual exclusion between the gateway process
+    and standalone ``hermes`` CLI invocations, which previously shared no lock
+    at all — a `cron pause` could be silently clobbered by a concurrent
+    gateway write, leaving a "paused" job still firing).
+
+    The flock is blocking, but every critical section that uses it is short
+    (field updates only — no agent execution), so contention resolves in
+    milliseconds. If neither fcntl nor msvcrt is available the manager still
+    provides in-process locking, matching the historical behaviour.
+
+    Nested calls in the same thread reuse the held lock so legacy callers that
+    invoke save_jobs() inside a broader mutation section don't deadlock or try
+    to reacquire the advisory file lock.
+    """
+    depth = getattr(_jobs_lock_state, "depth", 0)
+    if depth:
+        _jobs_lock_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            _jobs_lock_state.depth -= 1
+        return
+
+    with _jobs_file_lock:
+        _jobs_lock_state.depth = 1
+        lock_fd = None
+        try:
+            try:
+                ensure_dirs()
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd.seek(0)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+            except (OSError, IOError) as e:
+                # Never let a locking failure take down cron writes — fall back to
+                # in-process-only protection (still held via _jobs_file_lock).
+                logger.warning("jobs.json cross-process lock unavailable (%s); "
+                               "proceeding with in-process lock only", e)
+            try:
+                yield
+            finally:
+                if lock_fd is not None:
+                    try:
+                        if fcntl is not None:
+                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        elif msvcrt is not None:
+                            getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+                    except (OSError, IOError):
+                        pass
+                    finally:
+                        lock_fd.close()
+        finally:
+            _jobs_lock_state.depth = 0
+
+# Fields on a cron job that must never change after creation. ``id`` is used
+# as a filesystem path component under ``OUTPUT_DIR``; allowing it to be
+# updated lets an unsafe value (``../escape``, absolute path, nested) leak
+# into output writes/deletes.
+_IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+
+
+def _job_output_dir(job_id: str) -> Path:
+    """Resolve a job's output directory, rejecting any path-escape attempt.
+
+    Job IDs are filesystem path components under ``OUTPUT_DIR``. A legacy or
+    crafted ID containing ``..``, absolute paths, or nested separators would
+    allow output writes/deletes to escape the cron output sandbox. Reject
+    anything that isn't a single safe path component.
+    """
+    text = str(job_id or "").strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text:
+        raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
+    if Path(text).is_absolute() or Path(text).drive:
+        raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
+    return OUTPUT_DIR / text
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -61,6 +174,65 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     skills = _normalize_skill_list(normalized.get("skill"), normalized.get("skills"))
     normalized["skills"] = skills
     normalized["skill"] = skills[0] if skills else None
+    return normalized
+
+
+def _coerce_job_text(value: Any, fallback: str = "") -> str:
+    """Coerce legacy/hand-edited nullable cron fields to strings for readers."""
+    if value is None:
+        return fallback
+    return str(value)
+
+
+def _schedule_display_for_job(job: Dict[str, Any]) -> str:
+    display = _coerce_job_text(job.get("schedule_display")).strip()
+    if display:
+        return display
+
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        for key in ("display", "value", "expr", "run_at"):
+            text = _coerce_job_text(schedule.get(key)).strip()
+            if text:
+                return text
+    elif schedule is not None:
+        return str(schedule)
+
+    return "?"
+
+
+def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a read-safe cron job shape for UI/API/tool/scheduler consumers.
+
+    Older or hand-edited jobs can have nullable fields like ``prompt``,
+    ``name``, or ``schedule_display``.  Keep storage untouched on read, but
+    ensure consumers never crash while formatting or running those records.
+    """
+    normalized = _apply_skill_fields(job)
+    job_id = _coerce_job_text(normalized.get("id"), "unknown")
+    prompt = _coerce_job_text(normalized.get("prompt"))
+    normalized["id"] = job_id
+    normalized["prompt"] = prompt
+
+    name = _coerce_job_text(normalized.get("name")).strip()
+    if not name:
+        script = _coerce_job_text(normalized.get("script")).strip()
+        label_source = (
+            prompt
+            or (normalized["skills"][0] if normalized.get("skills") else "")
+            or script
+            or job_id
+            or "cron job"
+        )
+        name = label_source[:50].strip() or "cron job"
+    normalized["name"] = name
+    normalized["schedule_display"] = _schedule_display_for_job(normalized)
+
+    state = _coerce_job_text(normalized.get("state")).strip()
+    if not state:
+        state = "scheduled" if normalized.get("enabled", True) else "paused"
+    normalized["state"] = state
+
     return normalized
 
 
@@ -305,8 +477,22 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
+            logger.warning(
+                "Cannot compute next run for cron schedule %r: 'croniter' is "
+                "not installed. croniter is a core dependency as of v0.9.x; "
+                "reinstall hermes-agent or run 'pip install croniter' in your "
+                "runtime env.",
+                schedule.get("expr"),
+            )
             return None
-        cron = croniter(schedule["expr"], now)
+        # Use last_run_at as the croniter base when available, consistent
+        # with interval jobs.  This ensures that after a crash/restart,
+        # the next run is anchored to the actual last execution time
+        # rather than to an arbitrary restart time.
+        base_time = now
+        if last_run_at:
+            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+        cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 
@@ -322,22 +508,18 @@ def load_jobs() -> List[Dict[str, Any]]:
     ensure_dirs()
     if not JOBS_FILE.exists():
         return []
-    
+
+    _strict_retry = False  # track whether we used the strict=False fallback
+
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
+        _strict_retry = True
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
-                if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
-                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
@@ -345,9 +527,32 @@ def load_jobs() -> List[Dict[str, Any]]:
         logger.error("IOError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
 
+    # Validate the top-level JSON shape: accept a dict (expected) or a bare
+    # list (auto-repair). Anything else (str/number/null) is corruption that
+    # would otherwise raise an uncaught AttributeError on ``.get()`` and take
+    # down the whole cron subsystem.
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+        if _strict_retry and jobs:
+            # Hit control-character corruption — rewrite with proper escaping.
+            save_jobs(jobs)
+            logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+        return jobs
+    if isinstance(data, list):
+        # Bare array — likely saved/edited outside save_jobs(). Wrap it back
+        # into the expected {"jobs": [...]} structure.
+        if data:
+            save_jobs(data)
+            logger.warning("Auto-repaired jobs.json (bare list wrapped as dict)")
+        return data
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+    raise RuntimeError(
+        f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}"
+    )
+
+
+def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage. Caller must hold _jobs_lock()."""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
@@ -355,7 +560,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, JOBS_FILE)
+        atomic_replace(tmp_path, JOBS_FILE)
         _secure_file(JOBS_FILE)
     except BaseException:
         try:
@@ -365,8 +570,47 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         raise
 
 
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage."""
+    with _jobs_lock():
+        _save_jobs_unlocked(jobs)
+
+
+def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
+    """Normalize and validate a cron job workdir.
+
+    Rules:
+      - Empty / None → None (feature off, preserves old behaviour).
+      - ``~`` is expanded.  Relative paths are rejected — cron jobs run detached
+        from any shell cwd, so relative paths have no stable meaning.
+      - The path must exist and be a directory at create/update time.  We do
+        NOT re-check at run time (a user might briefly unmount the dir; the
+        scheduler will just fall back to old behaviour with a logged warning).
+
+    Returns the absolute path string, or None when disabled.
+    Raises ValueError on invalid input.
+    """
+    if workdir is None:
+        return None
+    raw = str(workdir).strip()
+    if not raw:
+        return None
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise ValueError(
+            f"Cron workdir must be an absolute path (got {raw!r}). "
+            f"Cron jobs run detached from any shell cwd, so relative paths are ambiguous."
+        )
+    resolved = expanded.resolve()
+    if not resolved.exists():
+        raise ValueError(f"Cron workdir does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise ValueError(f"Cron workdir is not a directory: {resolved}")
+    return str(resolved)
+
+
 def create_job(
-    prompt: str,
+    prompt: Optional[str],
     schedule: str,
     name: Optional[str] = None,
     repeat: Optional[int] = None,
@@ -378,12 +622,17 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    context_from: Optional[Union[str, List[str]]] = None,
+    enabled_toolsets: Optional[List[str]] = None,
+    workdir: Optional[str] = None,
+    no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
 
     Args:
-        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set)
+        prompt: The prompt to run (must be self-contained, or a task instruction when skill is set).
+                Ignored when ``no_agent=True`` except as an optional name hint.
         schedule: Schedule string (see parse_schedule)
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
@@ -394,9 +643,33 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
-        script: Optional path to a Python script whose stdout is injected into the
-                prompt each run.  The script runs before the agent turn, and its output
-                is prepended as context.  Useful for data collection / change detection.
+        script: Optional path to a script whose stdout feeds the job. With
+                ``no_agent=True`` the script IS the job — its stdout is
+                delivered verbatim. Without ``no_agent``, its stdout is
+                injected into the agent's prompt as context (data-collection /
+                change-detection pattern). Paths resolve under
+                ~/.hermes/scripts/; ``.sh`` / ``.bash`` files run via bash,
+                anything else via Python.
+        context_from: Optional job ID (or list of job IDs) whose most recent output
+                      is injected into the prompt as context before each run.
+                      Useful for chaining cron jobs: job A finds data, job B processes it.
+        enabled_toolsets: Optional list of toolset names to restrict the agent to.
+                          When set, only tools from these toolsets are loaded, reducing
+                          token overhead. When omitted, all default tools are loaded.
+                          Ignored when ``no_agent=True``.
+        workdir: Optional absolute path.  When set, the job runs as if launched
+                from that directory: AGENTS.md / CLAUDE.md / .cursorrules from
+                that directory are injected into the system prompt, and the
+                terminal/file/code_exec tools use it as their working directory
+                (via TERMINAL_CWD).  When unset, the old behaviour is preserved
+                (no context files injected, tools use the scheduler's cwd).
+                With ``no_agent=True``, ``workdir`` is still applied as the
+                script's cwd so relative paths inside the script behave
+                predictably.
+        no_agent: When True, skip the agent entirely — run ``script`` on schedule
+                and deliver its stdout directly. Empty stdout = silent (no
+                delivery). Requires ``script`` to be set. Ideal for classic
+                watchdogs and periodic alerts that don't need LLM reasoning.
 
     Returns:
         The created job dict
@@ -427,18 +700,42 @@ def create_job(
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
+    normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
+    normalized_toolsets = normalized_toolsets or None
+    normalized_workdir = _normalize_workdir(workdir)
+    normalized_no_agent = bool(no_agent)
 
-    label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
+    # no_agent jobs are meaningless without a script — the script IS the job.
+    # Surface this as a clear ValueError at create time so bad configs never
+    # reach the scheduler.
+    if normalized_no_agent and not normalized_script:
+        raise ValueError(
+            "no_agent=True requires a script — with no agent and no script "
+            "there is nothing for the job to run."
+        )
+
+    # Normalize context_from: accept str or list of str, store as list or None
+    if isinstance(context_from, str):
+        context_from = [context_from.strip()] if context_from.strip() else None
+    elif isinstance(context_from, list):
+        context_from = [str(j).strip() for j in context_from if str(j).strip()] or None
+    else:
+        context_from = None
+
+    prompt_text = _coerce_job_text(prompt)
+    label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
-        "prompt": prompt,
+        "prompt": prompt_text,
         "skills": normalized_skills,
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "no_agent": normalized_no_agent,
+        "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -458,11 +755,14 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        "enabled_toolsets": normalized_toolsets,
+        "workdir": normalized_workdir,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_lock():
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
 
     return job
 
@@ -472,13 +772,51 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
-            return _apply_skill_fields(job)
+            return _normalize_job_record(job)
     return None
+
+
+class AmbiguousJobReference(LookupError):
+    """Raised when a job name matches more than one job."""
+
+    def __init__(self, ref: str, matches: List[Dict[str, Any]]):
+        self.ref = ref
+        self.matches = matches
+        ids = ", ".join(m["id"] for m in matches)
+        super().__init__(
+            f"Job name '{ref}' is ambiguous — matches {len(matches)} jobs: {ids}. "
+            f"Use the job ID instead."
+        )
+
+
+def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
+    """Resolve a job reference (ID or name) to a job record.
+
+    - Exact ID match wins (works even if a different job's name equals this ID).
+    - Otherwise, case-insensitive name match.
+    - If a name matches more than one job, raises AmbiguousJobReference so the
+      caller can surface the matching IDs rather than silently picking one.
+    """
+    if not ref:
+        return None
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == ref:
+            return _normalize_job_record(job)
+    ref_lower = ref.lower()
+    name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
+    if not name_matches:
+        return None
+    if len(name_matches) > 1:
+        raise AmbiguousJobReference(
+            ref, [_normalize_job_record(j) for j in name_matches]
+        )
+    return _normalize_job_record(name_matches[0])
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_apply_skill_fields(j) for j in load_jobs()]
+    jobs = [_normalize_job_record(j) for j in load_jobs()]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
@@ -486,41 +824,69 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    # Block mutation of immutable fields. ``id`` in particular is a filesystem
+    # path component under OUTPUT_DIR — letting an update change it leaks
+    # path-escape values into output writes/deletes.
+    bad_fields = _IMMUTABLE_JOB_FIELDS.intersection(updates or {})
+    if bad_fields:
+        raise ValueError(
+            f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
+        )
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            # Validate / normalize workdir if present in updates.  Empty string
+            # or None both mean "clear the field" (restore old behaviour).
+            if "workdir" in updates:
+                _wd = updates["workdir"]
+                if _wd in {None, "", False}:
+                    updates["workdir"] = None
+                else:
+                    updates["workdir"] = _normalize_workdir(_wd)
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            updated = _apply_skill_fields({**job, **updates})
+            schedule_changed = "schedule" in updates
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            if "skills" in updates or "skill" in updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _apply_skill_fields(jobs[i])
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                # The API may pass schedule as a raw string (e.g. "every 10m")
+                # instead of a pre-parsed dict.  Normalize it the same way
+                # create_job() does so downstream code can call .get() safely.
+                if isinstance(updated_schedule, str):
+                    updated_schedule = parse_schedule(updated_schedule)
+                    updated["schedule"] = updated_schedule
+                updated["schedule_display"] = updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
+
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
+
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(jobs[i])
     return None
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Pause a job without deleting it."""
+    """Pause a job without deleting it. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": False,
             "state": "paused",
@@ -531,14 +897,14 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now."""
-    job = get_job(job_id)
+    """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
     if not job:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": True,
             "state": "scheduled",
@@ -550,12 +916,12 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
-    job = get_job(job_id)
+    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
     if not job:
         return None
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": True,
             "state": "scheduled",
@@ -567,13 +933,25 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        return True
+    """Remove a job by ID or name."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return False
+    canonical_id = job["id"]
+    with _jobs_lock():
+        jobs = load_jobs()
+        original_len = len(jobs)
+        jobs = [j for j in jobs if j["id"] != canonical_id]
+        if len(jobs) < original_len:
+            # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
+            # left over from before the create-time guard) fails closed without
+            # half-applying the removal.
+            job_output_dir = _job_output_dir(canonical_id)
+            save_jobs(jobs)
+            # Clean up output directory to prevent orphaned dirs accumulating
+            if job_output_dir.exists():
+                shutil.rmtree(job_output_dir)
+            return True
     return False
 
 
@@ -588,43 +966,66 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
     """
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] == job_id:
-            now = _hermes_now().isoformat()
-            job["last_run_at"] = now
-            job["last_status"] = "ok" if success else "error"
-            job["last_error"] = error if not success else None
-            # Track delivery failures separately — cleared on successful delivery
-            job["last_delivery_error"] = delivery_error
-            
-            # Increment completed count
-            if job.get("repeat"):
-                job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
+    with _jobs_lock():
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] == job_id:
+                now = _hermes_now().isoformat()
+                job["last_run_at"] = now
+                job["last_status"] = "ok" if success else "error"
+                job["last_error"] = error if not success else None
+                # Track delivery failures separately — cleared on successful delivery
+                job["last_delivery_error"] = delivery_error
                 
-                # Check if we've hit the repeat limit
-                times = job["repeat"].get("times")
-                completed = job["repeat"]["completed"]
-                if times is not None and times > 0 and completed >= times:
-                    # Remove the job (limit reached)
-                    jobs.pop(i)
-                    save_jobs(jobs)
-                    return
-            
-            # Compute next run
-            job["next_run_at"] = compute_next_run(job["schedule"], now)
+                # Increment completed count
+                if job.get("repeat"):
+                    job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
+                    
+                    # Check if we've hit the repeat limit
+                    times = job["repeat"].get("times")
+                    completed = job["repeat"]["completed"]
+                    if times is not None and times > 0 and completed >= times:
+                        # Remove the job (limit reached)
+                        jobs.pop(i)
+                        save_jobs(jobs)
+                        return
+                
+                # Compute next run
+                job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-            # If no next run (one-shot completed), disable
-            if job["next_run_at"] is None:
-                job["enabled"] = False
-                job["state"] = "completed"
-            elif job.get("state") != "paused":
-                job["state"] = "scheduled"
+                # If no next run, decide whether this is terminal completion
+                # (one-shot) or a transient failure (recurring schedule couldn't
+                # compute — e.g. 'croniter' missing from the runtime env).
+                # Recurring jobs must NEVER be silently disabled: that turns a
+                # missing runtime dep into "job completed" and the user's
+                # schedule quietly goes off. See issue #16265.
+                if job["next_run_at"] is None:
+                    kind = job.get("schedule", {}).get("kind")
+                    if kind in {"cron", "interval"}:
+                        job["state"] = "error"
+                        if not job.get("last_error"):
+                            job["last_error"] = (
+                                "Failed to compute next run for recurring "
+                                "schedule (is the 'croniter' package "
+                                "installed in the gateway's Python env?)"
+                            )
+                        logger.error(
+                            "Job '%s' (%s) could not compute next_run_at; "
+                            "leaving enabled and marking state=error so the "
+                            "job is not silently disabled.",
+                            job.get("name", job["id"]),
+                            kind,
+                        )
+                    else:
+                        job["enabled"] = False
+                        job["state"] = "completed"
+                elif job.get("state") != "paused":
+                    job["state"] = "scheduled"
 
-            save_jobs(jobs)
-            return
+                save_jobs(jobs)
+                return
 
-    logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
+        logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
 def advance_next_run(job_id: str) -> bool:
@@ -639,20 +1040,21 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    jobs = load_jobs()
-    for job in jobs:
-        if job["id"] == job_id:
-            kind = job.get("schedule", {}).get("kind")
-            if kind not in ("cron", "interval"):
+    with _jobs_lock():
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                kind = job.get("schedule", {}).get("kind")
+                if kind not in {"cron", "interval"}:
+                    return False
+                now = _hermes_now().isoformat()
+                new_next = compute_next_run(job["schedule"], now)
+                if new_next and new_next != job.get("next_run_at"):
+                    job["next_run_at"] = new_next
+                    save_jobs(jobs)
+                    return True
                 return False
-            now = _hermes_now().isoformat()
-            new_next = compute_next_run(job["schedule"], now)
-            if new_next and new_next != job.get("next_run_at"):
-                job["next_run_at"] = new_next
-                save_jobs(jobs)
-                return True
-            return False
-    return False
+        return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:
@@ -663,6 +1065,12 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     the job is fast-forwarded to the next future run instead of firing
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
+    with _jobs_lock():
+        return _get_due_jobs_locked()
+
+
+def _get_due_jobs_locked() -> List[Dict[str, Any]]:
+    """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
@@ -675,19 +1083,36 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
+            schedule = job.get("schedule", {})
+            kind = schedule.get("kind")
+
+            # One-shot jobs use a small grace window via the dedicated helper.
             recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
+                schedule,
                 now,
                 last_run_at=job.get("last_run_at"),
             )
+            recovery_kind = "one-shot" if recovered_next else None
+
+            # Recurring jobs reach here only when something — typically a
+            # direct jobs.json edit that bypassed add_job() — left
+            # next_run_at unset.  Without this branch, such jobs are
+            # silently skipped forever; recompute next_run_at from the
+            # schedule so they pick up at their next scheduled tick.
+            if not recovered_next and kind in {"cron", "interval"}:
+                recovered_next = compute_next_run(schedule, now.isoformat())
+                if recovered_next:
+                    recovery_kind = kind
+
             if not recovered_next:
                 continue
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
             logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                "Job '%s' had no next_run_at; recovering %s run at %s",
                 job.get("name", job["id"]),
+                recovery_kind,
                 recovered_next,
             )
             for rj in raw_jobs:
@@ -705,7 +1130,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
+            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())
@@ -737,7 +1162,7 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
-    job_output_dir = OUTPUT_DIR / job_id
+    job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     
@@ -750,7 +1175,7 @@ def save_job_output(job_id: str, output: str):
             f.write(output)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, output_file)
+        atomic_replace(tmp_path, output_file)
         _secure_file(output_file)
     except BaseException:
         try:
@@ -760,3 +1185,120 @@ def save_job_output(job_id: str, output: str):
         raise
     
     return output_file
+
+
+# =============================================================================
+# Skill reference rewriting (curator integration)
+# =============================================================================
+
+def rewrite_skill_refs(
+    consolidated: Optional[Dict[str, str]] = None,
+    pruned: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Rewrite cron job skill references after a curator consolidation pass.
+
+    When the curator consolidates a skill X into umbrella Y (or archives X
+    as pruned), any cron job that lists ``X`` in its ``skills`` field will
+    fail to load ``X`` at run time — the scheduler logs a warning and
+    skips the skill, so the job runs without the instructions it was
+    scheduled to follow. See cron/scheduler.py where ``skill_view`` is
+    called per skill name.
+
+    This function repairs cron jobs in-place:
+
+    - A skill listed in ``consolidated`` is replaced with its umbrella
+      target (the ``into`` value). If the umbrella is already in the
+      job's skill list, the stale name is dropped without duplication.
+    - A skill listed in ``pruned`` is dropped outright — there is no
+      forwarding target.
+    - Ordering and other skills in the list are preserved.
+    - The legacy ``skill`` field is realigned via ``_apply_skill_fields``.
+
+    Args:
+        consolidated: mapping of ``old_skill_name -> umbrella_skill_name``.
+        pruned: list of skill names that were archived with no forwarding
+            target.
+
+    Returns a report dict::
+
+        {
+            "rewrites": [
+                {
+                    "job_id": ...,
+                    "job_name": ...,
+                    "before": [...],
+                    "after": [...],
+                    "mapped": {"old": "new", ...},
+                    "dropped": ["old", ...],
+                },
+                ...
+            ],
+            "jobs_updated": N,
+            "jobs_scanned": M,
+        }
+
+    Best-effort: exceptions from loading/saving propagate to the caller so
+    tests can assert behaviour; the curator invocation site wraps this
+    call in a try/except so a failure here never breaks the curator.
+    """
+    consolidated = dict(consolidated or {})
+    pruned_set = set(pruned or [])
+    # A skill listed in both wins as "consolidated" — it has a target,
+    # which is the more useful of the two outcomes.
+    pruned_set -= set(consolidated.keys())
+
+    if not consolidated and not pruned_set:
+        return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
+
+    with _jobs_lock():
+        jobs = load_jobs()
+        rewrites: List[Dict[str, Any]] = []
+        changed = False
+
+        for job in jobs:
+            skills_before = _normalize_skill_list(job.get("skill"), job.get("skills"))
+            if not skills_before:
+                continue
+
+            mapped: Dict[str, str] = {}
+            dropped: List[str] = []
+            new_skills: List[str] = []
+
+            for name in skills_before:
+                if name in consolidated:
+                    target = consolidated[name]
+                    mapped[name] = target
+                    if target and target not in new_skills:
+                        new_skills.append(target)
+                elif name in pruned_set:
+                    dropped.append(name)
+                elif name not in new_skills:
+                    new_skills.append(name)
+
+            if not mapped and not dropped:
+                continue
+
+            job["skills"] = new_skills
+            job["skill"] = new_skills[0] if new_skills else None
+            changed = True
+
+            rewrites.append({
+                "job_id": job.get("id"),
+                "job_name": job.get("name") or job.get("id"),
+                "before": list(skills_before),
+                "after": list(new_skills),
+                "mapped": mapped,
+                "dropped": dropped,
+            })
+
+        if changed:
+            save_jobs(jobs)
+            logger.info(
+                "Curator rewrote skill references in %d cron job(s)", len(rewrites)
+            )
+
+        return {
+            "rewrites": rewrites,
+            "jobs_updated": len(rewrites),
+            "jobs_scanned": len(jobs),
+        }

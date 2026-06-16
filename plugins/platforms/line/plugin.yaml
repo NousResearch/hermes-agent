@@ -1,0 +1,65 @@
+name: line-platform
+label: LINE
+kind: platform
+version: 1.0.0
+description: >
+  LINE Messaging API gateway adapter for Hermes Agent.
+  Runs an aiohttp webhook server that receives LINE webhook events
+  (with HMAC-SHA256 signature verification) and relays messages between
+  LINE chats (1:1, groups, rooms) and the Hermes agent. Outbound replies
+  prefer the free reply token and fall back to the metered Push API
+  when the token has expired or is absent. Slow LLM responses surface a
+  Template Buttons postback bubble so the user can fetch the answer with
+  a fresh reply token (free) once it's ready.
+author: Hermes Agent contributors
+# ``requires_env`` and ``optional_env`` entries are surfaced in the
+# ``hermes config`` UI via the platform-plugin env var injector in
+# ``hermes_cli/config.py``.
+requires_env:
+  - name: LINE_CHANNEL_ACCESS_TOKEN
+    description: "LINE channel long-lived access token (LINE Developers Console > Messaging API > Channel access token)"
+    prompt: "LINE channel access token"
+    url: "https://developers.line.biz/console/"
+    password: true
+  - name: LINE_CHANNEL_SECRET
+    description: "LINE channel secret (used for HMAC-SHA256 webhook signature verification)"
+    prompt: "LINE channel secret"
+    url: "https://developers.line.biz/console/"
+    password: true
+optional_env:
+  - name: LINE_PORT
+    description: "Webhook listen port (default: 8646)"
+    prompt: "Webhook port"
+    password: false
+  - name: LINE_HOST
+    description: "Webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: LINE_PUBLIC_URL
+    description: "Public HTTPS base URL for serving images/audio/video to LINE (e.g. https://my-tunnel.example.com). Required for media sending when the bind address is not directly reachable."
+    prompt: "Public HTTPS base URL"
+    password: false
+  - name: LINE_ALLOWED_USERS
+    description: "Comma-separated LINE user IDs allowed to DM the bot (U-prefixed)"
+    prompt: "Allowed user IDs (comma-separated)"
+    password: false
+  - name: LINE_ALLOWED_GROUPS
+    description: "Comma-separated LINE group IDs the bot will respond in (C-prefixed)"
+    prompt: "Allowed group IDs (comma-separated)"
+    password: false
+  - name: LINE_ALLOWED_ROOMS
+    description: "Comma-separated LINE room IDs the bot will respond in (R-prefixed)"
+    prompt: "Allowed room IDs (comma-separated)"
+    password: false
+  - name: LINE_ALLOW_ALL_USERS
+    description: "Allow any LINE user to talk to the bot (dev only — disables allowlist)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: LINE_HOME_CHANNEL
+    description: "Default user/group/room ID for cron / notification delivery"
+    prompt: "Home channel ID (or empty)"
+    password: false
+  - name: LINE_SLOW_RESPONSE_THRESHOLD
+    description: "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)"
+    prompt: "Slow response threshold (seconds)"
+    password: false

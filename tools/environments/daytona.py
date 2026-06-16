@@ -7,6 +7,7 @@ and resumed on next creation, preserving the filesystem across sessions.
 
 import logging
 import math
+import os
 import shlex
 import threading
 from pathlib import Path
@@ -50,6 +51,13 @@ class DaytonaEnvironment(BaseEnvironment):
         requested_cwd = cwd
         super().__init__(cwd=cwd, timeout=timeout)
 
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("terminal.daytona", prompt=False)
+        except ImportError:
+            pass
+        except Exception as e:
+            raise ImportError(str(e))
         from daytona import (
             Daytona,
             CreateSandboxFromImageParams,
@@ -93,9 +101,13 @@ class DaytonaEnvironment(BaseEnvironment):
 
             if self._sandbox is None:
                 try:
-                    page = self._daytona.list(labels=labels, page=1, limit=1)
-                    if page.items:
-                        self._sandbox = page.items[0]
+                    # Daytona SDK >=0.108.0 uses cursor-based pagination and
+                    # list() returns an iterator. Offset-based pagination
+                    # (page=1) is removed on June 10, 2026.
+                    results = self._daytona.list(labels=labels, limit=1)
+                    legacy = next(iter(results), None)
+                    if legacy is not None:
+                        self._sandbox = legacy
                         self._sandbox.start()
                         logger.info("Daytona: resumed legacy sandbox %s for task %s",
                                     self._sandbox.id, task_id)
@@ -123,7 +135,7 @@ class DaytonaEnvironment(BaseEnvironment):
             home = self._sandbox.process.exec("echo $HOME").result.strip()
             if home:
                 self._remote_home = home
-                if requested_cwd in ("~", "/home/daytona"):
+                if requested_cwd in {"~", "/home/daytona"}:
                     self.cwd = home
         except Exception:
             pass
@@ -134,6 +146,7 @@ class DaytonaEnvironment(BaseEnvironment):
             upload_fn=self._daytona_upload,
             delete_fn=self._daytona_delete,
             bulk_upload_fn=self._daytona_bulk_upload,
+            bulk_download_fn=self._daytona_bulk_download,
         )
         self._sync_manager.sync(force=True)
         self.init_session()
@@ -166,6 +179,22 @@ class DaytonaEnvironment(BaseEnvironment):
         ]
         self._sandbox.fs.upload_files(uploads)
 
+    def _daytona_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive."""
+        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        # PID-suffixed remote temp path avoids collisions if sync_back fires
+        # concurrently for the same sandbox (e.g. retry after partial failure).
+        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
+        self._sandbox.process.exec(
+            f"tar cf {shlex.quote(remote_tar)} -C / {shlex.quote(rel_base)}"
+        )
+        self._sandbox.fs.download_file(remote_tar, str(dest))
+        # Clean up remote temp file
+        try:
+            self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
+        except Exception:
+            pass  # best-effort cleanup
+
     def _daytona_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via SDK exec."""
         self._sandbox.process.exec(quoted_rm_command(remote_paths))
@@ -177,7 +206,7 @@ class DaytonaEnvironment(BaseEnvironment):
     def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
         self._sandbox.refresh_data()
-        if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
+        if self._sandbox.state in {self._SandboxState.STOPPED, self._SandboxState.ARCHIVED}:
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
@@ -216,6 +245,18 @@ class DaytonaEnvironment(BaseEnvironment):
         with self._lock:
             if self._sandbox is None:
                 return
+
+            # Sync remote changes back to host before teardown. Running
+            # inside the lock (and after the _sandbox is None guard) avoids
+            # firing sync_back on an already-cleaned-up env, which would
+            # trigger a 3-attempt retry storm against a nil sandbox.
+            if self._sync_manager:
+                logger.info("Daytona: syncing files from sandbox...")
+                try:
+                    self._sync_manager.sync_back()
+                except Exception as e:
+                    logger.warning("Daytona: sync_back failed: %s", e)
+
             try:
                 if self._persistent:
                     self._sandbox.stop()

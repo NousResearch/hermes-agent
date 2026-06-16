@@ -1,13 +1,14 @@
 ---
 name: test-driven-development
-description: Use when implementing any feature or bugfix, before writing implementation code. Enforces RED-GREEN-REFACTOR cycle with test-first approach.
+description: "TDD: enforce RED-GREEN-REFACTOR, tests before code."
 version: 1.1.0
 author: Hermes Agent (adapted from obra/superpowers)
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [testing, tdd, development, quality, red-green-refactor]
-    related_skills: [systematic-debugging, writing-plans, subagent-driven-development]
+    related_skills: [systematic-debugging, plan, subagent-driven-development]
 ---
 
 # Test-Driven Development (TDD)

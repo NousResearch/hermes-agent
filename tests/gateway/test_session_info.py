@@ -1,8 +1,7 @@
 """Tests for GatewayRunner._format_session_info — session config surfacing."""
 
 import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch
 
 from gateway.run import GatewayRunner
 
@@ -58,7 +57,7 @@ class TestFormatSessionInfo:
                                   {"provider": "", "base_url": "", "api_key": ""})
         with p1, p2, p3:
             info = runner._format_session_info()
-        assert "128K" in info
+        assert "256K" in info
         assert "model.context_length" in info
 
     def test_local_endpoint_shown(self, runner, tmp_path):

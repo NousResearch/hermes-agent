@@ -8,7 +8,6 @@ Supports multiple concurrent approvals (parallel subagents, execute_code)
 via a per-session queue.
 """
 
-import asyncio
 import os
 import threading
 import time
@@ -19,7 +18,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import SessionSource
 
 
 def _make_source() -> SessionSource:
@@ -172,6 +171,23 @@ class TestBlockingGatewayApproval:
         unregister_gateway_notify(session_key)
         assert e1.event.is_set()
         assert e2.event.is_set()
+
+    def test_clear_session_denies_and_signals_all_entries(self):
+        """clear_session must wake blocked entries during boundary cleanup."""
+        from tools.approval import clear_session, _ApprovalEntry, _gateway_queues
+
+        session_key = "test-boundary-cleanup"
+        e1 = _ApprovalEntry({"command": "cmd1"})
+        e2 = _ApprovalEntry({"command": "cmd2"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        clear_session(session_key)
+
+        assert e1.event.is_set()
+        assert e2.event.is_set()
+        assert e1.result == "deny"
+        assert e2.result == "deny"
+        assert session_key not in _gateway_queues
 
 
 # ------------------------------------------------------------------
@@ -612,8 +628,13 @@ class TestFallbackNoCallback:
         _clear_approval_state()
 
     def test_no_callback_returns_approval_required(self):
-        """Without a registered callback, the old approval_required path is used."""
-        from tools.approval import check_all_command_guards, _pending
+        """Without a registered callback, the fallback returns pending_approval.
+
+        PR #6d495d9e7 renamed the LLM-visible status from ``approval_required``
+        to ``pending_approval`` to make the state distinguishable from a
+        failed tool call.
+        """
+        from tools.approval import check_all_command_guards
 
         os.environ["HERMES_EXEC_ASK"] = "1"
         os.environ["HERMES_SESSION_KEY"] = "no-callback-test"
@@ -624,4 +645,5 @@ class TestFallbackNoCallback:
             os.environ.pop("HERMES_SESSION_KEY", None)
 
         assert result["approved"] is False
-        assert result.get("status") == "approval_required"
+        assert result.get("status") == "pending_approval"
+        assert result.get("approval_pending") is True

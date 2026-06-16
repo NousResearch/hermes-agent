@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -124,6 +125,31 @@ def test_expand_file_range_and_folder_listing(sample_repo: Path):
     assert not result.warnings
 
 
+def test_folder_listing_falls_back_when_rg_is_blocked(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    real_run = subprocess.run
+
+    def blocked_rg(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args")
+        if isinstance(cmd, list) and cmd and cmd[0] == "rg":
+            raise PermissionError("rg blocked by policy")
+        return real_run(*args, **kwargs)
+
+    with patch("agent.context_references.subprocess.run", side_effect=blocked_rg):
+        result = preprocess_context_references(
+            "Review @folder:src/",
+            cwd=sample_repo,
+            context_length=100_000,
+        )
+
+    assert result.expanded
+    assert "src/" in result.message
+    assert "main.py" in result.message
+    assert "helper.py" in result.message
+    assert not result.warnings
+
+
 def test_expand_quoted_file_reference_with_spaces(tmp_path: Path):
     from agent.context_references import preprocess_context_references
 
@@ -166,19 +192,38 @@ def test_expand_git_diff_staged_and_log(sample_repo: Path):
     assert "VALUE = 2" in result.message
 
 
-def test_binary_and_missing_files_become_warnings(sample_repo: Path):
+def test_missing_file_becomes_warning(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 
     result = preprocess_context_references(
-        "Check @file:blob.bin and @file:nope.txt",
+        "Check @file:nope.txt",
         cwd=sample_repo,
         context_length=100_000,
     )
 
     assert result.expanded
-    assert len(result.warnings) == 2
-    assert "binary" in result.message.lower()
+    assert len(result.warnings) == 1
     assert "not found" in result.message.lower()
+
+
+def test_binary_file_yields_actionable_block_not_a_dead_warning(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Check @file:blob.bin",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    # The whole point: a binary attachment must NOT degrade into a discouraging
+    # warning that makes the model give up — it gets an actionable content block.
+    assert not result.warnings
+    assert "blob.bin" in result.message
+    assert "binary" in result.message.lower()
+    assert "not supported" not in result.message.lower()
+    # And it must point the agent at the file so it can act on it with tools.
+    assert str(sample_repo / "blob.bin") in result.message
 
 
 def test_soft_budget_warns_and_hard_budget_refuses(sample_repo: Path):

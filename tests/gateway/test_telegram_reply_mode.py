@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides
+from gateway.config import PlatformConfig, GatewayConfig, Platform, _apply_env_overrides, load_gateway_config
 
 
 def _ensure_telegram_mock():
@@ -240,3 +240,174 @@ class TestEnvVarOverride:
         with patch.dict(os.environ, {"TELEGRAM_REPLY_TO_MODE": ""}, clear=False):
             _apply_env_overrides(config)
         assert config.platforms[Platform.TELEGRAM].reply_to_mode == "first"
+
+
+class TestTelegramYamlConfigLoading:
+    """Tests for reply_to_mode loaded from config.yaml telegram section."""
+
+    def _write_config(self, tmp_path, content: str):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(content, encoding="utf-8")
+        return hermes_home
+
+    def test_top_level_reply_to_mode_off(self, tmp_path, monkeypatch):
+        """YAML 1.1 parses bare 'off' as boolean False — must map back to 'off'."""
+        hermes_home = self._write_config(tmp_path, "telegram:\n  reply_to_mode: off\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REPLY_TO_MODE", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_REPLY_TO_MODE") == "off"
+
+    def test_top_level_reply_to_mode_all(self, tmp_path, monkeypatch):
+        hermes_home = self._write_config(tmp_path, "telegram:\n  reply_to_mode: all\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REPLY_TO_MODE", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_REPLY_TO_MODE") == "all"
+
+    def test_extra_reply_to_mode_off(self, tmp_path, monkeypatch):
+        """telegram.extra.reply_to_mode is also honoured."""
+        hermes_home = self._write_config(
+            tmp_path, "telegram:\n  extra:\n    reply_to_mode: \"off\"\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REPLY_TO_MODE", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_REPLY_TO_MODE") == "off"
+
+    def test_env_var_takes_precedence_over_yaml(self, tmp_path, monkeypatch):
+        """Existing TELEGRAM_REPLY_TO_MODE env var is not overwritten by YAML."""
+        hermes_home = self._write_config(tmp_path, "telegram:\n  reply_to_mode: all\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TELEGRAM_REPLY_TO_MODE", "first")
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_REPLY_TO_MODE") == "first"
+
+    def test_top_level_takes_precedence_over_extra(self, tmp_path, monkeypatch):
+        """telegram.reply_to_mode wins over telegram.extra.reply_to_mode."""
+        hermes_home = self._write_config(
+            tmp_path,
+            "telegram:\n  reply_to_mode: all\n  extra:\n    reply_to_mode: \"off\"\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TELEGRAM_REPLY_TO_MODE", raising=False)
+
+        load_gateway_config()
+
+        assert os.environ.get("TELEGRAM_REPLY_TO_MODE") == "all"
+
+
+class TestDMTopicFallbackReplyToMode:
+    """Tests for reply_to_mode enforcement on DM topic fallback paths.
+
+    Regression tests for https://github.com/NousResearch/hermes-agent/issues/23994:
+    reply_to_mode 'off' was ignored when sending via Hermes-created DM topic
+    lanes (telegram_dm_topic_reply_fallback metadata), causing quote bubbles
+    despite the user setting reply_to_mode: 'off'.
+    """
+
+    DM_TOPIC_METADATA = {
+        "thread_id": "42",
+        "telegram_dm_topic_reply_fallback": True,
+        "telegram_reply_to_message_id": "12345",
+    }
+
+    # -- _reply_to_message_id_for_send classmethod --
+
+    def test_reply_to_id_suppressed_when_off(self):
+        """reply_to_mode='off' suppresses reply anchor for DM topic fallback."""
+        result = TelegramAdapter._reply_to_message_id_for_send(
+            None, self.DM_TOPIC_METADATA, reply_to_mode="off",
+        )
+        assert result is None
+
+    def test_reply_to_id_returned_when_first(self):
+        """reply_to_mode='first' still returns reply anchor for DM topic fallback."""
+        result = TelegramAdapter._reply_to_message_id_for_send(
+            None, self.DM_TOPIC_METADATA, reply_to_mode="first",
+        )
+        assert result == 12345
+
+    def test_reply_to_id_returned_when_all(self):
+        """reply_to_mode='all' still returns reply anchor for DM topic fallback."""
+        result = TelegramAdapter._reply_to_message_id_for_send(
+            None, self.DM_TOPIC_METADATA, reply_to_mode="all",
+        )
+        assert result == 12345
+
+    def test_reply_to_id_returned_when_no_mode(self):
+        """Without reply_to_mode, behavior is unchanged (backward compat)."""
+        result = TelegramAdapter._reply_to_message_id_for_send(
+            None, self.DM_TOPIC_METADATA,
+        )
+        assert result == 12345
+
+    def test_explicit_reply_to_overrides_mode(self):
+        """Explicit reply_to param always wins, regardless of mode."""
+        result = TelegramAdapter._reply_to_message_id_for_send(
+            "999", self.DM_TOPIC_METADATA, reply_to_mode="off",
+        )
+        assert result == 999
+
+    # -- _thread_kwargs_for_send classmethod --
+
+    def test_thread_kwargs_suppressed_reply_anchor_when_off(self):
+        """reply_to_mode='off' returns thread_id without reply anchor."""
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "42", self.DM_TOPIC_METADATA,
+            reply_to_message_id=None, reply_to_mode="off",
+        )
+        assert result == {"message_thread_id": 42}
+
+    def test_thread_kwargs_returns_full_when_first(self):
+        """reply_to_mode='first' returns thread_id (reply anchor in send kwargs)."""
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "42", self.DM_TOPIC_METADATA,
+            reply_to_message_id=12345, reply_to_mode="first",
+        )
+        assert result == {"message_thread_id": 42}
+
+    def test_thread_kwargs_no_mode_backward_compat(self):
+        """Without reply_to_mode, behavior is unchanged."""
+        result = TelegramAdapter._thread_kwargs_for_send(
+            "100", "42", self.DM_TOPIC_METADATA,
+            reply_to_message_id=12345,
+        )
+        assert result == {"message_thread_id": 42}
+
+    # -- send() integration test --
+
+    @pytest.mark.asyncio
+    async def test_send_dm_topic_off_no_quote(self, adapter_factory):
+        """send() with DM topic fallback and reply_to_mode='off' skips reply."""
+        adapter = adapter_factory(reply_to_mode="off")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1"]
+
+        await adapter.send("12345", "test content", metadata=self.DM_TOPIC_METADATA)
+
+        call = adapter._bot.send_message.call_args_list[0]
+        assert call.kwargs.get("reply_to_message_id") is None
+
+    @pytest.mark.asyncio
+    async def test_send_dm_topic_first_still_quotes(self, adapter_factory):
+        """send() with DM topic fallback and reply_to_mode='first' still quotes."""
+        adapter = adapter_factory(reply_to_mode="first")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["chunk1"]
+
+        await adapter.send("12345", "test content", metadata=self.DM_TOPIC_METADATA)
+
+        call = adapter._bot.send_message.call_args_list[0]
+        assert call.kwargs.get("reply_to_message_id") == 12345

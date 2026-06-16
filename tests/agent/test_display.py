@@ -1,17 +1,26 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
-import os
+import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    get_cute_tool_message,
+    set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_tool_preview_max_len():
+    set_tool_preview_max_len(0)
+    yield
+    set_tool_preview_max_len(0)
 
 
 class TestBuildToolPreview:
@@ -83,16 +92,118 @@ class TestBuildToolPreview:
         assert result is not None
         assert "user" in result
 
+    def test_memory_replace_missing_old_text_marked(self):
+        # Avoid empty quotes "" in the preview when old_text is missing/None.
+        result = build_tool_preview("memory", {"action": "replace", "target": "memory"})
+        assert result == '~memory: "<missing old_text>"'
+        result = build_tool_preview("memory", {"action": "remove", "target": "memory", "old_text": None})
+        assert result == '-memory: "<missing old_text>"'
+
     def test_session_search_preview(self):
         result = build_tool_preview("session_search", {"query": "find something"})
         assert result is not None
         assert "find something" in result
+
+    def test_delegate_task_single_goal_preview(self):
+        result = build_tool_preview("delegate_task", {"goal": "Review gateway status"})
+        assert result == "Review gateway status"
+
+    def test_delegate_task_batch_goal_preview(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "Review PR A"}, {"goal": "Review PR B"}]},
+        )
+        assert result == "2 tasks: Review PR A | Review PR B"
+
+    def test_delegate_task_batch_preview_handles_missing_non_string_goals(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": None}, {"goal": 123}, "not-a-task"]},
+        )
+        assert result == "2 tasks: ? | 123"
+
+    def test_delegate_task_batch_preview_respects_max_len(self):
+        result = build_tool_preview(
+            "delegate_task",
+            {"tasks": [{"goal": "A" * 80}, {"goal": "B" * 80}]},
+            max_len=30,
+        )
+        assert result == "2 tasks: AAAAAAAAAAAAAAAAAA..."
+        assert len(result) == 30
 
     def test_false_like_args_zero(self):
         """Non-dict falsy values should return None, not crash."""
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestCuteToolMessagePreviewLength:
+    def test_terminal_preview_unlimited_when_config_is_zero(self):
+        set_tool_preview_max_len(0)
+        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
+
+        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
+
+        assert command in line
+        assert "..." not in line
+
+    def test_terminal_preview_uses_positive_configured_limit(self):
+        set_tool_preview_max_len(80)
+        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
+
+        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
+
+        assert command[:77] in line
+        assert "..." in line
+        assert "head -5" not in line
+
+    def test_search_files_preview_uses_positive_configured_limit_not_default(self):
+        set_tool_preview_max_len(80)
+        pattern = "function.formatToolCall.context.preview.compactPreview.maxLength.truncate"
+
+        line = get_cute_tool_message("search_files", {"pattern": pattern}, 0.1)
+
+        assert pattern in line
+        assert "..." not in line
+
+    def test_path_preview_uses_positive_configured_limit_not_default(self):
+        set_tool_preview_max_len(80)
+        path = "/tmp/hermes-test-preview-length/deeply/nested/path/test-output.txt"
+
+        line = get_cute_tool_message("read_file", {"path": path}, 0.1)
+
+        assert path in line
+        assert "..." not in line
+
+    def test_write_file_lint_error_result_is_not_marked_failed(self):
+        result = json.dumps({
+            "bytes_written": 12,
+            "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
+        })
+
+        line = get_cute_tool_message("write_file", {"path": "/tmp/a.py"}, 0.1, result=result)
+
+        assert "[error]" not in line
+
+    def test_patch_lsp_diagnostics_result_is_not_marked_failed(self):
+        result = json.dumps({
+            "success": True,
+            "diff": "--- a/tmp.py\n+++ b/tmp.py\n",
+            "lsp_diagnostics": "<diagnostics>ERROR [1:1] type mismatch</diagnostics>",
+        })
+
+        line = get_cute_tool_message("patch", {"path": "/tmp/a.py"}, 0.1, result=result)
+
+        assert "[error]" not in line
+
+    def test_delegate_task_batch_message_includes_goals(self):
+        line = get_cute_tool_message(
+            "delegate_task",
+            {"tasks": [{"goal": "Review PR A"}, {"goal": "Review PR B"}]},
+            1.2,
+        )
+        assert "2x: Review PR A | Review PR B" in line
 
 
 class TestEditDiffPreview:

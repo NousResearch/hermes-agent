@@ -170,8 +170,10 @@ class ContextEngine(ABC):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas this engine provides to the agent.
 
-        Default returns empty list (no tools). LCM would return schemas
-        for lcm_grep, lcm_describe, lcm_expand here.
+        Engines may return bare OpenAI function schemas or full
+        {"type": "function", "function": ...} tool definitions; the host
+        normalizes both. LCM returns schemas for lcm_grep, lcm_describe,
+        lcm_expand here.
         """
         return []
 

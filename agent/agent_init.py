@@ -1630,10 +1630,15 @@ def init_agent(
             if isinstance(t, dict)
         }
         for _schema in agent.context_compressor.get_tool_schemas():
-            _tname = _schema.get("name", "")
+            if _schema.get("type") == "function" and isinstance(_schema.get("function"), dict):
+                _function_schema = _schema["function"]
+                _wrapped = _schema
+            else:
+                _function_schema = _schema
+                _wrapped = {"type": "function", "function": _schema}
+            _tname = _function_schema.get("name", "")
             if _tname and _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
             if _tname:
                 agent.valid_tool_names.add(_tname)

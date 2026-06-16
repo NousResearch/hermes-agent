@@ -206,9 +206,21 @@ the competing PRs into plugins against that interface.
 source .venv/bin/activate   # or: source venv/bin/activate
 ```
 
-`scripts/run_tests.sh` probes `.venv` first, then `venv`, then
-`$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
-main checkout).
+## Brain Guidelines
+
+Hermes-specific behavior documents are maintained under `brain/` and are loaded
+into startup project context:
+
+- `brain/AGENT.md`
+- `brain/AGENTS.md`
+- `brain/Gemini.md`
+- `brain/GOAL.md`
+- `brain/HEARTBEAT.md`
+- `brain/MEMORY.md`
+- `brain/RIEMANN_TRANSCEIVER.md`
+- `brain/VISION.md`
+- `brain/YANG_MILLS_TRANSCEIVER.md
+- `brain/SOUL.md`
 
 ## Project Structure
 
@@ -1367,3 +1379,26 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+## Learned User Preferences
+
+- Respond in Japanese; use なんJ tone in `_docs/` implementation logs.
+- Run Python with `py -3`; chain PowerShell commands with `;`, not `&`.
+- Write implementation logs under `_docs/` as `yyyy-mm-dd_{feature}_{worktreename}.md`.
+- Personal single-user gateway deployments use `GATEWAY_ALLOW_ALL_USERS=true` in `~/.hermes/.env`.
+- Do not create git commits unless the user explicitly requests it.
+
+## Learned Workspace Facts
+
+- Primary inference: OpenCode Zen free models (`opencode-zen` + `auto-free`) with rotation via `skills/autonomous-ai-agents/opencode-free-rotation/` and `scripts/refresh_opencode_free_catalog.py`.
+- Local rollback: llama-cpp at `http://127.0.0.1:8080/v1`; the active desktop/autostart fallback uses the RTX3060 64K launcher (`scripts/windows/start-hermes-llama-fallback-rtx3060.ps1`), with the RTX3080 launcher kept for legacy/manual use.
+- Local secretary agent (RTX3060 + Ryzen 5 4600, not coding): primary `unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL` alias `qwen35-9b-secretary` @ :8080 with `--jinja` and 65536 context; fallbacks Hermes-3 8B @ :8081 and Phi-4 mini @ :8082; Ollama trial-only; see `docs/local-secretary-runtime.md` and `scripts/windows/start-llama-secretary.ps1`.
+- Local secretary write actions (X publish, Gmail send, Calendar mutate, shell, external publish) require user confirmation; read-only web/Gmail/Calendar/news/TTS auto-OK.
+- User fallback GGUF (huihui-qwen35-4b Q8_0) is stored under `H:\elt_data\releases\` on this machine.
+- OpenCode credentials bridge from OpenClaw: shared `OPENCODE_API_KEY` satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset.
+- Canonical checkouts live under `C:\Users\downl\Documents\New project\`: agent `hermes-agent`, WebUI `hermes-WebUI`, Electron desktop via `hermes-agent\apps\desktop\` (`start-hermes-desktop.ps1` uses repo root). Legacy `~\Desktop\hermes-webui` is not used on this host.
+- Config reference for OpenCode free + llama rollback: `docs/migration/opencode_free_webui_config.example.yaml`.
+- Windows logon autostart: `scripts/windows/register-hermes-autostart.ps1` registers llama + gateway scheduled tasks; set `HERMES_LLAMA_MODEL_PATH` in `~/.hermes/.env` for llama task model resolution.
+- Active deployment checkout is `C:\Users\downl\Documents\New project\hermes-agent`; user pushes directly to `main`.
+- `~/.hermes/.env` UTF-8 BOM can prefix keys and break dotenv loading (e.g. `GATEWAY_ALLOW_ALL_USERS`); strip BOM from file and key names if env vars appear unset.
+- VRChat Quest2 + Virtual Desktop: OpenXR doctor scripts in `scripts/windows/` (`vrchat_quest2_controller_doctor.ps1`, `vrchat_quest2_openxr_fix.ps1`, `run-vrchat-openxr-fix-admin.ps1`); launch from VD Games (not desktop Steam); `Oculus Touch controller = False` without VD controller passthrough is typical.

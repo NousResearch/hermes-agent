@@ -1,12 +1,13 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
-import platform
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import Path
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ def _msys_to_windows_path(cwd: str) -> str:
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
+    m = re.match(r'^/mnt/([a-zA-Z])(/.*)?$', cwd)
+    if m:
+        drive = m.group(1).upper()
+        tail = (m.group(2) or "").replace('/', '\\')
+        return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
     # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
     m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
     if not m:
@@ -37,6 +43,25 @@ def _msys_to_windows_path(cwd: str) -> str:
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _windows_to_bash_path(path: str, path_style: str = "msys") -> str:
+    """Translate a native Windows drive path to the active bash path syntax."""
+    if not _IS_WINDOWS or not path:
+        return path
+    if path == "~" or path == "~/" or path.startswith("~/"):
+        return path
+    if path.startswith("\\\\"):
+        return "//" + path.lstrip("\\").replace("\\", "/")
+    m = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
+    if not m:
+        return path.replace("\\", "/")
+    drive = m.group(1).lower()
+    tail = m.group(2).replace("\\", "/")
+    prefix = f"/mnt/{drive}" if path_style == "wsl" else f"/{drive}"
+    if tail:
+        return f"{prefix}/{tail}"
+    return f"{prefix}/"
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -75,23 +100,8 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
-# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
-# providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
-# Bedrock-specific bearer token, which is a Hermes inference secret exactly
-# analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
-# ``boto3`` toolchain off it, so stripping it from terminal/execute_code
-# subprocesses costs no user capability.
-#
-# The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
-# AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
-# left inheritable.  Per SECURITY.md §3.2 the local terminal is the user's
-# trusted operator shell; the agent having the same general AWS access the
-# user's own shell has is the intended posture, not a leak.  Hard-blocklisting
-# those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
-# the agent terminal — not just Bedrock users, since the registry is iterated
-# unconditionally — and (b) be unrecoverable, because env_passthrough.py
-# refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
-# issue #32314 discussion.
+# Bedrock is auth_type="aws_sdk" but its bearer token is a Hermes-managed
+# inference secret, unlike the user's general AWS operator credential chain.
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
     "AWS_BEARER_TOKEN_BEDROCK",
 })
@@ -175,8 +185,35 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
-        "HERMES_DASHBOARD_SESSION_TOKEN",
+        "MATRIX_PASSWORD",
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_PHONE_NUMBER",
+        "TWILIO_PHONE_NUMBER_SID",
         "GATEWAY_ALLOWED_USERS",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
+        "DINGTALK_CLIENT_ID",
+        "DINGTALK_CLIENT_SECRET",
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_ENCRYPT_KEY",
+        "FEISHU_VERIFICATION_TOKEN",
+        "WECOM_BOT_ID",
+        "WECOM_SECRET",
+        "WECOM_CALLBACK_CORP_ID",
+        "WECOM_CALLBACK_CORP_SECRET",
+        "WECOM_CALLBACK_AGENT_ID",
+        "WECOM_CALLBACK_TOKEN",
+        "WECOM_CALLBACK_ENCODING_AES_KEY",
+        "WEIXIN_TOKEN",
+        "WEIXIN_ACCOUNT_ID",
+        "YUANBAO_APP_ID",
+        "YUANBAO_APP_KEY",
+        "YUANBAO_APP_SECRET",
+        "YUANBAO_BOT_ID",
+        "QQ_STT_API_KEY",
+        "TERMINAL_SSH_KEY",
+        "LANGFUSE_SECRET_KEY",
         "GH_TOKEN",
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
@@ -248,6 +285,25 @@ def _find_bash() -> str:
     if custom and os.path.isfile(custom):
         return custom
 
+    def _win_join(*parts: str) -> str:
+        return ntpath.join(*(part for part in parts if part))
+
+    def _is_wsl_bash_stub(candidate: str | None) -> bool:
+        if not candidate:
+            return False
+        try:
+            resolved = ntpath.normcase(ntpath.abspath(candidate))
+        except (OSError, ValueError):
+            resolved = ntpath.normcase(str(candidate))
+        windir = ntpath.normcase(os.environ.get("WINDIR", r"C:\Windows"))
+        local_appdata = ntpath.normcase(os.environ.get("LOCALAPPDATA", ""))
+        wsl_paths = [_win_join(windir, "system32", "bash.exe")]
+        if local_appdata:
+            wsl_paths.append(
+                _win_join(local_appdata, "microsoft", "windowsapps", "bash.exe")
+            )
+        return any(resolved == ntpath.normcase(path) for path in wsl_paths)
+
     # Prefer our own portable Git install first — this way a broken or
     # partially-uninstalled system Git can't hijack the bash lookup.  The
     # install.ps1 installer always drops portable Git here when the user
@@ -258,26 +314,26 @@ def _find_bash() -> str:
     #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
     #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
     _local_appdata = os.environ.get("LOCALAPPDATA", "")
-    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
+    _hermes_portable_git = _win_join(_local_appdata, "hermes", "git") if _local_appdata else ""
     if _hermes_portable_git:
         for candidate in (
-            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
-            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+            _win_join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            _win_join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
             if os.path.isfile(candidate):
                 return candidate
 
-    found = shutil.which("bash")
-    if found:
-        return found
-
     for candidate in (
-        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        _win_join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        _win_join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        _win_join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
     ):
         if candidate and os.path.isfile(candidate):
             return candidate
+
+    found = shutil.which("bash")
+    if found and not _is_wsl_bash_stub(found):
+        return found
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
@@ -286,7 +342,30 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
+def _windows_bash_path_style_from_path(bash_path: str) -> str:
+    """Return the Windows drive-prefix style expected by a bash executable."""
+    if not _IS_WINDOWS or not bash_path:
+        return "msys"
+    normalized = os.path.normcase(os.path.normpath(bash_path))
+    if (
+        normalized.endswith(r"\windows\system32\bash.exe")
+        or normalized.endswith(r"\microsoft\windowsapps\bash.exe")
+    ):
+        return "wsl"
+    return "msys"
+
+
+def _detect_windows_bash_path_style() -> str:
+    """Detect whether Windows bash expects Git Bash or WSL drive prefixes."""
+    if not _IS_WINDOWS:
+        return "msys"
+    try:
+        return _windows_bash_path_style_from_path(_find_bash())
+    except Exception:
+        return "msys"
+
+
+# Backward compat: process_registry.py imports this name.
 _find_shell = _find_bash
 
 
@@ -496,6 +575,8 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
+        self.uses_msys_paths = _IS_WINDOWS
+        self.windows_bash_path_style = _detect_windows_bash_path_style()
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -545,6 +626,16 @@ class LocalEnvironment(BaseEnvironment):
             return candidate.rstrip("/") or "/"
 
         return "/tmp"
+
+    def _quote_cwd_for_cd(self, cwd: str) -> str:
+        if _IS_WINDOWS:
+            cwd = _windows_to_bash_path(cwd, self.windows_bash_path_style)
+        return super()._quote_cwd_for_cd(cwd)
+
+    def _quote_path_for_shell(self, path: str) -> str:
+        if _IS_WINDOWS:
+            path = _windows_to_bash_path(path, self.windows_bash_path_style)
+        return super()._quote_path_for_shell(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

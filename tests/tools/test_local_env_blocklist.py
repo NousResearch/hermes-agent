@@ -9,8 +9,11 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 """
 
 import os
+import sys
 import threading
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.environments.local import (
     LocalEnvironment,
@@ -94,16 +97,7 @@ class TestProviderEnvBlocklist:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
     def test_bedrock_bearer_token_is_stripped(self):
-        """The Bedrock-specific bearer token is a Hermes inference secret
-        (analogous to OPENAI_API_KEY) and must not leak into subprocesses.
-
-        Regression for #32314: AWS_BEARER_TOKEN_BEDROCK leaked into terminal /
-        execute_code children because the ``bedrock`` ProviderConfig declares
-        ``api_key_env_vars=()`` (auth_type="aws_sdk") and the blocklist builder
-        only consulted that field. The reporter caught it when ``opencode
-        models`` run inside a Hermes terminal enumerated the entire Bedrock
-        catalog off the leaked bearer token.
-        """
+        """Bedrock's Hermes-managed inference bearer must not leak."""
         result_env = _run_with_env(extra_os_env={
             "AWS_BEARER_TOKEN_BEDROCK": "bedrock-bearer-secret",
         })
@@ -113,19 +107,7 @@ class TestProviderEnvBlocklist:
         )
 
     def test_general_aws_credential_chain_is_preserved(self):
-        """The GENERAL AWS credential chain must STILL pass through to
-        subprocesses — this is the no-regression guard for #32314.
-
-        Per SECURITY.md §3.2 the local terminal is the user's trusted operator
-        shell. A user running ``aws``/``terraform``/``cdk``/``boto3`` in the
-        agent terminal must keep the same AWS access their own shell has.
-        Stripping these would (a) break every user who does AWS work in the
-        agent terminal — not just Bedrock users, since the registry is iterated
-        unconditionally — and (b) be unrecoverable, because env_passthrough.py
-        refuses to re-allow anything in _HERMES_PROVIDER_ENV_BLOCKLIST
-        (GHSA-rhgp-j443-p4rf). Only the Bedrock inference bearer token is
-        Hermes-managed; the rest belongs to the user.
-        """
+        """User-owned AWS CLI/SDK credentials should remain inheritable."""
         general_chain = {
             "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
             "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -142,8 +124,7 @@ class TestProviderEnvBlocklist:
 
         for var, value in general_chain.items():
             assert result_env.get(var) == value, (
-                f"{var} was stripped from subprocess env — this is a "
-                f"capability regression (see #32314 discussion)"
+                f"{var} was stripped from subprocess env; see #32314"
             )
 
     def test_non_registry_provider_vars_are_stripped(self):
@@ -175,10 +156,22 @@ class TestProviderEnvBlocklist:
             "SIGNAL_ACCOUNT": "+15555550124",
             "HASS_TOKEN": "ha-secret",
             "EMAIL_PASSWORD": "email-secret",
+            "MATRIX_PASSWORD": "matrix-secret",
+            "TWILIO_ACCOUNT_SID": "twilio-sid",
+            "TWILIO_AUTH_TOKEN": "twilio-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
+            "DINGTALK_CLIENT_SECRET": "dingtalk-secret",
+            "FEISHU_APP_SECRET": "feishu-secret",
+            "WECOM_SECRET": "wecom-secret",
+            "WECOM_CALLBACK_CORP_SECRET": "wecom-corp-secret",
+            "WEIXIN_TOKEN": "weixin-token",
+            "YUANBAO_APP_SECRET": "yuanbao-secret",
+            "QQ_STT_API_KEY": "qq-stt-key",
+            "TERMINAL_SSH_KEY": "ssh-private-key",
+            "LANGFUSE_SECRET_KEY": "langfuse-secret",
             "GITHUB_TOKEN": "ghp_secret",
             "GH_TOKEN": "gh_alias_secret",
             "GATEWAY_ALLOW_ALL_USERS": "true",
@@ -268,17 +261,11 @@ class TestBlocklistCoverage:
                 )
 
     def test_bedrock_bearer_token_is_in_blocklist(self):
-        """auth_type='aws_sdk' providers contribute their Hermes-managed
-        inference token (the Bedrock bearer) to the blocklist, keyed off
-        auth_type so any future SDK-cred provider is covered automatically."""
+        """auth_type='aws_sdk' providers contribute Hermes-managed inference tokens."""
         assert "AWS_BEARER_TOKEN_BEDROCK" in _HERMES_PROVIDER_ENV_BLOCKLIST
 
     def test_general_aws_chain_not_in_blocklist(self):
-        """The general AWS credential chain must NOT be in the blocklist —
-        no-regression guard for #32314. These belong to the user's trusted
-        operator shell (SECURITY.md §3.2), not to Hermes, and blocklisting
-        them would be unrecoverable via env_passthrough (GHSA-rhgp-j443-p4rf).
-        """
+        """General AWS operator credentials must not be in the blocklist."""
         general_chain = {
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
@@ -294,7 +281,7 @@ class TestBlocklistCoverage:
         leaked_block = general_chain & _HERMES_PROVIDER_ENV_BLOCKLIST
         assert not leaked_block, (
             f"General AWS chain vars must stay inheritable, but these are "
-            f"blocklisted: {sorted(leaked_block)} (capability regression, #32314)"
+            f"blocklisted: {sorted(leaked_block)}"
         )
 
     def test_extra_auth_vars_covered(self):
@@ -363,8 +350,34 @@ class TestBlocklistCoverage:
             "EMAIL_SMTP_HOST",
             "EMAIL_HOME_ADDRESS",
             "EMAIL_HOME_ADDRESS_NAME",
-            "HERMES_DASHBOARD_SESSION_TOKEN",
+            "MATRIX_PASSWORD",
+            "TWILIO_ACCOUNT_SID",
+            "TWILIO_AUTH_TOKEN",
+            "TWILIO_PHONE_NUMBER",
+            "TWILIO_PHONE_NUMBER_SID",
             "GATEWAY_ALLOWED_USERS",
+            "DINGTALK_CLIENT_ID",
+            "DINGTALK_CLIENT_SECRET",
+            "FEISHU_APP_ID",
+            "FEISHU_APP_SECRET",
+            "FEISHU_ENCRYPT_KEY",
+            "FEISHU_VERIFICATION_TOKEN",
+            "WECOM_BOT_ID",
+            "WECOM_SECRET",
+            "WECOM_CALLBACK_CORP_ID",
+            "WECOM_CALLBACK_CORP_SECRET",
+            "WECOM_CALLBACK_AGENT_ID",
+            "WECOM_CALLBACK_TOKEN",
+            "WECOM_CALLBACK_ENCODING_AES_KEY",
+            "WEIXIN_TOKEN",
+            "WEIXIN_ACCOUNT_ID",
+            "YUANBAO_APP_ID",
+            "YUANBAO_APP_KEY",
+            "YUANBAO_APP_SECRET",
+            "YUANBAO_BOT_ID",
+            "QQ_STT_API_KEY",
+            "TERMINAL_SSH_KEY",
+            "LANGFUSE_SECRET_KEY",
             "GH_TOKEN",
             "GITHUB_APP_ID",
             "GITHUB_APP_PRIVATE_KEY_PATH",
@@ -375,18 +388,73 @@ class TestBlocklistCoverage:
         }
         assert extras.issubset(_HERMES_PROVIDER_ENV_BLOCKLIST)
 
+    def test_secret_extra_env_keys_are_in_blocklist(self):
+        """Secret-like env keys managed outside OPTIONAL_ENV_VARS must stay covered."""
+        from hermes_cli.config import _EXTRA_ENV_KEYS
+
+        secret_markers = (
+            "TOKEN",
+            "SECRET",
+            "PASSWORD",
+            "API_KEY",
+            "PRIVATE_KEY",
+            "SSH_KEY",
+            "RECOVERY_KEY",
+            "AUTH",
+        )
+        missing = {
+            name
+            for name in _EXTRA_ENV_KEYS
+            if any(marker in name for marker in secret_markers)
+            and name not in _HERMES_PROVIDER_ENV_BLOCKLIST
+        }
+        assert not missing
+
+    def test_gateway_credentials_are_stripped_from_all_local_env_paths(self):
+        """Gateway credentials must not leak into terminal or background subprocesses."""
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        secrets = {
+            "DINGTALK_CLIENT_SECRET": "dingtalk-secret",
+            "FEISHU_APP_SECRET": "feishu-secret",
+            "FEISHU_ENCRYPT_KEY": "feishu-encrypt-key",
+            "FEISHU_VERIFICATION_TOKEN": "feishu-verification-token",
+            "MATRIX_PASSWORD": "matrix-password",
+            "TWILIO_AUTH_TOKEN": "twilio-auth-token",
+            "WECOM_CALLBACK_CORP_SECRET": "wecom-callback-secret",
+            "WECOM_CALLBACK_TOKEN": "wecom-callback-token",
+            "WECOM_CALLBACK_ENCODING_AES_KEY": "wecom-callback-aes-key",
+            "WECOM_SECRET": "wecom-secret",
+            "WEIXIN_TOKEN": "weixin-token",
+            "YUANBAO_APP_SECRET": "yuanbao-secret",
+            "QQ_STT_API_KEY": "qq-stt-key",
+            "TERMINAL_SSH_KEY": "ssh-private-key",
+            "LANGFUSE_SECRET_KEY": "langfuse-secret",
+        }
+
+        with patch.dict(os.environ, secrets | {"PATH": "/usr/bin:/bin"}, clear=True):
+            run_env = _make_run_env({})
+        bg_env = _sanitize_subprocess_env(secrets | {"PATH": "/usr/bin:/bin"})
+
+        for env_name in secrets:
+            assert env_name not in run_env, f"{env_name} leaked through _make_run_env"
+            assert env_name not in bg_env, (
+                f"{env_name} leaked through _sanitize_subprocess_env"
+            )
+
 
 class TestSanePathIncludesHomebrew:
     """Verify _SANE_PATH includes macOS Homebrew directories."""
 
     def test_sane_path_includes_homebrew_bin(self):
-        from tools.environments.local import _SANE_PATH
+        from tools.environments.platform_shell_compat import _SANE_PATH
         assert "/opt/homebrew/bin" in _SANE_PATH
 
     def test_sane_path_includes_homebrew_sbin(self):
-        from tools.environments.local import _SANE_PATH
+        from tools.environments.platform_shell_compat import _SANE_PATH
         assert "/opt/homebrew/sbin" in _SANE_PATH
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix-only PATH augmentation")
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
         """When PATH is minimal, _make_run_env appends missing sane entries."""
         from tools.environments.local import _SANE_PATH, _make_run_env

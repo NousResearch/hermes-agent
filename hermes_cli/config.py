@@ -16,7 +16,6 @@ import copy
 import json
 import logging
 import os
-import platform
 import re
 import shutil
 import stat
@@ -137,7 +136,7 @@ def _warn_config_parse_failure(config_path: Path, exc: Exception) -> None:
     except Exception:
         pass
 
-_IS_WINDOWS = platform.system() == "Windows"
+_IS_WINDOWS = sys.platform == "win32"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Env var names that influence how the next subprocess executes —
@@ -1040,6 +1039,7 @@ DEFAULT_CONFIG = {
         "engine": "auto",
         "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        "allow_sensitive_cdp_methods": False,  # Opt in to raw CDP cookie/storage/permission/JS methods such as Network.getAllCookies and Runtime.evaluate
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
         # local Chrome via /browser connect). See
@@ -1293,6 +1293,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "vrchat_autonomy": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        },
         "approval": {
             "provider": "auto",
             "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
@@ -1428,9 +1436,14 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        "interim_assistant_messages": True,
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
+        "user_message_preview": {
+            "first_lines": 2,
+            "last_lines": 2,
+        },
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
         # behaves badly with replayed scrollback.
@@ -1462,20 +1475,7 @@ DEFAULT_CONFIG = {
         # failure isn't silent from the UI's perspective.  Set false to suppress.
         "turn_completion_explainer": True,
         "show_cost": False,       # Show $ cost in the status bar (off by default)
-        "skin": "default",
-        # UI language for static user-facing messages (approval prompts, a
-        # handful of gateway slash-command replies).  Does NOT affect agent
-        # responses, log lines, tool outputs, or slash-command descriptions.
-        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
-        "language": "en",
-        # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
-        # spinner), or ascii.  Live-swappable via `/indicator <style>`.
-        "tui_status_indicator": "kaomoji",
-        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
-            "first_lines": 2,
-            "last_lines": 2,
-        },
-        "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
+        "skin": "hakua",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
@@ -1744,6 +1744,25 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Inject a compact, transferable memory packet for local and
+        # Grok-style models. Default on: it is a safety-preserving
+        # compression layer, not telemetry.
+        "portable_memory_packet_enabled": True,
+        # Optional lazy idle sleep: when enabled, the next turn after the
+        # idle threshold runs ebbinghaus_memory(action='sleep') and prepends
+        # a one-shot wake greeting to the response.
+        "sleep": {
+            "enabled": False,
+            "idle_after_seconds": 300,
+            "wake_greeting": "おはよう！ボブにゃん。",
+            "sleep": {
+                "prune": True,
+                "rehearse_threshold": 0.45,
+                "forget_threshold": 0.08,
+                "salience_keep_threshold": 0.7,
+                "limit": 200,
+            },
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -2219,6 +2238,14 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
+        # Periodic process memory usage logging (gateway only). Emits a
+        # grep-friendly "[MEMORY] rss=...MB ..." line at the configured
+        # interval so slow leaks in the long-lived gateway are visible in
+        # agent.log / gateway.log as a time series.
+        "memory_monitor": {
+            "enabled": True,
+            "interval_seconds": 300,
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
@@ -2480,7 +2507,9 @@ DEFAULT_CONFIG = {
     },
 
     # Hypura Harness — central actuator for Hakua (OSC, VOICEVOX, Evolution)
-    # Enable with: enabled_toolsets: [..., "harness", "openclaw", "vrchat"]
+    # Opt-in OpenClaw toolsets (NOT enabled by default — avoids prompt-cache / toolset churn):
+    #   enabled_toolsets: [..., "harness", "openclaw", "vrchat"]
+    # Voice capture optional extra: uv pip install "hermes-agent[openclaw-voice]"
     "harness": {
         "enabled": True,
         "auto_start": True,
@@ -2884,6 +2913,14 @@ OPTIONAL_ENV_VARS = {
     "OPENCODE_ZEN_API_KEY": {
         "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
         "prompt": "OpenCode Zen API key",
+        "url": "https://opencode.ai/auth",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "OPENCODE_API_KEY": {
+        "description": "OpenCode shared API key (OpenClaw compat alias for Zen + Go)",
+        "prompt": "OpenCode API key",
         "url": "https://opencode.ai/auth",
         "password": True,
         "category": "provider",

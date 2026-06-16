@@ -1577,9 +1577,28 @@ def _youtube_api_key_from_env(env_name: str) -> str:
 def _youtube_api_get(endpoint: str, params: dict[str, str]) -> dict[str, Any]:
     query = urllib.parse.urlencode(params)
     request = urllib.request.Request(f"{endpoint}?{query}", method="GET")
-    with urllib.request.urlopen(request, timeout=15) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-    data = json.loads(raw)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        return {
+            "error": {
+                "status": exc.code,
+                "reason": exc.reason,
+                "body": body,
+            },
+            "http_status": exc.code,
+        }
+    except urllib.error.URLError as exc:
+        return {"error": {"reason": str(exc)}}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"error": {"reason": "Invalid JSON response", "body": raw[:512]}}
     return data if isinstance(data, dict) else {}
 
 
@@ -1588,6 +1607,14 @@ def youtube_live_chat_id(live_id: str, api_key: str) -> str:
         "https://youtube.googleapis.com/youtube/v3/videos",
         {"part": "liveStreamingDetails", "id": live_id, "key": api_key},
     )
+    if "error" in data and isinstance(data["error"], dict):
+        error = data["error"]
+        message = error.get("reason")
+        if not message and isinstance(error.get("body"), str):
+            message = error["body"][:256]
+        if not message:
+            message = str(error)
+        raise RuntimeError(f"YouTube API error: {message}")
     items = data.get("items")
     if not isinstance(items, list) or not items:
         return ""

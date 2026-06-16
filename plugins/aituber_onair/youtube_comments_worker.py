@@ -33,10 +33,27 @@ def run(args: argparse.Namespace) -> int:
         _log({"event": "fatal", "error": "api key env is not set", "env": args.api_key_env})
         return 2
 
-    live_chat_id = core.youtube_live_chat_id(args.live_id, api_key)
-    if not live_chat_id:
-        _log({"event": "fatal", "error": "active live chat id was not found", "live_id": args.live_id})
+    try:
+        live_chat_id = core.youtube_live_chat_id(args.live_id, api_key)
+    except Exception as exc:
+        _log(
+            {
+                "event": "fatal",
+                "error": str(exc),
+                "live_id": args.live_id,
+                "api_key_env": args.api_key_env,
+            }
+        )
         return 3
+    if not live_chat_id:
+        _log(
+            {
+                "event": "fatal",
+                "error": "active live chat id was not found",
+                "live_id": args.live_id,
+            }
+        )
+        return 4
 
     _log(
         {

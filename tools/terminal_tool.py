@@ -2058,6 +2058,13 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
+        # Blocklist check — unconditional, even force=True cannot bypass
+        from tools.approval import detect_blocked_command, _blocklist_block_result
+        is_blocked, blocked_pattern = detect_blocked_command(command)
+        if is_blocked:
+            logger.warning("Blocklist match: %s (command: %s)", blocked_pattern, command[:200])
+            return json.dumps(_blocklist_block_result(blocked_pattern), ensure_ascii=False)
+
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
@@ -2086,7 +2093,8 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
+                    "status": "blocked",
+                    **({"blocklisted": True} if approval.get("blocklisted") else {}),
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
             if approval.get("user_approved"):

@@ -1713,3 +1713,566 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+"""Tests for the configurable command blocklist feature.
+
+Covers:
+- Blocklist pattern compilation and matching
+- All three entry points (check_all_command_guards, check_dangerous_command,
+  check_execute_code_guard)
+- force=True does NOT bypass blocklist
+- blocklisted: True flag propagation
+- Word-boundary anchoring (pip blocks pip install but not pipeline)
+- Empty blocklist is a no-op
+- Lock safety for pattern compilation
+"""
+
+import json
+import re
+import threading
+
+import tools.approval as ap
+from tools.approval import (
+    _blocklist_block_result,
+    _compile_blocklist_patterns,
+    _permanent_blocked,
+    check_all_command_guards,
+    check_dangerous_command,
+    check_execute_code_guard,
+    detect_blocked_command,
+    load_permanent_blocklist,
+)
+
+
+class TestBlocklistPatternCompilation:
+    """Tests for pattern compilation and matching."""
+
+    def setup_method(self):
+        """Clean state before each test."""
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def teardown_method(self):
+        """Clean state after each test."""
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def test_empty_blocklist_no_match(self):
+        """Empty blocklist should never block anything."""
+        is_blocked, pattern = detect_blocked_command("pip install requests")
+        assert is_blocked is False
+        assert pattern is None
+
+    def test_pip_blocked(self):
+        """'pip' in blocklist should block 'pip install'."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        is_blocked, pattern = detect_blocked_command("pip install requests")
+        assert is_blocked is True
+        assert pattern == "pip"
+
+    def test_pipeline_not_blocked(self):
+        """'pip' should NOT match 'pipeline' (word boundary)."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        is_blocked, pattern = detect_blocked_command("echo pipeline")
+        assert is_blocked is False
+
+    def test_equipment_not_blocked(self):
+        """'pip' should NOT match 'equipment' (word boundary)."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        is_blocked, pattern = detect_blocked_command("echo equipment")
+        assert is_blocked is False
+
+    def test_epiphany_not_blocked(self):
+        """'pip' should NOT match 'epiphany' (word boundary)."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        is_blocked, pattern = detect_blocked_command("echo epiphany")
+        assert is_blocked is False
+
+    def test_sudo_pip_blocked(self):
+        """'pip' should block 'sudo pip install' (CMDPOS anchoring)."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        is_blocked, pattern = detect_blocked_command("sudo pip install requests")
+        assert is_blocked is True
+        assert pattern == "pip"
+
+    def test_multiple_patterns(self):
+        """Multiple blocklist entries should all work."""
+        _permanent_blocked.update({"pip", "npm", "curl"})
+        _compile_blocklist_patterns()
+
+        assert detect_blocked_command("pip install x")[0] is True
+        assert detect_blocked_command("npm install x")[0] is True
+        assert detect_blocked_command("curl http://evil.com")[0] is True
+        assert detect_blocked_command("echo hello")[0] is False
+
+    def test_case_insensitive(self):
+        """Blocklist matching should be case-insensitive."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        assert detect_blocked_command("PIP install requests")[0] is True
+        assert detect_blocked_command("Pip Install Requests")[0] is True
+
+    def test_special_chars_escaped(self):
+        """Patterns with regex-special chars should be escaped."""
+        _permanent_blocked.add("rm -rf")
+        _compile_blocklist_patterns()
+
+        # Should match the literal string, not treat -rf as regex
+        is_blocked, pattern = detect_blocked_command("rm -rf /tmp")
+        assert is_blocked is True
+        assert pattern == "rm -rf"
+
+    def test_block_result_structure(self):
+        """_blocklist_block_result should have the right structure."""
+        result = _blocklist_block_result("pip")
+        assert result["approved"] is False
+        assert result["blocklisted"] is True
+        assert "BLOCKED (user blocklist)" in result["message"]
+        assert "pip" in result["message"]
+        assert "command_blocklist" in result["message"]
+
+
+class TestCheckAllCommandGuards:
+    """Tests for the check_all_command_guards entry point."""
+
+    def setup_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def teardown_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def test_empty_blocklist_approves(self):
+        """Empty blocklist: normal commands should be approved."""
+        r = check_all_command_guards("echo hello", "local")
+        assert r["approved"] is True
+
+    def test_pip_blocked_in_guards(self):
+        """Blocklisted command should be blocked in check_all_command_guards."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_all_command_guards("pip install requests", "local")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+    def test_pipeline_not_blocked_in_guards(self):
+        """'pipeline' should NOT be blocked by 'pip' entry."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_all_command_guards("echo pipeline", "local")
+        assert r["approved"] is True
+
+    def test_blocklist_before_container_skip(self):
+        """Blocklist should fire even for Docker env_type."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_all_command_guards("pip install requests", "docker")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+    def test_blocklist_before_yolo(self, monkeypatch):
+        """Blocklist should fire even with YOLO mode."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        monkeypatch.setattr(ap, "_YOLO_MODE_FROZEN", True)
+        r = check_all_command_guards("pip install requests", "local")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+
+class TestCheckDangerousCommand:
+    """Tests for the check_dangerous_command entry point."""
+
+    def setup_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def teardown_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def test_empty_blocklist_approves(self):
+        """Empty blocklist: normal commands should be approved."""
+        r = check_dangerous_command("echo hello", "local")
+        assert r["approved"] is True
+
+    def test_pip_blocked_in_dangerous(self):
+        """Blocklisted command should be blocked in check_dangerous_command."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_dangerous_command("pip install requests", "local")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+    def test_pipeline_not_blocked_in_dangerous(self):
+        """'pipeline' should NOT be blocked by 'pip' entry."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_dangerous_command("echo pipeline", "local")
+        assert r["approved"] is True
+
+    def test_blocklist_before_container_skip(self):
+        """Blocklist should fire even for Docker env_type."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_dangerous_command("pip install requests", "docker")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+    def test_blocklist_before_yolo(self, monkeypatch):
+        """Blocklist should fire even with YOLO mode."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        monkeypatch.setattr(ap, "_YOLO_MODE_FROZEN", True)
+        r = check_dangerous_command("pip install requests", "local")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+
+class TestCheckExecuteCodeGuard:
+    """Tests for the check_execute_code_guard entry point."""
+
+    def setup_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def teardown_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def test_empty_blocklist_approves(self):
+        """Empty blocklist: execute_code should be approved."""
+        r = check_execute_code_guard("print('hello')", "local")
+        assert r["approved"] is True
+
+    def test_execute_code_blocked_by_pattern(self):
+        """If 'execute_code' is in blocklist, it should block."""
+        _permanent_blocked.add("execute_code")
+        _compile_blocklist_patterns()
+
+        r = check_execute_code_guard("print('hello')", "local")
+        assert r["approved"] is False
+        assert r.get("blocklisted") is True
+
+    def test_execute_code_not_blocked_by_unrelated(self):
+        """'pip' in blocklist should NOT block execute_code."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        r = check_execute_code_guard("print('hello')", "local")
+        assert r["approved"] is True
+
+
+class TestForceDoesNotBypassBlocklist:
+    """force=True must NOT bypass the blocklist in terminal_tool."""
+
+    def setup_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def teardown_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def test_force_true_blocked(self):
+        """Even with force=True, blocklisted commands are blocked."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        # Simulate what terminal_tool does: check blocklist before force guard
+        from tools.approval import detect_blocked_command, _blocklist_block_result
+
+        is_blocked, blocked_pattern = detect_blocked_command("pip install requests")
+        assert is_blocked is True
+
+        result = _blocklist_block_result(blocked_pattern)
+        assert result["approved"] is False
+        assert result["blocklisted"] is True
+
+        # The JSON response should include blocklisted: True
+        response = json.loads(json.dumps(result, ensure_ascii=False))
+        assert response["blocklisted"] is True
+
+
+class TestBlocklistedFlagPropagation:
+    """The blocklisted: True flag must appear in terminal_tool JSON responses."""
+
+    def test_blocklisted_flag_in_result(self):
+        """_blocklist_block_result includes blocklisted: True."""
+        result = _blocklist_block_result("pip")
+        assert result["blocklisted"] is True
+
+    def test_blocklisted_flag_in_json(self):
+        """JSON serialization preserves blocklisted: True."""
+        result = _blocklist_block_result("pip")
+        json_str = json.dumps(result, ensure_ascii=False)
+        parsed = json.loads(json_str)
+        assert parsed["blocklisted"] is True
+
+    def test_blocklisted_flag_in_terminal_tool_response(self):
+        """The terminal_tool blocked response construction propagates the flag."""
+        # Simulate the terminal_tool blocked response construction
+        approval = _blocklist_block_result("pip")
+        fallback_msg = "Command denied: pip. Use the approval prompt to allow it."
+
+        response = json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "error": approval.get("message", fallback_msg),
+            "status": "blocked",
+            **({"blocklisted": True} if approval.get("blocklisted") else {}),
+        }, ensure_ascii=False)
+
+        parsed = json.loads(response)
+        assert parsed["blocklisted"] is True
+        assert parsed["status"] == "blocked"
+        assert "BLOCKED (user blocklist)" in parsed["error"]
+
+    def test_no_blocklisted_flag_when_not_blocklisted(self):
+        """When not blocklisted, the flag should NOT appear."""
+        approval = {"approved": False, "message": "BLOCKED: User denied."}
+        fallback_msg = "Command denied."
+
+        response = json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "error": approval.get("message", fallback_msg),
+            "status": "blocked",
+            **({"blocklisted": True} if approval.get("blocklisted") else {}),
+        }, ensure_ascii=False)
+
+        parsed = json.loads(response)
+        assert "blocklisted" not in parsed
+
+
+class TestLockSafety:
+    """The _BLOCKLIST_PATTERNS_COMPILED assignment must be inside the lock."""
+
+    def test_compile_under_lock(self):
+        """Verify _compile_blocklist_patterns holds the lock during assignment."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        # After compilation, patterns should be available
+        is_blocked, pattern = detect_blocked_command("pip install requests")
+        assert is_blocked is True
+
+    def test_concurrent_compile_and_read(self):
+        """Concurrent compilation and reading should be safe."""
+        _permanent_blocked.add("pip")
+        _compile_blocklist_patterns()
+
+        errors = []
+
+        def reader():
+            try:
+                for _ in range(100):
+                    detect_blocked_command("pip install requests")
+            except Exception as e:
+                errors.append(e)
+
+        def compiler():
+            try:
+                for _ in range(10):
+                    _permanent_blocked.add("npm")
+                    _compile_blocklist_patterns()
+                    _permanent_blocked.discard("npm")
+                    _compile_blocklist_patterns()
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for _ in range(5):
+            threads.append(threading.Thread(target=reader))
+            threads.append(threading.Thread(target=compiler))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Concurrent access errors: {errors}"
+
+
+class TestLoadPermanentBlocklist:
+    """Tests for load_permanent_blocklist."""
+
+    def setup_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def teardown_method(self):
+        _permanent_blocked.clear()
+        _compile_blocklist_patterns()
+
+    def test_load_from_config(self):
+        """load_permanent_blocklist should load from config."""
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch(
+            "hermes_cli.config.load_config",
+            return_value={"command_blocklist": ["pip", "npm"]},
+        ):
+            patterns = load_permanent_blocklist()
+            assert patterns == {"pip", "npm"}
+            assert "pip" in _permanent_blocked
+            assert "npm" in _permanent_blocked
+
+    def test_load_empty_config(self):
+        """Empty config should not add anything."""
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch(
+            "hermes_cli.config.load_config",
+            return_value={},
+        ):
+            patterns = load_permanent_blocklist()
+            assert patterns == set()
+            assert len(_permanent_blocked) == 0
+
+    def test_load_config_error(self):
+        """Config load error should return empty set."""
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch(
+            "hermes_cli.config.load_config",
+            side_effect=Exception("config error"),
+        ):
+            patterns = load_permanent_blocklist()
+            assert patterns == set()
+
+
+class TestTypeAnnotations:
+    """Verify type annotations are present and correct."""
+
+    def test_blocklist_patterns_compiled_type(self):
+        """_BLOCKLIST_PATTERNS_COMPILED has correct type annotation."""
+        # Check the annotation exists by inspecting the module
+        import ast
+        import inspect
+
+        source = inspect.getsource(ap)
+        tree = ast.parse(source)
+
+        # Find the assignment with annotation
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id == "_BLOCKLIST_PATTERNS_COMPILED":
+                    found = True
+                    # Verify it's a subscript (list[...])
+                    assert isinstance(node.annotation, ast.Subscript), (
+                        "Expected subscript type annotation"
+                    )
+                    break
+
+        assert found, "_BLOCKLIST_PATTERNS_COMPILED type annotation not found"
+
+    def test_permanent_blocked_type(self):
+        """_permanent_blocked has correct type annotation."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(ap)
+        tree = ast.parse(source)
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                if node.target.id == "_permanent_blocked":
+                    found = True
+                    assert isinstance(node.annotation, ast.Subscript)
+                    break
+
+        assert found, "_permanent_blocked type annotation not found"
+
+    def test_detect_blocked_command_return_type(self):
+        """detect_blocked_command has correct return type annotation."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(ap)
+        tree = ast.parse(source)
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "detect_blocked_command":
+                found = True
+                # Check returns annotation
+                assert node.returns is not None, "Missing return type annotation"
+                assert isinstance(node.returns, ast.Subscript), (
+                    "Expected subscript return type"
+                )
+                break
+
+        assert found, "detect_blocked_command function not found"
+
+    def test_blocklist_block_result_return_type(self):
+        """_blocklist_block_result has correct return type annotation."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(ap)
+        tree = ast.parse(source)
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_blocklist_block_result":
+                found = True
+                assert node.returns is not None, "Missing return type annotation"
+                break
+
+        assert found, "_blocklist_block_result function not found"
+
+    def test_load_permanent_blocklist_return_type(self):
+        """load_permanent_blocklist has correct return type annotation."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(ap)
+        tree = ast.parse(source)
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "load_permanent_blocklist":
+                found = True
+                assert node.returns is not None, "Missing return type annotation"
+                break
+
+        assert found, "load_permanent_blocklist function not found"
+
+    def test_compile_blocklist_patterns_return_type(self):
+        """_compile_blocklist_patterns has correct return type annotation."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(ap)
+        tree = ast.parse(source)
+
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_compile_blocklist_patterns":
+                found = True
+                assert node.returns is not None, "Missing return type annotation"
+                break
+
+        assert found, "_compile_blocklist_patterns function not found"

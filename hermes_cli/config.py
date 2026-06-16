@@ -2055,6 +2055,7 @@ DEFAULT_CONFIG = {
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
+    "command_blocklist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
 

@@ -779,6 +779,46 @@ def test_handle_unreachable_endpoint_waits_long_enough_after_autostart(monkeypat
     assert "Waiting for OpenViking server to become reachable..." in output
 
 
+def test_manual_setup_does_not_offer_autostart_when_local_server_is_unhealthy(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://localhost:1933"
+
+        def health_payload(self):
+            return {"healthy": False}
+
+    select_calls = []
+
+    def select(title, options, **kwargs):
+        select_calls.append((title, options))
+        assert all(label != "Start local OpenViking" for label, _description in options)
+        return 1
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("unhealthy local server should not offer auto-start")),
+    )
+
+    result = openviking_module._prompt_manual_connection_values(
+        _prompt_from_values({"OpenViking server URL": "localhost"}),
+        select,
+        -1,
+    )
+
+    assert result is openviking_module._SETUP_CANCELLED
+    assert select_calls == [(
+        "  OpenViking server unhealthy",
+        [
+            ("Retry", "try this step again"),
+            ("Cancel setup", "no changes saved"),
+        ],
+    )]
+
+
 def test_initialize_autostarts_local_openviking_in_background_when_runtime_health_fails(monkeypatch):
     _clear_openviking_env(monkeypatch)
     monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")

@@ -89,6 +89,7 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
 _OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
+_OPENVIKING_RESPONDED_FAILURE_PREFIX = "OpenViking server responded"
 _SETUP_CANCELLED = object()
 
 
@@ -806,6 +807,8 @@ def _validate_openviking_reachability(endpoint: str) -> tuple[bool, str]:
         elif client.health():
             return True, ""
     except Exception as e:
+        if _status_code_from_error(e) is not None:
+            return False, f"OpenViking server responded with {_format_openviking_exception(e)}."
         return False, f"OpenViking server is not reachable at {endpoint}: {_format_openviking_exception(e)}"
     return False, f"OpenViking server is not reachable at {endpoint}."
 
@@ -984,8 +987,19 @@ def _wait_for_openviking_health(endpoint: str, *, timeout_seconds: float = 15.0)
     return False
 
 
-def _handle_unreachable_endpoint(endpoint: str, message: str, select, cancelled):
-    if _is_local_openviking_url(endpoint):
+def _reachability_failure_allows_local_autostart(message: str) -> bool:
+    return not (message or "").startswith(_OPENVIKING_RESPONDED_FAILURE_PREFIX)
+
+
+def _handle_unreachable_endpoint(
+    endpoint: str,
+    message: str,
+    select,
+    cancelled,
+    *,
+    allow_local_autostart: bool = True,
+):
+    if _is_local_openviking_url(endpoint) and allow_local_autostart:
         print(f"  {message}")
         choice = select(
             "  Local OpenViking server is down",
@@ -1017,7 +1031,7 @@ def _handle_unreachable_endpoint(endpoint: str, message: str, select, cancelled)
 
     return _retry_or_cancel_manual_setup(
         select,
-        "  OpenViking server unreachable",
+        "  OpenViking server unhealthy" if _is_local_openviking_url(endpoint) else "  OpenViking server unreachable",
         message,
         cancelled,
     )
@@ -1126,7 +1140,13 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
             if reachable:
                 print("  OpenViking server is reachable.")
                 break
-            retry = _handle_unreachable_endpoint(endpoint, message, select, cancelled)
+            retry = _handle_unreachable_endpoint(
+                endpoint,
+                message,
+                select,
+                cancelled,
+                allow_local_autostart=_reachability_failure_allows_local_autostart(message),
+            )
             if retry is True:
                 break
             if retry is _SETUP_CANCELLED:

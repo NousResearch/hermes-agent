@@ -118,6 +118,64 @@ class TestResolveAutoMainFirst:
         assert client is chain_client
         assert model == "google/gemini-3-flash-preview"
 
+    def test_main_unavailable_uses_task_fallback_chain_before_builtin_chain(self):
+        """Auto aux resolution honors auxiliary.<task>.fallback_chain before built-ins."""
+        task_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider has no client
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(task_client, "task-free-model", "fallback_chain[0](openrouter)"),
+        ) as mock_task_chain, patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+        ) as mock_main_chain, patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_openrouter:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="title_generation")
+
+        assert client is task_client
+        assert model == "task-free-model"
+        mock_task_chain.assert_called_once_with(
+            "title_generation", "nvidia", reason="main provider unavailable")
+        mock_main_chain.assert_not_called()
+        mock_openrouter.assert_not_called()
+
+    def test_main_unavailable_uses_main_fallback_chain_before_builtin_chain(self):
+        """Auto aux resolution honors top-level fallback_providers before built-ins."""
+        main_fallback_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nvidia",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="qwen/qwen3.5-122b-a10b",
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),  # main provider has no client
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(main_fallback_client, "inclusionai/ring-2.6-1t:free", "openrouter"),
+        ) as mock_main_chain, patch(
+            "agent.auxiliary_client._try_openrouter",
+        ) as mock_openrouter:
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(task="title_generation")
+
+        assert client is main_fallback_client
+        assert model == "inclusionai/ring-2.6-1t:free"
+        mock_main_chain.assert_called_once_with(
+            "title_generation", "nvidia", reason="main provider unavailable")
+        mock_openrouter.assert_not_called()
+
     def test_no_main_config_uses_chain_directly(self):
         """No main provider configured → skip step 1, use chain (no regression)."""
         chain_client = MagicMock()

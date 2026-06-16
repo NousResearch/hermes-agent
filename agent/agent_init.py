@@ -40,6 +40,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
+from agent.runtime_cwd import resolve_context_cwd
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -66,6 +67,23 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _subdirectory_hint_working_dir() -> str | None:
+    """Return the cwd root used for progressive subdirectory hints.
+
+    Startup context loading already uses ``resolve_context_cwd()`` so Desktop,
+    TUI, ACP, and gateway sessions can pin a logical per-session workspace via
+    the session-cwd contextvar. The lazy ``SubdirectoryHintTracker`` must use
+    the same root; otherwise a gateway launched from ``$HOME`` can load
+    ``HERMES.md`` from the session cwd at startup, then later treat that same
+    project root as a newly visited subdirectory and append its ``AGENTS.md``.
+
+    ``None`` preserves the plain CLI fallback: ``SubdirectoryHintTracker`` will
+    use the process cwd when no configured/session cwd exists.
+    """
+    context_cwd = resolve_context_cwd()
+    return str(context_cwd) if context_cwd is not None else None
 
 
 def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
@@ -2040,7 +2058,7 @@ def init_agent(
             _ra().logger.debug("Context engine on_session_start: %s", _ce_err)
 
     agent._subdirectory_hints = SubdirectoryHintTracker(
-        working_dir=os.getenv("TERMINAL_CWD") or None,
+        working_dir=_subdirectory_hint_working_dir(),
     )
     agent._user_turn_count = 0
     # Copilot x-initiator flag: first API call of a user turn sends "user" (#3040).

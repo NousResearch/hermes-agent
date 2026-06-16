@@ -2632,6 +2632,8 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with type result
     """
+    from agent.redact import redact_sensitive_text
+
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_type
         return camofox_type(ref, text, task_id)
@@ -2646,9 +2648,12 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
     result = _run_browser_command(effective_task_id, "fill", [ref, text])
 
     if result.get("success"):
+        # Redact sensitive text from output to prevent credential leakage
+        # in tool progress notifications (Telegram, Discord, etc.)
+        display_text = redact_sensitive_text(text)
         response = {
             "success": True,
-            "typed": text,
+            "typed": display_text,
             "element": ref
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)

@@ -562,9 +562,13 @@ def camofox_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             f"/tabs/{session['tab_id']}/type",
             {"userId": session["user_id"], "ref": clean_ref, "text": text},
         )
+        # Redact sensitive text from output to prevent credential leakage
+        # in tool progress notifications (Telegram, Discord, etc.)
+        from agent.redact import redact_sensitive_text
+        display_text = redact_sensitive_text(text)
         return json.dumps({
             "success": True,
-            "typed": text,
+            "typed": display_text,
             "element": clean_ref,
         })
     except Exception as e:

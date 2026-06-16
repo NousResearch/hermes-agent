@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, ddgs, searxng, exa, parallel,
+  tavily, firecrawl, xai, multi-search) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -68,7 +68,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All bundled web plugins discover and register correctly."""
 
     def test_all_seven_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "multi-search",
             "parallel",
             "searxng",
             "tavily",
@@ -96,6 +97,7 @@ class TestBundledPluginsRegister:
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
+            ("multi-search", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],
@@ -116,7 +118,17 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        [
+            "brave-free",
+            "ddgs",
+            "searxng",
+            "exa",
+            "parallel",
+            "tavily",
+            "firecrawl",
+            "multi-search",
+            "xai",
+        ],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +141,17 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        [
+            "brave-free",
+            "ddgs",
+            "searxng",
+            "exa",
+            "parallel",
+            "tavily",
+            "firecrawl",
+            "multi-search",
+            "xai",
+        ],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -180,6 +202,21 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("TAVILY_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_multi_search_requires_tavily_or_exa_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("multi-search")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("TAVILY_API_KEY", "real")
+        assert p.is_available() is True
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setenv("EXA_API_KEY", "real")
         assert p.is_available() is True
 
     def test_exa_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:

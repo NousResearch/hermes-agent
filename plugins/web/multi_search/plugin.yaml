@@ -1,0 +1,7 @@
+name: web-multi-search
+version: 1.0.0
+description: "Multi-provider fan-out search: queries Exa + Tavily + web-search-prime (z.ai MCP) in parallel, merges and deduplicates for maximum recall. Requires EXA_API_KEY, TAVILY_API_KEY, and web-search-prime MCP configured."
+author: custom
+kind: backend
+provides_web_providers:
+  - multi-search

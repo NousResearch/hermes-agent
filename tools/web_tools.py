@@ -141,6 +141,22 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+
+_CONFIGURABLE_WEB_BACKENDS = frozenset(
+    {
+        "parallel",
+        "firecrawl",
+        "tavily",
+        "exa",
+        "searxng",
+        "brave-free",
+        "ddgs",
+        "xai",
+        "multi-search",
+    }
+)
+
+
 def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
@@ -149,7 +165,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _CONFIGURABLE_WEB_BACKENDS:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -240,6 +256,8 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "multi-search":
+        return _has_env("TAVILY_API_KEY") or _has_env("EXA_API_KEY")
     return False
 
 
@@ -1185,7 +1203,7 @@ async def web_extract_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in _CONFIGURABLE_WEB_BACKENDS:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)

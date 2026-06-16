@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import tools.file_tools as ft
+import tools.terminal_tool as terminal_tool
 
 
 @pytest.fixture
@@ -214,6 +215,28 @@ def test_absolute_terminal_cwd_anchors_with_empty_registry(_isolated_cwd, monkey
 
     resolved = ft._resolve_path_for_task("target.py", task_id="default")
 
+    assert resolved == (workspace / "target.py")
+    assert not str(resolved).startswith(str(decoy))
+
+
+def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolated_cwd, monkeypatch):
+    """TUI/Desktop sessions register cwd by raw session key before tools run.
+
+    CWD-only overrides collapse to the shared terminal environment key, but the
+    file resolver must still read the raw task/session override before falling
+    back to TERMINAL_CWD or the process cwd.
+    """
+    workspace, decoy = _isolated_cwd
+    task_id = "desktop-session-cwd"
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
+
+    assert terminal_tool._resolve_container_task_id(task_id) == "default"
     assert resolved == (workspace / "target.py")
     assert not str(resolved).startswith(str(decoy))
 

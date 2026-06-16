@@ -726,6 +726,48 @@ def test_s6_lifecycle_dispatches_to_s6_svc(
     assert flags == ["-u", "-d", "-t"]
 
 
+def test_s6_lifecycle_persists_named_profile_desired_state(
+    s6_scandir,
+    fake_subprocess_run,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    hermes_home = tmp_path / "hermes-home"
+    profile_dir = hermes_home / "profiles" / "coder"
+    profile_dir.mkdir(parents=True)
+    (s6_scandir / "gateway-coder").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.start("gateway-coder")
+    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "running"
+    mgr.stop("gateway-coder")
+    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "stopped"
+    mgr.restart("gateway-coder")
+    assert json.loads((profile_dir / "gateway_state.json").read_text())["desired_state"] == "running"
+
+
+def test_s6_lifecycle_persists_default_profile_desired_state(
+    s6_scandir,
+    fake_subprocess_run,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    (s6_scandir / "gateway-default").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home / "profiles" / "coder"))
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    mgr.start("gateway-default")
+    state = json.loads((hermes_home / "gateway_state.json").read_text())
+    assert state["desired_state"] == "running"
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle errors — friendly messages, not raw CalledProcessError
 # ---------------------------------------------------------------------------

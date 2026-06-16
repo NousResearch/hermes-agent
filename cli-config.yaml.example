@@ -724,7 +724,7 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
-#       rich_messages: false          # Opt in to Bot API 10.1 rich messages; default uses legacy MarkdownV2
+#       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default true, set false to force legacy MarkdownV2
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

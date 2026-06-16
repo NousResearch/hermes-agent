@@ -61,6 +61,8 @@ def _make_adapter(extra=None):
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
     bot.send_chat_action = AsyncMock()  # keeps the post-send typing re-trigger quiet
     bot.send_message_draft = AsyncMock(return_value=True)  # legacy draft fallback
+    bot.edit_message_text = AsyncMock(return_value=MagicMock(message_id=1))  # legacy edit path
+    bot.delete_message = AsyncMock(return_value=True)
     adapter._bot = bot
     return adapter
 
@@ -184,7 +186,10 @@ async def test_rich_messages_opt_out_accepts_string_false():
 
 
 @pytest.mark.asyncio
-async def test_rich_messages_default_is_disabled():
+async def test_rich_messages_default_is_enabled():
+    """Rich messages are on by default (Bot API 10.1); rich-eligible content
+    (tables/task lists/details/math) goes through sendRichMessage without the
+    user having to opt in."""
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = TelegramAdapter(config)
     bot = MagicMock()
@@ -194,6 +199,42 @@ async def test_rich_messages_default_is_disabled():
     adapter._bot = bot
 
     result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rich_messages_can_be_opted_out():
+    """Setting platforms.telegram.extra.rich_messages: false keeps every reply
+    on the legacy MarkdownV2 path even for rich-eligible content."""
+    config = PlatformConfig(
+        enabled=True, token="fake-token", extra={"rich_messages": False}
+    )
+    adapter = TelegramAdapter(config)
+    bot = MagicMock()
+    bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=123))
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+    bot.send_chat_action = AsyncMock()
+    adapter._bot = bot
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plain_markdown_stays_on_legacy_path():
+    """Ordinary replies (no table/task-list/details/math) stay on the legacy
+    MarkdownV2 path for consistent client rendering, even with rich enabled."""
+    adapter = _make_adapter()
+
+    result = await adapter.send("12345", "Hello **there**\n\nA normal reply.")
 
     assert result.success is True
     bot = adapter._bot
@@ -240,7 +281,9 @@ async def test_oversized_content_skips_rich_and_chunks():
 async def test_rich_limit_is_characters_not_bytes():
     """Telegram's rich limit is UTF-8 characters, not encoded bytes."""
     adapter = _make_adapter()
-    cjk = "测" * 20000  # 20k chars, 60k UTF-8 bytes
+    # Rich-eligible (table) so the content takes the rich path; the CJK body
+    # is 20k chars / 60k UTF-8 bytes — over the byte count, under the char cap.
+    cjk = "| a | b |\n|---|---|\n" + "测" * 20000  # 20k chars, ~60k UTF-8 bytes
     assert len(cjk.encode("utf-8")) > TelegramAdapter.RICH_MESSAGE_MAX_BYTES
     assert len(cjk) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
@@ -324,7 +367,9 @@ async def test_real_ptb_endpoint_missing_falls_back_and_latches_off(exc):
 async def test_rich_payload_preserves_link_preview_disable():
     adapter = _make_adapter(extra={"disable_link_previews": True})
 
-    result = await adapter.send("12345", "See https://example.com")
+    result = await adapter.send(
+        "12345", "| Link | Note |\n|---|---|\n| See https://example.com | x |"
+    )
 
     assert result.success is True
     api_kwargs = _rich_api_kwargs(adapter)
@@ -575,3 +620,139 @@ async def test_rich_draft_opt_out_uses_legacy():
     assert bot is not None
     bot.do_api_request.assert_not_called()
     bot.send_message_draft.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------------
+# Rich finalize via editMessageText (Bot API 10.1 rich_message edit param).
+# Streamed previews finalize by editing the existing message IN PLACE as rich,
+# so tables/task lists survive without a fresh send + delete (no duplicate).
+# ----------------------------------------------------------------------------
+
+
+def _rich_edit_kwargs(adapter):
+    """Return the api_kwargs dict from the single editMessageText rich call."""
+    call = adapter._bot.do_api_request.call_args
+    assert call.args[0] == "editMessageText"
+    return call.kwargs["api_kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_uses_rich_for_table_content():
+    """Finalizing a streamed preview whose content is a table edits the
+    existing message IN PLACE via editMessageText's rich_message param —
+    no fresh send, no delete, no duplicate."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    assert result.message_id == "555"  # same message, edited in place
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["message_id"] == 555
+    # RAW markdown is passed through so table pipes survive.
+    assert api_kwargs["rich_message"]["markdown"] == RICH_CONTENT
+    # No fresh send / delete — the whole point of the in-place rich edit.
+    adapter._bot.edit_message_text.assert_not_called()
+    adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_plain_content_stays_legacy():
+    """Finalizing plain content (no table/task-list/details/math) uses the
+    legacy MarkdownV2 edit_message_text path, not the rich edit endpoint."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", "Just a normal answer, no rich constructs.", finalize=True,
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_rich_capability_error_falls_back_to_legacy():
+    """A capability error on the rich edit latches rich off and falls back to
+    the legacy MarkdownV2 edit so the user still gets the final answer."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=PTB_ENDPOINT_NOT_FOUND)
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    assert adapter._rich_send_disabled is True
+    adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_rich_not_modified_is_success_noop():
+    """'Message is not modified' on a rich edit is a no-op success — must NOT
+    fall through to a redundant legacy edit."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(
+        side_effect=BadRequest("Message is not modified")
+    )
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    adapter._bot.edit_message_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_non_finalize_edit_never_uses_rich():
+    """Intermediate (non-finalize) stream edits stay on the plain edit path;
+    rich is only applied on the final edit."""
+    adapter = _make_adapter()
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=False,
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_opt_out_uses_legacy():
+    """With rich_messages: false, even a table finalizes via the legacy
+    MarkdownV2 edit path."""
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.edit_message(
+        "12345", "555", RICH_CONTENT, finalize=True,
+    )
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.edit_message_text.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_rich_over_markdownv2_limit_not_split():
+    """A rich table that exceeds the 4,096 MarkdownV2 limit but fits the 32,768
+    rich cap is edited in place as one rich message, NOT split into legacy
+    chunks."""
+    adapter = _make_adapter()
+    big_table = "| a | b |\n|---|---|\n" + "\n".join(
+        f"| {'x' * 50} | {'y' * 50} |" for _ in range(40)
+    )
+    assert len(big_table) > TelegramAdapter.MAX_MESSAGE_LENGTH
+    assert len(big_table) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.edit_message(
+        "12345", "555", big_table, finalize=True,
+    )
+
+    assert result.success is True
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["markdown"] == big_table
+    adapter._bot.edit_message_text.assert_not_called()

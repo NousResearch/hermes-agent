@@ -12965,8 +12965,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not _cache_lock or _cache is None:
             return
         try:
-            _sess_row = self._session_db.get_session(session_id)
-            _live = _sess_row.get("message_count", 0) if _sess_row else None
+            _live = self._agent_visible_message_count(session_id)
         except Exception:
             return
         if _live is None:
@@ -12983,6 +12982,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 if cached[2] != _live:
                     _cache[session_key] = (cached[0], cached[1], _live)
+
+    def _agent_visible_message_count(self, session_id: Optional[str]) -> Optional[int]:
+        """Return transcript row count that can affect the cached agent prompt.
+
+        The gateway drops metadata-only rows such as ``session_meta`` and
+        ``system`` before replaying history into the agent.  Counting those
+        rows in the cross-process cache guard makes internal metadata writes
+        (for example auto-title session_meta rows) look like external transcript
+        mutations and rebuilds the cached agent unnecessarily.
+        """
+        if self._session_db is None or not session_id:
+            return None
+        with self._session_db._lock:
+            cursor = self._session_db._conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM messages
+                WHERE session_id = ?
+                  AND role NOT IN ('session_meta', 'system')
+                """,
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        return int(row[0]) if row else 0
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
@@ -14516,9 +14539,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _current_msg_count = None
             if self._session_db is not None and session_id:
                 try:
-                    _sess_row = self._session_db.get_session(session_id)
-                    if _sess_row:
-                        _current_msg_count = _sess_row.get("message_count", 0)
+                    _current_msg_count = self._agent_visible_message_count(session_id)
                 except Exception:
                     pass
 

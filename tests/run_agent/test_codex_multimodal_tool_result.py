@@ -7,7 +7,9 @@ This file verifies the Codex Responses adapter:
 
   1. Converts that list into ``function_call_output.output`` as an array of
      ``input_text``/``input_image`` items (not a stringified blob).
-  2. Preserves array-shaped output through the preflight validator.
+  2. Preserves supported array-shaped output through the preflight validator.
+  3. Downgrades provider-unsupported inline image formats to text instead of
+     replaying a permanent 400 into every continuation.
 """
 
 from __future__ import annotations
@@ -71,6 +73,18 @@ class TestMultimodalToolResultConversion:
         assert len(image_parts) == 1
         assert image_parts[0]["image_url"] == "data:image/png;base64,XYZ"
 
+    def test_svg_tool_result_downgrades_to_text_placeholder(self):
+        msgs = _build_messages_with_multimodal_tool_result()
+        msgs[2]["content"][1]["image_url"]["url"] = "data:image/svg+xml;base64,PHN2Zy8+"
+
+        items = _chat_messages_to_responses_input(msgs)
+
+        out = next(it for it in items if it.get("type") == "function_call_output")
+        assert isinstance(out["output"], list)
+        assert [p.get("type") for p in out["output"]] == ["input_text", "input_text"]
+        assert not any(p.get("type") == "input_image" for p in out["output"])
+        assert "unsupported provider image format image/svg+xml" in out["output"][1]["text"]
+
     def test_string_tool_content_still_string_output(self):
         msgs = [
             {"role": "user", "content": "hi"},
@@ -116,6 +130,64 @@ class TestPreflightAcceptsArrayOutput:
         assert len(out["output"]) == 2
         assert out["output"][1]["type"] == "input_image"
         assert out["output"][1]["image_url"] == "data:image/png;base64,ABC"
+
+    def test_preflight_downgrades_svg_function_call_output(self):
+        raw = [
+            {
+                "type": "function_call",
+                "call_id": "call_abc",
+                "name": "vision_analyze",
+                "arguments": "{}",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_abc",
+                "output": [
+                    {"type": "input_text", "text": "Image loaded."},
+                    {"type": "input_image", "image_url": "data:image/svg+xml;base64,PHN2Zy8+"},
+                ],
+            },
+        ]
+
+        normalized = _preflight_codex_input_items(raw)
+
+        out = [it for it in normalized if it.get("type") == "function_call_output"][0]
+        assert isinstance(out["output"], list)
+        assert [p.get("type") for p in out["output"]] == ["input_text", "input_text"]
+        assert "unsupported provider image format image/svg+xml" in out["output"][1]["text"]
+
+    def test_preflight_downgrades_svg_user_content(self):
+        raw = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe"},
+                    {"type": "input_image", "image_url": "data:image/svg+xml;base64,PHN2Zy8+"},
+                ],
+            },
+        ]
+
+        normalized = _preflight_codex_input_items(raw)
+
+        content = normalized[0]["content"]
+        assert [p.get("type") for p in content] == ["input_text", "input_text"]
+        assert "unsupported provider image format image/svg+xml" in content[1]["text"]
+
+    def test_preflight_downgrades_mixed_case_svg_data_url(self):
+        raw = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_image", "image_url": "data:IMAGE/SVG+XML;base64,PHN2Zy8+"},
+                ],
+            },
+        ]
+
+        normalized = _preflight_codex_input_items(raw)
+
+        content = normalized[0]["content"]
+        assert [p.get("type") for p in content] == ["input_text"]
+        assert "unsupported provider image format image/svg+xml" in content[0]["text"]
 
     def test_preflight_drops_unknown_part_types(self):
         raw = [

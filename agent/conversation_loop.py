@@ -2131,6 +2131,11 @@ def run_conversation(
                     # we don't false-trip on other URL validation
                     # errors. (issue #23570)
                     "image_url'. expected",
+                    # Codex rejects inline images whose bytes or MIME are not
+                    # in its supported raster set with this wording. Treat it
+                    # as an image rejection so old poisoned sessions can retry
+                    # text-only instead of wedging on every continuation.
+                    "image data you provided does not represent a valid image",
                     # DeepSeek's OpenAI-compatible API reports text-only
                     # request-body variants as:
                     # "unknown variant `image_url`, expected `text`".

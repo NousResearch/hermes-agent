@@ -23,6 +23,14 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+_CODEX_SUPPORTED_INLINE_IMAGE_MIMES = {
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+}
+
+
 def _classify_responses_issuer(
     *,
     is_xai_responses: bool = False,
@@ -76,6 +84,49 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
 
+def _codex_unsupported_inline_image_reason(url: str) -> Optional[str]:
+    """Return a reason when an inline image data URL is not Codex-safe.
+
+    The ChatGPT-account Codex Responses backend rejects otherwise well-formed
+    ``input_image`` parts whose data URL MIME is outside its supported raster
+    set (currently JPEG/PNG/GIF/WebP).  SVG is the common footgun: Hermes can
+    persist a ``vision_analyze`` tool result as ``data:image/svg+xml``; every
+    later continuation replays that history and receives the same HTTP 400.
+
+    Remote HTTP(S) URLs are left alone because the provider owns the fetch and
+    format validation.  This guard is deliberately narrow to avoid changing the
+    public OpenAI Responses adapter semantics for non-inline images.
+    """
+    if not isinstance(url, str):
+        return None
+    header, sep, _payload = url.partition(",")
+    if not header.lower().startswith("data:image/"):
+        return None
+    if sep != ",":
+        return "malformed inline image data URL"
+    mime = header[len("data:"):].split(";", 1)[0].strip().lower()
+    if mime not in _CODEX_SUPPORTED_INLINE_IMAGE_MIMES:
+        return f"unsupported provider image format {mime or 'unknown'}"
+    return None
+
+
+def _codex_image_or_placeholder_parts(
+    url: str,
+    *,
+    detail: Any = None,
+    text_type: str = "input_text",
+) -> List[Dict[str, Any]]:
+    """Build a Codex Responses image part, or a text placeholder if unsafe."""
+    reason = _codex_unsupported_inline_image_reason(url)
+    if reason:
+        logger.debug("Codex preflight downgraded inline image data URL: %s", reason)
+        return [{"type": text_type, "text": f"[image omitted: {reason}]"}]
+
+    image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
+    if isinstance(detail, str) and detail.strip():
+        image_part["detail"] = detail.strip()
+    return [image_part]
+
 def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> List[Dict[str, Any]]:
     """Convert chat-style multimodal content to Responses API input parts.
 
@@ -120,10 +171,13 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
                 url = image_ref
             if not isinstance(url, str) or not url:
                 continue
-            image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
-            if isinstance(detail, str) and detail.strip():
-                image_part["detail"] = detail.strip()
-            converted.append(image_part)
+            converted.extend(
+                _codex_image_or_placeholder_parts(
+                    url,
+                    detail=detail,
+                    text_type=text_type,
+                )
+            )
     return converted
 
 
@@ -618,11 +672,14 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                     elif ptype == "input_image":
                         url = part.get("image_url")
                         if isinstance(url, str) and url:
-                            entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
                             detail = part.get("detail")
-                            if isinstance(detail, str) and detail.strip():
-                                entry["detail"] = detail.strip()
-                            cleaned.append(entry)
+                            cleaned.extend(
+                                _codex_image_or_placeholder_parts(
+                                    url,
+                                    detail=detail,
+                                    text_type="input_text",
+                                )
+                            )
                 normalized.append(
                     {
                         "type": "function_call_output",
@@ -743,10 +800,13 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                             url = image_ref
                         if not isinstance(url, str):
                             url = str(url or "")
-                        image_part: Dict[str, Any] = {"type": "input_image", "image_url": url}
-                        if isinstance(detail, str) and detail.strip():
-                            image_part["detail"] = detail.strip()
-                        validated.append(image_part)
+                        validated.extend(
+                            _codex_image_or_placeholder_parts(
+                                url,
+                                detail=detail,
+                                text_type=text_type,
+                            )
+                        )
                     else:
                         raise ValueError(
                             f"Codex Responses input[{idx}].content[{part_idx}] has unsupported type {part.get('type')!r}."

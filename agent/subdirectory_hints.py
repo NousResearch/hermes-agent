@@ -23,6 +23,11 @@ from agent.prompt_builder import _scan_context_content
 
 logger = logging.getLogger(__name__)
 
+# Per-session mtime cache: path → last_seen_mtime.
+# Prevents re-injection of unchanged hint files when the same
+# directory is visited multiple times in a session.
+_mtime_cache: Dict[Path, float] = {}
+
 # Context files to look for in subdirectories, in priority order.
 # Same filenames as prompt_builder.py but we load ALL found (not first-wins)
 # since different subdirectories may use different conventions.
@@ -226,6 +231,21 @@ class SubdirectoryHintTracker:
                     continue
             except OSError:
                 continue
+
+            # Skip if mtime unchanged — prevents re-injection of
+            # identical content when the same directory is visited
+            # multiple times in a session.
+            try:
+                current_mtime = hint_path.stat().st_mtime
+                cached_mtime = _mtime_cache.get(hint_path)
+                if cached_mtime is not None and current_mtime <= cached_mtime:
+                    logger.debug("Skipping unchanged hint: %s", hint_path)
+                    found_hints.append((str(hint_path), ""))
+                    break
+                _mtime_cache[hint_path] = current_mtime
+            except OSError:
+                pass  # can't stat — load anyway
+
             try:
                 content = hint_path.read_text(encoding="utf-8").strip()
                 if not content:
@@ -258,6 +278,8 @@ class SubdirectoryHintTracker:
 
         sections = []
         for rel_path, content in found_hints:
+            if not content:
+                continue  # skipped due to mtime cache
             sections.append(
                 f"[Subdirectory context discovered: {rel_path}]\n{content}"
             )

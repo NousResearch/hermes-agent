@@ -34,6 +34,21 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
+    # Per-model completion-token cap. The opencode-go relay's default is
+    # too large for mimo-v2.5-pro — it sends max_tokens=262144 but Xiaomi
+    # only supports 131072 completion tokens and 400s the request.
+    # Setting an explicit cap here prevents the relay default from being
+    # applied. Keys are normalized via _flat_model_name().
+    _MODEL_MAX_TOKENS: dict[str, int] = {
+        "mimo-v2.5-pro": 131072,
+    }
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        cap = self._MODEL_MAX_TOKENS.get(_flat_model_name(model))
+        if cap is not None:
+            return cap
+        return self.default_max_tokens
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -49,9 +64,8 @@ class OpenCodeGoProfile(ProviderProfile):
                 return extra_body, top_level
 
             enabled = reasoning_config.get("enabled") is not False
-            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
-
             if not enabled:
+                extra_body["thinking"] = {"type": "disabled"}
                 return extra_body, top_level
 
             effort = (reasoning_config.get("effort") or "").strip().lower()
@@ -59,6 +73,11 @@ class OpenCodeGoProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "high"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+
+            # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
+            # only send extra_body["thinking"] when no reasoning_effort is set.
+            if "reasoning_effort" not in top_level:
+                extra_body["thinking"] = {"type": "enabled"}
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):
@@ -67,9 +86,9 @@ class OpenCodeGoProfile(ProviderProfile):
         enabled = True
         if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
             enabled = False
-        extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
 
         if not enabled:
+            extra_body["thinking"] = {"type": "disabled"}
             return extra_body, top_level
 
         if isinstance(reasoning_config, dict):
@@ -78,6 +97,11 @@ class OpenCodeGoProfile(ProviderProfile):
                 top_level["reasoning_effort"] = "max"
             elif effort in {"low", "medium", "high"}:
                 top_level["reasoning_effort"] = effort
+
+        # Avoid "cannot specify both 'thinking' and 'reasoning_effort'" HTTP 400:
+        # only send extra_body["thinking"] when no reasoning_effort is set.
+        if "reasoning_effort" not in top_level:
+            extra_body["thinking"] = {"type": "enabled"}
 
         return extra_body, top_level
 

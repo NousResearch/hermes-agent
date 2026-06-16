@@ -13,7 +13,6 @@ Interactive mode (tool_progress_mode == "full") still uses ChatConsole.
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from cli import HermesCLI
 

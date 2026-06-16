@@ -79,7 +79,7 @@ class XAIGrokAdapter(UpstreamAdapter):
         failed_credential: UpstreamCredential,
         status_code: int,
     ) -> Optional[UpstreamCredential]:
-        if status_code != 401:
+        if status_code not in {401, 429}:
             return None
 
         with self._lock:
@@ -87,16 +87,25 @@ class XAIGrokAdapter(UpstreamAdapter):
             if pool is None:
                 return None
 
-            refreshed = pool.try_refresh_current()
-            if refreshed is None:
+            if status_code == 429:
+                # Mark the rate-limited key with its 1-hour cooldown and rotate
+                # to the next available credential. Returns None when the pool
+                # has no other key to offer — the 429 will flow back to the client.
                 refreshed = pool.mark_exhausted_and_rotate(status_code=status_code)
+            else:
+                refreshed = pool.try_refresh_current()
+                if refreshed is None:
+                    refreshed = pool.mark_exhausted_and_rotate(status_code=status_code)
             if refreshed is None:
                 return None
 
             retry_cred = self._credential_from_entry(refreshed)
             if retry_cred.bearer == failed_credential.bearer:
                 return None
-            logger.info("proxy: xAI upstream rejected bearer; retrying with refreshed pool credential")
+            logger.info(
+                "proxy: xAI upstream returned %s; retrying with rotated pool credential",
+                status_code,
+            )
             return retry_cred
 
     def _load_pool(self) -> Optional[CredentialPool]:

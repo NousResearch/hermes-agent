@@ -1073,6 +1073,10 @@ export const ToolTrail = memo(function ToolTrail({
             const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
             const childRails = nextTreeRails(rails, branch)
             const hasInlineSubagents = inlineDelegateKey === group.key
+            // Surface the /agents hint the moment a delegate group appears —
+            // while it's still in-flight and before any subagent has
+            // registered — so users can open the live monitor immediately.
+            const isDelegateGroup = group.label.startsWith('Delegate Task')
 
             return (
               <Box flexDirection="column" key={group.key}>
@@ -1083,6 +1087,11 @@ export const ToolTrail = memo(function ToolTrail({
                     <>
                       <Text color={t.color.accent}>● </Text>
                       {toolLabel(group)}
+                      {isDelegateGroup ? (
+                        <Text color={t.color.statusFg} dim>
+                          {'  (/agents to monitor)'}
+                        </Text>
+                      ) : null}
                     </>
                   }
                   rails={rails}

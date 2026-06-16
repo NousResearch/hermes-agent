@@ -1,6 +1,6 @@
 ---
 title: 网页搜索与提取
-description: 通过多个后端提供商搜索网页、提取页面内容并爬取网站——包括免费的自托管 SearXNG。
+description: 通过多个后端提供商搜索网页并提取页面内容——包括免费的自托管 SearXNG。
 sidebar_label: Web Search
 sidebar_position: 6
 ---
@@ -10,22 +10,22 @@ sidebar_position: 6
 Hermes Agent 内置两个可供模型调用的网页工具，由多个提供商支持：
 
 - **`web_search`** — 搜索网页并返回排序结果
-- **`web_extract`** — 从一个或多个 URL 获取并提取可读内容（当后端支持时内置深度爬取功能）
+- **`web_extract`** — 从一个或多个 URL 获取并提取可读内容
 
-两者均通过单一后端选择进行配置。提供商可通过 `hermes tools` 选择，或直接在 `config.yaml` 中设置。递归爬取功能（Firecrawl/Tavily）通过 `web_extract` 暴露，而非作为独立的 `web_crawl` 工具。
+两者均通过单一后端选择进行配置。提供商可通过 `hermes tools` 选择，或直接在 `config.yaml` 中设置。
 
 ## 后端
 
-| 提供商 | 环境变量 | 搜索 | 提取 | 爬取 | 免费层级 |
-|----------|---------|--------|---------|-------|-----------|
-| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | ✔ | 500 积分/月 |
-| **SearXNG** | `SEARXNG_URL` | ✔ | — | — | ✔ 免费（自托管） |
-| **Brave Search（免费层级）** | `BRAVE_SEARCH_API_KEY` | ✔ | — | — | 2 000 次查询/月 |
-| **DDGS (DuckDuckGo)** | —（无需密钥） | ✔ | — | — | ✔ 免费 |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ | 1 000 次搜索/月 |
-| **Exa** | `EXA_API_KEY` | ✔ | ✔ | — | 1 000 次搜索/月 |
-| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — | 付费 |
-| **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth login xai-oauth` | ✔ | — | — | 付费（SuperGrok 或按 token 计费） |
+| 提供商 | 环境变量 | 搜索 | 提取 | 免费层级 |
+|----------|---------|--------|---------|-----------|
+| **Firecrawl**（默认） | `FIRECRAWL_API_KEY` | ✔ | ✔ | 500 积分/月 |
+| **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ 免费（自托管） |
+| **Brave Search（免费层级）** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 次查询/月 |
+| **DDGS (DuckDuckGo)** | —（无需密钥） | ✔ | — | ✔ 免费 |
+| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
+| **Exa** | `EXA_API_KEY` | ✔ | ✔ | 1 000 次搜索/月 |
+| **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | 付费 |
+| **xAI (Grok)** | `XAI_API_KEY` 或 `hermes auth login xai-oauth` | ✔ | — | 付费（SuperGrok 或按 token 计费） |
 
 Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_extract`，可将其中任意一个与 Firecrawl/Tavily/Exa/Parallel 配合使用。DDGS 底层使用 [`ddgs` Python 包](https://pypi.org/project/ddgs/)；若尚未安装，请运行 `pip install ddgs`（或让 Hermes 在首次使用时懒加载安装）。xAI 通过 Responses API 运行 Grok 服务端的 `web_search` 工具——结果由 LLM 生成而非基于索引，因此标题、描述和 URL 选择均为模型输出（参见下方[信任模型说明](#xai-grok)）。
 
@@ -46,7 +46,7 @@ Brave Search、DDGS 和 xAI 均为**仅搜索**——如果同时需要 `web_ext
 | 5 000 以下 | 原样返回——不调用 LLM，完整 markdown 直达 agent |
 | 5 000 – 500 000 | 通过 `web_extract` 辅助模型单次摘要，输出上限约 5 000 字符 |
 | 500 000 – 2 000 000 | 分块处理：拆分为 10 万字符的块，并行摘要每块，再合成最终摘要（约 5 000 字符） |
-| 超过 2 000 000 | 拒绝处理，并提示使用带有针对性提取指令的 `web_crawl` 或更具体的来源 |
+| 超过 2 000 000 | 拒绝处理，并提示使用更具体的来源 URL |
 
 摘要保留引用、代码块和关键事实的原始格式——它是内容压缩器，而非改写器。如果摘要失败或超时，Hermes 会回退到原始内容的前约 5 000 字符，而非返回无用的错误信息。
 
@@ -89,7 +89,7 @@ hermes tools
 
 ### Firecrawl（默认）
 
-功能完整的搜索、提取和爬取。推荐大多数用户使用。
+功能完整的搜索和提取。推荐大多数用户使用。
 
 ```bash
 # ~/.hermes/.env
@@ -113,7 +113,7 @@ FIRECRAWL_API_URL=http://localhost:3002
 
 SearXNG 是一个注重隐私的开源元搜索引擎，聚合来自 70 多个搜索引擎的结果。**无需 API 密钥**——只需将 Hermes 指向一个运行中的 SearXNG 实例。
 
-SearXNG 为**仅搜索**——`web_extract`（包括其爬取模式）需要单独的提取提供商。
+SearXNG 为**仅搜索**——`web_extract` 需要单独的提取提供商。
 
 #### 方案 A — 使用 Docker 自托管（推荐）
 
@@ -222,7 +222,7 @@ SEARXNG_URL=https://searx.example.com
 
 #### 将 SearXNG 与提取提供商配合使用
 
-SearXNG 负责搜索；`web_extract`（包括任何深度爬取模式）需要单独的提供商。使用按能力配置的键：
+SearXNG 负责搜索；`web_extract` 需要单独的提供商。使用按能力配置的键：
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -237,7 +237,7 @@ web:
 
 ### Tavily
 
-针对 AI 优化的搜索、提取和爬取，免费层级慷慨。
+针对 AI 优化的搜索和提取，免费层级慷慨。
 
 ```bash
 # ~/.hermes/.env
@@ -341,7 +341,7 @@ web:
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"     # 由 web_search 使用
-  extract_backend: "firecrawl"  # 由 web_extract（及其深度爬取模式）使用
+  extract_backend: "firecrawl"  # 由 web_extract 使用
 ```
 
 当按能力键为空时，两者均回退到 `web.backend`。当 `web.backend` 也为空时，后端根据存在的 API 密钥/URL 自动检测。

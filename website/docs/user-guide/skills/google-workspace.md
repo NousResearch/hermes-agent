@@ -7,7 +7,7 @@ description: "Send email, manage calendar events, search Drive, read/write Sheet
 
 # Google Workspace Skill
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses OAuth2 with automatic token refresh. Prefers the [Google Workspace CLI (`gws`)](https://github.com/nicholasgasior/gws) when available for broader coverage, and falls back to Google's Python client libraries otherwise.
+Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses OAuth2 with automatic token refresh. Prefers the [Google Workspace CLI (`gws`)](https://github.com/googleworkspace/cli) when available for broader coverage, and falls back to Google's Python client libraries otherwise.
 
 **Skill path:** `skills/productivity/google-workspace/`
 

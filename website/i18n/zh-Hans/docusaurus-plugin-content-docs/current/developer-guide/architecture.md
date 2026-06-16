@@ -211,7 +211,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### 工具系统
 
-中央工具注册表（`tools/registry.py`），包含约 28 个 toolset 中的 70+ 个已注册工具。每个工具文件在导入时自行注册。注册表负责 schema 收集、分发、可用性检查和错误包装。终端工具支持 7 种后端（local、Docker、SSH、Daytona、Modal、Singularity、Vercel Sandbox）。
+中央工具注册表（`tools/registry.py`），包含约 28 个 toolset 中的 70+ 个已注册工具。每个工具文件在导入时自行注册。注册表负责 schema 收集、分发、可用性检查和错误包装。终端工具支持 6 种后端（local、Docker、SSH、Daytona、Modal、Singularity）。
 
 → [工具运行时](./tools-runtime.md)
 

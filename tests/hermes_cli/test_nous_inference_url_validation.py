@@ -1,8 +1,8 @@
 """Regression tests for Nous Portal inference_base_url host-allowlist validation.
 
-A poisoned ``inference_base_url`` from the Portal refresh / agent-key-mint
-response (network MITM, malicious response injection) would otherwise be
-persisted to auth.json and forwarded the user's legitimate agent_key
+A poisoned ``inference_base_url`` from a Portal refresh response (network
+MITM, malicious response injection) would otherwise be persisted to
+auth.json and forwarded with the user's legitimate invoke JWT
 bearer on every subsequent proxy request, exfiltrating their inference
 budget and opening a response-injection channel into the IDE / chat
 client. ``_validate_nous_inference_url_from_network()`` blocks any URL
@@ -11,7 +11,7 @@ outside the allowlist at the source.
 These tests verify:
 
 1. The validator's host + scheme rules.
-2. Each of the five NETWORK call sites in ``auth.py`` calls the validator
+2. Each of the two NETWORK call sites in ``auth.py`` calls the validator
    rather than the unrestricted ``_optional_base_url`` helper.
 3. The proxy adapter applies the validator as belt-and-suspenders.
 4. The env-var override path (``NOUS_INFERENCE_BASE_URL``) is NOT
@@ -22,7 +22,6 @@ These tests verify:
 from __future__ import annotations
 
 import logging
-import pytest
 
 from hermes_cli.auth import (
     DEFAULT_NOUS_INFERENCE_URL,
@@ -125,7 +124,7 @@ class TestValidatorRules:
 
 
 class TestCallSiteWiring:
-    """Verify the validator is actually wired into all 5 NETWORK call sites.
+    """Verify the validator is actually wired into all auth.py NETWORK call sites.
 
     These are not behaviour-end-to-end tests (the surrounding code is
     several hundred lines per site with extensive HTTP mocking
@@ -162,7 +161,7 @@ class TestCallSiteWiring:
             )
 
     def test_validator_wired_at_all_known_call_sites(self):
-        """All 5 known NETWORK sites use the validator. If this count
+        """All 2 known auth.py NETWORK sites use the validator. If this count
         drops, someone removed protection; if it grows, audit the new
         site to be sure validation is appropriate."""
         source = self._read_auth_source()
@@ -172,8 +171,8 @@ class TestCallSiteWiring:
         mint_count = source.count(
             '_validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))'
         )
-        assert refresh_count == 3, f"expected 3 refresh sites, found {refresh_count}"
-        assert mint_count == 2, f"expected 2 mint sites, found {mint_count}"
+        assert refresh_count == 2, f"expected 2 refresh sites, found {refresh_count}"
+        assert mint_count == 0, f"expected 0 mint sites, found {mint_count}"
 
     def test_proxy_adapter_also_validates(self):
         """The Nous proxy adapter applies the validator as defense-in-depth

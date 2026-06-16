@@ -1,8 +1,10 @@
 """Shared utility functions for hermes-agent."""
 
+import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -71,14 +73,38 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call.
+    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
+    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
+    and busy-file deployments.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
+    tmp_str = str(tmp_path)
+    try:
+        os.replace(tmp_str, real_path)
+    except OSError as exc:
+        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+            raise
+        logger.debug(
+            "atomic_replace: %s -> %s failed with %s; falling back to copy",
+            tmp_str,
+            real_path,
+            errno.errorcode.get(exc.errno, exc.errno),
+        )
+        shutil.copyfile(tmp_str, real_path)
+        try:
+            shutil.copystat(tmp_str, real_path)
+        except OSError:
+            pass
+        try:
+            with open(real_path, "rb") as f:
+                os.fsync(f.fileno())
+        except OSError:
+            pass
+        os.unlink(tmp_str)
     return real_path
 
 
@@ -87,6 +113,7 @@ def atomic_json_write(
     data: Any,
     *,
     indent: int = 2,
+    mode: int | None = None,
     **dump_kwargs: Any,
 ) -> None:
     """Write JSON data to a file atomically.
@@ -99,13 +126,16 @@ def atomic_json_write(
         path: Target file path (will be created or overwritten).
         data: JSON-serializable data to write.
         indent: JSON indentation (default 2).
+        mode: Optional final permission mode. When set, the temp file is
+            created and replaced with this mode, avoiding chmod-after-write
+            TOCTOU exposure for secret-bearing files.
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    original_mode = _preserve_file_mode(path)
+    original_mode = None if mode is not None else _preserve_file_mode(path)
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -113,6 +143,11 @@ def atomic_json_write(
         suffix=".tmp",
     )
     try:
+        if mode is not None and hasattr(os, "fchmod"):
+            # fchmod is Unix-only; Windows' os module has no fchmod. Skipping it
+            # here is safe — mkstemp already created the temp file as 0o600, and
+            # the post-replace os.chmod below applies the final mode durably.
+            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(
                 data,
@@ -125,7 +160,13 @@ def atomic_json_write(
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
         real_path = atomic_replace(tmp_path, path)
-        _restore_file_mode(real_path, original_mode)
+        if mode is not None:
+            try:
+                os.chmod(real_path, mode)
+            except OSError:
+                pass
+        else:
+            _restore_file_mode(Path(real_path), original_mode)
     except BaseException:
         # Intentionally catch BaseException so temp-file cleanup still runs for
         # KeyboardInterrupt/SystemExit before re-raising the original signal.
@@ -338,6 +379,44 @@ def base_url_hostname(base_url: str) -> str:
         return ""
     parsed = urlparse(raw if "://" in raw else f"//{raw}")
     return (parsed.hostname or "").lower().rstrip(".")
+
+
+# ─── Model Capability Detection ──────────────────────────────────────────────
+
+
+def model_forces_max_completion_tokens(model: str) -> bool:
+    """Return True for model families that require ``max_completion_tokens``.
+
+    OpenAI's newer families reject ``max_tokens`` on /v1/chat/completions with
+    HTTP 400 ``unsupported_parameter`` — the caller must send
+    ``max_completion_tokens`` instead. This covers:
+
+    - ``gpt-4o`` / ``gpt-4o-mini`` / ``gpt-4o-*``
+    - ``gpt-4.1`` / ``gpt-4.1-*``
+    - ``gpt-5`` / ``gpt-5.x`` / ``gpt-5-*``
+    - ``o1`` / ``o1-*``
+    - ``o3`` / ``o3-*``
+    - ``o4`` / ``o4-*``
+
+    Handles vendor prefixes like ``openai/gpt-5.4`` by stripping to the tail.
+    The URL-based check (``base_url_hostname == "api.openai.com"``) misses
+    third-party OpenAI-compatible endpoints (custom OpenAI gateways,
+    OpenRouter) that front these models and enforce the same parameter
+    constraint, so name-based detection is required as a fallback.
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return (
+        m.startswith("gpt-4o")
+        or m.startswith("gpt-4.1")
+        or m.startswith("gpt-5")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )
 
 
 def base_url_host_matches(base_url: str, domain: str) -> bool:

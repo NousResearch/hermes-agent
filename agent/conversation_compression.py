@@ -603,6 +603,20 @@ def compress_context(
             force=True,
         )
 
+    # Emit session:compress event so hooks (e.g. MemPalace sync) can ingest
+    # the completed old session before its details are lost.
+    _old_sid_for_event = locals().get("old_session_id")
+    if getattr(agent, "event_callback", None):
+        try:
+            agent.event_callback("session:compress", {
+                "platform": agent.platform or "",
+                "session_id": agent.session_id,
+                "old_session_id": _old_sid_for_event or "",
+                "compression_count": agent.context_compressor.compression_count,
+            })
+        except Exception as e:
+            logger.debug("event_callback error on session:compress: %s", e)
+
     # Keep the post-compression rough estimate for diagnostics, but do not
     # treat it as provider-reported prompt usage. Schema-heavy rough estimates
     # can remain above threshold even after the next real API request fits.

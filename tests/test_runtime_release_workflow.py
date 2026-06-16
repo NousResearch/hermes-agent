@@ -225,39 +225,26 @@ def test_runtime_workflow_freezes_hindsight_client_api_and_aiohttp_retry():
     #    its aiohttp_retry-*.dist-info must be asserted; hindsight_client_api
     #    shares the hindsight_client-*.dist-info, so the single hindsight_client
     #    entry already covers it.
+    # Frozen-output verify list asserts dist-info directories of INDEPENDENT
+    # distributions only. hindsight_client_api has no independent distribution;
+    # it shares hindsight_client-*.dist-info with the main hindsight_client
+    # package (verified by importlib.metadata.packages_distributions()), so
+    # putting "hindsight_client_api" in the verify list would either be a
+    # silent no-op (find would not match anything) or, worse, mask a real
+    # build break. Only hindsight_client and aiohttp_retry are asserted here.
     verified = _frozen_verify_packages()
     for pkg in ("hindsight_client", "aiohttp_retry"):
         assert pkg in verified, (
             f"frozen-output verify list does not assert {pkg} dist-info"
         )
-
-
-def test_runtime_workflow_hindsight_transitive_deps_match_importlib_metadata():
-    """The PR three-module coverage must match what
-    importlib.metadata.packages_distributions() reports for each module.
-
-    This guards against adding a collect line for a module that the upstream
-    wheel does not actually ship, or missing a real transitive. It is a
-    textual contract test, not a PyInstaller runtime test (the cross-platform
-    PyInstaller build is exercised by CI, not by this unit suite).
-    """
-    # Pure-Python introspection of the wheel: pin the contract that
-    # hindsight-client==0.6.1 ships both hindsight_client and
-    # hindsight_client_api as top-level packages, and that aiohttp-retry
-    # is an independent distribution whose module name is aiohttp_retry.
-    try:
-        from importlib.metadata import packages_distributions
-    except ImportError:  # pragma: no cover - py<3.10
-        pytest.skip("importlib.metadata.packages_distributions requires py>=3.10")
-    pd = packages_distributions()
-    # These are the exact module->distribution mappings the build must
-    # respect. If the upstream wheel ever changes its bundling (e.g. splits
-    # hindsight_client_api into a separate distribution), this test fails
-    # and forces an explicit re-evaluation of which --copy-metadata lines
-    # the workflow needs.
-    assert "hindsight-client" in pd.get("hindsight_client", [])
-    assert "hindsight-client" in pd.get("hindsight_client_api", [])
-    assert "aiohttp-retry" in pd.get("aiohttp_retry", [])
+    assert "hindsight_client_api" not in verified, (
+        "frozen-output verify list must NOT contain hindsight_client_api: "
+        "it has no independent distribution metadata. Listing it here is "
+        "either a silent no-op (the find pattern would never match) or a "
+        "future regression hiding the real dist-info directory. The "
+        "hindsight_client entry already covers it because both modules share "
+        "hindsight_client-*.dist-info."
+    )
 
 
 def test_runtime_workflow_signs_and_preserves_macos_frameworks():

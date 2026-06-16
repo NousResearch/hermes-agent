@@ -1,7 +1,7 @@
 """Invariant: the @assistant-ui dependency cluster agrees on one tap version.
 
 The Hermes desktop app (``apps/desktop``) is built from source on every
-install/update via ``scripts/install.ps1`` -> ``npm ci``/``npm install`` ->
+install/update via ``scripts/install.ps1`` → ``npm ci``/``npm install`` →
 ``tsc -b && vite build``. The ``@assistant-ui`` packages share an internal
 reactivity lib, ``@assistant-ui/tap``, and they only interoperate when they
 all resolve the *same* tap version:
@@ -9,7 +9,7 @@ all resolve the *same* tap version:
 * ``@assistant-ui/react@0.12.28`` and ``@assistant-ui/core`` pin
   ``@assistant-ui/tap@^0.5.x`` (which exports ``.`` and ``./react``).
 * ``@assistant-ui/store@0.2.18`` bumped its tap peer to ``^0.9.0`` and started
-  importing ``@assistant-ui/tap/react-shim`` - an entry point that only exists
+  importing ``@assistant-ui/tap/react-shim`` — an entry point that only exists
   in the tap ``0.9.x`` line.
 
 Because ``react@0.12.28`` requests ``store@^0.2.9`` (a caret range), a fresh
@@ -88,7 +88,7 @@ def _hoisted_tap_version(packages: dict) -> str:
     entry = packages.get(f"node_modules/{TAP}")
     assert entry is not None, (
         "package-lock.json has no hoisted node_modules/@assistant-ui/tap "
-        "entry - the @assistant-ui cluster should resolve a single shared "
+        "entry — the @assistant-ui cluster should resolve a single shared "
         "tap version."
     )
     return entry["version"]
@@ -99,7 +99,7 @@ def test_assistant_ui_cluster_agrees_on_one_tap() -> None:
 
     Encodes the contract that broke the desktop build: a single hoisted
     @assistant-ui/tap must satisfy the tap range declared by react, core,
-    store, and any sibling - otherwise the missing ``./react-shim`` export
+    store, and any sibling — otherwise the missing ``./react-shim`` export
     (or a similar API split) breaks ``vite build``.
     """
     packages = _lock_packages()
@@ -124,7 +124,7 @@ def test_assistant_ui_cluster_agrees_on_one_tap() -> None:
     assert not offenders, (
         f"Hoisted {TAP}@{tap_version} does not satisfy: "
         + "; ".join(offenders)
-        + ". The @assistant-ui cluster has split tap requirements - pin the "
+        + ". The @assistant-ui cluster has split tap requirements — pin the "
         "offending package (e.g. via root package.json `overrides`) so the "
         "whole cluster shares one tap line. See this test's module docstring."
     )

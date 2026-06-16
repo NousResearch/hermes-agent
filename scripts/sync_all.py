@@ -120,11 +120,12 @@ def stage_dry_run_resolver(upstream_ref: str, strategy_file: Path) -> Path:
     return report_path
 
 
-def stage_merge(upstream_ref: str, strategy_file: Path, *, conflict_preference: str) -> None:
+def stage_merge(upstream_ref: str, strategy_file: Path, *, conflict_preference: str) -> str:
+    old_head = _git("rev-parse", "HEAD").stdout.strip()
     merge_x = "ours" if conflict_preference == "custom-first" else "theirs"
     proc = _git("merge", "-X", merge_x, "--no-edit", "--no-commit", upstream_ref, check=False)
     if proc.returncode == 0:
-        return
+        return old_head
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     log_path = REPO_ROOT / "_docs" / f"merge-conflict-resolution-{stamp}.md"
@@ -138,6 +139,8 @@ def stage_merge(upstream_ref: str, strategy_file: Path, *, conflict_preference: 
         "--paths-file",
         str(INVENTORY_JSON),
         "--only-unresolved",
+        "--old-head",
+        old_head,
         "--log-file",
         str(log_path),
         "--report-json",
@@ -154,6 +157,7 @@ def stage_merge(upstream_ref: str, strategy_file: Path, *, conflict_preference: 
             f"blockers={blockers[:10]} unresolved={unresolved[:10]} "
             f"report={report_path}"
         )
+    return old_head
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -168,7 +172,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--conflict-policy",
         choices=["custom-first", "official-first"],
-        default="custom-first",
+        default="official-first",
     )
     parser.add_argument(
         "--openclaw-vendor",
@@ -277,8 +281,26 @@ def main() -> int:
             return 0
 
         if args.merge:
-            stage_merge(args.upstream_ref, strategy_file, conflict_preference=args.conflict_policy)
+            old_head = stage_merge(args.upstream_ref, strategy_file, conflict_preference=args.conflict_policy)
             report["steps"].append("merge + policy resolve")
+            overlay_proc = _python_script(
+                "scripts/merge_tools/apply_post_merge_overlay.py",
+                "--upstream-ref",
+                args.upstream_ref,
+                "--old-head",
+                old_head,
+                "--strategy-file",
+                str(strategy_file),
+                check=False,
+            )
+            report["overlay_exit_code"] = overlay_proc.returncode
+            if overlay_proc.returncode != 0:
+                raise RuntimeError(
+                    "Post-merge overlay failed. "
+                    f"stdout={overlay_proc.stdout[-2000:]} "
+                    f"stderr={overlay_proc.stderr[-2000:]}"
+                )
+            report["steps"].append("post-merge overlay")
             if args.commit:
                 _git("commit", "-m", args.commit_message)
                 report["steps"].append("commit")

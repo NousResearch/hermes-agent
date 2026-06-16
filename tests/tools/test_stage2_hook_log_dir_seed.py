@@ -27,7 +27,7 @@ STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
 def stage2_text() -> str:
     if not STAGE2_HOOK.exists():
         pytest.skip("docker/stage2-hook.sh not present in this checkout")
-    return STAGE2_HOOK.read_text(encoding="utf-8")
+    return STAGE2_HOOK.read_text()
 
 
 def _seed_mkdir_block(text: str) -> str:

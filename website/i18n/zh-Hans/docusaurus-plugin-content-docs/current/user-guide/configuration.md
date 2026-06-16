@@ -1302,7 +1302,7 @@ streaming:
   edit_interval: 0.3      # 消息编辑之间的秒数
   buffer_threshold: 40    # 强制编辑刷新前的字符数
   cursor: " ▉"            # 流式传输期间显示的光标
-  fresh_final_after_seconds: 60   # 当预览超过此时间时发送新的最终消息（Telegram）；0 = 始终就地编辑
+  fresh_final_after_seconds: 0    # 预览超过此时间时选择发送新的最终消息（Telegram）
 ```
 
 启用后，bot 在第一个 token 时发送消息，然后随着更多 token 到来渐进式编辑它。不支持消息编辑的平台（Signal、Email、Home Assistant）在第一次尝试时自动检测 —— 该会话的流式传输被优雅地禁用，不会产生大量消息。
@@ -1311,7 +1311,7 @@ streaming:
 
 **溢出处理：** 如果流式传输的文本超过平台的消息长度限制（约 4096 字符），当前消息被最终化，新消息自动开始。
 
-**新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。当 `fresh_final_after_seconds > 0`（默认 `60`）时，完成的回复作为全新消息传递（尽力删除旧预览），以便 Telegram 的可见时间戳反映完成时间。短预览仍然就地最终化。设置为 `0` 以始终就地编辑。
+**新的最终消息（Telegram）：** Telegram 的 `editMessageText` 保留原始消息时间戳，因此长时间运行的流式回复即使在完成后也会保留第一个 token 的时间戳。设置 `fresh_final_after_seconds > 0` 可选择将旧预览作为全新的最终消息传递，并尽力删除旧预览。默认值为 `0`，始终就地最终化流式回复，避免某些客户端短暂显示重复消息再删除其中一条。
 
 :::note
 主开关 `streaming.enabled` 默认为 `false`——在你启用之前不会有任何流式传输。启用后，是否流式传输按**平台**决定：Telegram 默认带有 `display.platforms.telegram.streaming: true`（流式传输），Discord 为 `display.platforms.discord.streaming: false`（不流式传输）。因此启用流式传输后，Telegram 开箱即用地流式传输，Discord 在你修改其开关之前仍使用整条消息回复。你可以在仪表盘的 **Channels** 开关中或直接在 `~/.hermes/config.yaml` 中调整这些按平台的开关。

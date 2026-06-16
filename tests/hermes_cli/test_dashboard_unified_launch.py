@@ -58,7 +58,6 @@ class TestUnifiedDashboardRouting:
 
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
-        monkeypatch.setattr(main_mod.sys, "platform", "linux")
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
@@ -100,7 +99,6 @@ class TestUnifiedDashboardRouting:
         Regression test for the support report.
         """
         monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/oracle")
-        monkeypatch.setattr(main_mod.sys, "platform", "linux")
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "oracle"
         )
@@ -121,7 +119,7 @@ class TestUnifiedDashboardRouting:
         # get_default_hermes_root() strips the trailing profiles/<name>, so the
         # child binds /opt/data — where the real default/oracle/saga profiles
         # and the .install_method stamp actually live.
-        assert env.get("HERMES_HOME", "").replace("\\", "/") == "/opt/data"
+        assert env.get("HERMES_HOME") == "/opt/data"
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
         """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT

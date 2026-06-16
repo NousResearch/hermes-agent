@@ -220,6 +220,31 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_glm_52_context_1m(self):
+        """GLM-5.2 must resolve to 1M, not the generic GLM fallback of 202K.
+
+        Context window was verified empirically via needle-in-a-haystack
+        retrieval at 789K prompt tokens on api.z.ai/api/coding/paas/v4
+        (2026-06-13).
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5.2"] == 1_048_576
+        assert DEFAULT_CONTEXT_LENGTHS["glm"] == 202752
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            # GLM-5.2 (1M) must NOT fall through to the generic 202K entry
+            assert get_model_context_length("glm-5.2") == 1_048_576
+            # Vendor-prefixed forms (zai provider, zhipu alias)
+            assert get_model_context_length("zai/glm-5.2") == 1_048_576
+            assert get_model_context_length("zhipu/glm-5.2") == 1_048_576
+            # Older GLM variants still resolve to the generic 202K fallback
+            assert get_model_context_length("glm-5") == 202752
+            assert get_model_context_length("glm-5.1") == 202752
+
     def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
         """OpenRouter-routed slugs resolve via the live OR catalog before the
         hardcoded family catch-all.

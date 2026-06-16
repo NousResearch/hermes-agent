@@ -1922,7 +1922,7 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     agent = run_agent.AIAgent(
         model="gpt-4o",
         base_url="http://127.0.0.1:9208/v1",
-        api_key="provider-dummy-token-1234567890",
+        api_key="sk-ant-providersecret1234567890",
         quiet_mode=True,
         max_iterations=1,
         skip_context_files=True,
@@ -1931,8 +1931,8 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     agent.logs_dir = tmp_path
 
     notion_token = "ntn_abc123def456ghi789jkl"
-    error_secret = "ntn_errorsecret1234567890"
-    response_secret = "ntn_responsesecret1234567890"
+    error_secret = "sk-ant-errorsecret1234567890"
+    response_secret = "sk-ant-responsesecret1234567890"
     response = SimpleNamespace(status_code=400, text=f"provider echoed {response_secret}")
 
     class ProviderError(RuntimeError):
@@ -1956,12 +1956,12 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     assert dump_file is not None
     dumped_text = dump_file.read_text()
     stdout_text = capsys.readouterr().out
-    for raw in (notion_token, error_secret, response_secret, "provider-dummy-token-1234567890"):
+    for raw in (notion_token, error_secret, response_secret, "providersecret1234567890"):
         assert raw not in dumped_text
         assert raw not in stdout_text
 
     payload = json.loads(dumped_text)
-    assert payload["request"]["headers"]["Authorization"].startswith("Bearer provider...")
+    assert payload["request"]["headers"]["Authorization"].startswith("Bearer sk-ant-p...")
     assert "***" in dumped_text or "..." in dumped_text
 
 

@@ -59,14 +59,20 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Kanban coordination (runtime-gated by tools/kanban_tools.py check_fn)
-    "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
-    "kanban_heartbeat", "kanban_comment", "kanban_create", "kanban_link",
-    "kanban_unblock",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Kanban multi-agent coordination — only in schema when the agent is
+    # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
+    # profile explicitly enables the kanban toolset. Gated via check_fn in
+    # tools/kanban_tools.py.
+    "kanban_show", "kanban_list",
+    "kanban_complete", "kanban_block", "kanban_heartbeat",
+    "kanban_comment", "kanban_create", "kanban_link",
+    "kanban_unblock",
+    # Computer use (macOS, gated on cua-driver being installed via check_fn)
+    "computer_use",
     # VRChat autonomy readiness, decision validation, and dry-run-first turn planning
     "vrchat_autonomy_status", "vrchat_autonomy_heartbeat",
     "vrchat_autonomy_build_decision_request", "vrchat_autonomy_validate_decision",

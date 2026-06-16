@@ -1235,24 +1235,24 @@ class TestParseTargetRefWhatsAppJID:
 
     def test_group_jid_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref(
-            "whatsapp", "120363000000000000@g.us"
+            "whatsapp", "120363408391911677@g.us"
         )
-        assert chat_id == "120363000000000000@g.us"
+        assert chat_id == "120363408391911677@g.us"
         assert thread_id is None
         assert is_explicit is True
 
     def test_user_jid_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref(
-            "whatsapp", "15551234567@s.whatsapp.net"
+            "whatsapp", "19255551234@s.whatsapp.net"
         )
-        assert chat_id == "15551234567@s.whatsapp.net"
+        assert chat_id == "19255551234@s.whatsapp.net"
         assert is_explicit is True
 
     def test_lid_jid_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref(
-            "whatsapp", "test-linked-id@lid"
+            "whatsapp", "149606612619433@lid"
         )
-        assert chat_id == "test-linked-id@lid"
+        assert chat_id == "149606612619433@lid"
         assert is_explicit is True
 
     def test_broadcast_and_newsletter_jids_are_explicit(self):
@@ -1267,8 +1267,8 @@ class TestParseTargetRefWhatsAppJID:
 
     def test_jid_suffix_only_matches_whatsapp(self):
         """WhatsApp JID suffixes must NOT be treated as explicit elsewhere."""
-        assert _parse_target_ref("telegram", "120363000000000000@g.us")[2] is False
-        assert _parse_target_ref("signal", "test-linked-id@lid")[2] is False
+        assert _parse_target_ref("telegram", "120363408391911677@g.us")[2] is False
+        assert _parse_target_ref("signal", "149606612619433@lid")[2] is False
 
     def test_non_jid_whatsapp_target_falls_through(self):
         """A bare friendly name is not a JID — it must fall through to

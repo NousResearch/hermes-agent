@@ -1204,7 +1204,7 @@ class TestQuickSnapshot:
         (home / ".env").write_text("OPENROUTER_API_KEY=test-key-123\n")
         (home / "auth.json").write_text('{"providers": {}}\n')
         (home / "channel_aliases.json").write_text(
-            '{"whatsapp": {"120363000000000000@g.us": "general"}}\n'
+            '{"whatsapp": {"120363408391911677@g.us": "general"}}\n'
         )
         (home / "cron").mkdir()
         (home / "cron" / "jobs.json").write_text('{"jobs": []}\n')
@@ -1253,7 +1253,7 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         copied = hermes_home / "state-snapshots" / snap_id / "channel_aliases.json"
         assert copied.exists()
-        assert "120363000000000000@g.us" in copied.read_text()
+        assert "120363408391911677@g.us" in copied.read_text()
 
     def test_missing_files_skipped(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot

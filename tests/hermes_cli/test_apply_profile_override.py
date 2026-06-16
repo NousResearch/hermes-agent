@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 
@@ -127,6 +128,30 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
         assert result is not None
         assert "coder" in result
+
+    def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):
+        """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
+        root_home = tmp_path / "root"
+        user_home = tmp_path / "home" / "hermes"
+        profile_dir = user_home / ".hermes" / "profiles" / "elias"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (root_home / ".hermes").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+        monkeypatch.setenv("SUDO_USER", "hermes")
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+        monkeypatch.setattr(sys, "argv", ["hermes", "-p", "elias", "gateway", "install", "--system"])
+
+        import pwd
+
+        monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(profile_dir)
+        assert sys.argv == ["hermes", "gateway", "install", "--system"]
 
     def test_hermes_home_unset_default_profile_no_redirect(self, tmp_path, monkeypatch):
         """active_profile=default must not redirect HERMES_HOME."""
@@ -250,10 +275,6 @@ class TestSupervisedChildIgnoresStickyProfile:
         (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root",
-            lambda: hermes_root,
-        )
         # Container root HERMES_HOME: parent dir is NOT "profiles", so the
         # #22502 guard does not short-circuit — step 2 (active_profile) runs.
         monkeypatch.setenv("HERMES_HOME", str(hermes_root))
@@ -295,10 +316,6 @@ class TestSupervisedChildIgnoresStickyProfile:
         (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root",
-            lambda: hermes_root,
-        )
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
@@ -309,3 +326,4 @@ class TestSupervisedChildIgnoresStickyProfile:
         result = os.environ.get("HERMES_HOME")
         assert result is not None
         assert result.endswith("coder")
+

@@ -605,3 +605,4 @@ def test_aggregator_dedup_multiple_user_providers():
     or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
     assert or_row["models"] == ["model-z"]
     assert or_row["total_models"] == 1
+

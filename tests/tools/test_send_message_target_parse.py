@@ -31,24 +31,24 @@ def test_e164_target_still_requires_phone_platform() -> None:
 
 def test_whatsapp_group_jid_target_is_explicit() -> None:
     chat_id, thread_id, is_explicit = _parse_target_ref(
-        "whatsapp", "120363000000000000@g.us"
+        "whatsapp", "120363408391911677@g.us"
     )
 
-    assert chat_id == "120363000000000000@g.us"
+    assert chat_id == "120363408391911677@g.us"
     assert thread_id is None
     assert is_explicit is True
 
 
 def test_whatsapp_native_jids_are_explicit() -> None:
-    assert _parse_target_ref("whatsapp", "15551234567@s.whatsapp.net")[2] is True
-    assert _parse_target_ref("whatsapp", "test-linked-id@lid")[2] is True
+    assert _parse_target_ref("whatsapp", "19255551234@s.whatsapp.net")[2] is True
+    assert _parse_target_ref("whatsapp", "149606612619433@lid")[2] is True
     assert _parse_target_ref("whatsapp", "status@broadcast")[2] is True
     assert _parse_target_ref("whatsapp", "120363000000000000@newsletter")[2] is True
 
 
 def test_whatsapp_jid_suffix_only_matches_whatsapp() -> None:
-    assert _parse_target_ref("telegram", "120363000000000000@g.us")[2] is False
-    assert _parse_target_ref("signal", "test-linked-id@lid")[2] is False
+    assert _parse_target_ref("telegram", "120363408391911677@g.us")[2] is False
+    assert _parse_target_ref("signal", "149606612619433@lid")[2] is False
 
 
 def test_whatsapp_friendly_name_still_uses_directory_resolution() -> None:
@@ -72,7 +72,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
             send_message_tool(
                 {
                     "action": "send",
-                    "target": "whatsapp:120363000000000000@g.us",
+                    "target": "whatsapp:120363408391911677@g.us",
                     "message": "hello group",
                 }
             )
@@ -83,7 +83,7 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     send_mock.assert_awaited_once_with(
         Platform.WHATSAPP,
         whatsapp_cfg,
-        "120363000000000000@g.us",
+        "120363408391911677@g.us",
         "hello group",
         thread_id=None,
         media_files=[],

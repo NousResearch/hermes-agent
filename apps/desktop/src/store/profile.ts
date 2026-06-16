@@ -182,12 +182,12 @@ let gatewaySwitch: Promise<void> | null = null
 // Keep the renderer's $connection (mode / baseUrl / profile) in lockstep with
 // the profile the live gateway is now on. $connection seeds from the PRIMARY
 // (window) backend at boot and otherwise only refreshes on a sleep/wake
-// reconnect, so activating a *background* profile left $connection describing
+// reconnect — so activating a *background* profile left $connection describing
 // the primary, with the wrong `mode` for everything that branches on
 // local-vs-remote. Headline symptom: with a local primary and a remote pool
 // profile active, image attachments went out via the path-based `image.attach`
 // instead of `image.attach_bytes`, handing the remote gateway a client-only
-// path it can't resolve ("image not found: C:\\..."), while the /api/fs/* file
+// path it can't resolve ("image not found: C:\…"), while the /api/fs/* file
 // browser and /api/media fetches targeted the wrong machine (#46651).
 // Best-effort: a failed descriptor fetch leaves the prior connection intact for
 // boot/reconnect to resync.

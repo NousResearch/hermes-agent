@@ -127,6 +127,18 @@ export const zh: Translations = {
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用'
+    },
+    native: {
+      approvalTitle: '需要批准',
+      approveAction: '批准',
+      rejectAction: '拒绝',
+      inputTitle: '需要输入',
+      inputBody: 'Hermes 正在等待你的回应。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回复已就绪。',
+      turnErrorTitle: '本轮失败',
+      backgroundDoneTitle: '后台任务已完成',
+      backgroundFailedTitle: '后台任务失败'
     }
   },
 
@@ -259,7 +271,45 @@ export const zh: Translations = {
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
-      about: '关于'
+      about: '关于',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
+      enableAll: '启用通知',
+      enableAllDesc: '总开关。关闭后将静音下方所有通知。',
+      focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
+      kinds: {
+        approval: {
+          label: '需要批准',
+          description: '有命令正在等待你批准或拒绝。'
+        },
+        input: {
+          label: '需要输入',
+          description: 'Hermes 提出了问题，或需要密码或密钥。'
+        },
+        turnDone: {
+          label: '回复就绪',
+          description: 'Hermes 在后台时完成了一轮对话。'
+        },
+        turnError: {
+          label: '本轮失败',
+          description: '本轮以错误结束。'
+        },
+        backgroundDone: {
+          label: '后台任务完成',
+          description: '后台终端命令已完成。'
+        }
+      },
+      test: '发送测试通知',
+      testTitle: 'Hermes',
+      testBody: '通知工作正常。',
+      testSent: '测试已发送。如果没有出现，请检查系统通知权限和专注模式／勿扰模式。',
+      testUnsupported: '此系统不支持原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
+      completionSoundPreview: '预览'
     },
     sections: {
       model: '模型',
@@ -708,6 +758,12 @@ export const zh: Translations = {
       collapse: '收起',
       connectAnother: '连接其他提供方',
       otherProviders: '其他提供方',
+      removeConfirm: provider => `移除 ${provider}？`,
+      removeExternal: (provider, command) => `${provider} 由 Hermes 外部管理。请使用 ${command} 移除。`,
+      removeKeyManaged: provider => `${provider} 由 API 密钥配置。请从 API Keys 中移除。`,
+      removedTitle: '账号已移除',
+      removedMessage: provider => `${provider} 已移除。`,
+      failedRemove: provider => `无法移除 ${provider}`,
       noProviderKeys: '没有可用的提供方 API 密钥。',
       loading: '正在加载提供方...'
     },
@@ -1037,7 +1093,8 @@ export const zh: Translations = {
       feishu: '创建飞书 / Lark 应用，配置机器人能力，复制 App ID、App secret 和事件加密密钥。',
       wecom: '在企业微信中添加群机器人，复制其 webhook key 作为 WECOM_BOT_ID。仅可发送——双向请用企业微信 (应用) 选项。',
       wecom_callback: '设置一个企业微信自建应用，暴露其回调 URL，并提供 corp ID、secret、agent ID 和 AES key。',
-      weixin: '登录微信公众平台，复制 AppID 和 Token，并把消息回调 URL 指向 Hermes。',
+      weixin:
+        '运行 `hermes gateway setup`，选择 Weixin，然后使用个人微信账号扫描并确认二维码。Hermes 会通过腾讯 iLink Bot API 连接并保存凭据。',
       qqbot: '在 QQ 开放平台 (q.qq.com) 注册一个应用，复制 App ID 和 Client Secret。',
       api_server:
         '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥，然后把 Open WebUI / LobeChat 等指向 host:port。',

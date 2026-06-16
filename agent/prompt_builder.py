@@ -1164,7 +1164,7 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
-    disabled = get_disabled_skill_names()
+    disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1463,19 +1463,6 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-_BRAIN_CONTEXT_FILES = (
-    "AGENT.md",
-    "AGENTS.md",
-    "Gemini.md",
-    "GOAL.md",
-    "HEARTBEAT.md",
-    "MEMORY.md",
-    "RIEMANN_TRANSCEIVER.md",
-    "VISION.md",
-    "SOUL.md"
-    "YANG_MILLS_TRANSCEIVER.md",
-)
-
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
     """Head/tail truncation with a marker in the middle."""
     if len(content) <= max_chars:
@@ -1555,33 +1542,6 @@ def _load_agents_md(cwd_path: Path) -> str:
     return ""
 
 
-def _load_brain_docs(cwd_path: Path) -> str:
-    """brain/*.md — load Hermes brain guidelines when present."""
-    brain_dir = cwd_path / "brain"
-    if not brain_dir.exists() or not brain_dir.is_dir():
-        return ""
-
-    sections = []
-    for filename in _BRAIN_CONTEXT_FILES:
-        candidate = brain_dir / filename
-        if not candidate.exists() or not candidate.is_file():
-            continue
-        try:
-            content = candidate.read_text(encoding="utf-8").strip()
-            if not content:
-                continue
-            rel = f"brain/{filename}"
-            content = _scan_context_content(content, rel)
-            section = f"## {rel}\n\n{content}"
-            sections.append(_truncate_content(section, rel))
-        except Exception as e:
-            logger.debug("Could not read %s: %s", candidate, e)
-
-    if not sections:
-        return ""
-    return "\n\n".join(sections)
-
-
 def _load_claude_md(cwd_path: Path) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
@@ -1658,11 +1618,6 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     )
     if project_context:
         sections.append(project_context)
-
-    # Optional Hermes brain guidelines (repo-local brain/*.md).
-    brain_context = _load_brain_docs(cwd_path)
-    if brain_context:
-        sections.append(brain_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

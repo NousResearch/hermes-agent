@@ -1123,11 +1123,16 @@ class SessionDB:
             # backfills, index changes tied to a specific version step) stay
             # in a version-gated chain. Column additions are handled by
             # _reconcile_columns() above and no longer need entries here.
-            if current_version < 10:
+            if current_version < 10 and SCHEMA_VERSION == 10:
                 # v10: trigram FTS5 table for CJK/substring search. The
                 # virtual table + triggers are created unconditionally via
                 # FTS_TRIGRAM_SQL below, but existing rows need a one-time
                 # backfill into the FTS index.
+                #
+                # Only run this when v10 itself is the target schema. Current
+                # v11+ code drops and rebuilds both FTS tables below, so doing
+                # the v10-only trigram backfill first only burns startup time
+                # and WAL space before v11 throws the work away.
                 if fts5_available:
                     _fts_trigram_exists = self._fts_table_probe(
                         cursor, "messages_fts_trigram"

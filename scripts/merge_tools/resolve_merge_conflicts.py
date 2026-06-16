@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,10 +21,77 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STRATEGY_FILE = REPO_ROOT / "scripts" / "merge_tools" / "hermes-merge-conflict-strategies.json"
 
 
+OVERLAY_ACTIONS = frozenset({"official_with_overlay", "manual_api_followup"})
+
+
+def merge_base_sha(upstream_ref: str, old_head: str) -> str:
+    result = run_git(["merge-base", old_head, upstream_ref], check=False)
+    return result.stdout.strip()
+
+
+def merge_file_overlay(
+    target_path: str,
+    upstream_ref: str,
+    base_sha: str,
+    old_head: str,
+    *,
+    dry_run: bool,
+) -> bool:
+    """Take upstream file, then replay custom delta from merge-base..old_head."""
+    if dry_run:
+        return True
+
+    run_git(["checkout", upstream_ref, "--", target_path], check=False)
+    patch_cmd = ["git", "diff", f"{base_sha}..{old_head}", "--", target_path]
+    patch_payload = subprocess.run(
+        patch_cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).stdout
+    if not patch_payload.strip():
+        run_git(["add", "--", target_path], check=False)
+        return True
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".diff",
+        delete=False,
+    ) as handle:
+        handle.write(patch_payload)
+        patch_file = handle.name
+
+    apply_res = subprocess.run(
+        ["git", "apply", "--3way", "--whitespace=nowarn", patch_file],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    Path(patch_file).unlink(missing_ok=True)
+    if apply_res.returncode != 0:
+        return False
+    run_git(["add", "--", target_path], check=False)
+    return True
+
+
 class Resolver:
-    def __init__(self, upstream_ref: str, dry_run: bool):
+    def __init__(
+        self,
+        upstream_ref: str,
+        dry_run: bool,
+        *,
+        old_head: str = "",
+        merge_base: str = "",
+    ):
         self.upstream_ref = upstream_ref
         self.dry_run = dry_run
+        self.old_head = old_head or run_git(["rev-parse", "HEAD"], check=False).stdout.strip()
+        self.merge_base = merge_base or merge_base_sha(upstream_ref, self.old_head)
         self.actions: list[dict[str, str]] = []
 
     def run(self, cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -94,8 +162,18 @@ class Resolver:
         if action == "drop_generated":
             self.resolve_drop_generated(path)
             return "resolved"
-        if action in {"official_with_overlay", "manual_api_followup"}:
-            return "blocked"
+        if action in OVERLAY_ACTIONS:
+            if self.dry_run:
+                return "overlay_planned"
+            if merge_file_overlay(
+                path,
+                self.upstream_ref,
+                self.merge_base,
+                self.old_head,
+                dry_run=False,
+            ):
+                return "overlay_applied"
+            return "overlay_failed"
         raise ValueError(f"Unknown action: {action}")
 
 
@@ -179,7 +257,18 @@ def summarize_results(
         classification.path
         for classification in classifications
         if classification.action in blocker_actions
+        and not any(
+            action["path"] == classification.path
+            and action["result"] in {"overlay_planned", "overlay_applied"}
+            for action in resolver.actions
+        )
     ]
+    overlay_failed = [
+        action["path"]
+        for action in resolver.actions
+        if action["result"] == "overlay_failed"
+    ]
+    blocked_paths = sorted(set(blocked_paths) | set(overlay_failed))
     unresolved = unresolved_files()
     return blocked_paths, unresolved
 
@@ -266,6 +355,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-file", default="")
     parser.add_argument("--report-json", default="")
     parser.add_argument("--strict", action="store_true")
+    parser.add_argument(
+        "--old-head",
+        default="",
+        help="Pre-merge HEAD for overlay replay (defaults to current HEAD).",
+    )
+    parser.add_argument(
+        "--merge-base",
+        default="",
+        help="Explicit merge-base SHA for overlay replay.",
+    )
     return parser.parse_args()
 
 
@@ -294,8 +393,16 @@ def main() -> int:
             unresolved_files(),
             strategy,
         )
-    resolver = Resolver(upstream_ref=args.upstream_ref, dry_run=args.dry_run)
+    resolver = Resolver(
+        upstream_ref=args.upstream_ref,
+        dry_run=args.dry_run,
+        old_head=args.old_head,
+        merge_base=args.merge_base,
+    )
     print(f"Detected paths: {len(classifications)}")
+    if resolver.merge_base:
+        print(f"Overlay merge-base: {resolver.merge_base}")
+        print(f"Overlay old-head: {resolver.old_head}")
 
     for classification in classifications:
         result = resolver.apply_action(classification.path, classification.action)

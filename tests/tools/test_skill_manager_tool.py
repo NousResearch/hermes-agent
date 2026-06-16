@@ -957,3 +957,74 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# _delete_skill — recursive-delete safety (port of Kilo Code #11240)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteSkillRmtreeGuard:
+    """Defense-in-depth before ``shutil.rmtree`` in ``_delete_skill``.
+
+    Mirrors the Kilo Code #11227 fix: never let a recursive skill delete
+    escape the skills tree, target a skills root, or follow a symlink.
+    """
+
+    def test_normal_delete_still_works(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("good-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("good-skill", absorbed_into="")
+        assert result["success"] is True, result
+        assert not (tmp_path / "good-skill").exists()
+
+    def test_symlinked_skill_dir_refused(self, tmp_path):
+        """A skill dir that is a symlink must not be rmtree'd — rmtree would
+        otherwise follow it and delete the link target's contents."""
+        victim = tmp_path.parent / "precious_victim"
+        victim.mkdir()
+        (victim / "important.txt").write_text("DO NOT DELETE")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        evil = skills / "evil-skill"
+        evil.symlink_to(victim, target_is_directory=True)
+        try:
+            with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+                 patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
+                 patch("tools.skill_manager_tool._find_skill",
+                       return_value={"path": evil}):
+                result = _delete_skill("evil-skill", absorbed_into="")
+            assert result["success"] is False
+            assert "symlink" in result["error"].lower()
+            assert (victim / "important.txt").exists()
+        finally:
+            import shutil as _sh
+            _sh.rmtree(victim, ignore_errors=True)
+
+    def test_skills_root_itself_refused(self, tmp_path):
+        """If discovery ever hands back the skills root, refuse — rmtree would
+        wipe every installed skill."""
+        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+             patch("tools.skill_manager_tool._find_skill",
+                   return_value={"path": tmp_path}):
+            result = _delete_skill("root-attack", absorbed_into="")
+        assert result["success"] is False
+        assert "skills root" in result["error"].lower()
+        assert tmp_path.exists()
+
+    def test_out_of_tree_path_refused(self, tmp_path):
+        """A path that resolves outside every known skills root is refused."""
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        outside = tmp_path / "outside_skill"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text("x")
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
+             patch("tools.skill_manager_tool._find_skill",
+                   return_value={"path": outside}):
+            result = _delete_skill("outside", absorbed_into="")
+        assert result["success"] is False
+        assert "skills root" in result["error"].lower()
+        assert outside.exists()

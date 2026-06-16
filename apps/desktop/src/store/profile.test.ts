@@ -40,12 +40,12 @@ afterEach(() => {
   $connection.set(null)
 })
 
-describe('ensureGatewayProfile connection sync (#46651)', () => {
+describe('ensureGatewayProfile → $connection sync (#46651)', () => {
   it('refreshes $connection to the remote descriptor when activating a remote pool profile', async () => {
     // Regression: the primary window backend is local, so $connection.mode is
-    // "local". Activating the remote profile must flip it to "remote"; without
+    // "local". Activating the remote profile must flip it to "remote" — without
     // this, image attach uses path-based image.attach against the remote
-    // gateway ("image not found: C:\\...") instead of image.attach_bytes.
+    // gateway ("image not found: C:\\…") instead of image.attach_bytes.
     getConnection.mockResolvedValue(remoteConn())
 
     await ensureGatewayProfile('vps-remote')

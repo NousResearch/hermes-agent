@@ -10,8 +10,7 @@ firing even though the CLI reported "Paused".
 
 ``_jobs_lock()`` closes that gap with a short-held cross-process advisory file
 lock. This test proves the lock actually excludes a *separate process*, which an
-in-process ``threading.Lock`` cannot do. It covers POSIX ``fcntl`` and Windows
-``msvcrt`` backends.
+in-process ``threading.Lock`` cannot do.
 """
 
 import os
@@ -29,30 +28,7 @@ from cron import jobs
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(jobs.__file__)))
 
 
-def _lock_backend_available() -> bool:
-    return jobs.fcntl is not None or jobs.msvcrt is not None
-
-
-def _try_nonblocking_lock(fd: int) -> None:
-    os.lseek(fd, 0, os.SEEK_SET)
-    if jobs.fcntl is not None:
-        jobs.fcntl.flock(fd, jobs.fcntl.LOCK_EX | jobs.fcntl.LOCK_NB)
-        return
-    if jobs.msvcrt is not None:
-        jobs.msvcrt.locking(fd, jobs.msvcrt.LK_NBLCK, 1)
-        return
-    raise AssertionError("no jobs lock backend available")
-
-
-def _unlock_probe_lock(fd: int) -> None:
-    os.lseek(fd, 0, os.SEEK_SET)
-    if jobs.fcntl is not None:
-        jobs.fcntl.flock(fd, jobs.fcntl.LOCK_UN)
-    elif jobs.msvcrt is not None:
-        jobs.msvcrt.locking(fd, jobs.msvcrt.LK_UNLCK, 1)
-
-
-@pytest.mark.skipif(not _lock_backend_available(), reason="cross-process file lock backend required")
+@pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
 def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
     cron_dir = tmp_path / "cron"
     output_dir = cron_dir / "output"
@@ -122,16 +98,9 @@ def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
         lock_file = jobs._jobs_lock_file()
         fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT)
         try:
-            acquired = False
-            try:
-                _try_nonblocking_lock(fd)
-                acquired = True
-            except OSError:
-                pass
-            assert not acquired, "parent acquired _jobs_lock_file() while child held it"
+            with pytest.raises(OSError):
+                jobs.fcntl.flock(fd, jobs.fcntl.LOCK_EX | jobs.fcntl.LOCK_NB)
         finally:
-            if acquired:
-                _unlock_probe_lock(fd)
             os.close(fd)
 
         # A second _jobs_lock() caller in another process should block until the

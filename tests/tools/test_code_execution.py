@@ -17,6 +17,7 @@ import pytest
 
 import json
 import os
+import time
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -198,6 +199,16 @@ class TestExecuteCode(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("hello world", result["output"])
         self.assertEqual(result["tool_calls_made"], 0)
+
+    def test_no_tool_call_script_does_not_wait_for_rpc_accept_timeout(self):
+        """A no-tool script should not wait seconds for the idle RPC accept thread."""
+        start = time.monotonic()
+        result = self._run('print("fast")')
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn("fast", result["output"])
+        self.assertLess(elapsed, 2.0, f"execute_code took {elapsed:.3f}s")
 
     def test_repo_root_modules_are_importable(self):
         """Sandboxed scripts can import modules that live at the repo root."""

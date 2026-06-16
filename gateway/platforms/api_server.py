@@ -119,6 +119,8 @@ def _extract_media_from_result(result: dict, last_known: int = 0) -> tuple[list[
     重复推送。这里通过 last_known 记录上轮扫描到的消息位置，本轮只查
     messages[last_known:] 新增的消息，避免旧截图重复推送。
 
+    同时会给来源消息附加 media 字段，方便前端在对应位置内联展示截图。
+
     Returns (urls, new_last_known)
     """
     urls: list[str] = []
@@ -147,6 +149,14 @@ def _extract_media_from_result(result: dict, last_known: int = 0) -> tuple[list[
                     pass
             else:
                 urls.append(f"/v1/workspace/download?path={_path}")
+        else:
+            continue
+        # 将截图 URL 关联到来源消息，前端可据此在对应位置内联展示
+        _media_url = urls[-1]
+        msg.setdefault("media", []).append({
+            "url": _media_url,
+            "type": "screenshot",
+        })
     return urls, new_last
 
 
@@ -4573,9 +4583,13 @@ class APIServerAdapter(BasePlatformAdapter):
                             msg["tool_progress"] = tool_progress
                 messages.append(msg)
 
+            # 从消息中提取截图 URL，与实时聊天时推送 hermes.media 保持一致
+            _media_urls, _ = _extract_media_from_result({"messages": messages}, 0)
+
             return _json_response({
                 "session": session,
                 "messages": messages,
+                "media": _media_urls or None,
             })
         except Exception as e:
             logger.error(

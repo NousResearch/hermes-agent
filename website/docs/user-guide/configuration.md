@@ -958,6 +958,7 @@ auxiliary:
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
     timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
     download_timeout: 30       # seconds — image HTTP download; increase for slow connections
+    fallback_chain: []         # backup providers tried if this task's provider hits a capacity error
 
   # Web page summarization + browser page text extraction
   web_extract:
@@ -1023,6 +1024,34 @@ Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 
 :::info
 Context compression has its own `compression:` block for thresholds and an `auxiliary.compression:` block for model/provider settings — see [Context Compression](#context-compression) above. The primary fallback chain uses a top-level `fallback_providers:` list — see [Fallback Providers](/integrations/providers#fallback-providers). All three follow the same provider/model/base_url pattern.
 :::
+
+### Per-task fallback chain (`auxiliary.<task>.fallback_chain`)
+
+Any auxiliary task can carry its own `fallback_chain` — an ordered list of
+backup providers Hermes tries when the task's primary provider hits a
+**capacity error** (HTTP 402 payment required, daily/monthly quota
+exhaustion, or a connection failure). Each entry needs at least `provider`;
+`model`, `base_url`, and `api_key` are optional. The provider that just
+failed is skipped automatically.
+
+```yaml
+auxiliary:
+  compression:
+    provider: anthropic                # primary: compress on Anthropic Haiku
+    model: claude-haiku-4-5-20251001
+    fallback_chain:
+      - provider: openrouter           # tried first if Anthropic is out of capacity
+        model: anthropic/claude-haiku-4-5
+      - provider: gmi                   # then GMI Cloud
+        model: moonshotai/Kimi-K2-Instruct
+```
+
+The chain sits in the middle of the auxiliary fallback ladder: primary
+provider → your `fallback_chain` → main agent provider/model → warn and
+re-raise. Transient HTTP 429 rate limits (with `Retry-After`) respect your
+explicit provider choice and do **not** trigger the chain. For the full
+ladder and trigger rules, see
+[Fallback Providers → Auxiliary Task Fallback](/integrations/providers#fallback-providers).
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 

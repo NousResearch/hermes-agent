@@ -498,9 +498,10 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
     assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
 
 
-def test_gui_falls_back_to_mirror_when_purge_finds_nothing(tmp_path, monkeypatch, capsys):
-    """Purge clears nothing (not a cache problem) → fall back to an Electron
-    mirror once before failing, so a GitHub-blocked download self-heals."""
+def test_gui_redownloads_electron_via_mirror_then_repacks(tmp_path, monkeypatch, capsys):
+    """Purge clears nothing and the pinned electronDist (#38673) is missing →
+    the mirror fallback must drive electron's own downloader (NOT another pack,
+    which never downloads Electron) and only then retry pack (#47266)."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     _make_packaged_executable(root, monkeypatch, platform="linux")
@@ -512,19 +513,57 @@ def test_gui_falls_back_to_mirror_when_purge_finds_nothing(tmp_path, monkeypatch
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]) as mock_purge, \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
+         patch("hermes_cli.main._redownload_electron_dist", side_effect=[False, True]) as mock_dl, \
          patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail, pack_fail]) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 1
-    mock_purge.assert_called_once()
-    # pack(fail) → purge(nothing) → pack via mirror(fail) = 2 subprocess.run calls
+    # initial pack + mirror pack = 2 npm calls. The first-retry pack is skipped
+    # because the canonical-source re-download (no mirror) failed, so there was
+    # never a binary to build against.
     assert mock_run.call_count == 2
-    # The retry runs the same build but with ELECTRON_MIRROR injected.
+    # First re-download attempt is canonical (no mirror); the second drives the
+    # public mirror.
+    assert mock_dl.call_args_list[0].kwargs.get("mirror") is None
+    assert mock_dl.call_args_list[1].kwargs["mirror"]
+    # Only the mirror-driven pack carries ELECTRON_MIRROR.
     assert "ELECTRON_MIRROR" not in (mock_run.call_args_list[0].kwargs.get("env") or {})
     assert mock_run.call_args_list[1].kwargs["env"]["ELECTRON_MIRROR"]
     assert "Desktop GUI build failed" in capsys.readouterr().out
+
+
+def test_gui_skips_pack_when_electron_redownload_unrecoverable(tmp_path, monkeypatch, capsys):
+    """When the Electron binary can't be fetched at all (mirror also blocked),
+    skip the pointless final pack — it would just re-throw the same missing
+    electronDist — and fail with a clear message instead."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="linux")
+    monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_fail = subprocess.CompletedProcess(["npm", "run", "pack"], 1)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main._electron_dist_ok", return_value=False), \
+         patch("hermes_cli.main._redownload_electron_dist", return_value=False), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[pack_fail]) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    # Only the initial pack ran; both retries were skipped because no binary
+    # could be produced.
+    assert mock_run.call_count == 1
+    out = capsys.readouterr().out
+    assert "Could not re-download Electron from the mirror" in out
+    assert "Desktop GUI build failed" in out
 
 
 def test_gui_does_not_override_user_electron_mirror(tmp_path, monkeypatch, capsys):
@@ -551,6 +590,108 @@ def test_gui_does_not_override_user_electron_mirror(tmp_path, monkeypatch, capsy
     assert mock_run.call_count == 1
     assert mock_run.call_args_list[0].kwargs["env"]["ELECTRON_MIRROR"] == "https://mirror.example/electron/"
     assert "Desktop GUI build failed" in capsys.readouterr().out
+
+
+# ── electronDist (re)download helper tests (#47266) ───────────────────
+
+
+@pytest.mark.parametrize(
+    "platform,rel",
+    [
+        ("linux", "dist/electron"),
+        ("win32", "dist/electron.exe"),
+        ("darwin", "dist/Electron.app/Contents/MacOS/Electron"),
+    ],
+)
+def test_electron_dist_ok_per_platform(tmp_path, monkeypatch, platform, rel):
+    monkeypatch.setattr(cli_main.sys, "platform", platform)
+    electron = tmp_path / "node_modules" / "electron"
+    # A dist dir that exists but lacks the binary is NOT ok (partial extraction).
+    (electron / "dist").mkdir(parents=True)
+    assert cli_main._electron_dist_ok(tmp_path) is False
+
+    binp = electron / rel
+    binp.parent.mkdir(parents=True, exist_ok=True)
+    binp.write_text("", encoding="utf-8")
+    assert cli_main._electron_dist_ok(tmp_path) is True
+
+
+def test_redownload_electron_dist_noop_when_present(tmp_path, monkeypatch):
+    """Already-healthy dist → no download, so an unrelated build failure can't
+    trigger a needless ~200 MB refetch."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    binp = tmp_path / "node_modules" / "electron" / "dist" / "electron"
+    binp.parent.mkdir(parents=True)
+    binp.write_text("", encoding="utf-8")
+
+    with patch("hermes_cli.main.subprocess.run") as mock_run:
+        assert cli_main._redownload_electron_dist(tmp_path, {}) is True
+    mock_run.assert_not_called()
+
+
+def test_redownload_electron_dist_missing_installer(tmp_path, monkeypatch):
+    """No electron/install.js (deps never installed) → nothing to run."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    (tmp_path / "node_modules" / "electron").mkdir(parents=True)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+         patch("hermes_cli.main.subprocess.run") as mock_run:
+        assert cli_main._redownload_electron_dist(tmp_path, {}) is False
+    mock_run.assert_not_called()
+
+
+def test_redownload_electron_dist_runs_installer_with_mirror(tmp_path, monkeypatch):
+    """Missing dist → wipe any partial dist + version marker, run electron's own
+    install.js with ELECTRON_MIRROR injected, and report success on the binary."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    electron = tmp_path / "node_modules" / "electron"
+    electron.mkdir(parents=True)
+    (electron / "install.js").write_text("// stub", encoding="utf-8")
+    # A stale partial dist + version marker that MUST be cleared first, otherwise
+    # electron's install.js short-circuits on path.txt and never re-downloads.
+    (electron / "dist").mkdir()
+    (electron / "dist" / "leftover").write_text("junk", encoding="utf-8")
+    (electron / "path.txt").write_text("electron", encoding="utf-8")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        captured["cwd"] = kwargs.get("cwd")
+        # simulate electron's install.js producing the dist binary
+        binp = electron / "dist" / "electron"
+        binp.parent.mkdir(parents=True, exist_ok=True)
+        binp.write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=fake_run):
+        ok = cli_main._redownload_electron_dist(
+            tmp_path, {"PATH": "/x"}, mirror="https://mirror.example/electron/"
+        )
+
+    assert ok is True
+    assert captured["cmd"] == ["/usr/bin/node", str(electron / "install.js")]
+    assert captured["cwd"] == str(electron)
+    assert captured["env"]["ELECTRON_MIRROR"] == "https://mirror.example/electron/"
+    # The partial dir + marker were dropped before the re-download.
+    assert not (electron / "dist" / "leftover").exists()
+    assert not (electron / "path.txt").exists()
+
+
+def test_redownload_electron_dist_returns_false_when_download_fails(tmp_path, monkeypatch):
+    """install.js ran but produced no binary (still blocked) → False, so the
+    caller skips a doomed pack."""
+    monkeypatch.setattr(cli_main.sys, "platform", "linux")
+    electron = tmp_path / "node_modules" / "electron"
+    electron.mkdir(parents=True)
+    (electron / "install.js").write_text("// stub", encoding="utf-8")
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/node"), \
+         patch("hermes_cli.main.subprocess.run",
+               return_value=subprocess.CompletedProcess(["node"], 1)):
+        assert cli_main._redownload_electron_dist(tmp_path, {}) is False
 
 
 class _FakeProc:

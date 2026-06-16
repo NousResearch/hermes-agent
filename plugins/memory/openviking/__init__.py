@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -66,60 +67,18 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
     "memory": "patterns",
 }
 
-_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
-_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
-_SINGLE_SKILL_INSTRUCTION = (
-    "The user has provided the following instruction alongside the skill invocation: "
-)
-_BUNDLE_MARKER = " skill bundle,"
-_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
-_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
-_RUNTIME_NOTE = "\n\n[Runtime note:"
-
 
 def _derive_openviking_user_text(content: Any) -> str:
-    """Strip Hermes slash-skill scaffolding before sending content to OpenViking."""
-    if not isinstance(content, str):
-        return ""
+    """Strip Hermes slash-skill scaffolding before sending content to OpenViking.
 
-    if not content.startswith(_SKILL_INVOCATION_PREFIX):
-        return content
-
-    if _BUNDLE_MARKER in content:
-        return _extract_bundle_user_instruction(content)
-
-    if _SINGLE_SKILL_MARKER in content:
-        return _extract_single_skill_user_instruction(content)
-
-    return ""
-
-
-def _extract_single_skill_user_instruction(message: str) -> str:
-    # Single-skill format appends the user instruction after the skill body, so
-    # the last occurrence is the user-provided one; the body may quote this text.
-    marker_idx = message.rfind(_SINGLE_SKILL_INSTRUCTION)
-    if marker_idx < 0:
-        return ""
-
-    instruction = message[marker_idx + len(_SINGLE_SKILL_INSTRUCTION) :]
-    runtime_idx = instruction.find(_RUNTIME_NOTE)
-    if runtime_idx >= 0:
-        instruction = instruction[:runtime_idx]
-    return instruction.strip()
-
-
-def _extract_bundle_user_instruction(message: str) -> str:
-    # Bundle format puts the user instruction before the loaded skills, so the
-    # first occurrence is the user-provided one.
-    marker_idx = message.find(_BUNDLE_USER_INSTRUCTION)
-    if marker_idx < 0:
-        return ""
-
-    instruction = message[marker_idx + len(_BUNDLE_USER_INSTRUCTION) :]
-    first_skill_idx = instruction.find(_BUNDLE_FIRST_SKILL_BLOCK)
-    if first_skill_idx >= 0:
-        instruction = instruction[:first_skill_idx]
-    return instruction.strip()
+    Defense-in-depth: MemoryManager already strips skill scaffolding for the
+    whole provider fan-out (see ``MemoryManager._strip_skill_scaffolding``), so
+    in normal operation this receives already-clean text and passes it through
+    unchanged. It stays here so OpenViking is correct if its hooks are ever
+    invoked outside the manager. Delegates to the canonical extractor in
+    ``agent.skill_commands`` — no duplicated marker literals, no drift risk.
+    """
+    return extract_user_instruction_from_skill_message(content) or ""
 
 
 # ---------------------------------------------------------------------------

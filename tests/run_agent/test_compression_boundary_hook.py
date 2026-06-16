@@ -135,7 +135,7 @@ class TestCompressionBoundaryHook:
             f"got {comp_calls!r}"
         )
 
-    def test_todo_snapshot_is_preserved_as_system_note(self):
+    def test_todo_snapshot_is_preserved_as_assistant_compaction_note(self):
         """Compression keeps todo state visible without faking a user turn."""
         from run_agent import AIAgent
 
@@ -167,7 +167,7 @@ class TestCompressionBoundaryHook:
             [{"role": "user", "content": "m"}], "sys", approx_tokens=100
         )
 
-        assert compressed[-1]["role"] == "system"
+        assert compressed[-1]["role"] == "assistant"
         assert "active task list" in compressed[-1]["content"]
 
     def test_hook_failure_does_not_break_compression(self):

@@ -504,7 +504,7 @@ def compress_context(
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:
-        compressed.append({"role": "system", "content": todo_snapshot})
+        compressed.append({"role": "assistant", "content": todo_snapshot})
 
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)

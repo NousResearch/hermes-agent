@@ -2876,9 +2876,30 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
-            if row["role"] in {"user", "assistant"} and isinstance(content, str):
+            role = row["role"]
+
+            # Gateway replay is part of the paid model prompt.  Historical
+            # Telegram sessions can contain injected context-compaction
+            # handoff blocks and very large tool outputs (browser/search/skill
+            # dumps, terminal logs).  Those rows are useful for audit/search in
+            # state.db, but replaying them verbatim into every future turn makes
+            # long sessions explode in GPT/Codex input.  Keep the database
+            # canonical; compact only the conversation view sent back to the
+            # model.
+            if role == "session_meta":
+                continue
+            if role == "user" and isinstance(content, str):
+                content = self._strip_compaction_reference_block(content)
+                if not content:
+                    continue
+            if role == "tool" and isinstance(content, str):
+                content = self._compact_replayed_tool_content(
+                    content,
+                    tool_name=row["tool_name"] or "tool",
+                )
+            if role in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
-            msg = {"role": row["role"], "content": content}
+            msg = {"role": role, "content": content}
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
@@ -2901,7 +2922,7 @@ class SessionDB:
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
-            if row["role"] == "assistant":
+            if role == "assistant":
                 if row["finish_reason"]:
                     msg["finish_reason"] = row["finish_reason"]
                 if row["reasoning"]:
@@ -2930,6 +2951,47 @@ class SessionDB:
                 continue
             messages.append(msg)
         return messages
+
+    @staticmethod
+    def _strip_compaction_reference_block(content: str) -> str:
+        """Remove synthetic context-compaction handoff blocks from replay.
+
+        Telegram can persist context-compaction handoff text as if it were a
+        normal user message after a gateway restart/resume.  The block is only
+        an internal reconstruction aid; feeding tens of thousands of characters
+        of it back to the model on every turn is pure cost.  If a real user
+        message appears after the explicit end marker, keep that tail.
+        """
+        marker = "[CONTEXT COMPACTION — REFERENCE ONLY]"
+        if marker not in content:
+            return content
+        end_marker = "--- END OF CONTEXT SUMMARY"
+        idx = content.find(end_marker)
+        if idx < 0:
+            return ""
+        tail = content[idx + len(end_marker):]
+        # Drop common delimiter noise following the marker.
+        tail = tail.lstrip(" —-\n\r\t")
+        return tail.strip()
+
+    @staticmethod
+    def _compact_replayed_tool_content(
+        content: str,
+        *,
+        tool_name: str = "tool",
+        max_chars: int = 12_000,
+    ) -> str:
+        """Cap historical tool output replay while preserving audit in DB."""
+        if len(content) <= max_chars:
+            return content
+        head_len = max_chars // 2
+        tail_len = max_chars - head_len
+        omitted = len(content) - head_len - tail_len
+        return (
+            content[:head_len]
+            + f"\n\n[Hermes replay compacted {omitted:,} chars from prior {tool_name} output; full output remains in state.db.]\n\n"
+            + content[-tail_len:]
+        )
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:

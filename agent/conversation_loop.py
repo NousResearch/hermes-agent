@@ -100,6 +100,33 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+def _is_usage_limit_exhaustion(error: Exception, error_context: Optional[Dict[str, Any]] = None) -> bool:
+    """True for hard account/session quota walls, not transient throttles."""
+    pieces: List[str] = []
+    for value in (
+        error,
+        getattr(error, "message", None),
+        getattr(error, "body", None),
+        error_context.get("reason") if error_context else None,
+        error_context.get("message") if error_context else None,
+    ):
+        if value:
+            try:
+                pieces.append(str(value).lower())
+            except Exception:
+                pass
+    text = " ".join(pieces)
+    return any(
+        marker in text
+        for marker in (
+            "usage_limit_reached",
+            "usage limit has been reached",
+            "usage limit reached",
+            "gousagelimit",
+        )
+    )
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -2750,6 +2777,43 @@ def run_conversation(
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
                             continue
+
+                if (
+                    is_rate_limited
+                    and _is_usage_limit_exhaustion(api_error, error_context)
+                    and str(_provider).lower() == "openai-codex"
+                ):
+                    # ChatGPT/Codex usage-limit 429s are quota/session walls,
+                    # not transient throttles. Retrying just spins several more
+                    # failing requests and, worse, compression attempts will hit
+                    # the same exhausted account. Fail closed immediately unless
+                    # a fallback already succeeded above.
+                    _summary = agent._summarize_api_error(api_error)
+                    agent._flush_status_buffer()
+                    agent._emit_status(
+                        f"🛑 Codex usage limit reached — stopped retries: {_summary}"
+                    )
+                    logger.error(
+                        "%sCodex usage limit reached; aborting without retry loop. provider=%s model=%s msgs=%s tokens=~%s",
+                        agent.log_prefix,
+                        _provider,
+                        _model,
+                        len(api_messages),
+                        f"{approx_tokens:,}",
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": (
+                            "Codex usage limit reached, so I stopped instead of retrying the same exhausted account. "
+                            "Wait for the reset or switch to a fallback model."
+                        ),
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": _summary,
+                        "failure_reason": classified.reason.value,
+                    }
 
                 # ── Nous Portal: record rate limit & skip retries ─────
                 # When Nous returns a 429 that is a genuine account-

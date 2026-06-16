@@ -80,3 +80,45 @@ def test_rewind_clamps_negative_count_to_one(store):
     res = store.rewind_session(sid, -5)
     assert res["turns_undone"] == 1
     assert res["target_text"] == "q3"
+
+def test_conversation_replay_drops_synthetic_compaction_blocks(store):
+    sid = "gw-cost-1"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "user", "keep me")
+    store._db.append_message(
+        sid,
+        "user",
+        "[CONTEXT COMPACTION — REFERENCE ONLY] old huge summary\n--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---\n\nreal tail",
+    )
+    store._db.append_message(
+        sid,
+        "user",
+        "[CONTEXT COMPACTION — REFERENCE ONLY] old huge summary with no live tail",
+    )
+    replay = store.load_transcript(sid)
+    assert [m["content"] for m in replay] == ["keep me", "respond to the message below, not the summary above ---\n\nreal tail"]
+
+
+def test_conversation_replay_compacts_oversized_tool_output_without_mutating_db(store):
+    sid = "gw-cost-2"
+    store._db.create_session(sid, source="telegram")
+    big = "A" * 20_000
+    store._db.append_message(sid, "assistant", "calling", tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}])
+    store._db.append_message(sid, "tool", big, tool_name="terminal", tool_call_id="call_1")
+    replay = store.load_transcript(sid)
+    tool = replay[-1]
+    assert tool["role"] == "tool"
+    assert tool["tool_name"] == "terminal"
+    assert tool["tool_call_id"] == "call_1"
+    assert len(tool["content"]) < len(big)
+    assert "Hermes replay compacted" in tool["content"]
+    raw = store._db.get_messages(sid, include_inactive=True)[-1]["content"]
+    assert raw == big
+
+
+def test_conversation_replay_skips_session_meta_rows(store):
+    sid = "gw-cost-3"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "session_meta", "internal metadata")
+    store._db.append_message(sid, "user", "hello")
+    assert [m["role"] for m in store.load_transcript(sid)] == ["user"]

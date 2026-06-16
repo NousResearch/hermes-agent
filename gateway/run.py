@@ -9838,6 +9838,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
+        # When the goal is achieved, also notify the platform's home channel
+        # (the channel cron jobs deliver to) so the user sees the completion
+        # in their default chat, not just the originating DM/thread.
+        if decision.get("verdict") == "done" and source is not None:
+            try:
+                home = self.config.get_home_channel(source.platform)
+                if home and home.chat_id and home.chat_id != str(source.chat_id):
+                    home_source = source.__class__(**{**source.__dict__, "chat_id": str(home.chat_id)})
+                    if hasattr(home_source, "thread_id") and home.thread_id:
+                        home_source.thread_id = str(home.thread_id)
+                    await self._defer_goal_status_notice_after_delivery(home_source, msg)
+            except Exception as exc:
+                logger.debug("goal continuation: home-channel notify failed: %s", exc)
+
         if not decision.get("should_continue"):
             return
 

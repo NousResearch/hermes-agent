@@ -36,9 +36,20 @@ from toolsets import TOOLSETS
 # not natively known (named custom providers, third-party aggregators, etc.).
 # Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
+
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+# Session context isolation for subagents running in thread pools.
+# Without this, a subagent inherits the parent thread's ContextVars,
+# which may be overwritten by subsequent messages while the subagent
+# is still running.
+try:
+    from gateway.session_context import snapshot_session_context, restore_session_context
+    _SESSION_CONTEXT_AVAILABLE = True
+except ImportError:
+    _SESSION_CONTEXT_AVAILABLE = False
 
 
 # Tools that children must never have access to
@@ -1454,6 +1465,20 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # ── ContextVar isolation for subagents ──────────────────────────────
+    # Subagents run in a ThreadPoolExecutor and inherit the parent thread's
+    # ContextVars (platform, chat_id, thread_id, user_id, session_key).
+    # If the parent thread processes another message while the subagent is
+    # still running, those ContextVars get overwritten.  We snapshot them
+    # here and restore them before the child's *first* tool call, so the
+    # subagent always sees the context that was active when it was spawned.
+    _parent_context_snapshot: Optional[Dict[str, str]] = None
+    if _SESSION_CONTEXT_AVAILABLE:
+        try:
+            _parent_context_snapshot = snapshot_session_context()
+        except Exception:
+            logger.debug("Failed to snapshot session context for subagent", exc_info=True)
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -1628,6 +1653,18 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
+
+            # Restore the parent thread's ContextVar snapshot so the child
+            # agent sees the same session context (platform, chat, user)
+            # that was active when delegate_task was called.  Without this,
+            # a child running after the parent has moved on to another
+            # message inherits stale or overwritten contextvars.
+            if _SESSION_CONTEXT_AVAILABLE and _parent_context_snapshot is not None:
+                try:
+                    restore_session_context(_parent_context_snapshot)
+                except Exception:
+                    logger.debug("Failed to restore session context in subagent thread", exc_info=True)
+
             return child.run_conversation(
                 user_message=goal,
                 task_id=child_task_id,
@@ -1815,6 +1852,21 @@ def _run_single_child(
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
             "exit_reason": exit_reason,
+            # ── Context metadata for cross-turn consistency checks ──────
+            # The parent aggregator uses this to verify the subagent's
+            # session context (platform, chat_id, thread_id) still matches
+            # the parent's current context.  Stripped before serialization
+            # to the parent model.
+            "_context": (
+                {
+                    k: _parent_context_snapshot.get(k, "")
+                    for k in ("HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID",
+                              "HERMES_SESSION_THREAD_ID", "HERMES_SESSION_USER_ID",
+                              "HERMES_SESSION_KEY")
+                }
+                if _parent_context_snapshot is not None
+                else {}
+            ) if _SESSION_CONTEXT_AVAILABLE else {},
             "tokens": {
                 "input": (
                     _input_tokens if isinstance(_input_tokens, (int, float)) else 0

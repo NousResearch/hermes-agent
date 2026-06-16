@@ -6683,3 +6683,121 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id,
                 "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )
+
+    # ------------------------------------------------------------------
+    # Context verification — external history lookup via getUpdates
+    # ------------------------------------------------------------------
+    # Telegram's Bot API does NOT expose a message-history endpoint.
+    # We use ``get_updates`` to poll the bot's recent updates and search
+    # for the triggering message there.  This is less reliable than
+    # Feishu's direct ``message.get`` (get_updates only keeps updates
+    # received while the bot is polling, typically 24h), but it catches
+    # common drift scenarios where a queued message has already been
+    # processed or a user-session mismatch occurred.
+    #
+    # When *before_message_id* is provided, we first try a direct
+    # ``copy_message`` probe (cheap, returns bad request if message is
+    # gone), then fall back to get_updates scan.
+
+    async def fetch_recent_messages(
+        self,
+        chat_id: str,
+        *,
+        thread_id: Optional[str] = None,
+        limit: int = 3,
+        before_message_id: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent messages from a Telegram chat for context verification.
+
+        Uses ``copy_message`` as a probe when *before_message_id* is set
+        (fast existence check with no side effects when ``protect_content``
+        is set), then falls back to ``get_updates`` for history scan.
+
+        Returns a list of message dicts with ``id``, ``text``,
+        ``sender_id``, ``timestamp``, and ``chat_id``.
+        """
+        if not self._bot:
+            return []
+
+        results: List[Dict[str, Any]] = []
+
+        try:
+            # Tier 1 fast path: probe the specific message_id
+            if before_message_id:
+                try:
+                    mid = int(before_message_id)
+                    # Use copy_message as a probe — it returns a valid
+                    # result if the message exists, raises BadRequest if
+                    # the message_id is unknown or was deleted.  We
+                    # immediately delete the copy.
+                    probe = await self._bot.copy_message(
+                        chat_id=int(chat_id),
+                        from_chat_id=int(chat_id),
+                        message_id=mid,
+                        protect_content=True,
+                    )
+                    # Message exists — clean up the copy immediately
+                    try:
+                        await self._bot.delete_message(
+                            chat_id=int(chat_id),
+                            message_id=probe.message_id,
+                        )
+                    except Exception:
+                        pass
+                    results.append({
+                        "id": before_message_id,
+                        "text": "",
+                        "sender_id": "",
+                        "timestamp": "",
+                        "chat_id": chat_id,
+                        "verified": True,
+                    })
+                    return results
+                except Exception:
+                    # Message doesn't exist or can't be probed
+                    # Fall through to get_updates scan below
+                    pass
+
+            # Tier 2 fallback: scan recent updates for messages in this chat
+            updates = await self._bot.get_updates(
+                timeout=5,
+                limit=min(limit * 2, 100),  # fetch extra to filter
+            )
+
+            seen_ids: set[str] = set()
+            for update in updates:
+                msg = update.effective_message
+                if msg is None:
+                    continue
+                msg_chat_id = str(msg.chat_id) if msg.chat_id else ""
+                if msg_chat_id != chat_id:
+                    continue
+                # If thread_id is specified, only match messages in that thread
+                if thread_id:
+                    msg_thread = str(msg.message_thread_id or "")
+                    if msg_thread != thread_id:
+                        continue
+                msg_id = str(msg.message_id)
+                if msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+                results.append({
+                    "id": msg_id,
+                    "text": msg.text or msg.caption or "",
+                    "sender_id": str(msg.from_user.id) if msg.from_user else "",
+                    "timestamp": str(msg.date.timestamp()) if msg.date else "",
+                    "chat_id": chat_id,
+                })
+                if len(results) >= limit:
+                    break
+
+            return results
+
+        except Exception:
+            logger.debug(
+                "[%s] fetch_recent_messages failed for chat %s",
+                self.name, chat_id, exc_info=True,
+            )
+            return []

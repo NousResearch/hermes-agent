@@ -47,7 +47,8 @@ RUN sed -i '/exclude-newer/d' pyproject.toml && \
         --index-strategy unsafe-best-match \
         --exclude-newer-package "python-olm=false" \
         --exclude-newer-package "unpaddedbase64=false" \
-        -e ".[all]"
+        -e ".[all]" && \
+    chown -R hermes:hermes /opt/hermes/.venv
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

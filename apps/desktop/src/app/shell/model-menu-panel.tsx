@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { createContext, useContext, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -41,6 +41,11 @@ import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
+// Lets the host dropdown (model-pill) hand the panel a way to dismiss itself so
+// clicking a model row commits + closes, while the hover-revealed edit submenu
+// (reasoning/fast) stays open to play with (its items preventDefault on select).
+export const ModelMenuCloseContext = createContext<() => void>(() => {})
+
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
   onSelectModel: (selection: { model: string; provider: string }) => Promise<boolean> | void
@@ -55,6 +60,7 @@ interface ProviderGroup {
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
   const { t } = useI18n()
   const copy = t.shell.modelMenu
+  const closeMenu = useContext(ModelMenuCloseContext)
   const [search, setSearch] = useState('')
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
@@ -209,10 +215,15 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // restores its preset; the Fast toggle inside swaps to the -fast
                 // sibling (or flips the speed param). The sub-trigger has no
                 // `onSelect`, so wire both click and Enter/Space for keyboard parity.
+                // Clicking the row commits the model and closes the picker; the
+                // edit submenu (reasoning/fast) is reached by HOVER, so you can
+                // still tweak those without the click dismissing everything.
                 const activate = () => {
                   if (!isCurrent) {
                     void selectFamily(family, group.provider)
                   }
+
+                  closeMenu()
                 }
 
                 return (

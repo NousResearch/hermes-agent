@@ -2814,21 +2814,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """True for any Telegram topic that can be auto-renamed.
 
         Covers both DM topic lanes (via _is_telegram_topic_lane) and
-        group/supergroup forum topics with a non-General thread_id.
+        group/supergroup forum topics, unless the thread_id is in the
+        user-configured exclusion list (default: [0] for the General channel).
         """
         if source.platform != Platform.TELEGRAM:
+            logger.debug("[topic-rename] renamable=False (not TELEGRAM)")
             return False
         if not source.chat_id or not source.thread_id:
+            logger.debug("[topic-rename] renamable=False (missing chat_id or thread_id)")
             return False
+
         tid = str(source.thread_id or "")
-        if not tid or tid in self._TELEGRAM_GENERAL_TOPIC_IDS:
+
+        # Load exclusion list from config (default protects General channel)
+        exclude_ids = getattr(self, "_telegram_topic_rename_exclude_ids", None)
+        if exclude_ids is None:
+            # First access — load from config
+            tg_cfg = {}
+            try:
+                # config is usually available via self._config or similar; fall back to empty
+                tg_cfg = getattr(self, "_config", {}).get("telegram", {}) if hasattr(self, "_config") else {}
+            except Exception:
+                tg_cfg = {}
+            exclude_ids = tg_cfg.get("topic_rename_exclude_thread_ids", [0])
+            # Cache it so we don't hammer config on every call
+            self._telegram_topic_rename_exclude_ids = [str(x) for x in exclude_ids]
+            logger.info("[topic-rename] loaded exclude list: %s", self._telegram_topic_rename_exclude_ids)
+
+        if tid in self._telegram_topic_rename_exclude_ids:
+            logger.info("[topic-rename] renamable=False (thread %s is in exclude list)", tid)
             return False
+
         # DM topic lanes — full topic mode path
         if self._is_telegram_topic_lane(source):
+            logger.debug("[topic-rename] renamable=True (DM topic lane)")
             return True
+
         # Group/supergroup forum topics
         if source.chat_type in {"group", "forum"}:
+            logger.debug("[topic-rename] renamable=True (group/forum topic)")
             return True
+
+        logger.debug("[topic-rename] renamable=False (chat_type=%s)", getattr(source, "chat_type", None))
         return False
 
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
@@ -10785,9 +10812,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Best-effort rename of a Telegram topic when Hermes auto-titles a session."""
+        logger.info("[topic-rename] _rename_telegram_topic_for_session_title called: title='%s' session_id=%s source=%s", 
+                   title, session_id, source)
+        
         if not source.chat_id or not source.thread_id:
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: missing chat_id or thread_id")
             return
+            
         if not self._is_telegram_renamable_topic(source):
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: source is not renamable")
             return
 
         # Operator can fully disable per-topic auto-rename via
@@ -10795,6 +10828,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # by the user (ad-hoc Threaded Mode) and auto-rename would
         # overwrite their chosen names every time the auto-title fires.
         if self._telegram_topic_auto_rename_disabled(source):
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: auto rename disabled for source")
             return
 
         # Skip rename when the topic is operator-declared via
@@ -10807,64 +10841,92 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # would return True for every test double.
         adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
         if adapter is not None:
+            logger.debug("[topic-rename] _rename_telegram_topic_for_session_title adapter found, checking for operator topic")
             get_info = getattr(type(adapter), "_get_dm_topic_info", None)
             if callable(get_info):
                 try:
                     operator_topic = get_info(adapter, str(source.chat_id), str(source.thread_id))
+                    logger.debug("[topic-rename] _rename_telegram_topic_for_session_title operator_topic check result: %s", operator_topic)
                 except Exception:
                     operator_topic = None
+                    logger.debug("[topic-rename] _rename_telegram_topic_for_session_title operator_topic check failed", exc_info=True)
                 # Only treat dict-shaped returns as operator-declared; a
                 # bare MagicMock or other sentinel shouldn't count.
                 if isinstance(operator_topic, dict):
+                    logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: topic is operator-declared")
                     return
+            else:
+                logger.debug("[topic-rename] _rename_telegram_topic_for_session_title adapter has no _get_dm_topic_info method")
+        else:
+            logger.debug("[topic-rename] _rename_telegram_topic_for_session_title no adapter found")
 
+        logger.info("[topic-rename] _rename_telegram_topic_for_session_title proceeding with session binding check")
         session_db = getattr(self, "_session_db", None)
         if session_db is not None:
             try:
+                logger.debug("[topic-rename] _rename_telegram_topic_for_session_title checking topic binding in session_db")
                 binding = session_db.get_telegram_topic_binding(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                 )
+                logger.debug("[topic-rename] _rename_telegram_topic_for_session_title binding check result: %s", binding)
                 if binding and str(binding.get("session_id") or "") != str(session_id):
+                    logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: session_id mismatch (binding=%s, current=%s)", 
+                               binding.get("session_id"), session_id)
                     return
             except Exception:
-                logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
+                logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: binding check failed", exc_info=True)
                 return
 
         if adapter is None:
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: no adapter available")
             return
+
+        logger.info("[topic-rename] _rename_telegram_topic_for_session_title proceeding with rename")
         topic_name = self._sanitize_telegram_topic_title(title)
+        logger.debug("[topic-rename] _rename_telegram_topic_for_session_title sanitized topic name: '%s'", topic_name)
+        
         try:
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title attempting rename via adapter methods")
             rename_topic = getattr(adapter, "rename_dm_topic", None)
             if rename_topic is not None:
+                logger.info("[topic-rename] _rename_telegram_topic_for_session_title using adapter.rename_dm_topic method")
                 await rename_topic(
                     chat_id=str(source.chat_id),
                     thread_id=str(source.thread_id),
                     name=topic_name,
-                    **emoji_kwargs,
                 )
+                logger.info("[topic-rename] _rename_telegram_topic_for_session_title rename completed successfully via adapter.rename_dm_topic")
                 return
 
+            logger.debug("[topic-rename] _rename_telegram_topic_for_session_title adapter.rename_dm_topic not available, trying bot.edit_forum_topic")
             bot = getattr(adapter, "_bot", None)
             edit_forum_topic = getattr(bot, "edit_forum_topic", None) if bot is not None else None
             if edit_forum_topic is None:
                 edit_forum_topic = getattr(bot, "editForumTopic", None) if bot is not None else None
+            
             if edit_forum_topic is None:
+                logger.info("[topic-rename] _rename_telegram_topic_for_session_title returning early: no edit_forum_topic method available")
                 return
+                
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title using bot.edit_forum_topic method")
             try:
                 await edit_forum_topic(
                     chat_id=int(source.chat_id),
                     message_thread_id=int(source.thread_id),
                     name=topic_name,
                 )
+                logger.info("[topic-rename] _rename_telegram_topic_for_session_title rename completed successfully via bot.edit_forum_topic (int conversion)")
             except (TypeError, ValueError):
+                logger.debug("[topic-rename] _rename_telegram_topic_for_session_title int conversion failed, trying original types")
                 await edit_forum_topic(
                     chat_id=source.chat_id,
                     message_thread_id=source.thread_id,
                     name=topic_name,
                 )
+                logger.info("[topic-rename] _rename_telegram_topic_for_session_title rename completed successfully via bot.edit_forum_topic (original types)")
         except Exception:
-            logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
+            logger.info("[topic-rename] _rename_telegram_topic_for_session_title rename failed", exc_info=True)
 
     def _telegram_topic_auto_rename_disabled(self, source: SessionSource) -> bool:
         """Return True when operator disabled per-topic auto-rename for this Telegram chat.
@@ -10896,20 +10958,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Schedule a topic rename from the auto-title background thread."""
-        if not title or not self._is_telegram_renamable_topic(source):
+        logger.info("[topic-rename] _schedule_telegram_topic_title_rename called: title='%s' session_id=%s source=%s", 
+                   title, session_id, source)
+        
+        if not title:
+            logger.info("[topic-rename] _schedule_telegram_topic_title_rename returning early: no title provided")
             return
+            
+        if not self._is_telegram_renamable_topic(source):
+            logger.info("[topic-rename] _schedule_telegram_topic_title_rename returning early: source is not renamable")
+            return
+            
         if self._telegram_topic_auto_rename_disabled(source):
+            logger.info("[topic-rename] _schedule_telegram_topic_title_rename returning early: auto rename disabled for source")
             return
+            
+        logger.info("[topic-rename] _schedule_telegram_topic_title_rename proceeding with scheduling")
+        
         try:
             loop = asyncio.get_running_loop()
+            logger.debug("[topic-rename] _schedule_telegram_topic_title_rename got running loop")
         except RuntimeError:
             loop = getattr(self, "_gateway_loop", None)
+            logger.debug("[topic-rename] _schedule_telegram_topic_title_rename using fallback loop: %s", "available" if loop else "None")
         if loop is None or loop.is_closed():
+            logger.info("[topic-rename] _schedule_telegram_topic_title_rename returning early: no available loop")
             return
+            
+        logger.info("[topic-rename] _schedule_telegram_topic_title_rename creating copied source")
         try:
             copied_source = dataclasses.replace(source)
+            logger.debug("[topic-rename] _schedule_telegram_topic_title_rename copied source created successfully")
         except Exception:
             copied_source = source
+            logger.debug("[topic-rename] _schedule_telegram_topic_title_rename using original source (copy failed)")
+            
+        logger.info("[topic-rename] _schedule_telegram_topic_title_rename scheduling coroutine")
         future = safe_schedule_threadsafe(
             self._rename_telegram_topic_for_session_title(copied_source, session_id, title),
             loop,
@@ -10917,14 +11001,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             log_message="Telegram topic title rename failed to schedule",
         )
         if future is None:
+            logger.info("[topic-rename] _schedule_telegram_topic_title_rename returning early: scheduling returned None future")
             return
+            
+        logger.info("[topic-rename] _schedule_telegram_topic_title_rename successfully scheduled, adding failure callback")
         def _log_rename_failure(fut) -> None:
             try:
                 fut.result()
+                logger.debug("[topic-rename] _schedule_telegram_topic_title_rename callback: rename completed successfully")
             except Exception:
-                logger.debug("Telegram topic title rename failed", exc_info=True)
+                logger.info("[topic-rename] _schedule_telegram_topic_title_rename callback: rename failed", exc_info=True)
 
         future.add_done_callback(_log_rename_failure)
+        logger.info("[topic-rename] _schedule_telegram_topic_title_rename scheduling complete")
 
     _TELEGRAM_CAPABILITY_HINT_COOLDOWN_S = 300.0
 
@@ -15332,6 +15421,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
                 try:
+                    logger.info("[topic-rename] AUTO-TITLE BLOCK ENTERED: final_response=%s has_session_db=%s source=%s", 
+                               bool(final_response), bool(self._session_db), source)
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
                     # In Gateway mode, auto-title failures must NOT be
@@ -15354,12 +15445,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
                     }
-                    if self._is_telegram_renamable_topic(source):
-                        maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
-                            source,
-                            effective_session_id,
-                            title,
-                        )
+                    logger.info(
+                        "[topic-rename] CHECK source: platform=%s chat_type=%s thread_id=%s chat_id=%s",
+                        getattr(source, "platform", None),
+                        getattr(source, "chat_type", None),
+                        getattr(source, "thread_id", None),
+                        getattr(source, "chat_id", None),
+                    )
+                    try:
+                        logger.info("[topic-rename] ABOUT TO CALL _is_telegram_renamable_topic")
+                        is_renamable = self._is_telegram_renamable_topic(source)
+                        logger.info("[topic-rename] _is_telegram_renamable_topic returned: %s", is_renamable)
+                        if is_renamable:
+                            logger.info("[topic-rename] SOURCE IS RENAMABLE: attaching title_callback")
+                            maybe_auto_title_kwargs["title_callback"] = lambda title: self._schedule_telegram_topic_title_rename(
+                                source,
+                                effective_session_id,
+                                title,
+                            )
+                        else:
+                            logger.info("[topic-rename] SOURCE NOT RENAMABLE: title_callback will NOT be attached")
+                    except Exception as e:
+                        logger.info("[topic-rename] EXCEPTION in _is_telegram_renamable_topic: %s", str(e), exc_info=True)
+                        # Continue without title callback
+                        pass
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
@@ -15369,7 +15478,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         **maybe_auto_title_kwargs,
                     )
                 except Exception:
-                    pass
+                    logger.info(
+                        "[topic-rename] auto-title block failed for session %s (source=%s)",
+                        effective_session_id,
+                        getattr(source, "chat_type", None),
+                        exc_info=True,
+                    )
 
             return {
                 "final_response": final_response,

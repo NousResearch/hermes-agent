@@ -101,7 +101,7 @@ def test_register_cli_does_not_raise_on_argparse_help():
     plugin.cli.register_cli(plugin_cli)
 
     nested = argparse.ArgumentParser(prog="hermes lm-twitterer")
-    plugin.cli.register_cli(nested.add_subparsers(dest="lm_twitterer_command"))
+    plugin.cli.register_cli(nested)
     args = parser.parse_args(["lm-twitterer", "status"])
     assert args.command == "lm-twitterer"
 
@@ -315,6 +315,39 @@ def test_safe_post_create_tweet_clears_default_quote_attachment(monkeypatch):
     assert request.variables.tweet_text == "Hello Hermes"
     assert request.variables.attachment_url is None
     assert request.variables.reply is None
+
+
+def test_validate_public_topic_allows_natural_phrases():
+    plugin = load_plugin()
+    core = plugin.core
+
+    assert core.validate_public_topic("environment variables in public docs") is None
+    assert core.validate_public_topic("local secretary agent roadmap") is None
+    assert core.validate_public_topic("OpenCode API setup tips") is None
+
+
+def test_validate_public_topic_blocks_secret_like_assignments():
+    plugin = load_plugin()
+    core = plugin.core
+
+    assert core.validate_public_topic("debug HOME=/tmp leak") is not None
+    assert core.validate_public_topic("paste API_KEY=sk-abc here") is not None
+    assert core.validate_public_topic("see ~/.hermes/.env for keys") is not None
+
+
+def test_post_rejects_secret_like_topic_without_calling_llm(tmp_path, monkeypatch):
+    plugin = load_plugin()
+    core = plugin.core
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("LLM should not run for rejected topics")
+
+    monkeypatch.setattr(core, "_llm_generate", _boom)
+    cfg = make_settings(core, tmp_path)
+    result = core.post("debug PATH=/tmp/x", dry_run=True, cfg=cfg)
+
+    assert result["ok"] is False
+    assert "secret leak" in result["error"]
 
 
 def test_dry_run_post_is_written_to_ebbinghaus_memory_db(tmp_path):

@@ -39,6 +39,37 @@ DEFAULT_REPLY_PROMPT = (
 DEFAULT_IDENTITY_NAME = "はくあ"
 DEFAULT_REQUIRED_HASHTAG = "#hermesagent"
 
+_MAX_PUBLIC_TOPIC_CHARS = 240
+_FORBIDDEN_TOPIC_CHECKS: list[tuple[str, re.Pattern[str]]] = [
+    ("windows user profile path", re.compile(r"C:\\Users", re.I)),
+    ("wsl hermes home path", re.compile(r"/c/Users", re.I)),
+    ("HOME= assignment", re.compile(r"\bHOME\s*=", re.I)),
+    ("PATH= assignment", re.compile(r"\bPATH\s*=", re.I)),
+    ("token assignment", re.compile(r"\b[A-Z0-9_]*TOKEN\s*=", re.I)),
+    ("secret assignment", re.compile(r"\b[A-Z0-9_]*SECRET\s*=", re.I)),
+    ("password assignment", re.compile(r"\bPASSWORD\s*=", re.I)),
+    ("api key assignment", re.compile(r"\b[A-Z0-9_]*API_KEY\s*=", re.I)),
+    (".env file reference", re.compile(r"\.env\b", re.I)),
+    ("bitwarden item id", re.compile(r"Bitwarden item ID", re.I)),
+    ("memory vault key", re.compile(r"MEMORY_VAULT_AES_KEY_B64", re.I)),
+]
+
+
+def validate_public_topic(topic: str) -> str | None:
+    """Return an error message when *topic* may leak secrets; otherwise None."""
+    text = (topic or "").strip()
+    if not text:
+        return None
+    if len(text) > _MAX_PUBLIC_TOPIC_CHARS:
+        return (
+            f"Topic too long for public posting: {len(text)} chars "
+            f"(max {_MAX_PUBLIC_TOPIC_CHARS})"
+        )
+    for label, pattern in _FORBIDDEN_TOPIC_CHECKS:
+        if pattern.search(text):
+            return f"Refusing topic that looks like a secret leak ({label})"
+    return None
+
 POST_SCHEMA = {
     "name": "lm_twitterer_post",
     "description": "Generate an X post with the active Hermes model and optionally publish it.",
@@ -821,6 +852,9 @@ def post(
 ) -> dict[str, Any]:
     cfg = settings_with_overrides(provider=provider, model=model, cfg=cfg)
     _ensure_state(cfg)
+    topic_error = validate_public_topic(topic)
+    if topic_error:
+        return {"ok": False, "error": topic_error}
     text = generate_post_text(topic, cfg)
     result: dict[str, Any] = {
         "ok": True,

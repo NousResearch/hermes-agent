@@ -1,112 +1,52 @@
-# LM-twitterer Hermes Plugin
+# LM-twitterer (Hermes plugin)
 
-Local Hermes plugin port inspired by
-<https://github.com/soichi11208/LM-twitterer>.
+Hermes plugin inspired by [soichi11208/LM-twitterer](https://github.com/soichi11208/LM-twitterer).
 
-The original app is a Gradio bot that can use GGUF or OpenAI-compatible
-endpoints.  This plugin keeps generation inside Hermes through `ctx.llm`, so
-it can use the currently configured Hermes model, including non-Grok models.
-X access uses the same cookie style as LM-twitterer: `auth_token` and `ct0`
-from the logged-in X browser session.
+The original app is a Gradio bot around local GGUF or OpenAI-compatible endpoints. This plugin keeps **text generation inside Hermes** (`ctx.llm`) and uses **X session cookies** (`auth_token`, `ct0`) only for posting and replying. X Premium / Grok is not the generation backend unless you explicitly point Hermes at a Grok/xAI provider.
 
-X Premium/Grok is not used as the generation backend unless you explicitly set
-Hermes to a Grok/xAI provider.  The logged-in X account is only the posting and
-replying identity; text generation stays inside Hermes.  Outgoing posts are
-signed as `はくあ #hermesagent` by default so the account remains transparent
-about the Hermes/Hakua-assisted voice.
+Outgoing posts are signed as **`はくあ #hermesagent`** by default so the account stays transparent about the Hermes/Hakua-assisted voice.
 
-Check the active generation route with:
-
-```powershell
-hermes lm-twitterer status
-```
-
-Look at `effective_generation_provider` and `generation_uses_grok_backend`.
-
-## Setup
-
-Enable the plugin:
+## Quick start
 
 ```powershell
 hermes plugins enable lm-twitterer
-```
-
-Install X client dependencies into the Hermes Python environment:
-
-```powershell
 hermes lm-twitterer install-deps --yes
+hermes lm-twitterer auth-browser --screen-name your_x_screen_name --wait-seconds 600
+hermes lm-twitterer auth-check
+hermes lm-twitterer status
+hermes lm-twitterer post "today's AI tooling note"
+hermes lm-twitterer post "today's AI tooling note" --live
 ```
 
-If you want an interactive login flow, also install the temporary browser
-runtime:
+`status` prints JSON readiness, including `effective_generation_provider` and `generation_uses_grok_backend`.
+
+## Authentication
+
+Pick one path that fits your environment.
+
+| Command | When to use |
+|---------|-------------|
+| `hermes lm-twitterer setup` | Manual screen name + cookie entry into `~/.hermes/.env` |
+| `hermes lm-twitterer auth-browser` | Temporary Chromium/Edge profile; polls or waits for login |
+| `hermes lm-twitterer auth-edge-direct` | Normal Edge window + local CDP after manual login |
+| `hermes lm-twitterer import-edge-cookies` | Read `auth_token` / `ct0` from an existing Edge profile |
+
+Notes:
+
+- Only `auth_token` and `ct0` for `x.com` are saved. Cookie **names and status** are printed; values are never logged.
+- Close Edge completely before `import-edge-cookies` (Edge locks the cookie DB while running).
+- App-bound Edge encryption can block profile import; fall back to `auth-browser` or `setup`.
+- Cookies expire. Refresh with `auth-browser`, `import-edge-cookies`, or DevTools → Application → Cookies → `x.com`.
+
+Browser runtime (only if you use `auth-browser`):
 
 ```powershell
 hermes lm-twitterer install-deps --browser --yes
 ```
 
-Save the bot screen name and cookies manually:
+## Configuration
 
-```powershell
-hermes lm-twitterer setup
-```
-
-Or log in through a temporary Chromium profile and let Hermes save only the
-`auth_token` and `ct0` cookies:
-
-```powershell
-hermes lm-twitterer auth-browser
-```
-
-Or let the visible browser poll for cookies for up to ten minutes:
-
-```powershell
-hermes lm-twitterer auth-browser --screen-name your_x_screen_name --wait-seconds 600
-```
-
-Use Microsoft Edge instead of bundled Chromium:
-
-```powershell
-hermes lm-twitterer auth-browser --browser edge --screen-name your_x_screen_name --wait-seconds 600
-```
-
-If X flags the Playwright-managed browser as automated, open a normal Edge
-window and let Hermes read cookies through a local debugging connection after
-you finish the login:
-
-```powershell
-hermes lm-twitterer auth-edge-direct --screen-name your_x_screen_name --wait-seconds 900
-```
-
-Enter the X password only in the visible Edge window.  The command does not
-accept or print passwords.
-
-Or import cookies from the normal Microsoft Edge profile after you log in at
-`https://x.com`.  Close Edge completely before importing, because Edge locks
-the cookie database while it is running:
-
-```powershell
-hermes lm-twitterer import-edge-cookies --screen-name your_x_screen_name
-```
-
-If you know the profile directory, pass it explicitly:
-
-```powershell
-hermes lm-twitterer import-edge-cookies --profile "Profile 1" --screen-name your_x_screen_name
-```
-
-The importer only reads `auth_token` and `ct0` for `x.com`, saves them to the
-Hermes `.env`, and prints cookie names/status only.  It never prints cookie
-values.  Some current Edge profiles use app-bound cookie encryption; if the
-importer reports that, use `auth-browser` or `setup` instead of the normal
-profile import.
-
-Verify the saved cookies without posting:
-
-```powershell
-hermes lm-twitterer auth-check
-```
-
-Or add secrets to `~/.hermes/.env` manually:
+Secrets belong in `~/.hermes/.env` only:
 
 ```dotenv
 LM_TWITTERER_BOT_SCREEN_NAME=your_x_screen_name_without_at
@@ -120,106 +60,142 @@ LM_TWITTERER_REQUIRE_FOLLOWER=true
 LM_TWITTERER_MAX_REPLIES_PER_RUN=3
 ```
 
-Optional model override, if this plugin is trusted in `config.yaml`:
+Optional generation override (requires allowlisting — see below):
 
 ```dotenv
 LM_TWITTERER_PROVIDER=opencode-zen
 LM_TWITTERER_MODEL=auto-free
 ```
 
-Without those override vars, the plugin uses the active Hermes model.
-
-To explicitly route generation away from Grok/X Premium while keeping the X
-account as the posting identity, allowlist one Hermes provider/model pair:
+Without overrides, the plugin uses the active Hermes model. To route away from Grok while keeping the X account as posting identity:
 
 ```powershell
 hermes lm-twitterer trust-llm-overrides --provider opencode-zen --model auto-free
 ```
 
-## Commands
+## Posting and topics
+
+```powershell
+# Dry-run (default) — generates text, does not publish
+hermes lm-twitterer post "Hermes skill curation tips"
+
+# Live publish
+hermes lm-twitterer post "Hermes skill curation tips" --live
+
+# Pin provider/model for this run
+hermes lm-twitterer post "release notes" --provider opencode-zen --model auto-free --live
+```
+
+- **Empty topic** → `LM_TWITTERER_DEFAULT_TOPIC` from `.env`.
+- **Gateway:** `/lm-twitterer post [topic...] [--live]`
+
+### Topic safety (`validate_public_topic`)
+
+Topics are checked before generation to reduce accidental secret leaks. The check looks for **assignment-like patterns and paths**, not innocent English substrings.
+
+| Allowed | Blocked |
+|---------|---------|
+| `environment variables in public docs` | `HOME=/tmp` |
+| `local secretary agent roadmap` | `API_KEY=sk-...` |
+| `OpenCode setup tips` | references to `~/.hermes/.env` |
+| Japanese prose about 環境変数 or パスワード as concepts | Windows profile paths, vault keys |
+
+Limits:
+
+- Max **240 characters** per topic.
+- On rejection, `post` returns `{"ok": false, "error": "..."}` without calling the LLM.
+
+## Replies and whitelist
+
+```powershell
+hermes lm-twitterer mentions --count 20
+hermes lm-twitterer whitelist list
+hermes lm-twitterer whitelist add some_account
+hermes lm-twitterer whitelist import-mentioned-followers --count 100
+hermes lm-twitterer replies --count 20
+hermes lm-twitterer replies --live --count 20
+```
+
+Reply safety defaults:
+
+- Mention text is **untrusted**; injection phrases cannot override the Hermes/Hakua system prompt.
+- Replies require whitelist membership **and** `followed_by=True` unless `LM_TWITTERER_REQUIRE_FOLLOWER=false`.
+- `import-mentioned-followers` only adds authors whose relationship data shows they follow the bot.
+- At most `LM_TWITTERER_MAX_REPLIES_PER_RUN` replies per run.
+- Dry-run is the default; `--live` publishes.
+
+## Cron
+
+Install recurring post + reply jobs (`no_agent` mode — thin Python wrappers, no extra agent turn):
+
+```powershell
+hermes lm-twitterer cron install `
+  --post-schedule "every 6h" `
+  --reply-schedule "every 1h" `
+  --reply-count 20 `
+  --post-topic "public Hermes operations memo" `
+  --provider opencode-zen `
+  --model auto-free
+```
+
+What happens:
+
+1. Writes `~/.hermes/scripts/lm-twitterer-post.py` and `lm-twitterer-replies.py`.
+2. Wrappers call `hermes lm-twitterer auth-check`, then `post --live` / `replies --live`.
+3. `cron install` bumps `cron.script_timeout_seconds` to **at least 900** when lower (live posts need preflight + LLM time; the scheduler default is 120s).
+4. Live install is refused until cookies, screen name, and a non-empty reply whitelist exist.
+
+Useful flags:
+
+```powershell
+hermes lm-twitterer cron install --dry-run --force   # preview jobs and script paths
+hermes lm-twitterer cron install --paused            # create jobs paused
+hermes cron resume <job-id>                          # enable after review
+```
+
+Preflight-only test (no publish):
+
+```powershell
+$env:LM_TWITTERER_CRON_PREFLIGHT_ONLY = "1"
+py -3 ~/.hermes/scripts/lm-twitterer-post.py
+py -3 ~/.hermes/scripts/lm-twitterer-replies.py
+```
+
+`--post-topic` is passed through to `hermes lm-twitterer post --live <topic>`. Re-run `cron install` after changing the topic so the generated wrapper picks it up.
+
+## CLI reference
 
 ```powershell
 hermes lm-twitterer status
 hermes lm-twitterer auth-check
-hermes lm-twitterer auth-edge-direct --screen-name your_x_screen_name --wait-seconds 900
-hermes lm-twitterer import-edge-cookies --screen-name your_x_screen_name
-hermes lm-twitterer trust-llm-overrides --provider opencode-zen --model auto-free
-hermes lm-twitterer mentions --count 20
-hermes lm-twitterer whitelist import-mentioned-followers --count 100
-hermes lm-twitterer whitelist add some_account
-hermes lm-twitterer post "today's AI tooling note"
-hermes lm-twitterer post "today's AI tooling note" --provider opencode-zen --model auto-free
-hermes lm-twitterer post "today's AI tooling note" --live
-hermes lm-twitterer replies --count 20
-hermes lm-twitterer replies --count 20 --provider opencode-zen --model auto-free
-hermes lm-twitterer replies --live --count 20
+hermes lm-twitterer setup
+hermes lm-twitterer auth-browser [--browser edge] [--wait-seconds N]
+hermes lm-twitterer auth-edge-direct --screen-name NAME
+hermes lm-twitterer import-edge-cookies [--profile "Profile 1"]
+hermes lm-twitterer install-deps [--browser] --yes
+hermes lm-twitterer trust-llm-overrides --provider P --model M
+hermes lm-twitterer post [topic...] [--live] [--provider P] [--model M]
+hermes lm-twitterer replies [--live] [--count N] [--provider P] [--model M]
+hermes lm-twitterer mentions [--count N]
+hermes lm-twitterer whitelist list|add|remove|import-mentioned-followers
+hermes lm-twitterer cron install [options]
 ```
 
-The default is dry-run.  `--live` publishes.
+Nested `hermes lm-twitterer …` commands are registered as a plugin subcommand tree. They do not collide with top-level `hermes status`.
 
-Reply safety defaults:
+## Troubleshooting
 
-- Public X text is treated as untrusted input, so prompt-injection phrases inside
-  mentions are context only and cannot override the Hermes/Hakua system prompt.
-- Replies require both whitelist membership and `followed_by=True` unless
-  `LM_TWITTERER_REQUIRE_FOLLOWER=false`.
-- `whitelist import-mentioned-followers` only adds recent mention authors whose
-  X relationship data says they follow the bot account.
-- At most `LM_TWITTERER_MAX_REPLIES_PER_RUN` replies are generated/published per
-  run.
-- The plugin does not try to evade platform detection; it uses transparent
-  identity, conservative rate limits, dry-run defaults, and allowlisted replies.
-  The default cron cadence is intentionally modest: post every 6 hours and scan
-  replies every 1 hour.
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `hermes lm-twitterer status` prints root help | Plugin CLI failed to register (often argparse help on Python 3.14+) | Update plugin; run `hermes plugins enable lm-twitterer` again |
+| Post cron dies at ~120s | `cron.script_timeout_seconds` too low | Set `900` in `config.yaml` or re-run `cron install` |
+| Topic rejected before generation | Topic matches secret-leak patterns | Rephrase; avoid `KEY=`, `.env` paths, profile paths |
+| `auth-check` fails | Expired cookies | Re-auth via browser or Edge import |
+| Live post 429 / rate limit | Provider quota, not topic parsing | Switch provider/model or retry later |
+| Replies skipped | Not whitelisted or not followed | `whitelist add` / `import-mentioned-followers` |
 
-## Cron
+## Design constraints
 
-Create two Hermes cron jobs:
-
-```powershell
-hermes lm-twitterer cron install --post-schedule "every 6h" --reply-schedule "every 1h" --reply-count 20 --provider opencode-zen --model auto-free
-```
-
-The generated jobs run in `no_agent` mode.  Hermes cron executes small Python
-wrappers from `~/.hermes/scripts/`, and those wrappers call:
-
-```powershell
-hermes lm-twitterer post --live
-hermes lm-twitterer replies --live --count 20
-```
-
-This avoids spending an extra cron-agent turn just to call one known tool.  The
-command refuses to create live jobs until the X cookies, bot screen name, and
-reply whitelist are present.  Preview the exact jobs and wrapper paths with:
-
-```powershell
-hermes lm-twitterer cron install --dry-run --force
-```
-
-Install without firing public posts yet:
-
-```powershell
-hermes lm-twitterer cron install --paused
-```
-
-Resume only after live posting has been explicitly approved:
-
-```powershell
-hermes cron resume <job-id>
-```
-
-Cron wrappers run `lm-twitterer auth-check` before every live action.  To test
-the wrapper preflight without posting:
-
-```powershell
-$env:LM_TWITTERER_CRON_PREFLIGHT_ONLY="1"
-python ~/.hermes/scripts/lm-twitterer-post.py
-python ~/.hermes/scripts/lm-twitterer-replies.py
-```
-
-## Notes
-
-The X cookies expire and must be refreshed from the browser session when X
-invalidates them.  If live calls fail, refresh `LM_TWITTERER_AUTH_TOKEN` and
-`LM_TWITTERER_CT0` from DevTools > Application > Cookies > `x.com`, rerun
-`auth-browser`, or rerun `import-edge-cookies` after closing Edge.
+- Public X text is treated as hostile input for replies.
+- The plugin does not try to evade platform detection: transparent identity, conservative cadence, dry-run defaults, allowlisted replies.
+- Default cron cadence is modest: post every 6h, scan replies every 1h.

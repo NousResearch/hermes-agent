@@ -89,3 +89,49 @@ def test_persist_user_message_override_keeps_clean_content_and_timestamp_metadat
             "timestamp": _epoch(2026, 4, 28, 13, 40, 53),
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# Opt-in gate: gateway.message_timestamps.enabled (default OFF)
+# ---------------------------------------------------------------------------
+
+
+def test_message_timestamps_enabled_defaults_off():
+    from gateway.run import _message_timestamps_enabled
+
+    assert _message_timestamps_enabled(None) is False
+    assert _message_timestamps_enabled({}) is False
+    assert _message_timestamps_enabled({"gateway": {}}) is False
+    assert (
+        _message_timestamps_enabled({"gateway": {"message_timestamps": {}}}) is False
+    )
+
+
+def test_message_timestamps_enabled_when_opted_in():
+    from gateway.run import _message_timestamps_enabled
+
+    assert _message_timestamps_enabled(
+        {"gateway": {"message_timestamps": {"enabled": True}}}
+    ) is True
+    # Bare shorthand also accepted.
+    assert _message_timestamps_enabled({"gateway": {"message_timestamps": True}}) is True
+
+
+def test_build_history_injects_only_when_enabled():
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "hello", "timestamp": _epoch(2026, 4, 28, 13, 40, 53)},
+        {"role": "assistant", "content": "hi"},
+    ]
+
+    # Default (off): user content stays clean, no timestamp prefix.
+    agent_history, _ = _build_gateway_agent_history(history)
+    assert agent_history[0]["content"] == "hello"
+
+    # Enabled: user content gets exactly one timestamp prefix.
+    agent_history, _ = _build_gateway_agent_history(history, inject_timestamps=True)
+    assert agent_history[0]["content"].startswith("[")
+    assert agent_history[0]["content"].endswith("hello")
+    # Assistant message is never timestamped.
+    assert agent_history[1]["content"] == "hi"

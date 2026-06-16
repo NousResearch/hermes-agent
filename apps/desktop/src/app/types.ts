@@ -87,6 +87,7 @@ export interface SessionCompressResponse {
   }
   info?: Record<string, unknown>
   messages?: Array<Record<string, unknown>>
+  new_session_id?: string
 }
 
 export interface HandoffRequestResponse {

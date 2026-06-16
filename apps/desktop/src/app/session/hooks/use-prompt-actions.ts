@@ -52,6 +52,7 @@ import {
   setBusy,
   setMessages,
   setModelPickerOpen,
+  setSelectedStoredSessionId,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
@@ -1048,18 +1049,28 @@ export function usePromptActions({
               ...(focusArg ? { focus_topic: focusArg } : {}),
               ...(deep ? { deep: true } : {})
             })
+            const compressedSessionId =
+              typeof result.new_session_id === 'string' && result.new_session_id ? result.new_session_id : sid
 
             // Re-fetch messages from the REST API to get the compressed transcript.
             // The gateway updates state.db after compression, so the REST API has
             // the updated messages.
             try {
-              const { messages: freshMessages } = await getSessionMessages(sid)
+              const { messages: freshMessages, session_id: resolvedSessionId } = await getSessionMessages(compressedSessionId)
+              const storedSessionId = resolvedSessionId || compressedSessionId
               const chatMessages = toChatMessages(freshMessages)
+
+              if (storedSessionId && storedSessionId !== selectedStoredSessionIdRef.current) {
+                setSelectedStoredSessionId(storedSessionId)
+                selectedStoredSessionIdRef.current = storedSessionId
+                navigate(sessionRoute(storedSessionId))
+              }
 
               updateSessionState(sid, state => ({
                 ...state,
-                messages: chatMessages
-              }), selectedStoredSessionIdRef.current)
+                messages: chatMessages,
+                storedSessionId
+              }), storedSessionId)
             } catch {
               // Non-fatal: summary still renders below
             }

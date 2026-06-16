@@ -870,8 +870,9 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id. In
-        # thread mode, top-level channel posts are valid roots for progress.
+        # Thread support: replies carry root_id. In thread mode, a top-level
+        # channel post is its own root. Flat mode and DMs retain their existing
+        # channel-scoped session behavior.
         thread_id = post.get("root_id") or None
         if (
             not thread_id
@@ -881,8 +882,18 @@ class MattermostAdapter(BasePlatformAdapter):
         ):
             thread_id = post_id
 
-        # Determine message type.
+        # Ignore textless posts with no files. After mention stripping, a bare
+        # mention or empty wake-up would otherwise become a blank user turn and
+        # can replay the previous interrupted tool intent.
         file_ids = post.get("file_ids") or []
+        if not str(message_text or "").strip() and not file_ids:
+            logger.debug(
+                "Mattermost: ignoring empty post with no attachments (channel=%s, post=%s)",
+                channel_id,
+                post_id,
+            )
+            return
+
         msg_type = MessageType.TEXT
         if message_text[:1].isspace() and message_text.lstrip().startswith("/"):
             message_text = message_text.lstrip()

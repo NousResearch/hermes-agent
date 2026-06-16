@@ -3122,7 +3122,21 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # ── Thread / topic identification ──────────────────────────────────
+        # Feishu topics are identified by ``root_id`` (the root message of the
+        # topic).  ``thread_id`` is a newer field that carries the same value
+        # for topic messages.  When *both* are absent but ``parent_id`` is
+        # present, the message is a reply inside a topic whose root the event
+        # omitted — use ``parent_id`` as a best-effort grouping key to keep
+        # the reply chain in one session instead of falling back to the
+        # per-user group session, which would fragment the conversation.
+        _raw_root = getattr(message, "root_id", None)
+        _raw_parent = getattr(message, "parent_id", None)
+        thread_id = (
+            getattr(message, "thread_id", None)
+            or _raw_root
+            or (_raw_parent if _raw_parent and chat_type != "p2p" else None)
+        )
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)

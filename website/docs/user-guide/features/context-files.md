@@ -16,6 +16,7 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
+| **HERMES.md (global)** | Global operational policy — workflows, conventions, safety rules — that follows the agent across every cwd | `HERMES_HOME/HERMES.md` (preferred), with `AGENTS.md` and `CLAUDE.md` accepted as aliases |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
@@ -77,6 +78,30 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 - Frontend port is 3000, backend is 8000, DB is 5432
 ```
 
+## HERMES.md (global)
+
+A `HERMES.md` placed in `HERMES_HOME` (default `~/.hermes/`) holds **global operational policy** — the procedures, workflow rules, safety guardrails, and formatting preferences that should apply to every Hermes session regardless of working directory. It mirrors the loading model of `SOUL.md` but covers procedure rather than identity.
+
+**Why this exists:** project context discovery is cwd-bound. Gateway sessions (Telegram, Discord, WeChat), cron jobs, and subagents often run from a working directory that is *not* the project root, so a project-local `AGENTS.md` silently drops out. Anything in `HERMES_HOME/HERMES.md` is loaded unconditionally.
+
+**Filenames accepted (priority order, first non-empty wins):**
+
+1. `HERMES.md` — preferred, Hermes-native
+2. `AGENTS.md` — alias for users coming from the Codex / agent-spec convention
+3. `CLAUDE.md` — alias for users coming from Claude Code
+
+Only one global operational file is loaded — pick whichever name you prefer; `HERMES.md` wins when more than one exists.
+
+**Suggested split:**
+
+| File | Role | Example content |
+|---|---|---|
+| `SOUL.md` | Identity, voice, values | "Be direct. Have opinions. Skip filler." |
+| `HERMES.md` (HERMES_HOME) | Global operational policy | "Always git push after commit. PT-BR responses. Never edit secrets." |
+| `.hermes.md` / `AGENTS.md` (project) | Project-specific context | "Use pytest. Lint with ruff. Service entry point at `run.py`." |
+
+**Ordering:** the global file is injected **before** project context, so a project's `AGENTS.md` can refine or override baseline policy. When `cwd` equals `HERMES_HOME`, project discovery is suppressed to avoid injecting the same file twice.
+
 ## SOUL.md
 
 `SOUL.md` controls the agent's personality, tone, and communication style. See the [Personality](/user-guide/features/personality) page for full details.
@@ -106,12 +131,13 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
-2. **Content is read** — each file is read as UTF-8 text
-3. **Security scan** — content is checked for prompt injection patterns
-4. **Truncation** — files exceeding 20,000 characters are head/tail truncated (70% head, 20% tail, with a marker in the middle)
-5. **Assembly** — all sections are combined under a `# Project Context` header
-6. **Injection** — the assembled content is added to the system prompt
+1. **Global operational file** — checks `HERMES_HOME/HERMES.md` → `AGENTS.md` → `CLAUDE.md` (first non-empty wins) and prepends it to the block
+2. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins; skipped when cwd is `HERMES_HOME`)
+3. **Content is read** — each file is read as UTF-8 text
+4. **Security scan** — content is checked for prompt injection patterns
+5. **Truncation** — files exceeding 20,000 characters are head/tail truncated (70% head, 20% tail, with a marker in the middle)
+6. **Assembly** — all sections are combined under a `# Project Context` header (global first, then project, then `SOUL.md`)
+7. **Injection** — the assembled content is added to the system prompt
 
 ### During the session (progressive discovery)
 

@@ -1503,6 +1503,48 @@ def load_soul_md() -> Optional[str]:
         return None
 
 
+_GLOBAL_OPERATIONAL_FILES = ("HERMES.md", "AGENTS.md", "CLAUDE.md")
+
+
+def _load_global_operational_md() -> str:
+    """Load global operational context from ``$HERMES_HOME``.
+
+    Mirrors :func:`load_soul_md` but for operational policy (workflows,
+    conventions, safety guardrails) rather than identity/persona.
+
+    Priority (first existing file with non-empty content wins):
+      1. ``HERMES.md`` — Hermes-native, preferred
+      2. ``AGENTS.md`` — alias for users coming from Codex / agent-spec
+      3. ``CLAUDE.md`` — alias for users coming from Claude Code
+
+    Returns an empty string when no file is present so this is safe to
+    concat unconditionally.
+    """
+    try:
+        from hermes_cli.config import ensure_hermes_home
+        ensure_hermes_home()
+    except Exception as e:
+        logger.debug("Could not ensure HERMES_HOME before loading global operational file: %s", e)
+
+    home = get_hermes_home()
+    for name in _GLOBAL_OPERATIONAL_FILES:
+        candidate = home / name
+        if not candidate.exists():
+            continue
+        try:
+            content = candidate.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            content = _strip_yaml_frontmatter(content)
+            label = f"{name} (global)"
+            content = _scan_context_content(content, label)
+            result = f"## {label}\n\n{content}"
+            return _truncate_content(result, label)
+        except Exception as e:
+            logger.debug("Could not read %s: %s", candidate, e)
+    return ""
+
+
 def _load_hermes_md(cwd_path: Path) -> str:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
@@ -1591,14 +1633,22 @@ def _load_cursorrules(cwd_path: Path) -> str:
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
-      1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+    Layout of the returned ``# Project Context`` block:
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
+      1. Global operational policy from ``$HERMES_HOME`` — first existing
+         non-empty file among ``HERMES.md`` (preferred), ``AGENTS.md``,
+         ``CLAUDE.md``. Loaded regardless of cwd.
+      2. Project context from the working directory — first match wins:
+         ``.hermes.md`` / ``HERMES.md`` (walk to git root), ``AGENTS.md``
+         (cwd only), ``CLAUDE.md`` (cwd only), ``.cursorrules`` /
+         ``.cursor/rules/*.mdc`` (cwd only).
+      3. ``SOUL.md`` from ``HERMES_HOME`` — identity, included when not
+         already loaded as the agent identity slot.
+
+    Project context follows global so a project can refine or override
+    baseline policy. When cwd equals ``HERMES_HOME`` the cwd discovery
+    is skipped to avoid injecting the same file twice. Each source is
+    capped at 20,000 chars.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).
@@ -1609,13 +1659,32 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
+    # Global operational policy from $HERMES_HOME (HERMES.md / AGENTS.md /
+    # CLAUDE.md, in priority order). Loaded independently of cwd so it
+    # follows the user across CLI, gateway, cron, and subagent sessions —
+    # symmetric with SOUL.md but for procedure rather than identity.
+    global_op = _load_global_operational_md()
+    if global_op:
+        sections.append(global_op)
+
+    # Suppress cwd-based project context discovery when cwd is HERMES_HOME
+    # itself — the same file would otherwise be injected twice.
+    skip_project_context = False
+    try:
+        if cwd_path == get_hermes_home().resolve():
+            skip_project_context = True
+    except Exception:
+        pass
+
     # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
+    project_context = ""
+    if not skip_project_context:
+        project_context = (
+            _load_hermes_md(cwd_path)
+            or _load_agents_md(cwd_path)
+            or _load_claude_md(cwd_path)
+            or _load_cursorrules(cwd_path)
+        )
     if project_context:
         sections.append(project_context)
 

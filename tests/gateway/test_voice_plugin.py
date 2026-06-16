@@ -448,15 +448,10 @@ def test_ink_normalize_resume_is_turn_resumed():
     assert out["event"] == "turn_resumed"
 
 
-def test_ink_normalize_transcript_field_fallbacks():
-    # transcript field name is assumed; defensive extraction tries text ->
-    # transcript -> transcript_text.
-    assert ink._normalize_ink_message(
-        {"type": "turn.end", "text": "hello"})["transcript"] == "hello"
+def test_ink_normalize_transcript_field():
+    # Verified live: the transcript lives in "transcript".
     assert ink._normalize_ink_message(
         {"type": "turn.end", "transcript": "hi there"})["transcript"] == "hi there"
-    assert ink._normalize_ink_message(
-        {"type": "turn.end", "transcript_text": "yo"})["transcript"] == "yo"
 
 
 def test_ink_normalize_defaults_missing_fields():
@@ -467,13 +462,15 @@ def test_ink_normalize_defaults_missing_fields():
     assert out["turn_index"] is None
 
 
-def test_ink_normalize_carries_optional_fields():
+def test_ink_normalize_carries_turn_id():
+    # Verified live: id field is "turn_id" (string); Ink-2 sends no confidence
+    # or per-word list, so those stay None/[] for shape-parity with Flux.
     out = ink._normalize_ink_message({
-        "type": "turn.update", "text": "partial",
-        "confidence": 0.42, "words": [{"w": "partial"}], "turn_index": 3})
-    assert out["confidence"] == 0.42
-    assert out["words"] == [{"w": "partial"}]
-    assert out["turn_index"] == 3
+        "type": "turn.update", "transcript": "partial", "turn_id": "3"})
+    assert out["transcript"] == "partial"
+    assert out["turn_index"] == "3"
+    assert out["confidence"] is None
+    assert out["words"] == []
 
 
 def test_ink_normalize_drops_unknown_types():

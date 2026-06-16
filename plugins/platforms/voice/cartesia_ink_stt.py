@@ -12,12 +12,17 @@ Input: raw s16le mono PCM at the call's native rate. Unlike Flux (which we
 resample 24k->16k), Ink-2 accepts the declared sample_rate directly, so we send
 the inbound mic audio AS-IS and just declare its rate in the URL — no resample.
 
-IMPORTANT — wire schema is ASSUMED, not yet verified live. The turn-event JSON
-field names (transcript / confidence / words), the exact ``type`` strings, and
-whether eager-end needs an opt-in query param are not confirmed. Every such
-assumption is isolated in ``_normalize_ink_message`` and the URL builder behind
-``# VERIFY-AGAINST-LIVE-API:`` comments, so a first live call can correct them
-in one place without touching the turn loop.
+Wire schema VERIFIED live 2026-06-16 (probe against the real socket):
+  {"type":"connected","request_id":...}                       -> ignored ack
+  {"type":"turn.start","turn_id":"1","request_id":...}
+  {"type":"turn.update","transcript":"Hi, I'm","turn_id":"1",...}   (cumulative)
+  {"type":"turn.eager_end","transcript":"...","turn_id":"1",...}
+  {"type":"turn.resume","turn_id":"1",...}                     (no transcript)
+  {"type":"turn.end","transcript":"...","turn_id":"1",...}     (final)
+Transcript lives in ``transcript``; the id field is ``turn_id`` (string);
+there is no ``confidence`` or per-word list; eager-end fires by default (no
+opt-in param). Connection params + ``Authorization: Bearer`` + ``Cartesia-Version``
+header are confirmed working.
 """
 
 from __future__ import annotations
@@ -39,9 +44,7 @@ WS_BASE = "wss://api.cartesia.ai/stt/turns/websocket"
 INK_MODEL = "ink-2"
 CARTESIA_VERSION = "2026-03-01"
 
-# VERIFY-AGAINST-LIVE-API: top-level message "type" -> normalized EV_*. These
-# turn.* strings are the assumed Realtime-turns event names; confirm against a
-# live socket capture and fix only this map if they differ.
+# Verified live 2026-06-16: top-level message "type" -> normalized EV_*.
 _INK_EVENT_MAP = {
     "turn.start": EV_START,
     "turn.update": EV_UPDATE,
@@ -59,34 +62,20 @@ def _normalize_ink_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     Yields the same shape Flux yields:
         {"event", "transcript", "confidence", "words", "turn_index"}
     """
-    raw_type = msg.get("type")
-    ev = _INK_EVENT_MAP.get(raw_type)
+    ev = _INK_EVENT_MAP.get(msg.get("type"))
     if ev is None:
-        # Non-turn frames (acks, metadata, errors) are surfaced by the caller;
-        # here we just drop anything that isn't a known turn event.
+        # Non-turn frames ("connected" ack, metadata, errors) are not turn
+        # events; the loop ignores them.
         return None
-    # VERIFY-AGAINST-LIVE-API: transcript field name. Try the most likely keys
-    # in order; Cartesia may use "text", "transcript", or "transcript_text".
-    transcript = (
-        msg.get("text")
-        or msg.get("transcript")
-        or msg.get("transcript_text")
-        or ""
-    )
-    # VERIFY-AGAINST-LIVE-API: confidence field name (assumed "confidence";
-    # Flux uses "end_of_turn_confidence"). Defaults to None if absent.
-    confidence = msg.get("confidence")
-    # VERIFY-AGAINST-LIVE-API: per-word timing list field name (assumed
-    # "words"). Defaults to [] if absent — the turn loop does not require it.
-    words = msg.get("words") or []
-    # VERIFY-AGAINST-LIVE-API: turn index field name (assumed "turn_index").
-    turn_index = msg.get("turn_index")
+    # Verified: transcript in "transcript"; id in "turn_id" (string). Ink-2
+    # sends no confidence or per-word list, so those stay None/[] (the turn
+    # loop does not require them) — kept for shape-parity with the Flux adapter.
     return {
         "event": ev,
-        "transcript": transcript or "",
-        "confidence": confidence,
-        "words": words,
-        "turn_index": turn_index,
+        "transcript": msg.get("transcript") or "",
+        "confidence": None,
+        "words": [],
+        "turn_index": msg.get("turn_id"),
     }
 
 
@@ -115,10 +104,8 @@ class CartesiaInkSTT:
         return self._asr_seconds
 
     def _url(self) -> str:
-        # VERIFY-AGAINST-LIVE-API: query params. This is the Realtime "Auto"
-        # endpoint (Cartesia owns turn detection). Whether turn.eager_end is
-        # emitted by default or needs an opt-in param (e.g. &eager_end=true) is
-        # NOT confirmed — add it here if eager events never arrive live.
+        # Realtime "Auto" endpoint (Cartesia owns turn detection). Verified
+        # live: these params connect and eager-end fires by default.
         return (
             f"{WS_BASE}?model={INK_MODEL}"
             f"&encoding=pcm_s16le&sample_rate={self._input_rate}"

@@ -18,12 +18,15 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { mergeUsageSnapshot, type TokenUsagePayload, usageFromTokenUsagePayload } from '@/lib/token-usage'
 import { setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  $localDeviceName,
+  $selectedStoredSessionId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -33,7 +36,12 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setLocalDeviceName,
+  setSelectedStoredSessionId,
+  setSessionActivityStatus,
+  setSessionParticipants,
   setTurnStartedAt,
+  type SessionParticipant,
   setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
@@ -67,15 +75,7 @@ interface QueuedStreamDeltas {
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -124,6 +124,21 @@ function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): Sessio
 function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
   return Object.keys(patch).length > 0
 }
+
+function trimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function toSessionParticipants(payload: GatewayEventPayload | undefined): SessionParticipant[] {
+  return (payload?.participants ?? [])
+    .map(participant => ({
+      count: typeof participant.count === 'number' && Number.isFinite(participant.count) ? participant.count : 0,
+      device: trimmedString(participant.device)
+    }))
+    .filter(participant => participant.device && participant.count > 0)
+}
+
+const ACTIVITY_STATUS_KINDS = new Set(['compressing', 'lifecycle', 'process', 'status'])
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
@@ -684,6 +699,10 @@ export function useMessageStream({
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
+        const deviceName = trimmedString(payload?.device_name)
+        if (deviceName && !$localDeviceName.get()) {
+          setLocalDeviceName(deviceName)
+        }
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
@@ -694,8 +713,13 @@ export function useMessageStream({
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+        const storedSessionId = trimmedString(payload?.session_key) || undefined
 
         if (apply) {
+          if (storedSessionId) {
+            setSelectedStoredSessionId(storedSessionId)
+          }
+
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
           }
@@ -733,50 +757,62 @@ export function useMessageStream({
           }
         }
 
+        if (sessionId && storedSessionId) {
+          updateSessionState(sessionId, state => state, storedSessionId)
+        }
+
         if (sessionId && hasStatePatch) {
-          updateSessionState(sessionId, state => ({
-            ...state,
-            ...statePatch,
-            branch: statePatch.branch ?? state.branch,
-            cwd: statePatch.cwd ?? state.cwd
-          }))
+          updateSessionState(
+            sessionId,
+            state => ({
+              ...state,
+              ...statePatch,
+              branch: statePatch.branch ?? state.branch,
+              cwd: statePatch.cwd ?? state.cwd
+            }),
+            storedSessionId ?? $selectedStoredSessionId.get()
+          )
         }
 
         if (apply) {
           if (runningChanged && sessionId) {
-            updateSessionState(sessionId, state => {
-              const busy = Boolean(payload!.running)
+            updateSessionState(
+              sessionId,
+              state => {
+                const busy = Boolean(payload!.running)
 
-              if (state.busy === busy && (busy || !state.awaitingResponse)) {
-                return state
-              }
+                if (state.busy === busy && (busy || !state.awaitingResponse)) {
+                  return state
+                }
 
-              if (busy) {
+                if (busy) {
+                  return {
+                    ...state,
+                    busy,
+                    turnStartedAt: state.turnStartedAt ?? Date.now()
+                  }
+                }
+
+                if (state.awaitingResponse && !state.sawAssistantPayload) {
+                  return state
+                }
+
                 return {
                   ...state,
+                  awaitingResponse: false,
                   busy,
-                  turnStartedAt: state.turnStartedAt ?? Date.now()
+                  pendingBranchGroup: null,
+                  streamId: null,
+                  turnStartedAt: null
                 }
-              }
-
-              if (state.awaitingResponse && !state.sawAssistantPayload) {
-                return state
-              }
-
-              return {
-                ...state,
-                awaitingResponse: false,
-                busy,
-                pendingBranchGroup: null,
-                streamId: null,
-                turnStartedAt: null
-              }
-            })
+              },
+              storedSessionId ?? $selectedStoredSessionId.get()
+            )
           }
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
 
         if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
@@ -789,6 +825,27 @@ export function useMessageStream({
           void queryClient.invalidateQueries({
             queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
           })
+        }
+      } else if (event.type === 'token.usage') {
+        if (isActiveEvent) {
+          setCurrentUsage(current =>
+            mergeUsageSnapshot(current, usageFromTokenUsagePayload(payload as TokenUsagePayload | undefined))
+          )
+        }
+      } else if (event.type === 'session.participants') {
+        if (sessionId) {
+          setSessionParticipants(sessionId, toSessionParticipants(payload))
+        }
+      } else if (event.type === 'status.update') {
+        if (isActiveEvent) {
+          const kind = trimmedString(payload?.kind)
+          const text = trimmedString(payload?.text)
+
+          if (kind === 'ready') {
+            setSessionActivityStatus(null)
+          } else if (ACTIVITY_STATUS_KINDS.has(kind) && text) {
+            setSessionActivityStatus({ kind, text })
+          }
         }
       } else if (event.type === 'message.start') {
         if (!sessionId) {
@@ -819,6 +876,9 @@ export function useMessageStream({
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
         }
+        if (isActiveEvent) {
+          setSessionActivityStatus(null)
+        }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
         // KawaiiSpinner), not real reasoning. The bottom-of-thread loading
@@ -827,6 +887,9 @@ export function useMessageStream({
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
+        }
+        if (isActiveEvent) {
+          setSessionActivityStatus(null)
         }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
@@ -857,7 +920,7 @@ export function useMessageStream({
         }
 
         if (payload?.usage) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
@@ -866,10 +929,19 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+        if (isActiveEvent) {
+          setSessionActivityStatus(null)
+        }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          if (isActiveEvent && payload?.usage) {
+            setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
+          }
+          if (isActiveEvent) {
+            setSessionActivityStatus(null)
+          }
           // A pending clarify blocks the turn, so the first tool.complete after
           // one is the clarify resolving — drop the "needs input" flag here so
           // the sidebar indicator clears as soon as it's answered, not only at

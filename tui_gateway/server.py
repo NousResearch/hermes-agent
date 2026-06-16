@@ -26,6 +26,7 @@ from hermes_constants import (
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
+    FanoutTransport,
     StdioTransport,
     Transport,
     bind_transport,
@@ -555,7 +556,12 @@ def _close_sessions_for_transport(
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
     with _sessions_lock:
-        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+        owned = [
+            (sid, s)
+            for sid, s in _sessions.items()
+            if s.get("transport") is transport
+            or (isinstance(s.get("transport"), FanoutTransport) and s["transport"].contains(transport))
+        ]
     reaped = 0
     detached = 0
     for sid, session in owned:
@@ -566,7 +572,14 @@ def _close_sessions_for_transport(
             # Point detached sessions at the drop sentinel (NOT real stdio) so
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
+            current = session.get("transport")
+            if current is transport:
+                session["transport"] = _detached_ws_transport
+            elif isinstance(current, FanoutTransport):
+                current.detach(transport)
+                if not current.has_transports():
+                    session["transport"] = _detached_ws_transport
+            _drop_session_participant(sid, session, transport)
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
@@ -600,7 +613,113 @@ def _transport_is_dead(transport) -> bool:
     # so let the idle reaper evict healthy standalone TUI sessions).
     if transport is _detached_ws_transport:
         return True
+    if isinstance(transport, FanoutTransport):
+        return not transport.has_transports()
     return getattr(transport, "_closed", None) is True
+
+
+def _session_has_live_transport(session: dict) -> bool:
+    transport = session.get("transport")
+    return transport is not None and not _transport_is_dead(transport)
+
+
+def _attach_session_transport(session: dict, transport: Transport):
+    current = session.get("transport")
+    if current is transport:
+        return current
+
+    if current is _stdio_transport and transport is not _stdio_transport:
+        session["transport"] = transport
+        return transport
+
+    if current is None or _transport_is_dead(current):
+        session["transport"] = transport
+        return transport
+
+    if isinstance(current, FanoutTransport):
+        current.attach(transport)
+        return current
+
+    fanout = FanoutTransport(current, transport)
+    session["transport"] = fanout
+    return fanout
+
+
+def _sanitize_sender_device(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split()).strip()[:80]
+
+
+def _emit_participants_update(sid: str, session: dict) -> None:
+    try:
+        _emit("session.participants", sid, {"participants": _session_participants_payload(session)})
+    except Exception:
+        logger.debug("Failed to emit session participants update", exc_info=True)
+
+
+def _drop_session_participant(sid: str, session: dict, transport: Transport) -> bool:
+    participants = _participants_map(session)
+    if participants.pop(id(transport), None) is None:
+        return False
+    _emit_participants_update(sid, session)
+    return True
+
+
+def _record_session_participant(sid: str, session: dict, transport: Transport, sender_device) -> None:
+    if transport is _stdio_transport:
+        return
+
+    device = _sanitize_sender_device(sender_device)
+    if not device:
+        return
+
+    participants = _participants_map(session)
+    key = id(transport)
+    if participants.get(key) == device:
+        return
+
+    participants[key] = device
+    _emit_participants_update(sid, session)
+
+
+def _detach_transport_from_sessions(transport: Transport) -> list[str]:
+    detached: list[str] = []
+    participant_updates: list[tuple[str, dict]] = []
+
+    with _sessions_lock:
+        owned = list(_sessions.items())
+        for sid, session in owned:
+            current = session.get("transport")
+            changed = False
+
+            if current is transport:
+                session["transport"] = _detached_ws_transport
+                changed = True
+            elif isinstance(current, FanoutTransport) and current.detach(transport):
+                if not current.has_transports():
+                    session["transport"] = _detached_ws_transport
+                changed = True
+
+            if not changed:
+                continue
+
+            participants = _participants_map(session)
+            if participants.pop(id(transport), None) is not None:
+                participant_updates.append((sid, session))
+            detached.append(sid)
+
+    for sid, session in participant_updates:
+        _emit_participants_update(sid, session)
+
+    for sid in detached:
+        if _ws_session_is_orphaned(_sessions.get(sid)):
+            try:
+                _schedule_ws_orphan_reap(sid)
+            except Exception:
+                pass
+
+    return detached
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
@@ -758,6 +877,14 @@ def _emit(event: str, sid: str, payload: dict | None = None):
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
+        return
+    if kind == "token_usage":
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            _emit("token.usage", sid, payload)
         return
     _emit(
         "status.update",
@@ -3912,13 +4039,15 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4007, "session not found")
     def _reuse_live_payload(sid: str, session: dict) -> dict:
+        transport = current_transport() or _stdio_transport
         payload = _live_session_payload(
             sid,
             session,
             cols=cols,
             touch=True,
-            transport=current_transport() or _stdio_transport,
+            transport=transport,
         )
+        _record_session_participant(sid, session, transport, params.get("sender_device"))
         payload["resumed"] = target
         # A lazy watch session never owns a run loop, so its payload's running
         # flag is always False — overlay the child-run registry so a reconnecting
@@ -4260,7 +4389,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
+            _attach_session_transport(session, transport)
         if touch:
             session["last_active"] = time.time()
         history = list(session.get("display_history_prefix") or []) + list(
@@ -4333,16 +4462,12 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     assert session is not None
+    transport = current_transport() or _stdio_transport
 
-    return _ok(
-        rid,
-        _live_session_payload(
-            sid,
-            session,
-            touch=True,
-            transport=current_transport() or _stdio_transport,
-        ),
-    )
+    payload = _live_session_payload(sid, session, touch=True, transport=transport)
+    _record_session_participant(sid, session, transport, params.get("sender_device"))
+
+    return _ok(rid, payload)
 
 
 def _participants_map(session: dict) -> dict[int, str]:
@@ -5727,7 +5852,8 @@ def _(rid, params: dict) -> dict:
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        _attach_session_transport(session, t)
+        _record_session_participant(sid, session, t, params.get("sender_device"))
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")

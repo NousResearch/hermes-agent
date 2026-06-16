@@ -371,6 +371,24 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
     return value or None
 
 
+def _git_tracking_ref(repo_dir: Path) -> Optional[str]:
+    """Return the checkout's configured upstream ref, if it has one."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """Return upstream/local git hashes for the startup banner.
 
@@ -396,7 +414,8 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             pass
         return None
 
-    upstream = _git_short_hash(repo_dir, "origin/main")
+    upstream_ref = _git_tracking_ref(repo_dir) or "origin/main"
+    upstream = _git_short_hash(repo_dir, upstream_ref)
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
@@ -413,7 +432,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            ["git", "rev-list", "--count", f"{upstream_ref}..HEAD"],
             capture_output=True,
             text=True,
             timeout=5,

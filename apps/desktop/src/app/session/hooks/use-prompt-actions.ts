@@ -41,6 +41,7 @@ import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalize
 import {
   $busy,
   $connection,
+  $localDeviceName,
   $messages,
   $sessions,
   $yoloActive,
@@ -72,6 +73,12 @@ interface HandoffResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function localSenderDevice(): string | undefined {
+  const deviceName = $localDeviceName.get().trim()
+
+  return deviceName || undefined
 }
 
 function isSessionIdCandidate(value: string): boolean {
@@ -127,9 +134,7 @@ function imageFilenameFromPath(filePath: string): string {
 // Remote gateway: the local composer-image file lives on THIS machine's disk,
 // not the gateway's, so read the bytes here and upload them via
 // image.attach_bytes. Returns null when the file can't be read.
-async function readImageForRemoteAttach(
-  filePath: string
-): Promise<{ contentBase64: string; filename: string } | null> {
+async function readImageForRemoteAttach(filePath: string): Promise<{ contentBase64: string; filename: string } | null> {
   const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
   const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
 
@@ -545,12 +550,14 @@ export function usePromptActions({
       }
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const senderDevice = localSenderDevice()
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
+        attachmentRefs,
+        ...(senderDevice ? { senderDevice } : {})
       })
 
       const releaseBusy = () => {
@@ -1242,13 +1249,8 @@ export function usePromptActions({
     // body text is dropped entirely so we never leave an empty bubble behind.
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
-        .filter(
-          message =>
-            !((message.pending || message.id === streamId) && !chatMessageText(message).trim())
-        )
-        .map(message =>
-          message.pending || message.id === streamId ? { ...message, pending: false } : message
-        )
+        .filter(message => !((message.pending || message.id === streamId) && !chatMessageText(message).trim()))
+        .map(message => (message.pending || message.id === streamId ? { ...message, pending: false } : message))
 
     if (!sessionId) {
       setMutableRef(busyRef, false)

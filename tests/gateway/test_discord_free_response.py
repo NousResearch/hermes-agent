@@ -581,6 +581,26 @@ async def test_discord_message_started_thread_injects_parent_alert_context(adapt
     assert "192.168.0.15:9100" in event.reply_to_text
 
 
+def test_discord_thread_starter_context_notes_omitted_embed_fields():
+    fields = [
+        SimpleNamespace(name=f"field-{idx}", value=f"value-{idx}")
+        for idx in range(15)
+    ]
+    message = make_history_message(
+        author=SimpleNamespace(id=77, display_name="Robusta", name="Robusta", bot=True),
+        content="alert details",
+        msg_id=900,
+        embeds=[SimpleNamespace(title="Alert", description="Many labels", fields=fields)],
+    )
+
+    context = discord_platform._format_discord_message_context(message)
+
+    assert "field-0: value-0" in context
+    assert "field-7: value-7" in context
+    assert "field-8: value-8" not in context
+    assert "[7 more embed fields omitted]" in context
+
+
 @pytest.mark.asyncio
 async def test_discord_thread_starter_context_fetches_unresolved_parent_message(adapter):
     """If Discord omits referenced_message, fetch the parent message by reference."""

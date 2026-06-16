@@ -175,7 +175,11 @@ def _compact_context_text(value: Any, limit: int) -> str:
 
 
 def _format_discord_message_context(message: Any, *, max_chars: int = 1800) -> str:
-    """Format a Discord message's content/embed payload for prompt context."""
+    """Format a Discord message's content/embed payload for prompt context.
+
+    The prompt snippet is intentionally bounded: only the first 3 embeds and
+    first 8 fields per embed are included, with omitted counts noted inline.
+    """
     if message is None:
         return ""
 
@@ -195,14 +199,16 @@ def _format_discord_message_context(message: Any, *, max_chars: int = 1800) -> s
     if content:
         lines.append(f"content: {_compact_context_text(content, 700)}")
 
-    for embed in list(getattr(message, "embeds", []) or [])[:3]:
+    embeds = list(getattr(message, "embeds", []) or [])
+    for embed in embeds[:3]:
         title = _obj_value(embed, "title")
         description = _obj_value(embed, "description")
         if title:
             lines.append(f"embed title: {_compact_context_text(title, 240)}")
         if description:
             lines.append(f"embed description: {_compact_context_text(description, 700)}")
-        for field in list(_obj_value(embed, "fields", []) or [])[:8]:
+        fields = list(_obj_value(embed, "fields", []) or [])
+        for field in fields[:8]:
             name = _obj_value(field, "name", "field")
             value = _obj_value(field, "value", "")
             if value:
@@ -210,6 +216,10 @@ def _format_discord_message_context(message: Any, *, max_chars: int = 1800) -> s
                     f"{_compact_context_text(name, 120)}: "
                     f"{_compact_context_text(value, 500)}"
                 )
+        if len(fields) > 8:
+            lines.append(f"[{len(fields) - 8} more embed fields omitted]")
+    if len(embeds) > 3:
+        lines.append(f"[{len(embeds) - 3} more embeds omitted]")
 
     attachments = list(getattr(message, "attachments", []) or [])
     if attachments:

@@ -1,0 +1,7 @@
+name: browser-steel
+version: 1.0.0
+description: "Steel (https://steel.dev) cloud browser backend. Requires STEEL_API_KEY. Connects over CDP (no Steel CLI needed for the browser path); supports residential proxies and CAPTCHA solving. Explicit-only — set browser.cloud_provider: steel."
+author: nibzard
+kind: backend
+provides_browser_providers:
+  - steel

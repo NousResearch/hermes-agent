@@ -1295,6 +1295,8 @@ AUTHOR_MAP = {
     # Debug share upload-time redaction (May 2026)
     "dhuysamen@gmail.com": "GodsBoy",  # PR #19318
     "github@nadyahermes.anonaddy.com": "ruangraung",  # PR #42308
+    # Steel cloud browser provider
+    "nikola.balic@gmail.com": "nibzard",  # PR #21182
     "mrcoferland@gmail.com": "mrcoferland",  # PR #19023
     "chenlinfeng@ruije.com.cn": "noOne-list",  # PR #19050
     "briansu@Mac-mini.attlocal.net": "likejudy",  # PR #19052

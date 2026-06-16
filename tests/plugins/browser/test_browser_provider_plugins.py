@@ -2,7 +2,7 @@
 
 Covers:
 
-- All three bundled plugins (browserbase, browser-use, firecrawl)
+- All four bundled plugins (browserbase, browser-use, firecrawl, steel)
   instantiate and self-report the expected ABC defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The browser_registry resolves an active provider in the documented
@@ -72,14 +72,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All three bundled browser plugins discover and register correctly."""
+    """All four bundled browser plugins discover and register correctly."""
 
-    def test_all_three_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.browser_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "steel"]
 
     @pytest.mark.parametrize(
         "plugin_name,expected_display",
@@ -87,6 +87,7 @@ class TestBundledPluginsRegister:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("steel", "Steel"),
         ],
     )
     def test_each_plugin_has_name_and_display_name(
@@ -102,7 +103,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "steel"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -121,7 +122,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "steel"],
     )
     def test_each_plugin_implements_full_lifecycle(self, plugin_name: str) -> None:
         """The ABC's three lifecycle methods are all overridden."""
@@ -313,7 +314,7 @@ class TestLegacyAbcAliases:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "steel"],
     )
     def test_is_configured_delegates_to_is_available(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -329,6 +330,7 @@ class TestLegacyAbcAliases:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("steel", "Steel"),
         ],
     )
     def test_provider_name_returns_display_name(
@@ -356,7 +358,7 @@ class TestPickerIntegration:
 
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "steel"]
 
     def test_picker_rows_carry_post_setup_hook(self) -> None:
         """Every browser plugin row has post_setup='agent_browser' so

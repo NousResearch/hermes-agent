@@ -54,6 +54,7 @@ Hermes includes full browser automation with multiple backend options for naviga
 
 - **Browserbase** — Managed cloud browsers with anti-bot tooling, CAPTCHA solving, and residential proxies
 - **Browser Use** — Alternative cloud browser provider
+- **Steel** — Stealth cloud browsers with proxy rotation and CAPTCHA solving
 - **Local Chromium-family CDP** — Connect to your running Chrome, Brave, Chromium, or Edge browser using `/browser connect`
 - **Local Chromium** — Headless local browser via the `agent-browser` CLI
 

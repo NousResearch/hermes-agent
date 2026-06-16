@@ -165,6 +165,16 @@ export function SidebarSessionRow({
     onSessionDragStart?.(payload)
   }
 
+  const handleRowButtonDragStart = (event: React.DragEvent<HTMLButtonElement>) => {
+    handleSessionDragStart(event)
+    event.stopPropagation()
+  }
+
+  const handleRowButtonDragEnd = (event: React.DragEvent<HTMLButtonElement>) => {
+    onSessionDragEnd?.()
+    event.stopPropagation()
+  }
+
   return (
     <SessionContextMenu
       archived={archived}
@@ -212,6 +222,10 @@ export function SidebarSessionRow({
           {isWorking && !needsInput && !dragging && <span aria-hidden="true" className="arc-border" />}
           <button
             className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
+            data-session-row-main
+            draggable={nativeDraggable}
+            onDragEnd={nativeDraggable ? handleRowButtonDragEnd : undefined}
+            onDragStart={nativeDraggable ? handleRowButtonDragStart : undefined}
             onClick={event => {
               const canSelect = Boolean(selectable && onToggleSelect)
 

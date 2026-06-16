@@ -330,7 +330,7 @@ describe('SidebarSessionRow gestures', () => {
       onSessionDragStart
     })
 
-    const transfer = fakeTransfer()
+    const rowButtonTransfer = fakeTransfer()
     const dragAnchor = container.querySelector('[data-session-id]') as HTMLElement
     const dragSource = container.querySelector('[data-session-row-chrome]') as HTMLElement
     const timestamp = container.querySelector('[data-session-row-age]') as HTMLElement
@@ -343,11 +343,12 @@ describe('SidebarSessionRow gestures', () => {
     expect(dragSource.dataset.sessionDragSource).toBeUndefined()
     expect(dragSource.draggable).toBe(false)
     expect(dragSource.className).toContain('[-webkit-app-region:no-drag]')
-    expect(rowButton.draggable).toBe(false)
+    expect(rowButton.dataset.sessionRowMain).toBe('true')
+    expect(rowButton.draggable).toBe(true)
 
-    fireEvent.dragStart(dragAnchor, { dataTransfer: transfer })
+    fireEvent.dragStart(rowButton, { dataTransfer: rowButtonTransfer })
 
-    expect(readSessionDrag(transfer)).toMatchObject({
+    expect(readSessionDrag(rowButtonTransfer)).toMatchObject({
       archived: false,
       id: 's1',
       pinId: 's1',
@@ -363,7 +364,7 @@ describe('SidebarSessionRow gestures', () => {
     )
     expect(onSessionDragStart).toHaveBeenCalledTimes(1)
 
-    fireEvent.dragEnd(dragAnchor)
+    fireEvent.dragEnd(rowButton)
     expect(onSessionDragEnd).toHaveBeenCalledTimes(1)
 
     const timestampTransfer = fakeTransfer()

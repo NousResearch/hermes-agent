@@ -1,8 +1,8 @@
 ---
 name: shop
-description: "Ultimate personal shopping assistant: find, compare, buy, gift, and reorder products across the Shop catalog containing millions of stores. Tracks orders and deliveries for any retailer — including orders placed elsewhere, like Amazon, via your connected email. Helps get order info and initiate returns and refunds."
+description: "Shop catalog search, checkout, order tracking, returns."
 version: 1.0.1
-author: community
+author: Joe Rinaldi Johnson (joerj123), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:

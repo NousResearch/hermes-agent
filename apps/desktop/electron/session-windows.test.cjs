@@ -76,6 +76,18 @@ test('buildSessionWindowUrl builds a packaged file URL with the flag before the 
   assert.match(url, /^file:\/\/.*index\.html\?win=secondary#\/abc$/)
 })
 
+test('buildSessionWindowUrl adds the watch flag for spectator windows, before the hash', () => {
+  const url = buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', watch: true })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
+})
+
+test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () => {
+  const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&new=1#/')
+})
+
 test('registry opens one window per session and focuses on re-open', () => {
   const registry = createSessionWindowRegistry()
   let built = 0

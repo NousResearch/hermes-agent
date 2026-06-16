@@ -5,22 +5,31 @@
 
 const { pathToFileURL } = require('node:url')
 
+// Secondary windows open at the minimum usable size — a compact side panel for
+// subagent watch / cmd-click session pop-out, not a second full desktop.
+const SESSION_WINDOW_MIN_WIDTH = 420
+const SESSION_WINDOW_MIN_HEIGHT = 620
+
 // Build the renderer URL for a secondary window. The renderer uses a
 // HashRouter, so the session route lives after the '#'. The `?win=secondary`
 // flag MUST sit in the query string BEFORE the '#': anything after the '#' is
 // treated as the route by HashRouter and would break routeSessionId(). The
 // renderer reads the flag from window.location.search to suppress the install /
-// onboarding overlays and the global session sidebar.
-function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath } = {}) {
-  const route = `#/${encodeURIComponent(sessionId)}`
+// onboarding overlays and the global session sidebar. `new=1` marks the compact
+// scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
+// session): the renderer resumes it lazily so the gateway never builds an agent
+// just to stream into it.
+function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch, newSession } = {}) {
+  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
+  const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
 
-    return `${base}/?win=secondary${route}`
+    return `${base}/${query}${route}`
   }
 
-  return `${pathToFileURL(rendererIndexPath).toString()}?win=secondary${route}`
+  return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
 // A small registry keyed by sessionId that guarantees one window per chat:
@@ -83,4 +92,9 @@ function createSessionWindowRegistry() {
   }
 }
 
-module.exports = { buildSessionWindowUrl, createSessionWindowRegistry }
+module.exports = {
+  buildSessionWindowUrl,
+  createSessionWindowRegistry,
+  SESSION_WINDOW_MIN_HEIGHT,
+  SESSION_WINDOW_MIN_WIDTH
+}

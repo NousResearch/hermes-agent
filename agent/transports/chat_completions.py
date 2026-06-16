@@ -531,6 +531,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 supports_reasoning=params.get("supports_reasoning", False),
                 qwen_session_metadata=params.get("qwen_session_metadata"),
                 model=model,
+                base_url=params.get("base_url"),
                 ollama_num_ctx=params.get("ollama_num_ctx"),
                 session_id=params.get("session_id"),
             )
@@ -664,8 +665,42 @@ class ChatCompletionsTransport(ProviderTransport):
         if rd:
             provider_data["reasoning_details"] = rd
 
+        # OpenAI structured-refusal field. When a model declines, the SDK
+        # populates ``message.refusal`` with the explanation and leaves
+        # ``content`` empty. OpenAI-compatible proxies that front Anthropic /
+        # Bedrock (e.g. Nous Portal) surface a Claude refusal this way — or via
+        # ``finish_reason="content_filter"`` — instead of the native
+        # ``stop_reason="refusal"``. Without capturing it the refusal looks
+        # like an empty response, so the agent loop retries a deterministic
+        # refusal three times and gives up with "no content after retries".
+        # Promote it to content + a ``content_filter`` finish reason so the
+        # loop's refusal handler surfaces it clearly and stops. ``refusal`` is
+        # ``None`` for normal responses, so this is a no-op in the common case.
+        content = msg.content
+        refusal = getattr(msg, "refusal", None)
+        if refusal is None and hasattr(msg, "model_extra"):
+            _msg_extra = getattr(msg, "model_extra", None) or {}
+            if isinstance(_msg_extra, dict):
+                refusal = _msg_extra.get("refusal")
+        if isinstance(refusal, str) and refusal.strip():
+            # Record the refusal explanation regardless — it's useful provider
+            # metadata even when the model also returned a usable payload.
+            provider_data["refusal"] = refusal
+            _has_text = isinstance(content, str) and content.strip()
+            _has_tool_calls = bool(tool_calls)
+            # Only promote to a terminal ``content_filter`` when the refusal is
+            # the *sole* payload — no visible text and no tool calls. A response
+            # that carries real content (or tool calls) alongside a refusal note
+            # is a normal, usable turn: surfacing it as a failed safety refusal
+            # would discard the model's actual work. In the empty-payload case,
+            # adopt the refusal as content so the loop has something to show.
+            if not _has_text and not _has_tool_calls:
+                content = refusal
+                if finish_reason in (None, "stop"):
+                    finish_reason = "content_filter"
+
         return NormalizedResponse(
-            content=msg.content,
+            content=content,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             reasoning=reasoning,

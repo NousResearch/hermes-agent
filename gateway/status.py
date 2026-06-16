@@ -643,6 +643,21 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     live_cmdline = _read_process_cmdline(existing_pid)
                     if live_cmdline is not None or not _record_looks_like_gateway(existing):
                         stale = True
+                # Secondary defence against boot-time PID+start_time collisions:
+                # systemd spawns core services deterministically, so an unrelated
+                # process (e.g. cron) can land on the exact same PID and jiffy
+                # count as a previous gateway. If both start_times are known and
+                # match but the live process is not a gateway, and we can confirm
+                # that by reading its cmdline, the lock is stale.
+                if (
+                    not stale
+                    and existing.get("start_time") is not None
+                    and current_start is not None
+                    and not _looks_like_gateway_process(existing_pid)
+                ):
+                    live_cmdline = _read_process_cmdline(existing_pid)
+                    if live_cmdline is not None:
+                        stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still appear alive to _pid_exists but are not
                 # actually running. Treat them as stale so --replace works.

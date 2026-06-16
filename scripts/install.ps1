@@ -892,6 +892,42 @@ function Test-Node {
     return $true
 }
 
+function Update-ProcessPathForPackages {
+    # Make freshly-installed shims (rg.exe, ffmpeg.exe) visible to Get-Command in
+    # THIS process without spawning a new shell, by folding the persisted
+    # User+Machine hives plus winget's alias-shim directory into $env:Path.
+    # Called after every package-manager attempt (winget/choco/scoop): previously
+    # PATH was only refreshed inside the winget branch, so a successful
+    # choco/scoop fallback -- or any install on a box without winget -- could be
+    # misreported as "not installed".
+    #
+    # MERGE rather than overwrite: start from the existing process PATH so any
+    # process-only entries added earlier in this installer run survive, then
+    # APPEND hive/winget-Links entries not already present (case-insensitive,
+    # order-preserving dedupe). A wholesale replace would silently drop those
+    # process-only entries.
+    $candidates = @()
+    $candidates += $env:Path
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "User")
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+    if (Test-Path $wingetLinks) {
+        $candidates += $wingetLinks
+    }
+    $seen = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($chunk in $candidates) {
+        if ([string]::IsNullOrEmpty($chunk)) { continue }
+        foreach ($entry in $chunk.Split(';')) {
+            $trimmed = $entry.Trim()
+            if ($trimmed -and $seen.Add($trimmed)) {
+                $ordered.Add($trimmed)
+            }
+        }
+    }
+    $env:Path = [string]::Join(';', $ordered)
+}
+
 function Install-SystemPackages {
     $script:HasRipgrep = $false
     $script:HasFfmpeg = $false
@@ -961,25 +997,33 @@ function Install-SystemPackages {
             try {
                 $output = winget install --exact --id $pkg --source winget --silent `
                     --accept-package-agreements --accept-source-agreements 2>&1
+                $code = $LASTEXITCODE
                 $output | Out-File -FilePath $log -Encoding utf8
-                "winget exit: $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
+                # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
+                # winget treats `install` on a package it already has registered as
+                # an *upgrade*, finds no newer version, and bails with this code --
+                # even when the binary is gone from disk/PATH (stale registration,
+                # files removed outside winget, or a missing alias shim). We KNOW the
+                # command was missing (that's why we're here), so a plain install
+                # dead-ends forever. Force a reinstall to repair the registration so
+                # the shim reappears.
+                if ($code -eq -1978335189) {
+                    "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
+                    $output = winget install --exact --id $pkg --source winget --silent --force `
+                        --accept-package-agreements --accept-source-agreements 2>&1
+                    $output | Out-File -FilePath $log -Encoding utf8 -Append
+                    "winget exit (force): $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                }
             } catch {
                 $_ | Out-File -FilePath $log -Encoding utf8 -Append
                 "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
             }
         }
-        # Refresh PATH from both env-var hives AND winget's alias shim directory.
-        # winget exposes packages via "command line aliases" in %LOCALAPPDATA%\
-        # Microsoft\WinGet\Links, which is added to PATH by the AppExecutionAlias
-        # machinery only in *newly-spawned* shells -- not the current process.
-        # Without this addition, Get-Command rg below would falsely return null
-        # immediately after a successful install.
-        $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
-        $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if (Test-Path $wingetLinks) {
-            $envPath = "$envPath;$wingetLinks"
-        }
-        $env:Path = $envPath
+        # Refresh PATH so packages winget exposed via "command line aliases" in
+        # %LOCALAPPDATA%\Microsoft\WinGet\Links (added to PATH only in
+        # newly-spawned shells, not this process) are visible to Get-Command below.
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
@@ -1005,6 +1049,7 @@ function Install-SystemPackages {
         foreach ($pkg in $chocoPkgs) {
             try { choco install $pkg -y 2>&1 | Out-Null } catch { }
         }
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via chocolatey"
             $script:HasRipgrep = $true
@@ -1023,6 +1068,7 @@ function Install-SystemPackages {
         foreach ($pkg in $scoopPkgs) {
             try { scoop install $pkg 2>&1 | Out-Null } catch { }
         }
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via scoop"
             $script:HasRipgrep = $true
@@ -1125,6 +1171,20 @@ function Install-Repository {
                 # agent-created dirs (e.g. tinker-atropos/) survive too.
                 $statusOut = git -c windows.appendAtomically=false status --porcelain 2>$null
                 if (-not [string]::IsNullOrWhiteSpace(($statusOut -join "`n"))) {
+                    # A previously interrupted update can leave the index with
+                    # unmerged entries. In that state `git stash` aborts with
+                    # "could not write index" and the following `git checkout`
+                    # aborts with "you need to resolve your current index first"
+                    # -- the GUI "git checkout main failed (exit 1)" install
+                    # failure. Clear the conflict markers with `git reset` first:
+                    # working-tree changes are kept (and stashed just below); only
+                    # the index conflict state is dropped. Mirrors the `hermes
+                    # update` path (#4735).
+                    $unmergedOut = git -c windows.appendAtomically=false ls-files --unmerged 2>$null
+                    if (-not [string]::IsNullOrWhiteSpace(($unmergedOut -join "`n"))) {
+                        Write-Info "Clearing unmerged index entries from a previous conflict..."
+                        git -c windows.appendAtomically=false reset -q 2>$null
+                    }
                     $stashName = "hermes-install-autostash-" + (Get-Date -Format "yyyyMMdd-HHmmss")
                     Write-Info "Local changes detected, stashing before update..."
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
@@ -1371,6 +1431,15 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
+        # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
+        # DLLs by any running hermes process. Windows denies deletion of loaded
+        # DLLs, so kill any hermes.exe tree before removing the venv.
+        if ($env:OS -eq "Windows_NT") {
+            $myPid = $PID
+            Write-Info "Stopping any running hermes processes before recreating venv..."
+            & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+            Start-Sleep -Milliseconds 800
+        }
         Remove-Item -Recurse -Force "venv"
     }
     

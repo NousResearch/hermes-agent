@@ -12,16 +12,20 @@ import { DiffLines } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { FadeText } from '@/components/ui/fade-text'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
+import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
 import { PendingToolApproval } from './tool-approval'
@@ -100,7 +104,7 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
 function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
   if (status === 'running') {
     return (
-      <BrailleSpinner
+      <GlyphSpinner
         ariaLabel={copy.statusRunning}
         className="size-3.5 shrink-0 text-[0.95rem] text-(--ui-text-tertiary)"
         spinner="breathe"
@@ -114,10 +118,7 @@ function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
 
   if (status === 'warning') {
     return (
-      <AlertCircle
-        aria-label={copy.statusRecovered}
-        className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
-      />
+      <AlertCircle aria-label={copy.statusRecovered} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
     )
   }
 
@@ -196,13 +197,16 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
 function ToolEntry({ part }: ToolEntryProps) {
   const { t } = useI18n()
   const copy = t.assistant.tool
+  const statusCopy = t.statusStack
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
   const toolViewMode = useStore($toolViewMode)
   const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
+  const dismissed = useStore($toolRowDismissed(disclosureId))
   const open = useDisclosureOpen(disclosureId)
   const isPending = messageRunning && part.result === undefined
+  const canDismiss = !isPending && !embedded
   // Only animate entries that mount while their message is actively
   // streaming — historical sessions mount with `messageRunning === false`,
   // so they paint statically without a settle cascade. The wrapping group
@@ -279,12 +283,39 @@ function ToolEntry({ part }: ToolEntryProps) {
 
   const copyAction = useMemo(() => toolCopyPayload(part, view), [part, view])
 
+  // The header trailing slot only carries the live duration timer while the
+  // tool is running. The copy control used to live here too, but an
+  // `opacity-0` (yet still clickable) button straddling the caret/duration made
+  // the disclosure caret hard to hit. Copy now lives in the expanded body's
+  // top-right, where it can't fight the caret for the right edge.
   const trailing =
-    isPending && !embedded ? (
-      <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} />
-    ) : !isPending && copyAction.text ? (
-      <CopyButton appearance="tool-row" label={copyAction.label} stopPropagation text={copyAction.text} />
-    ) : undefined
+    isPending && !embedded ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} /> : undefined
+
+  // Once a turn has settled, a hover/focus-revealed dismiss lets the user clear
+  // a completed/failed row that would otherwise sit at the tail of the chat.
+  // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
+  // the disclosure caret's hit-target — see the comment above `trailing`.
+  const dismissAction = canDismiss ? (
+    <Tip label={statusCopy.dismiss}>
+      <Button
+        aria-label={statusCopy.dismiss}
+        className="size-5 rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:text-(--ui-text-primary) hover:opacity-100 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80"
+        onClick={event => {
+          event.stopPropagation()
+          dismissToolRow(disclosureId)
+        }}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="close" size="0.75rem" />
+      </Button>
+    </Tip>
+  ) : undefined
+
+  if (dismissed) {
+    return null
+  }
 
   return (
     <div
@@ -297,6 +328,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
+          action={dismissAction}
           onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
           open={open}
           trailing={trailing}
@@ -322,7 +354,18 @@ function ToolEntry({ part }: ToolEntryProps) {
       </div>
       {isPending && <PendingToolApproval part={part} />}
       {open && (
-        <div className="grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+        <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+          {copyAction.text && (
+            <CopyButton
+              appearance="inline"
+              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/80 px-1 opacity-60 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
+              iconClassName="size-3"
+              label={copyAction.label}
+              showLabel={false}
+              stopPropagation
+              text={copyAction.text}
+            />
+          )}
           {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (
             <PreviewAttachment source="tool-result" target={view.previewTarget} />
           )}

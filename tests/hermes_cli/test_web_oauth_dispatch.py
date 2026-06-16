@@ -34,6 +34,13 @@ client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
 
 
+def _make_profile_home(tmp_path, monkeypatch, profile="coder"):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    profile_home = tmp_path / "profiles" / profile
+    profile_home.mkdir(parents=True)
+    return profile_home
+
+
 def _fake_nous_device_data():
     return {
         "device_code": "device-code",
@@ -127,6 +134,67 @@ def test_nous_dashboard_device_flow_ignores_legacy_scope_override(monkeypatch):
         ws._oauth_sessions.pop(result["session_id"], None)
 
 
+def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
+    from hermes_cli import web_server as ws
+    from hermes_constants import get_hermes_home
+
+    profile_home = _make_profile_home(tmp_path, monkeypatch)
+    observed_homes = []
+
+    def fake_status():
+        observed_homes.append(get_hermes_home())
+        return {"logged_in": False, "source": None}
+
+    fake_catalog = ({
+        "id": "fake-oauth",
+        "name": "Fake OAuth",
+        "flow": "pkce",
+        "cli_command": "hermes auth add fake-oauth",
+        "docs_url": "https://example.com",
+        "status_fn": fake_status,
+    },)
+    monkeypatch.setattr(ws, "_OAUTH_PROVIDER_CATALOG", fake_catalog)
+
+    resp = client.get("/api/providers/oauth?profile=coder", headers=HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    assert observed_homes == [profile_home]
+
+
+def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypatch):
+    from hermes_cli import web_server as ws
+
+    _make_profile_home(tmp_path, monkeypatch)
+    fake_user_code_resp = {
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://api.minimax.io/oauth/verify",
+        "expired_in": 600,
+        "interval": 2000,
+        "state": "stub-state",
+    }
+    with patch(
+        "hermes_cli.auth._minimax_request_user_code",
+        return_value=fake_user_code_resp,
+    ), patch(
+        "hermes_cli.auth._minimax_pkce_pair",
+        return_value=("verifier-stub", "challenge-stub", "stub-state"),
+    ), patch(
+        "hermes_cli.web_server._minimax_poller",
+        return_value=None,
+    ):
+        resp = client.post(
+            "/api/providers/oauth/minimax-oauth/start?profile=coder",
+            headers=HEADERS,
+        )
+
+    assert resp.status_code == 200, resp.text
+    session_id = resp.json()["session_id"]
+    try:
+        assert ws._oauth_sessions[session_id]["profile"] == "coder"
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 def test_nous_dashboard_device_flow_does_not_retry_legacy_scope_on_invoke_refusal(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws
@@ -203,6 +271,71 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
         assert runtime["provider"] == "openai-codex"
         assert runtime["api_key"] == access_token
         assert runtime["api_mode"] == "codex_responses"
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
+def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+    from hermes_constants import get_hermes_home
+
+    profile_home = _make_profile_home(tmp_path, monkeypatch)
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/deviceauth/usercode"):
+                return _Resp(200, {
+                    "device_auth_id": "device-auth-id",
+                    "interval": 3,
+                    "user_code": "CODEX-1234",
+                })
+            if url.endswith("/deviceauth/token"):
+                return _Resp(200, {
+                    "authorization_code": "authorization-code",
+                    "code_verifier": "code-verifier",
+                })
+            return _Resp(200, {
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+            })
+
+    saved_homes = []
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        auth_mod,
+        "_save_codex_tokens",
+        lambda tokens: saved_homes.append(get_hermes_home()),
+    )
+
+    sid, _ = ws._new_oauth_session(
+        "openai-codex",
+        "device_code",
+        profile="coder",
+    )
+    try:
+        ws._codex_full_login_worker(sid)
+
+        assert ws._oauth_sessions[sid]["status"] == "approved"
+        assert saved_homes == [profile_home]
     finally:
         ws._oauth_sessions.pop(sid, None)
 
@@ -335,6 +468,53 @@ def test_xai_oauth_listed_as_loopback_flow():
     assert "xai-oauth" in providers
     assert providers["xai-oauth"]["flow"] == "loopback"
     assert "grok" in providers["xai-oauth"]["name"].lower()
+
+
+def test_oauth_catalog_marks_external_providers_not_disconnectable():
+    """External CLI credentials are visible in Accounts but cannot be removed by Hermes."""
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    assert providers["qwen-oauth"]["flow"] == "external"
+    assert providers["qwen-oauth"]["disconnectable"] is False
+    assert "provider's CLI" in providers["qwen-oauth"]["disconnect_hint"]
+
+    assert providers["claude-code"]["flow"] == "external"
+    assert providers["claude-code"]["disconnectable"] is False
+    assert "provider's CLI" in providers["claude-code"]["disconnect_hint"]
+
+
+def test_external_oauth_disconnect_rejected_before_auth_mutation(monkeypatch):
+    """DELETE must not pretend to remove credentials owned by another CLI."""
+    from hermes_cli import auth as auth_mod
+
+    def fail_clear_provider_auth(provider_id=None):
+        raise AssertionError("external providers must not reach clear_provider_auth")
+
+    monkeypatch.setattr(auth_mod, "clear_provider_auth", fail_clear_provider_auth)
+
+    resp = client.delete("/api/providers/oauth/qwen-oauth", headers=HEADERS)
+    assert resp.status_code == 400, resp.text
+    assert "cannot be disconnected automatically" in resp.text
+    assert "provider's CLI" in resp.text
+
+
+def test_env_sourced_oauth_status_is_not_disconnectable(monkeypatch):
+    """An env/.env-backed Anthropic API key is removed from Keys, not OAuth Accounts."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    providers = {p["id"]: p for p in resp.json()["providers"]}
+
+    assert providers["anthropic"]["status"]["source"] == "env_var"
+    assert providers["anthropic"]["disconnectable"] is False
+    assert providers["anthropic"]["disconnect_hint"] == "Remove the API key from Settings → Keys instead."
+
+    delete_resp = client.delete("/api/providers/oauth/anthropic", headers=HEADERS)
+    assert delete_resp.status_code == 400, delete_resp.text
+    assert "Settings" in delete_resp.text
 
 
 def test_xai_loopback_start_returns_authorize_url(monkeypatch):

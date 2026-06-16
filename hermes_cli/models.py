@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.parse
 import urllib.request
 import urllib.error
 import time
@@ -33,7 +34,6 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
-    ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
     ("anthropic/claude-sonnet-4.6",            ""),
@@ -57,6 +57,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k2.6",                   "recommended"),
+    ("moonshotai/kimi-k2.7-code",              ""),
     # MiniMax
     ("minimax/minimax-m3",                     ""),
     # Z-AI
@@ -155,7 +156,6 @@ def _xai_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         # Anthropic
-        "anthropic/claude-fable-5",
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-haiku-4.5",
@@ -178,6 +178,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
         # MiniMax
         "minimax/minimax-m3",
         # Z-AI
@@ -256,6 +257,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
     ],
     "zai": [
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -280,6 +282,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
@@ -1690,15 +1693,36 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
 
 def _get_custom_base_url() -> str:
     """Get the custom endpoint base_url from config.yaml."""
+    model_cfg = _get_model_config_dict()
+    return str(model_cfg.get("base_url", "")).strip()
+
+
+def _get_model_config_dict() -> dict[str, Any]:
+    """Return the main model config mapping, or an empty dict."""
     try:
         from hermes_cli.config import load_config
         config = load_config()
         model_cfg = config.get("model", {})
         if isinstance(model_cfg, dict):
-            return str(model_cfg.get("base_url", "")).strip()
+            return model_cfg
     except Exception:
         pass
-    return ""
+    return {}
+
+
+def _base_url_looks_like_anthropic_messages(base_url: str) -> bool:
+    normalized = str(base_url or "").strip().lower().rstrip("/")
+    if not normalized:
+        return False
+    path = urllib.parse.urlparse(normalized).path.rstrip("/")
+    return path.endswith("/anthropic") or path.endswith("/anthropic/v1")
+
+
+def _anthropic_models_url(base_url: Optional[str] = None) -> str:
+    endpoint = str(base_url or "https://api.anthropic.com").strip().rstrip("/")
+    if endpoint.endswith("/v1"):
+        return endpoint + "/models"
+    return endpoint + "/v1/models"
 
 
 def curated_models_for_provider(
@@ -2218,8 +2242,21 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             pass
     if normalized == "anthropic":
-        live = _fetch_anthropic_models()
+        model_cfg = _get_model_config_dict()
+        cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
+        if cfg_provider == "anthropic":
+            cfg_base_url = str(model_cfg.get("base_url", "") or "").strip()
+            cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
+        else:
+            cfg_base_url = ""
+            cfg_api_key = ""
+        live = _fetch_anthropic_models(
+            base_url=cfg_base_url or None,
+            api_key=cfg_api_key or None,
+        )
         if live:
+            if cfg_base_url:
+                return live
             # The live /v1/models dump lags newly-routed curated aliases
             # (e.g. claude-fable-5, which is reachable on Anthropic before it
             # is enumerated by the models endpoint). Surface curated entries
@@ -2288,13 +2325,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
+            model_cfg = _get_model_config_dict()
             # Try common API key env vars for custom endpoints
             api_key = (
-                os.getenv("CUSTOM_API_KEY", "")
+                str(model_cfg.get("api_key", "") or "").strip()
+                or os.getenv("CUSTOM_API_KEY", "")
                 or os.getenv("OPENAI_API_KEY", "")
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
-            live = fetch_api_models(api_key, base_url)
+            api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
+            live = fetch_api_models(api_key, base_url, api_mode=api_mode)
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
@@ -2330,6 +2370,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
+                    if normalized in {"kimi-coding", "kimi-coding-cn"}:
+                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        merged = list(curated)
+                        merged_lower = {m.lower() for m in curated}
+                        for m in live:
+                            if m.lower() not in merged_lower:
+                                merged.append(m)
+                                merged_lower.add(m.lower())
+                        return merged
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:
@@ -2543,18 +2592,24 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         pass
 
 
-def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
+def _fetch_anthropic_models(
+    timeout: float = 5.0,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Optional[list[str]]:
     """Fetch available models from the Anthropic /v1/models endpoint.
 
     Uses resolve_anthropic_token() to find credentials (env vars or
-    Claude Code auto-discovery).  Returns sorted model IDs or None.
+    Claude Code auto-discovery) unless api_key is provided explicitly.
+    Returns sorted model IDs or None.
     """
     try:
         from agent.anthropic_adapter import resolve_anthropic_token, _is_oauth_token
     except ImportError:
         return None
 
-    token = resolve_anthropic_token()
+    token = (api_key or "").strip() or resolve_anthropic_token()
     if not token:
         return None
 
@@ -2569,7 +2624,7 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
 
     def _do_request(h: dict[str, str]):
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/models",
+            _anthropic_models_url(base_url),
             headers=h,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -3759,7 +3814,10 @@ def validate_requested_model(
     # tokens.  (The api_mode=="anthropic_messages" branch below handles the
     # Messages-API transport case separately.)
     if normalized == "anthropic":
-        anthropic_models = _fetch_anthropic_models()
+        anthropic_models = _fetch_anthropic_models(
+            base_url=base_url or None,
+            api_key=api_key or None,
+        )
         if anthropic_models is not None:
             if requested_for_lookup in set(anthropic_models):
                 return {

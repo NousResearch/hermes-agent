@@ -413,6 +413,25 @@ get_command_link_display_dir() {
     fi
 }
 
+# Point a Hermes-managed Node's `npm install -g` at a directory that is on
+# PATH. npm's default global prefix for a bundled Node is the Node dir itself,
+# so global package binaries land in $HERMES_HOME/node/bin — which is NOT on
+# PATH (only the command link dir is) and is wiped on every Node upgrade.
+# Redirecting the prefix to the link dir's parent makes global bins resolve to
+# the command link dir (node/npm/npx live there too, already on PATH) and
+# survive upgrades. Scoped to the managed Node via its prefix-local global
+# npmrc, so the user's other Node installs and their ~/.npmrc are untouched.
+# Hermes's own global installs pass an explicit --prefix and are unaffected.
+# Idempotent and a no-op when there is no Hermes-managed npm, so calling it on
+# every install run repairs pre-existing installs, not just fresh ones.
+configure_managed_node_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 get_hermes_command_path() {
     local link_dir
     link_dir="$(get_command_link_dir)"
@@ -722,6 +741,11 @@ node_satisfies_build() {
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
+    # Repair pre-existing Hermes-managed installs where `npm install -g` lands
+    # off PATH. No-op when there's no managed Node, so this is safe to run on
+    # every install — including re-runs that skip the Node (re)install below.
+    configure_managed_node_npm_prefix
+
     if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
         log_success "Node.js $(node --version) found"
         HAS_NODE=true
@@ -850,6 +874,8 @@ install_node() {
     ln -sf "$HERMES_HOME/node/bin/node" "$node_link_dir/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$node_link_dir/npm"
     ln -sf "$HERMES_HOME/node/bin/npx"  "$node_link_dir/npx"
+
+    configure_managed_node_npm_prefix
 
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
@@ -1111,6 +1137,19 @@ clone_repo() {
 
             local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
+                # A previously interrupted update can leave the index with
+                # unmerged entries. In that state `git stash` aborts with
+                # "could not write index" and the later `git checkout` aborts
+                # with "you need to resolve your current index first", failing
+                # the whole install at the repository stage. Clear the conflict
+                # markers with `git reset` first -- this keeps working-tree
+                # changes (they're still stashed just below) and only drops the
+                # index-level conflict state. Mirrors the `hermes update` path
+                # (#4735).
+                if [ -n "$(git ls-files --unmerged)" ]; then
+                    log_info "Clearing unmerged index entries from a previous conflict..."
+                    git reset -q
+                fi
                 local stash_name
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
                 log_info "Local changes detected, stashing before update..."

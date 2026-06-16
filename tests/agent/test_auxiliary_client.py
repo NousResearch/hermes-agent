@@ -146,6 +146,47 @@ class TestBuildCallKwargsMaxTokens:
         assert "max_completion_tokens" not in kwargs
 
 
+class TestNousTagsScoping:
+    def test_tags_injected_when_provider_is_nous(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", False)
+
+        kwargs = aux._build_call_kwargs(
+            provider="nous",
+            model="hermes-4",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert kwargs["extra_body"]["tags"] == aux._nous_portal_tags()
+
+    def test_tags_not_injected_for_gemini_when_main_is_nous(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
+
+        kwargs = aux._build_call_kwargs(
+            provider="gemini",
+            model="gemini-2.5-flash",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert "extra_body" not in kwargs
+
+    def test_tags_not_injected_for_openrouter_when_main_is_nous(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "auxiliary_is_nous", True)
+
+        kwargs = aux._build_call_kwargs(
+            provider="openrouter",
+            model="openai/gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert "extra_body" not in kwargs
+
+
 class TestNormalizeAuxProvider:
     def test_maps_github_copilot_aliases(self):
         assert _normalize_aux_provider("github") == "copilot"
@@ -1611,6 +1652,37 @@ class TestAuxiliaryFallbackLayering:
         exc = Exception("Payment Required: insufficient credits")
         exc.status_code = 402
         return exc
+
+    def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
+        """Auto aux call failures try per-task then top-level fallback before built-ins."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        main_chain_client = MagicMock()
+        main_chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main fallback chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "qwen/qwen3.5-122b-a10b")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_task_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(main_chain_client, "inclusionai/ring-2.6-1t:free", "openrouter")) as mock_main_chain, \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_builtin_chain:
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert main_chain_client.chat.completions.create.called
+        mock_task_chain.assert_called_once_with(
+            "title_generation", "auto", reason="payment error")
+        mock_main_chain.assert_called_once_with(
+            "title_generation", "auto", reason="payment error")
+        mock_builtin_chain.assert_not_called()
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""

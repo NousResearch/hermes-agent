@@ -399,14 +399,17 @@ describe('SidebarSessionRow gestures', () => {
     const transfer = fakeTransfer()
 
     expect(container.querySelector('[data-reorder-handle]')).toBeNull()
-    expect(dragAnchor.getAttribute('aria-label')).toBe('Reorder session')
+    expect(dragAnchor.getAttribute('aria-label')).toBeNull()
     expect(dragAnchor.dataset.sessionDragSource).toBeUndefined()
     expect(dragAnchor.draggable).toBe(false)
     expect(dragAnchor.className).toContain('[-webkit-app-region:no-drag]')
     expect(dragSource.dataset.sessionDragSource).toBeUndefined()
     expect(dragSource.draggable).toBe(false)
     expect(rowButton.draggable).toBe(false)
+    expect(rowButton.getAttribute('aria-label')).toBe('Reorder session')
 
+    fireEvent.pointerDown(rowButton)
+    expect(onPointerDown).toHaveBeenCalledTimes(1)
     fireEvent.pointerDown(dragAnchor)
     expect(onPointerDown).toHaveBeenCalledTimes(1)
 

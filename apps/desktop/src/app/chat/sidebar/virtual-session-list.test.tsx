@@ -50,7 +50,7 @@ afterEach(() => {
 })
 
 describe('VirtualSessionList drag behavior', () => {
-  it('lets pointer-dnd own virtual sortable rows instead of native HTML5 drag', () => {
+  it('lets pointer-dnd own single-row virtual sortable sections instead of native HTML5 drag', () => {
     const onSessionDragStart = vi.fn()
     const onPointerDown = vi.fn()
 
@@ -66,7 +66,6 @@ describe('VirtualSessionList drag behavior', () => {
             onTogglePin={vi.fn()}
             pinned={false}
             sectionKey="sessions"
-            sessionDragEnabled
             sessions={[session()]}
             sortable
             workingSessionIdSet={new Set()}
@@ -76,15 +75,50 @@ describe('VirtualSessionList drag behavior', () => {
     )
 
     const row = screen.getByText('First session').closest('[data-session-id]') as HTMLElement
+    const rowButton = row.querySelector('[data-session-row-main]') as HTMLButtonElement
 
-    row.addEventListener('pointerdown', onPointerDown)
+    rowButton.addEventListener('pointerdown', onPointerDown)
 
     expect(row.draggable).toBe(false)
     expect(row.dataset.sessionDragSource).toBeUndefined()
+    expect(rowButton.draggable).toBe(false)
+    expect(rowButton.getAttribute('aria-roledescription')).toBe('sortable')
 
-    fireEvent.pointerDown(row)
+    fireEvent.pointerDown(rowButton)
 
     expect(onPointerDown).toHaveBeenCalledTimes(1)
     expect(onSessionDragStart).not.toHaveBeenCalled()
+  })
+
+  it('renders a cross-section preview row as pointer-dnd visual state, not a native drag source', () => {
+    render(
+      <DndContext>
+        <SortableContext items={['s1', 'moving']}>
+          <VirtualSessionList
+            activeSessionId={null}
+            draggingSessionId="moving"
+            dropActive
+            onArchiveSession={vi.fn()}
+            onDeleteSession={vi.fn()}
+            onResumeSession={vi.fn()}
+            onTogglePin={vi.fn()}
+            pinned
+            sectionKey="pinned"
+            sessionDragEnabled
+            sessions={[session(), session({ id: 'moving', title: 'Moving session' })]}
+            sortable
+            sourceSectionKey="sessions"
+            workingSessionIdSet={new Set()}
+          />
+        </SortableContext>
+      </DndContext>
+    )
+
+    const previewRow = screen.getByText('Moving session').closest('[data-session-id]') as HTMLElement
+    const previewChrome = previewRow.querySelector('[data-session-row-chrome]') as HTMLElement
+
+    expect(previewRow.draggable).toBe(false)
+    expect(previewRow.dataset.sessionDragSource).toBeUndefined()
+    expect(previewChrome.className).toContain('opacity-60')
   })
 })

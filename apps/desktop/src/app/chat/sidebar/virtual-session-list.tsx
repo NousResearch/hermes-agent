@@ -266,10 +266,9 @@ function VirtualSortableSessionRow({
   return (
     <SidebarSessionRow
       {...commonProps}
-      {...attributes}
-      {...listeners}
       data-index={index}
       dragging={isDragging}
+      dragHandleProps={{ ...attributes, ...listeners }}
       key={session.id}
       nativeDraggable={false}
       presence={presence}

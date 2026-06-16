@@ -58,6 +58,7 @@ import { clearSessionTodos } from '@/store/todos'
 
 import type {
   ClientSessionState,
+  BrowserManageResponse,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -1138,6 +1139,81 @@ export function usePromptActions({
             const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
 
             renderSlashOutput(renderCommandsCatalog(catalog, copy))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
+        // /browser connect|disconnect|status manages the live CDP connection on
+        // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
+        // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
+        // meaningful when that process runs on this machine, so it's gated to
+        // local connections. A remote gateway would act on the wrong host.
+        browser: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if ($connection.get()?.mode === 'remote') {
+            renderSlashOutput(
+              '/browser manages a Chromium-family browser on the gateway host — only available when connected to a local gateway.'
+            )
+
+            return
+          }
+
+          const [rawAction = 'status', ...rest] = ctx.arg.trim().split(/\s+/).filter(Boolean)
+          const cmdAction = rawAction.toLowerCase()
+
+          if (!['connect', 'disconnect', 'status'].includes(cmdAction)) {
+            renderSlashOutput(
+              'usage: /browser [connect|disconnect|status] [url] · persistent: set browser.cdp_url in config.yaml'
+            )
+
+            return
+          }
+
+          const url = cmdAction === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
+
+          if (url) {
+            renderSlashOutput(`checking Chromium-family browser remote debugging at ${url}...`)
+          }
+
+          try {
+            const result = await requestGateway<BrowserManageResponse>('browser.manage', {
+              action: cmdAction,
+              session_id: sessionId,
+              ...(url && { url })
+            })
+
+            // Without a streamed session subscription, the gateway bundles its
+            // progress lines into `messages` — flush them inline.
+            result?.messages?.forEach(message => renderSlashOutput(message))
+
+            if (cmdAction === 'status') {
+              renderSlashOutput(
+                result?.connected
+                  ? `browser connected: ${result.url || '(url unavailable)'}`
+                  : 'browser not connected (try /browser connect <url> or set browser.cdp_url in config.yaml)'
+              )
+
+              return
+            }
+
+            if (cmdAction === 'disconnect') {
+              renderSlashOutput('browser disconnected')
+
+              return
+            }
+
+            if (result?.connected) {
+              renderSlashOutput('Browser connected to live Chromium-family browser via CDP')
+              renderSlashOutput(`Endpoint: ${result.url || '(url unavailable)'}`)
+              renderSlashOutput('next browser tool call will use this CDP endpoint')
+            }
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }

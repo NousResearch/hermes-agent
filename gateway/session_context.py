@@ -290,6 +290,28 @@ def reset_session_vars() -> None:
         pass
 
 
+def reset_cron_delivery_vars() -> None:
+    """Restore the cron auto-delivery ContextVars to their *never set* state.
+
+    Distinct from setting them to ``""``: an empty string is the
+    "explicitly cleared" state that suppresses the ``os.environ`` fallback in
+    ``get_session_env`` (correct WHILE a job runs, so a job's own
+    ``send_message`` can detect a duplicate auto-delivery target). After a job
+    finishes, the vars must be returned to the ``_UNSET`` sentinel so the next
+    caller in the same thread/task falls back to ``os.environ`` again. Without
+    this, a cron run leaks an empty cron-delivery value into every later caller
+    in the process — observed as cross-test pollution where a later
+    ``send_message`` no longer detects the cron duplicate-target case because
+    the ContextVar shadows the env the caller set.
+    """
+    for var in (
+        _CRON_AUTO_DELIVER_PLATFORM,
+        _CRON_AUTO_DELIVER_CHAT_ID,
+        _CRON_AUTO_DELIVER_THREAD_ID,
+    ):
+        var.set(_UNSET)
+
+
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session context variable by its legacy ``HERMES_SESSION_*`` name.
 

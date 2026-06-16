@@ -394,3 +394,59 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
     finally:
         runner._shutdown_executor()
 
+
+# ---------------------------------------------------------------------------
+# reset_cron_delivery_vars: cron auto-delivery vars must return to the *never
+# set* (_UNSET) state after a job, NOT "" — otherwise an empty value leaks
+# into every later same-thread caller and shadows the os.environ fallback.
+# ---------------------------------------------------------------------------
+
+from gateway.session_context import (  # noqa: E402
+    reset_cron_delivery_vars,
+    _CRON_AUTO_DELIVER_PLATFORM,
+    _CRON_AUTO_DELIVER_CHAT_ID,
+    _CRON_AUTO_DELIVER_THREAD_ID,
+)
+
+_CRON_DELIVERY_VARS = (
+    "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+    "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+    "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+)
+
+
+def test_reset_cron_delivery_vars_restores_unset_sentinel():
+    """After a cron job, the delivery vars must hold _UNSET, not ""."""
+    # Simulate run_job setting the delivery target during execution.
+    _CRON_AUTO_DELIVER_PLATFORM.set("telegram")
+    _CRON_AUTO_DELIVER_CHAT_ID.set("-1001")
+    _CRON_AUTO_DELIVER_THREAD_ID.set("")
+
+    reset_cron_delivery_vars()
+
+    assert _CRON_AUTO_DELIVER_PLATFORM.get() is _UNSET
+    assert _CRON_AUTO_DELIVER_CHAT_ID.get() is _UNSET
+    assert _CRON_AUTO_DELIVER_THREAD_ID.get() is _UNSET
+
+
+def test_reset_cron_delivery_vars_reenables_environ_fallback(monkeypatch):
+    """The bug: a cron run set the vars to "" (the explicitly-cleared state),
+    which suppresses the os.environ fallback in get_session_env, so a later
+    same-thread caller read "" instead of the env it had set. After the fix,
+    reset_cron_delivery_vars() returns the vars to _UNSET so the fallback works.
+    """
+    # A later caller (e.g. send_message) relies on the env var.
+    monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "999")
+
+    # Reproduce the OLD leak: a finished cron job left the vars at "".
+    _CRON_AUTO_DELIVER_PLATFORM.set("")
+    _CRON_AUTO_DELIVER_CHAT_ID.set("")
+    # With "" set, the contextvar shadows os.environ — fallback suppressed.
+    assert get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") == ""
+    assert get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") == ""
+
+    # The fix restores _UNSET, so get_session_env falls back to os.environ.
+    reset_cron_delivery_vars()
+    assert get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM") == "discord"
+    assert get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID") == "999"

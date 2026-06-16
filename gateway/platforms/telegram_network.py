@@ -61,6 +61,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
         proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
+        self._proxy_configured = bool(proxy_url)
         if proxy_url and "proxy" not in transport_kwargs:
             transport_kwargs["proxy"] = proxy_url
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
@@ -69,6 +70,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         }
         self._sticky_ip: Optional[str] = None
         self._sticky_lock = asyncio.Lock()
+        # Emit the "all paths dead -> try a proxy" hint at most once, so a full
+        # ISP block doesn't spam the log on every retry.
+        self._proxy_hint_emitted = False
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
@@ -121,6 +125,22 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
+        # Every path (primary DNS + all fallback IPs) failed to connect. When the
+        # whole api.telegram.org address space is unreachable — e.g. an ISP-level
+        # block (common in India and other regions) — fallback IPs cannot help
+        # because they live in the same blocked ranges. A proxy is the only
+        # remedy. Surface that once, actionably, instead of only per-IP failures.
+        if not self._proxy_configured and not self._proxy_hint_emitted:
+            self._proxy_hint_emitted = True
+            logger.warning(
+                "[Telegram] Primary DNS path and all %d fallback IP(s) are unreachable. "
+                "If your network blocks api.telegram.org (e.g. an ISP-level Telegram block, "
+                "common in some regions), fallback IPs cannot help — they are in the same "
+                "blocked ranges. Set TELEGRAM_PROXY=socks5h://<host>:<port> in your .env to "
+                "route the Bot API through a reachable exit (httpx speaks SOCKS natively). "
+                "For a slow proxy, also raise HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT (default 10).",
+                len(self._fallback_ips),
+            )
         raise last_error
 
     async def aclose(self) -> None:

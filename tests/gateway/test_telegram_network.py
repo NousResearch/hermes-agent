@@ -209,6 +209,47 @@ class TestFallbackTransport:
         assert transport._sticky_ip is None
 
     @pytest.mark.asyncio
+    async def test_all_paths_fail_logs_proxy_hint_once(self, monkeypatch, caplog):
+        """When every path (primary + fallbacks) is unreachable and no proxy is
+        configured, a one-time actionable TELEGRAM_PROXY hint is logged."""
+        import logging
+
+        # Ensure no proxy is resolved so the hint path is taken.
+        monkeypatch.setattr(tnet, "_resolve_proxy_url", lambda *a, **k: None)
+        calls = []
+        behavior = {"api.telegram.org": "timeout", "149.154.167.220": "timeout"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        with caplog.at_level(logging.WARNING, logger=tnet.logger.name):
+            for _ in range(3):  # multiple failures...
+                with pytest.raises(httpx.ConnectTimeout):
+                    await transport.handle_async_request(_telegram_request())
+
+        hint_lines = [r for r in caplog.records if "TELEGRAM_PROXY" in r.getMessage()]
+        assert len(hint_lines) == 1  # ...but the hint is emitted only once
+
+    @pytest.mark.asyncio
+    async def test_proxy_configured_suppresses_hint(self, monkeypatch, caplog):
+        """If a proxy is already configured, the connect-fail hint is not shown
+        (the user has already done the recommended thing)."""
+        import logging
+
+        monkeypatch.setattr(tnet, "_resolve_proxy_url", lambda *a, **k: "socks5h://127.0.0.1:1080")
+        calls = []
+        behavior = {"api.telegram.org": "timeout", "149.154.167.220": "timeout"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        with caplog.at_level(logging.WARNING, logger=tnet.logger.name):
+            with pytest.raises(httpx.ConnectTimeout):
+                await transport.handle_async_request(_telegram_request())
+
+        assert not [r for r in caplog.records if "TELEGRAM_PROXY" in r.getMessage()]
+
+    @pytest.mark.asyncio
     async def test_multiple_fallback_ips_tried_in_order(self, monkeypatch):
         calls = []
         behavior = {

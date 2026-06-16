@@ -1466,6 +1466,13 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Contextual followup flag — set when this event is a reply to one of our
+    # own bot messages within an active session.  When true, the busy-message
+    # handler routes the event to _queued_events instead of the single-slot
+    # pending_messages, so it is processed as a distinct next turn rather than
+    # merged into the user's pending text.
+    _is_contextual_followup: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

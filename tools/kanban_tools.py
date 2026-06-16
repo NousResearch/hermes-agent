@@ -44,7 +44,9 @@ logger = logging.getLogger(__name__)
 # Key = board slug, Value = (platform_str, chat_id).
 # Gateway sets the current source before each _handle_message.
 _kanban_board_sources: dict[str, tuple[str, str]] = {}
-_kanban_current_source: tuple[str, str] | None = None
+# NOTE: _kanban_current_source was removed — all source resolution now
+# goes through ContextVar (HERMES_KANBAN_SOURCE_PLATFORM / CHAT in
+# gateway.session_context).
 
 
 # ---------------------------------------------------------------------------
@@ -191,8 +193,21 @@ def _connect(board: Optional[str] = None, *, update_source: bool = False):
         try:
             resolved = kb.get_current_board() if not board else board
             import tools.kanban_tools as _kt
-            if _kt._kanban_current_source and resolved:
-                _kt._kanban_board_sources[resolved] = _kt._kanban_current_source
+            # Prefer ContextVar (per-session, concurrent-safe) over
+            # module-level global (shared across sessions, causes cross-board
+            # source leakage when two workers run concurrently).
+            _current_src = None
+            try:
+                from gateway.session_context import _KANBAN_SOURCE_PLATFORM, _KANBAN_SOURCE_CHAT
+                _p = _KANBAN_SOURCE_PLATFORM.get()
+                _c = _KANBAN_SOURCE_CHAT.get()
+                if _p and _c:
+                    _current_src = (_p, _c)
+            except Exception:
+                pass
+            if _current_src and resolved:
+                _plat, _chat = _current_src
+                _kt._kanban_board_sources[resolved] = (_plat, _chat)
         except Exception:
             pass
     return kb, conn

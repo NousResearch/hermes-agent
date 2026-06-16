@@ -61,6 +61,11 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
+# Kanban source vars — set per-session in _handle_message so concurrent
+# sessions operating different boards don't clobber each other's source.
+_KANBAN_SOURCE_PLATFORM: ContextVar = ContextVar("HERMES_KANBAN_SOURCE_PLATFORM", default=_UNSET)
+_KANBAN_SOURCE_CHAT: ContextVar = ContextVar("HERMES_KANBAN_SOURCE_CHAT", default=_UNSET)
+
 # Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
 # don't clobber each other's delivery targets.
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -77,6 +82,8 @@ _VAR_MAP = {
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
     "HERMES_SESSION_MESSAGE_ID": _SESSION_MESSAGE_ID,
+    "HERMES_KANBAN_SOURCE_PLATFORM": _KANBAN_SOURCE_PLATFORM,
+    "HERMES_KANBAN_SOURCE_CHAT": _KANBAN_SOURCE_CHAT,
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
@@ -161,6 +168,8 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_KEY,
         _SESSION_ID,
         _SESSION_MESSAGE_ID,
+        _KANBAN_SOURCE_PLATFORM,
+        _KANBAN_SOURCE_CHAT,
     ):
         var.set("")
     try:

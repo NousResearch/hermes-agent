@@ -6383,7 +6383,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _chat_s = str(getattr(source, "chat_id", "") or "")
                 if _plat_s and _chat_s and _plat_s not in ("webhook", "api_server", "system"):
                     import tools.kanban_tools as _kt
-                    _kt._kanban_current_source = (_plat_s, _chat_s)
+                    # ContextVar for per-session isolation — module-level globals
+                    # are shared across concurrent sessions and cause cross-board
+                    # source leakage.
+                    from gateway.session_context import _KANBAN_SOURCE_PLATFORM, _KANBAN_SOURCE_CHAT
+                    _KANBAN_SOURCE_PLATFORM.set(_plat_s)
+                    _KANBAN_SOURCE_CHAT.set(_chat_s)
                     self._kanban_last_user_source = _kt._kanban_board_sources
             except Exception:
                 pass

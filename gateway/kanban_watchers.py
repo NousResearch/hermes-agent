@@ -364,6 +364,25 @@ class GatewayKanbanWatchersMixin:
                 last_src = _src_map.get(slug)
 
                 if not last_src or not last_src[0]:
+                    # Unify with notifier: fall back to the board's active
+                    # subscription (platform, chat_id) when in-memory cache
+                    # has no record — prevents routing to wrong session.
+                    try:
+                        _conn2 = _kb.connect(board=slug)
+                        try:
+                            _subs = _kb.list_notify_subs(_conn2)
+                            if _subs:
+                                _s = _subs[0]
+                                _sp = (_s.get("platform") or "").lower()
+                                _sch = _s.get("chat_id") or ""
+                                if _sp and _sch:
+                                    last_src = (_sp, _sch)
+                        finally:
+                            _conn2.close()
+                    except Exception:
+                        pass
+
+                if not last_src or not last_src[0]:
                     logger.debug(
                         "kanban orchestrator callback: no source for board %s, skipping",
                         slug,
@@ -577,7 +596,7 @@ class GatewayKanbanWatchersMixin:
                         boards = _kb.list_boards(include_archived=False)
                     except Exception:
                         boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
-                    seen_db_paths: set[str] = set()
+                    seen_db_paths: dict[str, set[str]] = {}
                     for board_meta in boards:
                         slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
                         db_path = board_meta.get("db_path")
@@ -586,12 +605,16 @@ class GatewayKanbanWatchersMixin:
                         except Exception:
                             resolved_db_path = f"slug:{slug}"
                         if resolved_db_path in seen_db_paths:
-                            logger.debug(
-                                "kanban notifier: skipping duplicate board slug %s for DB %s",
-                                slug, resolved_db_path,
-                            )
-                            continue
-                        seen_db_paths.add(resolved_db_path)
+                            # When multiple slugs map to the same DB, we still
+                            # need to process events for EACH slug separately
+                            # — skip only truly duplicate (db_path, slug) pairs.
+                            if slug in seen_db_paths.get(resolved_db_path, set()):
+                                logger.debug(
+                                    "kanban notifier: skipping duplicate board slug %s for DB %s",
+                                    slug, resolved_db_path,
+                                )
+                                continue
+                        seen_db_paths.setdefault(resolved_db_path, set()).add(slug)
                         try:
                             conn = _kb.connect(board=slug)
                         except Exception as exc:

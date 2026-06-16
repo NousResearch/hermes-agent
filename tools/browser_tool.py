@@ -3729,18 +3729,33 @@ def check_browser_requirements() -> bool:
 def check_browser_vision_requirements() -> bool:
     """Whether ``browser_vision`` should be advertised to the model.
 
-    Requires BOTH a working browser (``check_browser_requirements``) AND a
-    resolvable vision backend. Without the vision check, the tool stays in
-    the model's tool list even when no vision provider is configured, then
-    fails at call time with a cryptic provider-side error like
-    ``unknown variant `image_url`, expected `text``` (issue #31179).
+    Requires a working browser (``check_browser_requirements``) AND a usable
+    vision backend — either a resolvable auxiliary vision provider OR the
+    native fast path for the active main model. Without a vision check, the
+    tool stays in the model's tool list even when no vision provider is
+    configured, then fails at call time with a cryptic provider-side error
+    like ``unknown variant `image_url', expected `text``` (issue #31179).
     """
     if not check_browser_requirements():
         return False
     try:
-        from tools.vision_tools import check_vision_requirements
+        from tools.vision_tools import (
+            check_vision_requirements,
+            _should_use_native_vision_fast_path,
+        )
     except ImportError:
         return False
+    # Native fast path: when the active main model is itself vision-capable
+    # (e.g. a multimodal model on an OAuth provider that isn't in the aux
+    # resolver's allowlist), the analyze step at line ~3246 attaches the
+    # screenshot directly to the model — no aux provider needed. The legacy
+    # check_vision_requirements() probe below would still return False in
+    # that case and incorrectly hide the tool.
+    try:
+        if _should_use_native_vision_fast_path():
+            return True
+    except Exception:
+        pass
     return check_vision_requirements()
 
 

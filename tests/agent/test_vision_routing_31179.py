@@ -295,3 +295,101 @@ model:
         import tools.browser_tool
         with patch.object(tools.browser_tool, "check_browser_requirements", return_value=True):
             assert tools.browser_tool.check_browser_vision_requirements() is True
+
+
+# --------------------------------------------------------------------------
+# Fix 4: check_browser_vision_requirements accepts the native fast path
+#
+# When the active main model is itself vision-capable (per
+# ``decide_image_input_mode`` / ``_should_use_native_vision_fast_path``),
+# the analyze step at tools/browser_tool.py:3246 attaches the screenshot
+# directly to the main model — no aux vision provider is involved. The
+# gate should accept this as a valid vision backend, mirroring the
+# runtime check, instead of only consulting the aux resolver.
+# --------------------------------------------------------------------------
+
+
+class TestBrowserVisionUnhiddenByNativeFastPath:
+    """Native-fast-path main model un-hides browser_vision even without aux provider."""
+
+    def test_browser_vision_true_when_native_fast_path_active(
+        self, isolated_home, monkeypatch
+    ):
+        """Vision-capable main model + no aux provider + working browser → True.
+
+        Reproduces the reported bug: a multimodal main model on a provider
+        the aux resolver doesn't know (here we simulate it via a stub for
+        ``_should_use_native_vision_fast_path``) must still advertise
+        ``browser_vision`` because the analyze step uses the native path.
+        """
+        from unittest.mock import patch
+
+        _write_config(isolated_home, """
+model:
+  provider: minimax-oauth
+  default: MiniMax-M3
+""")
+        # No auxiliary vision provider configured, no API keys set.
+        _fresh_modules()
+
+        import tools.browser_tool
+        import tools.vision_tools
+
+        with patch.object(tools.browser_tool, "check_browser_requirements", return_value=True), \
+             patch.object(tools.vision_tools, "_should_use_native_vision_fast_path", return_value=True), \
+             patch.object(tools.vision_tools, "check_vision_requirements", return_value=False):
+            assert tools.browser_tool.check_browser_vision_requirements() is True
+
+    def test_browser_vision_false_when_neither_native_nor_aux_available(
+        self, isolated_home, monkeypatch
+    ):
+        """Negative case: text-only main, no native fast path, no aux → still False.
+
+        Guards against the gate becoming too permissive.
+        """
+        from unittest.mock import patch
+
+        _write_config(isolated_home, """
+model:
+  provider: deepseek
+  default: deepseek-v4-pro
+""")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        _fresh_modules()
+
+        import tools.browser_tool
+        import tools.vision_tools
+
+        with patch.object(tools.browser_tool, "check_browser_requirements", return_value=True), \
+             patch.object(tools.vision_tools, "_should_use_native_vision_fast_path", return_value=False), \
+             patch.object(tools.vision_tools, "check_vision_requirements", return_value=False):
+            assert tools.browser_tool.check_browser_vision_requirements() is False
+
+    def test_browser_vision_falls_through_to_aux_when_native_check_raises(
+        self, isolated_home, monkeypatch
+    ):
+        """If the native fast path probe raises, fall through to the aux check.
+
+        Ensures the ``try/except Exception: pass`` around the native probe
+        doesn't swallow legitimate failures silently — a raised probe just
+        means "use the legacy aux check," preserving the pre-patch behavior.
+        """
+        from unittest.mock import patch
+
+        _write_config(isolated_home, """
+model:
+  provider: openrouter
+  default: anthropic/claude-sonnet-4
+""")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        _fresh_modules()
+
+        import tools.browser_tool
+        import tools.vision_tools
+
+        with patch.object(tools.browser_tool, "check_browser_requirements", return_value=True), \
+             patch.object(tools.vision_tools, "_should_use_native_vision_fast_path",
+                          side_effect=RuntimeError("probe failed")), \
+             patch.object(tools.vision_tools, "check_vision_requirements", return_value=True):
+            # Native probe raised → fell through to aux check, which is True.
+            assert tools.browser_tool.check_browser_vision_requirements() is True

@@ -606,3 +606,90 @@ def test_aggregator_dedup_multiple_user_providers():
     assert or_row["models"] == ["model-z"]
     assert or_row["total_models"] == 1
 
+
+# ─── Custom-provider dedup guard (named custom providers are NOT their
+# own dedup source — a `custom:foo` row's models must stay in the picker
+# because that endpoint IS the model's source of truth, not a user-side
+# proxy serving a subset). Without this guard, build_models_payload zeros
+# out a custom provider's models when it is the only authenticated row.
+
+
+def _custom_provider_row(slug: str, models: list[str]) -> dict:
+    """Mirror the real shape of a custom_providers row in
+    list_authenticated_providers — `api_url` and `is_user_defined=True`
+    are what `is_aggregator` keys on to treat it as aggregator-shaped.
+    """
+    return {
+        "slug": slug,
+        "name": slug.split(":", 1)[-1].title(),
+        "models": models,
+        "total_models": len(models),
+        "is_current": False,
+        "is_user_defined": True,
+        "source": "user-config",
+        "api_url": "https://example.invalid/v1",
+    }
+
+
+def test_custom_provider_keeps_own_models_in_dedup():
+    """A named custom provider (``custom:foo``) is aggregator-shaped by
+    ``is_aggregator()`` but its own model list is the source of truth
+    for that endpoint. ``build_models_payload`` must NOT subtract its
+    own models from itself — the picker should see all 62, not 0.
+
+    Without the guard, a custom provider with models = [] in the picker
+    payload even though ``list_authenticated_providers`` populated it
+    with the full live ``/v1/models`` catalog.
+    """
+    rows = [
+        _custom_provider_row(
+            "custom:tokendance.space",
+            ["glm-5.1", "deepseek-v4-pro", "kimi-k2.7-code", "qwen3.7-max"],
+        ),
+    ]
+    ctx = _empty_ctx(provider="custom:tokendance.space", model="glm-5.1")
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    custom_row = payload["providers"][0]
+    assert custom_row["slug"] == "custom:tokendance.space"
+    assert custom_row["models"] == [
+        "glm-5.1", "deepseek-v4-pro", "kimi-k2.7-code", "qwen3.7-max",
+    ]
+    assert custom_row["total_models"] == 4
+
+
+def test_dedup_skips_user_defined_aggregator_shaped_rows():
+    """When a custom aggregator-shaped row sits alongside a real
+    aggregator (openrouter), the custom provider's models must not be
+    added to the dedup-source set — those models live on the user's
+    endpoint, not the aggregator.  Real aggregator dedup against a
+    non-aggregator user proxy still works.
+    """
+    rows = [
+        _custom_provider_row(
+            "custom:tokendance.space",
+            ["glm-5.1", "deepseek-v4-pro"],  # live catalog
+        ),
+        _user_provider_row("litellm-proxy", ["custom-only-1"]),
+        _aggregator_row("openrouter", [
+            "glm-5.1",         # happens to share a name; must NOT be removed
+            "custom-only-1",   # this one IS removed — proxy is narrower
+            "anthropic/claude-sonnet-4.6",
+        ]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    # Only the non-aggregator user proxy's model was subtracted;
+    # the custom aggregator's shared model survived.
+    assert or_row["models"] == ["glm-5.1", "anthropic/claude-sonnet-4.6"]
+    assert or_row["total_models"] == 2
+
+    custom_row = next(r for r in payload["providers"]
+                      if r["slug"] == "custom:tokendance.space")
+    # Custom provider's own list is untouched.
+    assert custom_row["models"] == ["glm-5.1", "deepseek-v4-pro"]
+

@@ -174,12 +174,24 @@ def build_models_payload(
     if _is_aggregator is not None:
         user_models: set[str] = set()
         for row in rows:
-            if row.get("is_user_defined"):
+            # Only collect models from non-aggregator user-defined providers
+            # (e.g. litellm-proxy). Aggregator-shaped custom providers
+            # (any `custom:*` slug) must be excluded from the dedup source
+            # set — they're full-catalog endpoints, not narrow user proxies,
+            # so their models must not be subtracted from the same provider's
+            # own picker row. Without this guard, a custom provider with
+            # many models ends up with `models=[]` in the picker payload.
+            if row.get("is_user_defined") and not _is_aggregator(row.get("slug", "")):
                 user_models.update(m.lower() for m in (row.get("models") or []))
         if user_models:
             for row in rows:
                 slug = row.get("slug", "")
                 if not _is_aggregator(slug):
+                    continue
+                # Never dedup a custom provider against its own models —
+                # a `custom:foo` row's own model list is the source of truth
+                # for that endpoint, not a candidate for filtering.
+                if slug.lower().startswith("custom:"):
                     continue
                 original = row.get("models") or []
                 filtered = [m for m in original if m.lower() not in user_models]

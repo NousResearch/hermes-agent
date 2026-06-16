@@ -9855,6 +9855,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await _deliver()
 
+    async def _notify_goal_done_home_channel(self, source: Any, message: str) -> None:
+        """Mirror a goal-completion notice to the Discord home channel (#47191)."""
+        from gateway.config import Platform
+        import os
+
+        env_key = _home_target_env_var("discord")
+        chat_id = os.getenv(env_key, "").strip()
+        if not chat_id:
+            return
+
+        if source is not None and hasattr(source, "chat_id"):
+            if str(getattr(source, "chat_id", "")) == chat_id:
+                return
+
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter:
+            return
+
+        thread_id = os.getenv(f"{env_key}_THREAD_ID", "").strip() or None
+        metadata = self._thread_metadata_for_target(Platform.DISCORD, chat_id, thread_id)
+
+        try:
+            result = await adapter.send(chat_id, message, metadata=metadata)
+            if result is not None and not getattr(result, "success", True):
+                logger.warning(
+                    "goal home-channel notice: send failed: %s",
+                    getattr(result, "error", "unknown error"),
+                )
+        except Exception as exc:
+            logger.warning("goal home-channel notice failed: %s", exc, exc_info=True)
+
     async def _post_turn_goal_continuation(
         self,
         *,
@@ -9899,6 +9930,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # without reversing the user-visible ordering.
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)
+
+        # Verdict done ise ana kanala bildirimi fırlat:
+        if source is not None and decision.get("verdict") == "done":
+            notification_text = msg or "Goal achieved."
+            await self._notify_goal_done_home_channel(source, notification_text)
 
         if not decision.get("should_continue"):
             return

@@ -78,6 +78,10 @@ def _cmd_status(args) -> int:
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
 
+    locked_cats = curator.get_locked_categories()
+    if locked_cats:
+        print(f"  locked_cats:    {', '.join(locked_cats)}")
+
     rows = skill_usage.agent_created_report()
     if not rows:
         print("\nno agent-created skills")

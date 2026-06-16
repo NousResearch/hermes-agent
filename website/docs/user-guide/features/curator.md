@@ -48,6 +48,7 @@ curator:
   stale_after_days: 30
   archive_after_days: 90
   prune_builtins: true         # archive unused bundled built-in skills too (hub skills always exempt)
+  locked_categories: []        # e.g. [security, devops] — skip all skills in these categories
 ```
 
 To disable entirely, set `curator.enabled: false`.
@@ -195,6 +196,33 @@ Only **agent-created** skills can be pinned — `hermes curator pin` refuses on 
 A small set of **protected built-ins** is hardcoded as never-archivable and never-consolidatable, regardless of `curator.prune_builtins`, pin state, or LLM judgment. These back load-bearing UX — for example, `plan` powers the `/plan` slash-command flow — so silently archiving one would turn its slash command into an "Unknown command" error with no signal to you. Protected built-ins are filtered out of the curator's candidate list entirely, so the consolidation pass never sees them.
 
 If you want a stronger guarantee than "no deletion" — for instance, freezing a skill's content entirely while the agent still reads it — edit `~/.hermes/skills/<name>/SKILL.md` directly with your editor. The pin guards tool-driven deletion, not your own filesystem access.
+
+## Locked categories
+
+Pinning works well for individual skills, but when you have an entire domain you want to protect — say, all your `security` or `devops` skills — pinning each one manually is tedious. The `locked_categories` config option exempts every skill whose SKILL.md `category` frontmatter matches any entry in the list.
+
+```yaml
+curator:
+  locked_categories:
+    - security     # all skills with `category: security`
+    - devops       # all skills with `category: devops`
+```
+
+Skills in a locked category:
+
+- Are **skipped** by automatic transitions (`active → stale → archived`), just like pinned skills.
+- Are **skipped** by the curator's LLM review pass — the review prompt explicitly instructs the agent to leave them alone.
+- Still appear in the candidate list with their category shown, so you can see which skills are protected.
+
+Unlike pinning (which is per-skill and stored in `.usage.json`), locked categories are a **global config setting** — add or remove a category and it takes effect on the next curator run. A skill with no `category` field is unaffected by `locked_categories`.
+
+`hermes curator status` shows active locked categories:
+
+```
+curator: ENABLED
+  ...
+  locked_cats:    security, devops
+```
 
 ## Usage telemetry
 

@@ -212,6 +212,190 @@ def test_pinned_skill_is_never_touched(curator_env):
     assert rec["pinned"] is True
 
 
+def test_locked_categories_default_empty(curator_env):
+    c = curator_env["curator"]
+    assert c.get_locked_categories() == []
+
+
+def test_locked_categories_from_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {
+        "locked_categories": ["security", "devops"],
+    })
+    assert c.get_locked_categories() == ["security", "devops"]
+
+
+def test_locked_categories_single_string(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {
+        "locked_categories": "security",
+    })
+    assert c.get_locked_categories() == ["security"]
+
+
+def test_locked_category_skill_is_never_archived(curator_env, monkeypatch):
+    """A skill whose category is in locked_categories skips auto-transitions."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+
+    # Write a skill with category: security
+    d = _write_skill(skills_dir, "threat-scanner")
+    (d / "SKILL.md").write_text(
+        "---\nname: threat-scanner\ndescription: x\ncategory: security\n---\n",
+        encoding="utf-8",
+    )
+
+    # Config locks the security category
+    monkeypatch.setattr(c, "_load_config", lambda: {"locked_categories": ["security"]})
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["threat-scanner"] = u._empty_record()
+    data["threat-scanner"]["created_by"] = "agent"
+    data["threat-scanner"]["last_used_at"] = super_old
+    data["threat-scanner"]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 0
+    assert counts["marked_stale"] == 0
+    rec = u.get_record("threat-scanner")
+    assert rec["state"] == "active"  # untouched
+
+
+def test_non_locked_category_skill_is_archived_normally(curator_env, monkeypatch):
+    """A skill NOT in a locked category is archived when old enough."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+
+    d = _write_skill(skills_dir, "old-thing")
+    (d / "SKILL.md").write_text(
+        "---\nname: old-thing\ndescription: x\ncategory: misc\n---\n",
+        encoding="utf-8",
+    )
+
+    # Only lock security, not misc
+    monkeypatch.setattr(c, "_load_config", lambda: {"locked_categories": ["security"]})
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["old-thing"] = u._empty_record()
+    data["old-thing"]["created_by"] = "agent"
+    data["old-thing"]["last_used_at"] = super_old
+    data["old-thing"]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 1
+
+
+def test_skill_without_category_not_locked(curator_env, monkeypatch):
+    """A skill with no category field is NOT affected by locked_categories."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+
+    _write_skill(skills_dir, "uncategorized")
+
+    monkeypatch.setattr(c, "_load_config", lambda: {"locked_categories": ["security"]})
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["uncategorized"] = u._empty_record()
+    data["uncategorized"]["created_by"] = "agent"
+    data["uncategorized"]["last_used_at"] = super_old
+    data["uncategorized"]["created_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 1  # archived because it has no locked category
+
+
+def test_locked_categories_default_empty(curator_env):
+    c = curator_env["curator"]
+    assert c.get_locked_categories() == []
+
+
+def test_locked_categories_from_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {
+        "locked_categories": ["security", "devops"],
+    })
+    assert c.get_locked_categories() == ["security", "devops"]
+
+
+def test_locked_categories_single_string(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {
+        "locked_categories": "security",
+    })
+    assert c.get_locked_categories() == ["security"]
+
+
+def test_locked_category_skill_is_never_archived(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    d = _write_skill(skills_dir, "threat-scanner")
+    (d / "SKILL.md").write_text(
+        '---\nname: threat-scanner\ndescription: x\ncategory: security\n---\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(c, "_load_config", lambda: {"locked_categories": ["security"]})
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["threat-scanner"] = u._empty_record()
+    data["threat-scanner"]["created_by"] = "agent"
+    data["threat-scanner"]["last_used_at"] = super_old
+    data["threat-scanner"]["created_at"] = super_old
+    u.save_usage(data)
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 0
+    assert counts["marked_stale"] == 0
+    rec = u.get_record("threat-scanner")
+    assert rec["state"] == "active"
+
+
+def test_non_locked_category_skill_is_archived_normally(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    d = _write_skill(skills_dir, "old-thing")
+    (d / "SKILL.md").write_text(
+        '---\nname: old-thing\ndescription: x\ncategory: misc\n---\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(c, "_load_config", lambda: {"locked_categories": ["security"]})
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["old-thing"] = u._empty_record()
+    data["old-thing"]["created_by"] = "agent"
+    data["old-thing"]["last_used_at"] = super_old
+    data["old-thing"]["created_at"] = super_old
+    u.save_usage(data)
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 1
+
+
+def test_skill_without_category_not_locked(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "uncategorized")
+    monkeypatch.setattr(c, "_load_config", lambda: {"locked_categories": ["security"]})
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["uncategorized"] = u._empty_record()
+    data["uncategorized"]["created_by"] = "agent"
+    data["uncategorized"]["last_used_at"] = super_old
+    data["uncategorized"]["created_at"] = super_old
+    u.save_usage(data)
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 1
+
+
 def test_stale_skill_reactivates_on_recent_use(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]

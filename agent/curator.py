@@ -182,6 +182,54 @@ def get_prune_builtins() -> bool:
     return bool(cfg.get("prune_builtins", True))
 
 
+def get_locked_categories() -> List[str]:
+    """Return list of skill categories exempt from curator auto-transitions.
+
+    Skills whose ``category`` frontmatter field matches any entry in this list
+    are skipped by both automatic state transitions (active→stale→archived)
+    and the LLM review pass. This lets users protect entire domains (e.g.
+    ``security``, ``devops``) without pinning each skill individually.
+    """
+    cfg = _load_config()
+    raw = cfg.get("locked_categories", [])
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        return [str(c).strip() for c in raw if str(c).strip()]
+    return []
+
+
+def _get_skill_category(skill_name: str) -> Optional[str]:
+    """Read the ``category`` field from a skill's SKILL.md frontmatter.
+
+    Returns ``None`` when the file is missing or has no category.
+    """
+    from hermes_constants import get_skills_dir
+    from agent.skill_utils import parse_frontmatter
+
+    skills_dir = get_skills_dir()
+    for base in (skills_dir, skills_dir / ".archive"):
+        skill_md = base / skill_name / "SKILL.md"
+        if skill_md.exists():
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(content)
+                cat = fm.get("category", "")
+                return str(cat).strip() if cat else None
+            except Exception:
+                return None
+    return None
+
+
+def _is_category_locked(skill_name: str) -> bool:
+    """True if the skill's category is in the locked_categories list."""
+    locked = get_locked_categories()
+    if not locked:
+        return False
+    cat = _get_skill_category(skill_name)
+    return cat in locked if cat else False
+
+
 # ---------------------------------------------------------------------------
 # Idle / interval check
 # ---------------------------------------------------------------------------
@@ -279,6 +327,10 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         if row.get("pinned"):
             continue
 
+        # Skills in a locked category are exempt from auto-transitions.
+        if _is_category_locked(name):
+            continue
+
         # First sight of a curation-eligible skill with no persisted record
         # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
         if not row.get("_persisted", True):
@@ -362,7 +414,10 @@ CURATOR_REVIEW_PROMPT = (
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
-    "3b. DO NOT archive, delete, consolidate, move, or otherwise modify any "
+    "3b. DO NOT touch any skill whose category is in the locked_categories "
+    "list (shown below). Locked categories are exempt from ALL curator "
+    "operations — archival, consolidation, and patching.\n"
+    "3c. DO NOT archive, delete, consolidate, move, or otherwise modify any "
     "skill named in the protected built-ins list (currently: plan). These "
     "back load-bearing UX (slash-command entry points referenced in docs and "
     "tips) and are filtered out of the candidate list below — never resurrect "
@@ -1389,12 +1444,19 @@ def _render_candidate_list() -> str:
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
+    locked_cats = get_locked_categories()
     lines = [f"Agent-created skills ({len(rows)}):\n"]
+    if locked_cats:
+        lines.append(f"  locked_categories: {', '.join(locked_cats)}\n")
     for r in rows:
+        cat = _get_skill_category(r["name"]) or "—"
+        lock_marker = "🔒" if cat in locked_cats else ""
         lines.append(
             f"- {r['name']}  "
             f"state={r['state']}  "
+            f"category={cat}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"{lock_marker}"
             f"activity={r.get('activity_count', 0)}  "
             f"use={r.get('use_count', 0)}  "
             f"view={r.get('view_count', 0)}  "

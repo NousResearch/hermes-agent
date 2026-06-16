@@ -468,6 +468,53 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _strip_all_multimodal_tool_results(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Replace ``_multimodal`` image payloads in tool results with their text summaries.
+
+    ``browser_vision`` and ``computer_use`` return screenshots inside a
+    ``_multimodal`` envelope::
+
+        {"_multimodal": True, "content": [...base64...], "text_summary": "..."}
+
+    Each screenshot can be several megabytes.  After :meth:`compress` assembles
+    the compressed message list, the model has already seen and responded to
+    every tool result in the conversation.  The base64 payload is therefore
+    redundant — it carries no information the model has not already processed,
+    but it inflates every subsequent API request's byte size.  Providers impose
+    hard limits on request body size (not token count), so even when the token
+    estimate is within limits a session with a handful of browser_vision calls
+    can produce HTTP 413 errors that survive every compression pass.
+
+    Replaces each ``_multimodal`` envelope with its ``text_summary`` string so
+    the model retains a readable description of what the screenshot showed.
+    Only called inside :meth:`compress` after the final message list is
+    assembled, guaranteeing the model will have seen the screenshot before it
+    is stripped.
+
+    Shallow copies only; input is never mutated.
+    """
+    if not messages:
+        return messages
+
+    result: List[Dict[str, Any]] = []
+    changed = False
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            result.append(msg)
+            continue
+        content = msg.get("content")
+        if isinstance(content, dict) and content.get("_multimodal"):
+            summary = content.get("text_summary") or "[screenshot removed to save context]"
+            new_msg = msg.copy()
+            new_msg["content"] = f"[screenshot removed] {summary[:200]}"
+            result.append(new_msg)
+            changed = True
+        else:
+            result.append(msg)
+
+    return result if changed else messages
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -2394,12 +2441,17 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         compressed = self._sanitize_tool_pairs(compressed)
 
-        # Replace image parts in all compressed messages before the newest
-        # image-bearing user turn with a short text placeholder. Without
-        # this, tail messages keep their original multi-MB base-64 image
-        # payloads forever, which can push every subsequent API request
-        # past the provider's body-size limit and wedge the session.
-        # Port of Kilo-Org/kilocode#9434.
+        # Strip _multimodal base64 from all tool results (browser_vision /
+        # computer_use screenshots).  After compression the model has already
+        # analyzed and responded to every tool result, so the base64 is
+        # redundant.  Provider payload limits are based on byte size, not
+        # token count, so a handful of screenshots can produce HTTP 413 errors
+        # even when the token estimate is within bounds.  text_summary is
+        # preserved so the model can still reference what the screenshot showed.
+        compressed = _strip_all_multimodal_tool_results(compressed)
+
+        # Replace image parts in older user messages with a short text
+        # placeholder.  Port of Kilo-Org/kilocode#9434.
         compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)

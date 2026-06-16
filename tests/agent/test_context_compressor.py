@@ -2264,3 +2264,111 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+
+
+class TestStripAllMultimodalToolResults:
+    """_strip_all_multimodal_tool_results strips every _multimodal tool result.
+
+    browser_vision and computer_use return screenshots as ``_multimodal`` envelopes.
+    After compression the model has already responded to each of them, so the
+    base64 payload is pure waste.  Providers enforce byte-size limits (not token
+    limits), so even a token-lean conversation can produce HTTP 413 when a handful
+    of multi-MB screenshots survive in the compressed message list.
+
+    The key difference from the anchor-based user-image stripping: ALL tool-result
+    envelopes are stripped — including the most recent one — because the model will
+    always have seen and responded to them before compress() runs.
+    """
+
+    def _make_multimodal_envelope(self, summary: str = "screenshot of page") -> dict:
+        return {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "Image loaded into your context."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA" + "x" * 1000}},
+            ],
+            "text_summary": summary,
+            "meta": {"size_bytes": 1024},
+        }
+
+    def test_single_multimodal_tool_result_stripped(self):
+        """Even the only tool result is stripped — no anchor exception."""
+        from agent.context_compressor import _strip_all_multimodal_tool_results
+
+        messages = [
+            {"role": "user", "content": "screenshot please"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("login page"), "tool_call_id": "c1"},
+            {"role": "assistant", "content": "I see the login form."},
+        ]
+
+        result = _strip_all_multimodal_tool_results(messages)
+
+        assert result[2]["content"] == "[screenshot removed] login page"
+        assert result[0] is messages[0]
+        assert result[3] is messages[3]
+
+    def test_all_multimodal_tool_results_stripped(self):
+        """Every _multimodal tool result in the list is stripped, not just older ones."""
+        from agent.context_compressor import _strip_all_multimodal_tool_results
+
+        messages = [
+            {"role": "user", "content": "take two screenshots"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("first"), "tool_call_id": "c1"},
+            {"role": "assistant", "content": "I see the first page."},
+            {"role": "user", "content": "now the second"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+            {"role": "tool", "content": self._make_multimodal_envelope("second"), "tool_call_id": "c2"},
+            {"role": "assistant", "content": "I see the second page."},
+        ]
+
+        result = _strip_all_multimodal_tool_results(messages)
+
+        assert result[2]["content"] == "[screenshot removed] first"
+        assert result[6]["content"] == "[screenshot removed] second"
+
+    def test_text_summary_used_as_replacement(self):
+        """Stripped content uses text_summary from the envelope."""
+        from agent.context_compressor import _strip_all_multimodal_tool_results
+
+        envelope = self._make_multimodal_envelope("a dashboard with 3 charts")
+        messages = [
+            {"role": "tool", "content": envelope, "tool_call_id": "c1"},
+        ]
+        result = _strip_all_multimodal_tool_results(messages)
+        assert result[0]["content"] == "[screenshot removed] a dashboard with 3 charts"
+
+    def test_fallback_when_no_text_summary(self):
+        """Falls back to generic placeholder when text_summary is absent."""
+        from agent.context_compressor import _strip_all_multimodal_tool_results
+
+        envelope = {"_multimodal": True, "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}
+        messages = [
+            {"role": "tool", "content": envelope, "tool_call_id": "c1"},
+        ]
+        result = _strip_all_multimodal_tool_results(messages)
+        assert result[0]["content"] == "[screenshot removed] [screenshot removed to save context]"
+
+    def test_non_multimodal_tool_results_unchanged(self):
+        """Plain string tool results are not touched."""
+        from agent.context_compressor import _strip_all_multimodal_tool_results
+
+        messages = [
+            {"role": "tool", "content": "exit code 0", "tool_call_id": "c1"},
+            {"role": "tool", "content": [{"type": "text", "text": "plain list"}], "tool_call_id": "c2"},
+        ]
+        result = _strip_all_multimodal_tool_results(messages)
+        assert result is messages
+
+    def test_user_and_assistant_messages_unchanged(self):
+        """Only tool messages are inspected; user/assistant messages pass through."""
+        from agent.context_compressor import _strip_all_multimodal_tool_results
+
+        img_content = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,USR"}}]
+        messages = [
+            {"role": "user", "content": img_content},
+            {"role": "assistant", "content": "described it"},
+        ]
+        result = _strip_all_multimodal_tool_results(messages)
+        assert result is messages

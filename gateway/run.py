@@ -17253,10 +17253,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _resume_entry = self.session_store._entries.get(session_key)
                 except Exception:
                     _resume_entry = None
+
+            # resume_pending freshness uses a SECOND signal in addition to the
+            # transcript clock above.  The restart watchdog stamps the session
+            # with ``last_resume_marked_at`` at interrupt time — that is the
+            # correct "when were we interrupted" signal.  The transcript clock
+            # (_interruption_is_fresh) can be far older: an active thread you
+            # return to may have its last persisted row hours back, even though
+            # the interruption itself just happened.  Gating resume_pending on
+            # the transcript clock alone makes the recovery note silently drop,
+            # and because the startup auto-resume turn carries empty text
+            # (_schedule_resume_pending_sessions), the model then receives a
+            # blank user message and replies with confused "the message came
+            # through blank" noise.  Treat the marker as fresh when
+            # EITHER signal is fresh so the two freshness checks agree.
+            _resume_mark_is_fresh = False
+            if _resume_entry is not None and getattr(_resume_entry, "resume_pending", False):
+                _resume_mark_is_fresh = _is_fresh_gateway_interruption(
+                    getattr(_resume_entry, "last_resume_marked_at", None),
+                    window_secs=_freshness_window,
+                )
             _is_resume_pending = bool(
                 _resume_entry is not None
                 and getattr(_resume_entry, "resume_pending", False)
-                and _interruption_is_fresh
+                and (_interruption_is_fresh or _resume_mark_is_fresh)
             )
             _has_fresh_tool_tail = bool(
                 agent_history
@@ -17317,6 +17337,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _srn = _pending_notes.pop(session_key, None)
                 if _srn:
                     message = _srn + "\n\n" + message
+
+            # Safety net: a startup auto-resume event carries empty
+            # text and relies on the resume_pending branch above to supply the
+            # recovery note.  If that branch did not fire for any reason (e.g.
+            # both freshness signals disagreed, or the marker was cleared
+            # between scheduling and dispatch) we must NOT hand the model a
+            # blank user turn — it responds with confused "the message came
+            # through blank" noise.  Restricted to resume_pending sessions so
+            # legitimately empty user turns (e.g. an image with no caption,
+            # wrapped as native content below) are untouched.
+            if (
+                isinstance(message, str)
+                and not message.strip()
+                and _resume_entry is not None
+                and getattr(_resume_entry, "resume_pending", False)
+            ):
+                message = (
+                    "[System note: The previous turn in this session was "
+                    "interrupted by a gateway restart. Review the conversation "
+                    "history above, finish any unfinished work, and summarize "
+                    "what was accomplished, then wait for the user's next "
+                    "message.]"
+                )
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

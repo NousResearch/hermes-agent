@@ -638,3 +638,25 @@ def test_aggregator_dedup_does_not_empty_user_defined_custom_provider():
     assert "other/model" in or_row["models"]
     assert or_row["total_models"] == 1
 
+
+def test_two_custom_providers_with_overlap_both_survive():
+    """Two user-defined custom endpoints that happen to expose an
+    overlapping model must each keep their full catalog. Neither is the
+    aggregator the dedup exists to trim, so cross-filtering between two
+    user-defined rows must not happen.
+    """
+    rows = [
+        _user_provider_row("custom:proxy-a", ["shared/model", "a/only"]),
+        _user_provider_row("custom:proxy-b", ["shared/model", "b/only"]),
+    ]
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    a_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-a")
+    b_row = next(r for r in payload["providers"] if r["slug"] == "custom:proxy-b")
+    assert a_row["models"] == ["shared/model", "a/only"]
+    assert b_row["models"] == ["shared/model", "b/only"]
+    assert a_row["total_models"] == 2
+    assert b_row["total_models"] == 2
+

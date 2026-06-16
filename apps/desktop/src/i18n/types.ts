@@ -842,6 +842,15 @@ export interface Translations {
     groupAriaUngrouped: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
+    archiveAllTitle: string
+    archiveAllAria: string
+    archiveAllDialogTitle: string
+    archiveAllDialogDesc: string
+    archiveAllConfirm: string
+    archiveAllCancel: string
+    archiveAllSubmitting: string
+    archiveAllChecked: (count: number) => string
+    archiveAllNone: string
     cloudChannelsTitle: string
     cloudChannelsDesc: string
     cloudInviteTokenAria: string
@@ -909,6 +918,12 @@ export interface Translations {
       deleteDialogTitle: (count: number) => string
       deleteDialogDesc: string
       deleteConfirm: string
+      archivedToast: (count: number) => string
+      restoredToast: (count: number) => string
+      deletedToast: (count: number) => string
+      archiveFailed: (count: number) => string
+      restoreFailed: (count: number) => string
+      deleteFailed: (count: number) => string
     }
     row: {
       pin: string

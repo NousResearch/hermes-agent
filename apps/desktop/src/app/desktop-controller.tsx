@@ -22,9 +22,12 @@ import {
 } from '../lib/session-source'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
+  $archivedSessionsLimit,
   $panesFlipped,
   $pinnedSessionIds,
   $sessionsLimit,
+  $sidebarArchivedOpen,
+  bumpArchivedSessionsLimit,
   bumpSessionsLimit,
   FILE_BROWSER_DEFAULT_WIDTH,
   FILE_BROWSER_MAX_WIDTH,
@@ -47,6 +50,7 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
+  $archivedSessions,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -59,6 +63,9 @@ import {
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   sessionPinId,
+  setArchivedSessions,
+  setArchivedSessionsLoading,
+  setArchivedSessionsTotal,
   setAwaitingResponse,
   setBusy,
   setCronSessions,
@@ -350,6 +357,47 @@ export function DesktopController() {
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
   }, [])
 
+  const archivedPageFetchedRef = useRef(false)
+
+  const refreshArchivedSessions = useCallback(async (options?: { force?: boolean }) => {
+    const wantPage = Boolean(options?.force) || archivedPageFetchedRef.current || $sidebarArchivedOpen.get()
+
+    setArchivedSessionsLoading(true)
+
+    try {
+      const scope = $profileScope.get()
+      const profile = scope === ALL_PROFILES ? 'all' : scope
+      const limit = wantPage ? $archivedSessionsLimit.get() : 1
+
+      const result = await listAllProfileSessions(limit, 0, 'only', 'recent', profile, {
+        excludeSources: ['cron']
+      })
+
+      const total = Math.max(typeof result.total === 'number' ? result.total : result.sessions.length, 0)
+
+      if (wantPage) {
+        archivedPageFetchedRef.current = true
+        setArchivedSessions(result.sessions)
+        setArchivedSessionsTotal(Math.max(total, result.sessions.length))
+      } else {
+        setArchivedSessionsTotal(Math.max(total, $archivedSessions.get().length))
+      }
+    } catch {
+      // Non-fatal: the Archived section keeps its last-known rows/count.
+    } finally {
+      setArchivedSessionsLoading(false)
+    }
+  }, [])
+
+  const ensureArchivedLoaded = useCallback(() => {
+    void refreshArchivedSessions({ force: true })
+  }, [refreshArchivedSessions])
+
+  const loadMoreArchivedSessions = useCallback(() => {
+    bumpArchivedSessionsLimit()
+    void refreshArchivedSessions({ force: true })
+  }, [refreshArchivedSessions])
+
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
   // after an agent turn surfaces a new job immediately; the interval poll keeps
@@ -403,7 +451,8 @@ export function DesktopController() {
     void refreshCronSessions()
     void refreshCronJobs()
     void refreshMessagingSessions()
-  }, [profileScope, refreshCronSessions, refreshCronJobs, refreshMessagingSessions])
+    void refreshArchivedSessions()
+  }, [profileScope, refreshArchivedSessions, refreshCronSessions, refreshCronJobs, refreshMessagingSessions])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
@@ -568,11 +617,15 @@ export function DesktopController() {
   })
 
   const {
+    archiveAllSessions,
     archiveSession,
+    archiveSessionsBulk,
     branchCurrentSession,
     createBackendSessionForSend,
+    deleteSessionsBulk,
     openSettings,
     removeSession,
+    restoreSessionsBulk,
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft
@@ -789,8 +842,13 @@ export function DesktopController() {
   const sidebar = (
     <ChatSidebar
       currentView={currentView}
+      onArchiveAllSessions={archiveAllSessions}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
+      onArchiveSessions={archiveSessionsBulk}
       onDeleteSession={sessionId => void removeSession(sessionId)}
+      onDeleteSessions={deleteSessionsBulk}
+      onEnsureArchivedLoaded={ensureArchivedLoaded}
+      onLoadMoreArchived={loadMoreArchivedSessions}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
@@ -800,6 +858,8 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onRestoreSession={sessionId => void restoreSessionsBulk([sessionId])}
+      onRestoreSessions={restoreSessionsBulk}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)

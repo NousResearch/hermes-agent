@@ -82,7 +82,10 @@ const SIDEBAR_SESSION_SORTABLE_TRANSITION = { duration: 150, easing: 'cubic-bezi
 
 const sidebarSessionDndId = (id: string) => `${SIDEBAR_SESSION_DND_ID_PREFIX}${id}`
 
-function sessionDragPayloadFor(session: SessionInfo, options: { archived: boolean; pinned: boolean }): SessionDragPayload {
+function sessionDragPayloadFor(
+  session: SessionInfo,
+  options: { archived: boolean; pinned: boolean }
+): SessionDragPayload {
   return {
     archived: options.archived,
     id: session.id,
@@ -243,10 +246,7 @@ function VirtualSortableSessionRow({
   sectionKey,
   session
 }: VirtualSortableSessionRowProps) {
-  const payload = useMemo(
-    () => sessionDragPayloadFor(session, { archived, pinned }),
-    [archived, pinned, session]
-  )
+  const payload = useMemo(() => sessionDragPayloadFor(session, { archived, pinned }), [archived, pinned, session])
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     data: {
@@ -274,7 +274,7 @@ function VirtualSortableSessionRow({
       data-index={index}
       dragging={isDragging}
       key={session.id}
-      nativeDraggable={false}
+      nativeDraggable
       presence={presence}
       ref={refMerged}
       reorderable

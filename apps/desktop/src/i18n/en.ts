@@ -1098,6 +1098,16 @@ export const en: Translations = {
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
+    archiveAllTitle: 'Archive all sessions',
+    archiveAllAria: 'Archive all unpinned sessions',
+    archiveAllDialogTitle: 'Archive all sessions',
+    archiveAllDialogDesc:
+      'Archive unpinned sessions from the sidebar. Pinned chats, the current chat, and running sessions stay visible.',
+    archiveAllConfirm: 'Archive all',
+    archiveAllCancel: 'Cancel',
+    archiveAllSubmitting: 'Archiving...',
+    archiveAllChecked: count => `${count} visible session${count === 1 ? '' : 's'} will be checked.`,
+    archiveAllNone: 'No sessions to archive.',
     cloudChannelsTitle: 'Cloud channels',
     cloudChannelsDesc: 'Accept invites and review channels available to this cloud account.',
     cloudInviteTokenAria: 'Cloud invite token',
@@ -1164,7 +1174,13 @@ export const en: Translations = {
       clearSelection: 'Clear selection',
       deleteDialogTitle: count => (count === 1 ? 'Delete 1 session?' : `Delete ${count} sessions?`),
       deleteDialogDesc: 'Deleted sessions are removed permanently. This cannot be undone.',
-      deleteConfirm: 'Delete'
+      deleteConfirm: 'Delete',
+      archivedToast: count => (count === 1 ? 'Archived 1 session' : `Archived ${count} sessions`),
+      restoredToast: count => (count === 1 ? 'Restored 1 session' : `Restored ${count} sessions`),
+      deletedToast: count => (count === 1 ? 'Deleted 1 session' : `Deleted ${count} sessions`),
+      archiveFailed: count => (count === 1 ? 'Could not archive 1 session' : `Could not archive ${count} sessions`),
+      restoreFailed: count => (count === 1 ? 'Could not restore 1 session' : `Could not restore ${count} sessions`),
+      deleteFailed: count => (count === 1 ? 'Could not delete 1 session' : `Could not delete ${count} sessions`)
     },
     row: {
       pin: 'Pin',
@@ -1773,7 +1789,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreFromHere: 'Restore checkpoint — rerun from this prompt',
       restoreTitle: 'Restore to this checkpoint?',
-      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+      restoreBody:
+        'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
       restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',

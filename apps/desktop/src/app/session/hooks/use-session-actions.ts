@@ -2,11 +2,12 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { bulkArchiveSessions, deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { sessionArchivePreserveIds } from '@/lib/session-eligibility'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -17,6 +18,8 @@ import {
   $currentCwd,
   $messages,
   $sessions,
+  $sessionsTotal,
+  $workingSessionIds,
   $yoloActive,
   sessionPinId,
   setActiveSessionId,
@@ -43,10 +46,25 @@ import {
   workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionResumeResponse,
+  SessionRuntimeInfo,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
+import {
+  archiveStoredSessions,
+  deleteStoredSessions,
+  dropArchivedSessionRow,
+  hideStoredSession,
+  isSessionGoneError,
+  recordSessionArchived,
+  restoreArchivedSessions
+} from '../session-bulk-actions'
 
 export { isSessionGoneError } from '../session-bulk-actions'
 
@@ -214,15 +232,7 @@ function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -491,6 +501,7 @@ export function useSessionActions({
 
       if (cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
+
         const cachedViewState =
           !cachedState.model && stored?.model != null
             ? {
@@ -801,7 +812,8 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const removed = $sessions.get().find(s => s.id === storedSessionId)
+      const hidden = hideStoredSession(storedSessionId)
+      const removed = hidden?.session
       const wasSelected = selectedStoredSessionId === storedSessionId
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
@@ -810,10 +822,6 @@ export function useSessionActions({
       // live tip after compression. Drop both so the pin can't linger.
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
 
-      setSessions(prev => prev.filter(s => s.id !== storedSessionId))
-      // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
-      // doesn't keep claiming the removed row is still on the server.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
 
       // Tear down before awaiting so the route effect can't resume the
@@ -834,11 +842,13 @@ export function useSessionActions({
           clearQueuedPrompts(closingRuntimeId)
         }
       } catch (err) {
-        if (removed) {
-          setSessions(prev => [removed, ...prev])
-          setSessionsTotal(prev => prev + 1)
+        if (isSessionGoneError(err)) {
+          clearQueuedPrompts(storedSessionId)
+
+          return
         }
 
+        hidden?.undo()
         $pinnedSessionIds.set(previousPinned)
 
         if (wasSelected) {
@@ -884,20 +894,19 @@ export function useSessionActions({
     async (storedSessionId: string) => {
       clearNotifications()
 
-      const archived = $sessions.get().find(s => s.id === storedSessionId)
+      const hidden = hideStoredSession(storedSessionId)
+      const archived = hidden?.session
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
 
-      // Soft-hide: drop from the sidebar immediately, keep the data.
-      setSessions(prev => prev.filter(s => s.id !== storedSessionId))
-      // Archived sessions are hidden by the listSessions(min_messages=1) query
-      // on the next refresh, so they count as "removed" for the load-more
-      // footer math.
-      setSessionsTotal(prev => Math.max(0, prev - 1))
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+
+      if (archived) {
+        recordSessionArchived(archived)
+      }
 
       if (wasSelected) {
         startFreshSessionDraft(true)
@@ -905,19 +914,10 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
-        // A sidebar refresh can race the optimistic removal while the PATCH is
-        // in flight and briefly reinsert the still-unarchived backend row. Win
-        // that race after the mutation succeeds so right-click → Archive does
-        // not appear to do nothing until the next full refresh.
-        setSessions(prev => prev.filter(s => s.id !== storedSessionId))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
-        if (archived) {
-          setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])
-          setSessionsTotal(prev => prev + 1)
-        }
-
+        dropArchivedSessionRow(storedSessionId)
+        hidden?.undo()
         $pinnedSessionIds.set(previousPinned)
         notifyError(err, copy.archiveFailed)
       }
@@ -925,13 +925,98 @@ export function useSessionActions({
     [copy, selectedStoredSessionId, startFreshSessionDraft]
   )
 
+  const archiveSessionsBulk = useCallback(
+    (sessionIds: string[]) => {
+      clearNotifications()
+
+      return archiveStoredSessions(sessionIds, {
+        onAfterHide: () => {
+          if (selectedStoredSessionId && sessionIds.includes(selectedStoredSessionId)) {
+            startFreshSessionDraft(true)
+          }
+        }
+      })
+    },
+    [selectedStoredSessionId, startFreshSessionDraft]
+  )
+
+  const restoreSessionsBulk = useCallback((sessionIds: string[]) => {
+    clearNotifications()
+
+    return restoreArchivedSessions(sessionIds)
+  }, [])
+
+  const deleteSessionsBulk = useCallback(
+    (sessionIds: string[]) => {
+      clearNotifications()
+
+      return deleteStoredSessions(sessionIds, {
+        onAfterHide: async () => {
+          if (!selectedStoredSessionId || !sessionIds.includes(selectedStoredSessionId)) {
+            return
+          }
+
+          const closingRuntimeId = activeSessionId
+          startFreshSessionDraft(true)
+
+          if (closingRuntimeId) {
+            await requestGateway('session.close', { session_id: closingRuntimeId }).catch(() => undefined)
+            clearQueuedPrompts(closingRuntimeId)
+          }
+        }
+      })
+    },
+    [activeSessionId, requestGateway, selectedStoredSessionId, startFreshSessionDraft]
+  )
+
+  const archiveAllSessions = useCallback(async () => {
+    clearNotifications()
+
+    const previousSessions = $sessions.get()
+    const previousTotal = $sessionsTotal.get()
+
+    const preserveIds = sessionArchivePreserveIds(previousSessions, {
+      activeSessionId,
+      pinnedSessionIds: $pinnedSessionIds.get(),
+      selectedSessionId: selectedStoredSessionId,
+      workingSessionIds: $workingSessionIds.get()
+    })
+
+    const shouldPreserve = (session: SessionInfo) =>
+      preserveIds.has(session.id) || (session._lineage_root_id != null && preserveIds.has(session._lineage_root_id))
+
+    const keptSessions = previousSessions.filter(shouldPreserve)
+    setSessions(keptSessions)
+    setSessionsTotal(keptSessions.length)
+
+    try {
+      const result = await bulkArchiveSessions([...preserveIds])
+      notify({
+        durationMs: 2_500,
+        kind: 'success',
+        message: result.archived === 1 ? 'Archived 1 session' : `Archived ${result.archived} sessions`
+      })
+
+      return result
+    } catch (err) {
+      setSessions(previousSessions)
+      setSessionsTotal(previousTotal)
+      notifyError(err, 'Archive all failed')
+      throw err
+    }
+  }, [activeSessionId, selectedStoredSessionId])
+
   return {
+    archiveAllSessions,
     archiveSession,
+    archiveSessionsBulk,
     branchCurrentSession,
     closeSettings,
     createBackendSessionForSend,
+    deleteSessionsBulk,
     openSettings,
     removeSession,
+    restoreSessionsBulk,
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft

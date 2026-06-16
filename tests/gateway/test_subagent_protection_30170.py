@@ -202,6 +202,23 @@ class TestAgentHasActiveSubagents:
         parent._active_children_lock = threading.Lock()
         assert GatewayRunner._agent_has_active_subagents(parent) is True
 
+    def test_returns_false_when_parent_not_executing_tools(self) -> None:
+        """#46864 — Background children (delegate_task background=True) remain
+        in _active_children after the parent's tool loop finishes, but
+        _executing_tools is False because the parent has returned.
+        The helper must return False so the gateway does NOT demote user
+        interrupts to queue for background-only subagents."""
+        parent = _make_parent_with_subagents(children=2)
+        parent._executing_tools = False
+        assert GatewayRunner._agent_has_active_subagents(parent) is False
+
+    def test_returns_false_when_executing_tools_attr_missing(self) -> None:
+        """If _executing_tools is not set (e.g. test stubs), default to True
+        so existing behaviour is preserved."""
+        parent = _make_parent_with_subagents(children=1)
+        # Deliberately don't set _executing_tools — getattr should default to True
+        assert GatewayRunner._agent_has_active_subagents(parent) is True
+
 
 # ──────────────────────────────────────────────────────────────────────
 # _handle_active_session_busy_message — interrupt demotion

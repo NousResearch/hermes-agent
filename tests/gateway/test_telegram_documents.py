@@ -435,6 +435,44 @@ class TestVideoDownloadBlock:
 
 class TestMediaGroups:
     @pytest.mark.asyncio
+    async def test_photo_download_retries_transient_timeout(self, adapter):
+        file_obj = _make_file_obj(b"retried-photo")
+        photo = MagicMock()
+        photo.get_file = AsyncMock(side_effect=[TimeoutError("Timed out"), file_obj])
+        msg = _make_message(caption="inspect", photo=[photo])
+
+        with (
+            patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/retried.jpg"),
+            patch("gateway.platforms.telegram.asyncio.sleep", new_callable=AsyncMock),
+            patch.object(adapter, "_photo_batch_key", return_value="batch-retry"),
+            patch.object(adapter, "_enqueue_photo_event") as enqueue_mock,
+        ):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert photo.get_file.await_count == 2
+        file_obj.download_as_bytearray.assert_awaited_once()
+        enqueue_mock.assert_called_once()
+        event = enqueue_mock.call_args.args[1]
+        assert event.media_urls == ["/tmp/retried.jpg"]
+        assert event.text == "inspect"
+
+    @pytest.mark.asyncio
+    async def test_photo_download_timeout_adds_note_after_retries(self, adapter):
+        photo = MagicMock()
+        photo.get_file = AsyncMock(side_effect=TimeoutError("Timed out"))
+        msg = _make_message(caption="inspect", photo=[photo])
+
+        with patch("gateway.platforms.telegram.asyncio.sleep", new_callable=AsyncMock):
+            await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        assert photo.get_file.await_count == 3
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert "inspect" in event.text
+        assert "Telegram photo could not be downloaded after retries" in event.text
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
     async def test_non_album_photo_burst_is_buffered_and_combined(self, adapter):
         first_photo = _make_photo(_make_file_obj(b"first"))
         second_photo = _make_photo(_make_file_obj(b"second"))

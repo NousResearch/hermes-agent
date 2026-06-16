@@ -183,6 +183,11 @@ def _get_default_output_dir() -> str:
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 
+
+_KO_DIGITS = ["영", "일", "이", "삼", "사", "오", "육", "칠", "팔", "구"]
+_KO_UNITS_SMALL = ["", "십", "백", "천"]
+_KO_UNITS_BIG = ["", "만", "억", "조", "경"]
+
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
@@ -585,6 +590,132 @@ def _is_command_tts_voice_compatible(config: Dict[str, Any]) -> bool:
     return bool(value)
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Coerce common truthy/falsey config values to bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _int_to_korean(number: int) -> str:
+    """Convert an integer to Korean reading (Sino-Korean)."""
+    if number == 0:
+        return _KO_DIGITS[0]
+
+    def _chunk_to_korean(chunk: int) -> str:
+        out = []
+        for idx, digit_char in enumerate(f"{chunk:04d}"):
+            digit = int(digit_char)
+            if digit == 0:
+                continue
+            place = 3 - idx
+            if digit == 1 and place > 0:
+                out.append(_KO_UNITS_SMALL[place])
+            else:
+                out.append(_KO_DIGITS[digit] + _KO_UNITS_SMALL[place])
+        return "".join(out)
+
+    parts = []
+    unit_idx = 0
+    value = number
+    while value > 0:
+        value, chunk = divmod(value, 10000)
+        if chunk:
+            chunk_text = _chunk_to_korean(chunk)
+            unit = _KO_UNITS_BIG[unit_idx] if unit_idx < len(_KO_UNITS_BIG) else ""
+            parts.append(chunk_text + unit)
+        unit_idx += 1
+    return "".join(reversed(parts))
+
+
+def _number_token_to_korean(token: str) -> str:
+    """Convert numeric token (e.g. -1,234.5) into Korean reading."""
+    s = token.strip()
+    sign_prefix = ""
+    if s.startswith("+"):
+        sign_prefix = "플러스 "
+        s = s[1:]
+    elif s.startswith("-"):
+        sign_prefix = "마이너스 "
+        s = s[1:]
+
+    s = s.replace(",", "")
+    if not s:
+        return token
+
+    if "." in s:
+        integer_part, frac_part = s.split(".", 1)
+        integer_value = int(integer_part or "0")
+        integer_text = _int_to_korean(integer_value)
+        if frac_part:
+            frac_text = "".join(_KO_DIGITS[int(ch)] for ch in frac_part if ch.isdigit())
+            return f"{sign_prefix}{integer_text}점 {frac_text}" if frac_text else f"{sign_prefix}{integer_text}"
+        return f"{sign_prefix}{integer_text}"
+
+    return f"{sign_prefix}{_int_to_korean(int(s))}"
+
+
+def _normalize_korean_tts_numbers(text: str) -> str:
+    """Normalize numbers for Korean TTS pronunciation.
+
+    Examples:
+      - 20.5% -> 이십점 오 퍼센트
+      - 12pt -> 십이 포인트
+      - 50bp -> 오십 비피
+      - 1,234 -> 천이백삼십사
+    """
+    pattern = re.compile(r"(?<![A-Za-z0-9])([+-]?[\d,]+(?:\.\d+)?)(\s*)(%|퍼센트|pt|포인트|bp)?")
+
+    def _replace(match: re.Match) -> str:
+        number_token = match.group(1)
+        between = match.group(2) or ""
+        suffix = (match.group(3) or "").lower()
+
+        spoken = _number_token_to_korean(number_token)
+        if not suffix:
+            return spoken
+
+        if suffix in {"%", "퍼센트"}:
+            return f"{spoken} 퍼센트"
+        if suffix in {"pt", "포인트"}:
+            return f"{spoken} 포인트"
+        if suffix == "bp":
+            return f"{spoken} 비피"
+        return f"{spoken}{between}{suffix}"
+
+    return pattern.sub(_replace, text)
+
+
+def _should_apply_ko_number_normalization(
+    provider: str,
+    tts_config: Dict[str, Any],
+    command_provider_config: Optional[Dict[str, Any]],
+) -> bool:
+    """Decide whether Korean spoken-number normalization should run for TTS input.
+
+    Priority:
+      1) tts.providers.<name>.normalize_numbers_ko (or command config)
+      2) tts.number_normalization.normalize_numbers_ko (global)
+      3) implicit default for provider name 'supertonic'
+    """
+    if isinstance(command_provider_config, dict) and "normalize_numbers_ko" in command_provider_config:
+        return _as_bool(command_provider_config.get("normalize_numbers_ko"), default=False)
+
+    nr = tts_config.get("number_normalization") if isinstance(tts_config.get("number_normalization"), dict) else {}
+    if "normalize_numbers_ko" in nr:
+        return _as_bool(nr.get("normalize_numbers_ko"), default=False)
+
+    return str(provider or "").strip().lower() == "supertonic"
+
+
 def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
     """Return the shell quote character active right before *position*.
 
@@ -971,22 +1102,44 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key, base_url = _resolve_openai_audio_client_config()
-
     oai_config = tts_config.get("openai", {})
+    configured_base_url = str(oai_config.get("base_url") or "").strip()
+    configured_api_key = str(oai_config.get("api_key") or "").strip()
+
+    try:
+        api_key, base_url = _resolve_openai_audio_client_config()
+    except ValueError:
+        if configured_base_url and configured_base_url != DEFAULT_OPENAI_BASE_URL:
+            # Local OpenAI-compatible TTS servers often require a syntactic bearer
+            # token but do not validate it. Respect an explicit config api_key when
+            # present, otherwise use a harmless local placeholder.
+            api_key = configured_api_key or "local-openai-compatible-tts"
+            base_url = configured_base_url
+        else:
+            raise
+
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    base_url = oai_config.get("base_url", base_url)
+    base_url = configured_base_url or base_url
     speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
+    # Determine response format from extension (or explicit config override)
+    configured_format = (oai_config.get("response_format") or "").strip().lower()
+    if configured_format:
+        response_format = configured_format
+    elif output_path.endswith(".ogg"):
         response_format = "opus"
+    elif output_path.endswith(".wav"):
+        response_format = "wav"
     else:
         response_format = "mp3"
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
+    actual_output_path = output_path
+    if configured_format in {"wav", "mp3", "opus", "flac"}:
+        suffix = ".ogg" if configured_format == "opus" else f'.{configured_format}'
+        actual_output_path = str(Path(output_path).with_suffix(suffix))
     try:
         create_kwargs = {
             "model": model,
@@ -997,10 +1150,23 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         }
         if speed != 1.0:
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
-        response = client.audio.speech.create(**create_kwargs)
+        try:
+            response = client.audio.speech.create(**create_kwargs)
+        except Exception as e:
+            error_text = str(e).lower()
+            if response_format != "wav" and ("not supported" in error_text and "wav" in error_text):
+                logger.warning(
+                    "OpenAI-compatible TTS endpoint rejected response_format=%s; retrying with wav",
+                    response_format,
+                )
+                create_kwargs["response_format"] = "wav"
+                response = client.audio.speech.create(**create_kwargs)
+                actual_output_path = str(Path(output_path).with_suffix(".wav"))
+            else:
+                raise
 
-        response.stream_to_file(output_path)
-        return output_path
+        response.stream_to_file(actual_output_path)
+        return actual_output_path
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -1849,6 +2015,12 @@ def text_to_speech_tool(
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
+    # Korean spoken-number normalization for TTS input.
+    # This only affects what gets sent to the speech engine; the regular text
+    # response remains unchanged in chat channels.
+    if _should_apply_ko_number_normalization(provider, tts_config, command_provider_config):
+        text = _normalize_korean_tts_numbers(text)
+
     # Truncate very long text with a warning. The cap is per-provider
     # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
     max_len = _resolve_max_text_length(provider, tts_config)
@@ -1958,7 +2130,7 @@ def text_to_speech_tool(
                     "error": "OpenAI provider selected but 'openai' package not installed."
                 }, ensure_ascii=False)
             logger.info("Generating speech with OpenAI TTS...")
-            _generate_openai_tts(text, file_str, tts_config)
+            file_str = _generate_openai_tts(text, file_str, tts_config)
 
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")

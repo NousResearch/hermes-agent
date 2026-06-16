@@ -36,10 +36,12 @@ from tools.tts_tool import (
     _is_command_provider_config,
     _is_command_tts_voice_compatible,
     _iter_command_providers,
+    _normalize_korean_tts_numbers,
     _render_command_tts_template,
     _resolve_command_provider_config,
     _resolve_max_text_length,
     _shell_quote_context,
+    _should_apply_ko_number_normalization,
     check_tts_requirements,
     text_to_speech_tool,
 )
@@ -421,6 +423,37 @@ class TestGenerateCommandTts:
 
 
 # ---------------------------------------------------------------------------
+# Korean number normalization for TTS input
+# ---------------------------------------------------------------------------
+
+class TestKoreanNumberNormalization:
+    def test_basic_numeric_readings(self):
+        out = _normalize_korean_tts_numbers("주가 상승률 20.5% 목표 12pt 스프레드 50bp")
+        assert "이십점 오 퍼센트" in out
+        assert "십이 포인트" in out
+        assert "오십 비피" in out
+
+    def test_large_and_negative_numbers(self):
+        out = _normalize_korean_tts_numbers("매출 1,234원 변화 -3.2%")
+        assert "천이백삼십사" in out
+        assert "마이너스 삼점 이 퍼센트" in out
+
+
+class TestKoNormalizationPolicy:
+    def test_supertonic_default_on(self):
+        assert _should_apply_ko_number_normalization("supertonic", {}, None) is True
+
+    def test_global_toggle_overrides_default(self):
+        cfg = {"number_normalization": {"normalize_numbers_ko": False}}
+        assert _should_apply_ko_number_normalization("supertonic", cfg, None) is False
+
+    def test_provider_toggle_wins(self):
+        cfg = {"number_normalization": {"normalize_numbers_ko": False}}
+        p_cfg = {"normalize_numbers_ko": True}
+        assert _should_apply_ko_number_normalization("supertonic", cfg, p_cfg) is True
+
+
+# ---------------------------------------------------------------------------
 # text_to_speech_tool integration
 # ---------------------------------------------------------------------------
 
@@ -451,6 +484,29 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["provider"] == "py-copy"
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
+
+    def test_supertonic_command_provider_normalizes_numbers_for_tts_only(self, tmp_path):
+        cfg = {
+            "provider": "supertonic",
+            "providers": {
+                "supertonic": {
+                    "type": "command",
+                    "command": _python_copy_command(),
+                    "output_format": "mp3",
+                },
+            },
+        }
+        out = tmp_path / "clip.mp3"
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(text="주가 상승률 20.5%", output_path=str(out))
+
+        data = json.loads(result)
+        assert data["success"] is True, data
+        # command is copy(input -> output), so output file contains exact text fed into TTS
+        spoken_input = out.read_text(encoding="utf-8")
+        assert "20.5%" not in spoken_input
+        assert "이십점 오 퍼센트" in spoken_input
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the

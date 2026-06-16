@@ -2795,5 +2795,232 @@ class TestFallbackModelInheritance(unittest.TestCase):
         self.assertIsNone(kwargs["fallback_model"])
 
 
+class TestSubagentSessionContextIsolation(unittest.TestCase):
+    """Tests for subagent ContextVar snapshot/restore and _context metadata.
+
+    When a subagent runs in a ThreadPoolExecutor thread, it inherits the
+    parent thread's ContextVars.  If the parent processes another message
+    while the subagent is still running, those ContextVars get overwritten.
+    _run_single_child should snapshot the parent's context at spawn time
+    and restore it in the child thread.
+    """
+
+    def _set_env_context(self, **kwargs):
+        """Set fake HERMES_SESSION_* env vars to simulate gateway context."""
+        for k, v in kwargs.items():
+            os.environ[k] = v
+        self.addCleanup(lambda: [os.environ.pop(k, None) for k in kwargs])
+
+    @patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", True)
+    def test_context_metadata_present_in_result(self):
+        """_run_single_child result should include _context metadata when
+        session_context is available."""
+        from tools.delegate_tool import _run_single_child
+
+        child = MagicMock()
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Test context metadata",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertIn("_context", result)
+        # _context should be a dict (may be empty if no session contextvars
+        # are set in the test environment)
+        self.assertIsInstance(result["_context"], dict)
+
+    @patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", True)
+    @patch("tools.delegate_tool.snapshot_session_context")
+    def test_snapshot_called_on_entry(self, mock_snapshot):
+        """_run_single_child should call snapshot_session_context on entry."""
+        from tools.delegate_tool import _run_single_child
+
+        mock_snapshot.return_value = {
+            "HERMES_SESSION_PLATFORM": "test",
+            "HERMES_SESSION_CHAT_ID": "chat_123",
+        }
+
+        child = MagicMock()
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        _run_single_child(
+            task_index=0,
+            goal="Test snapshot",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        mock_snapshot.assert_called_once()
+
+    @patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", True)
+    @patch("tools.delegate_tool.snapshot_session_context")
+    @patch("tools.delegate_tool.restore_session_context")
+    def test_context_restored_in_child_thread(self, mock_restore, mock_snapshot):
+        """The child thread should have restore_session_context called with
+        the snapshot before run_conversation starts."""
+        from tools.delegate_tool import _run_single_child
+
+        fake_snapshot = {
+            "HERMES_SESSION_PLATFORM": "test",
+            "HERMES_SESSION_CHAT_ID": "chat_123",
+            "HERMES_SESSION_THREAD_ID": "",
+            "HERMES_SESSION_USER_ID": "user_1",
+            "HERMES_SESSION_KEY": "sk_test",
+        }
+        mock_snapshot.return_value = fake_snapshot
+
+        child = MagicMock()
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        _run_single_child(
+            task_index=0,
+            goal="Test restore",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        # restore must be called with the snapshot before run_conversation
+        mock_restore.assert_called_once_with(fake_snapshot)
+
+    @patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", True)
+    @patch("tools.delegate_tool.snapshot_session_context")
+    def test_context_passed_to_result(self, mock_snapshot):
+        """The _context metadata in the result should contain the same
+        values as the snapshot."""
+        from tools.delegate_tool import _run_single_child
+
+        fake_snapshot = {
+            "HERMES_SESSION_PLATFORM": "feishu",
+            "HERMES_SESSION_CHAT_ID": "oc_abc123",
+            "HERMES_SESSION_THREAD_ID": "",
+            "HERMES_SESSION_USER_ID": "ou_user1",
+            "HERMES_SESSION_KEY": "sk_xyz",
+        }
+        mock_snapshot.return_value = fake_snapshot
+
+        child = MagicMock()
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Test context in result",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        ctx = result["_context"]
+        self.assertEqual(ctx.get("HERMES_SESSION_PLATFORM"), "feishu")
+        self.assertEqual(ctx.get("HERMES_SESSION_CHAT_ID"), "oc_abc123")
+        self.assertEqual(ctx.get("HERMES_SESSION_USER_ID"), "ou_user1")
+
+    def test_no_context_when_module_unavailable(self):
+        """When _SESSION_CONTEXT_AVAILABLE is False, _run_single_child
+        should not crash and _context should be empty."""
+        from tools.delegate_tool import _run_single_child
+
+        # Even with the module unavailable, the function must handle it gracefully
+        with patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", False):
+            child = MagicMock()
+            child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+            result = _run_single_child(
+                task_index=0,
+                goal="Test no context",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+
+            self.assertEqual(result["_context"], {})
+
+    def test_snapshot_failure_does_not_crash(self):
+        """If snapshot_session_context raises, the subagent should still
+        run normally with empty _context."""
+        from tools.delegate_tool import _run_single_child
+
+        with patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", True):
+            with patch("tools.delegate_tool.snapshot_session_context",
+                       side_effect=RuntimeError("boom")):
+                child = MagicMock()
+                child.run_conversation.return_value = {
+                    "final_response": "done",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+                # Must not raise — snapshot failure is logged but non-fatal
+                result = _run_single_child(
+                    task_index=0,
+                    goal="Test snapshot failure",
+                    child=child,
+                    parent_agent=_make_mock_parent(),
+                )
+
+                self.assertEqual(result["status"], "completed")
+                self.assertIn("_context", result)
+
+    def test_restore_failure_does_not_crash_child(self):
+        """If restore_session_context raises in the child thread,
+        run_conversation should still proceed."""
+        from tools.delegate_tool import _run_single_child
+
+        with patch("tools.delegate_tool._SESSION_CONTEXT_AVAILABLE", True):
+            with patch("tools.delegate_tool.snapshot_session_context",
+                       return_value={"HERMES_SESSION_PLATFORM": "test"}):
+                with patch("tools.delegate_tool.restore_session_context",
+                           side_effect=RuntimeError("restore boom")):
+                    child = MagicMock()
+                    child.run_conversation.return_value = {
+                        "final_response": "done",
+                        "completed": True,
+                        "interrupted": False,
+                        "api_calls": 1,
+                        "messages": [],
+                    }
+
+                    result = _run_single_child(
+                        task_index=0,
+                        goal="Test restore failure",
+                        child=child,
+                        parent_agent=_make_mock_parent(),
+                    )
+
+                    self.assertEqual(result["status"], "completed")
+
+
 if __name__ == "__main__":
     unittest.main()

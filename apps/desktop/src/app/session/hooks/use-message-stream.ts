@@ -955,12 +955,29 @@ export function useMessageStream({
         const question = typeof payload?.question === 'string' ? payload.question : ''
 
         if (requestId && question) {
+          const choices = Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null
+
           setClarifyRequest({
             requestId,
             question,
-            choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
+            choices,
             sessionId: sessionId ?? null
           })
+
+          if (sessionId) {
+            // `clarify.request` is the blocking event the Python side waits on,
+            // while the inline UI normally mounts from the earlier `tool.start`
+            // row. If that row was missed (stream reconnect / hydration race) the
+            // sidebar still shows "needs input" but there is nowhere to render
+            // choices. Upsert a stable pending clarify tool row from the request
+            // itself so the prompt remains answerable; a real tool.start/complete
+            // with the same request id will merge rather than duplicate.
+            upsertToolCall(sessionId, {
+              args: { choices, question },
+              name: 'clarify',
+              tool_id: requestId
+            }, 'running')
+          }
 
           // The transcript only renders the active session, so a background
           // clarify is otherwise invisible (the row just keeps spinning like

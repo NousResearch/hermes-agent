@@ -3401,22 +3401,31 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
+    # Build ProgramArguments array, including --profile when using a named profile.
+    # Local macOS deployments may install a tiny wrapper that filters one known
+    # benign Python/macOS runtime stderr line:
+    #   MallocStackLogging: can't turn off malloc stack logging because it was not enabled.
+    # Prefer it when present so `hermes gateway status` does not mark the
+    # LaunchAgent stale after that local noise-suppression hardening.
+    stderr_filter_wrapper = get_hermes_home() / "bin" / "hermes-gateway-filtered.sh"
+    if stderr_filter_wrapper.exists():
+        prog_args = [f"<string>{stderr_filter_wrapper}</string>"]
+    else:
+        prog_args = [
+            f"<string>{python_path}</string>",
+            "<string>-m</string>",
+            "<string>hermes_cli.main</string>",
         ]
-    )
+        if profile_arg:
+            for part in profile_arg.split():
+                prog_args.append(f"<string>{part}</string>")
+        prog_args.extend(
+            [
+                "<string>gateway</string>",
+                "<string>run</string>",
+                "<string>--replace</string>",
+            ]
+        )
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -3442,6 +3451,10 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
+        <key>MallocStackLogging</key>
+        <string>1</string>
+        <key>MallocStackLoggingNoCompact</key>
+        <string>1</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>

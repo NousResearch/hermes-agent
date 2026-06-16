@@ -152,22 +152,26 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         container_key = task_id
 
     with _file_ops_lock:
-        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
+        cached = _file_ops_cache.get(task_id)
+        if cached is None and container_key != task_id and not (container_key == "default" and task_id != "default"):
+            cached = _file_ops_cache.get(container_key)
     if cached is not None:
         live_cwd = getattr(getattr(cached, "env", None), "cwd", None) or getattr(
             cached, "cwd", None
         )
-        if live_cwd:
-            return live_cwd
+        if live_cwd and isinstance(live_cwd, (str, os.PathLike)):
+            return os.fspath(live_cwd)
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
 
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env = _active_environments.get(task_id)
+            if env is None and container_key != task_id and not (container_key == "default" and task_id != "default"):
+                env = _active_environments.get(container_key)
             live_cwd = getattr(env, "cwd", None) if env is not None else None
-        if live_cwd:
-            return live_cwd
+        if live_cwd and isinstance(live_cwd, (str, os.PathLike)):
+            return os.fspath(live_cwd)
     except Exception:
         pass
 
@@ -328,6 +332,17 @@ _SENSITIVE_PATH_PREFIXES = (
     "/private/etc/", "/private/var/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_TEMP_PREFIXES = (
+    "/private/var/folders/",  # macOS pytest/tempdir root
+    "/var/folders/",          # macOS symlink form
+    "/tmp/",
+    "/private/tmp/",
+)
+
+
+def _is_allowed_temp_path(path: str) -> bool:
+    normalized = os.path.realpath(os.path.normpath(os.path.expanduser(path)))
+    return any(normalized.startswith(prefix) for prefix in _SENSITIVE_TEMP_PREFIXES)
 
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False
@@ -362,7 +377,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if (resolved.startswith(prefix) or normalized.startswith(prefix)) and not _is_allowed_temp_path(resolved):
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
@@ -1231,7 +1246,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
             file_ops = _get_file_ops(task_id)
-            result = file_ops.write_file(_resolved, content)
+            _write_target = path if Path(path).expanduser().is_absolute() else _resolved
+            result = file_ops.write_file(_write_target, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
@@ -1352,7 +1368,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 # shell's own cwd may differ (worktree-cwd bug), and a relative
                 # path would let the two layers disagree about which file is
                 # being edited.
-                _replace_target = _path_to_resolved.get(path) or path
+                _replace_target = path if Path(path).expanduser().is_absolute() else (_path_to_resolved.get(path) or path)
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:

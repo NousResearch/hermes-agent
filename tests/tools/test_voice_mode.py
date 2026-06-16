@@ -1,7 +1,9 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import shutil
 import struct
+import tempfile
 import time
 import wave
 from pathlib import Path
@@ -20,6 +22,11 @@ def _non_wsl_proc_version(real_open):
         return real_open(file, *args, **kwargs)
 
     return _fake_open
+
+
+def _short_tmp_dir(prefix: str = "hv-") -> Path:
+    """Return a short temp path suitable for AF_UNIX socket tests on macOS."""
+    return Path(tempfile.mkdtemp(prefix=prefix, dir="/tmp"))
 
 
 # ============================================================================
@@ -83,22 +90,27 @@ class TestPulseSocketReachable:
     def test_stale_socket_file_not_reachable(self, monkeypatch, tmp_path):
         """A socket file with no listener should not count as reachable."""
         import socket as _socket
-        sock_path = tmp_path / "pulse" / "native"
-        sock_path.parent.mkdir(parents=True)
-        # Create + bind, then close so the path is a stale socket file.
-        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        s.bind(str(sock_path))
-        s.close()
-        monkeypatch.delenv("PULSE_SERVER", raising=False)
-        monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
-        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-        from tools.voice_mode import _pulse_socket_reachable
-        assert _pulse_socket_reachable() is False
+        runtime_dir = _short_tmp_dir()
+        try:
+            sock_path = runtime_dir / "pulse" / "native"
+            sock_path.parent.mkdir(parents=True)
+            # Create + bind, then close so the path is a stale socket file.
+            s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            s.bind(str(sock_path))
+            s.close()
+            monkeypatch.delenv("PULSE_SERVER", raising=False)
+            monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+            from tools.voice_mode import _pulse_socket_reachable
+            assert _pulse_socket_reachable() is False
+        finally:
+            shutil.rmtree(runtime_dir, ignore_errors=True)
 
     def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch, tmp_path):
         """A live PulseAudio-style socket under XDG_RUNTIME_DIR is reachable (#35622)."""
         import socket as _socket
-        sock_path = tmp_path / "pulse" / "native"
+        runtime_dir = _short_tmp_dir()
+        sock_path = runtime_dir / "pulse" / "native"
         sock_path.parent.mkdir(parents=True)
         server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         server.bind(str(sock_path))
@@ -106,15 +118,17 @@ class TestPulseSocketReachable:
         try:
             monkeypatch.delenv("PULSE_SERVER", raising=False)
             monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
-            monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+            monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
             from tools.voice_mode import _pulse_socket_reachable
             assert _pulse_socket_reachable() is True
         finally:
             server.close()
+            shutil.rmtree(runtime_dir, ignore_errors=True)
 
     def test_listening_socket_reachable_via_pulse_server_env(self, monkeypatch, tmp_path):
         import socket as _socket
-        sock_path = tmp_path / "native"
+        runtime_dir = _short_tmp_dir()
+        sock_path = runtime_dir / "native"
         server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         server.bind(str(sock_path))
         server.listen(1)
@@ -126,6 +140,7 @@ class TestPulseSocketReachable:
             assert _pulse_socket_reachable() is True
         finally:
             server.close()
+            shutil.rmtree(runtime_dir, ignore_errors=True)
 
 
 class TestDetectAudioEnvironment:

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+import urllib.request
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
@@ -1315,11 +1316,12 @@ def _dump_subagent_timeout_diagnostic(
     worker_thread: Optional[threading.Thread],
     goal: str,
 ) -> Optional[str]:
-    """Write a structured diagnostic dump for a subagent that timed out
-    before making any API call.
+    """Write a structured diagnostic dump for a subagent that timed out.
 
     See issue #14726: users hit "subagent timed out after 300s with no response"
-    with zero API calls and no way to inspect what happened. This helper
+    with zero API calls and no way to inspect what happened. The same artifact
+    is also useful for in-flight API/tool stalls after one or more API calls.
+    This helper
     writes a dedicated log under ``~/.hermes/logs/subagent-<sid>-<ts>.log``
     capturing the child's config, system-prompt / tool-schema sizes, activity
     tracker snapshot, and the worker thread's Python stack at timeout.
@@ -1438,10 +1440,11 @@ def _dump_subagent_timeout_diagnostic(
         _w("")
 
         _w("## Notes")
-        _w("  This file is written ONLY when a subagent times out with 0 API calls.")
+        _w("  This file is written when a subagent times out.")
         _w("  0-API-call timeouts mean the child never reached its first LLM request.")
+        _w("  1+-API-call timeouts usually mean a slow/stalled provider transport, local model, or tool.")
         _w("  Common causes: oversized prompt rejected by provider, transport hang,")
-        _w("  credential resolution stuck. See issue #14726 for context.")
+        _w("  credential resolution stuck, local model stall, or blocking tool I/O. See issue #14726 for context.")
 
         dump_path.write_text("\n".join(lines), encoding="utf-8")
         return str(dump_path)
@@ -1676,9 +1679,10 @@ def _run_single_child(
                 duration,
             )
 
-            # When a subagent times out BEFORE making any API call, dump a
-            # diagnostic to help users (and us) see what the child was doing.
-            # See #14726 — without this, 0-API-call hangs are black boxes.
+            # Dump a diagnostic for every timeout.  0-API-call failures tell us
+            # the child never reached the provider; 1+-API-call failures catch
+            # the local-model/provider stall class that can otherwise burn the
+            # whole child timeout with no artifact.
             diagnostic_path: Optional[str] = None
             child_api_calls = 0
             try:
@@ -1686,7 +1690,7 @@ def _run_single_child(
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
             except Exception:
                 pass
-            if is_timeout and child_api_calls == 0:
+            if is_timeout:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
                     task_index=task_index,
@@ -1699,8 +1703,9 @@ def _run_single_child(
                 )
                 if diagnostic_path:
                     logger.warning(
-                        "Subagent %d 0-API-call timeout — diagnostic written to %s",
+                        "Subagent %d timeout after %d API call(s) — diagnostic written to %s",
                         task_index,
+                        child_api_calls,
                         diagnostic_path,
                     )
 
@@ -1736,6 +1741,8 @@ def _run_single_child(
                         f"{child_api_calls} API call(s) completed — likely "
                         f"stuck on a slow API call or unresponsive network request."
                     )
+                    if diagnostic_path:
+                        _err += f" Diagnostic: {diagnostic_path}"
             else:
                 _err = str(_timeout_exc)
 
@@ -2039,6 +2046,93 @@ def _run_single_child(
             logger.debug("Failed to close child agent after delegation")
 
 
+def _is_loopback_delegation_endpoint(base_url: Optional[str]) -> bool:
+    """Return True for local endpoints worth preflighting before fan-out."""
+    if not base_url:
+        return False
+    host = base_url_hostname(str(base_url)) or ""
+    host = host.lower()
+    return host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+
+
+def _preflight_delegation_model(
+    creds: Dict[str, Any],
+    cfg: Dict[str, Any],
+) -> tuple[bool, Optional[str]]:
+    """Fast healthcheck for local OpenAI-compatible delegation endpoints.
+
+    A stalled local model can otherwise burn the full child timeout for every
+    child.  We only probe loopback chat-completions endpoints, where a tiny
+    request is safe and deterministic enough to catch Ollama/llama.cpp stalls.
+    Cloud providers and non-chat transports are skipped to avoid surprise
+    network calls/cost beyond the normal child run.
+    """
+    if is_truthy_value(cfg.get("preflight_enabled"), default=True) is False:
+        return True, None
+
+    base_url = str(creds.get("base_url") or "").strip()
+    model = str(creds.get("model") or cfg.get("model") or "").strip()
+    api_mode = str(creds.get("api_mode") or "").strip().lower()
+    if not base_url or not model:
+        return True, None
+    if api_mode and api_mode != "chat_completions":
+        return True, None
+    if not _is_loopback_delegation_endpoint(base_url):
+        return True, None
+
+    try:
+        timeout = float(cfg.get("preflight_timeout_seconds") or 20.0)
+    except (TypeError, ValueError):
+        timeout = 20.0
+    timeout = max(1.0, min(timeout, 60.0))
+
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": "Return exactly OK"}],
+            "stream": False,
+            "max_tokens": 8,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(4000)
+            if response.status >= 400:
+                return False, f"HTTP {response.status} from {base_url}"
+            try:
+                body = json.loads(raw.decode("utf-8", errors="replace"))
+                content = (
+                    body.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+            except Exception:
+                content = ""
+            if not str(content).strip():
+                return False, f"empty response from {model} at {base_url}"
+            elapsed = round(time.monotonic() - started, 2)
+            logger.debug(
+                "Delegation preflight ok: model=%s endpoint=%s elapsed=%.2fs",
+                model,
+                base_url,
+                elapsed,
+            )
+            return True, None
+    except Exception as exc:
+        elapsed = round(time.monotonic() - started, 2)
+        return (
+            False,
+            f"{type(exc).__name__} after {elapsed}s probing {model} at {base_url}: {exc}",
+        )
+
+
 def _recover_tasks_from_json_string(
     tasks: Any,
 ) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
@@ -2195,6 +2289,14 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    preflight_ok, preflight_error = _preflight_delegation_model(creds, cfg)
+    if not preflight_ok:
+        return tool_error(
+            "Delegation preflight failed before spawning children: "
+            f"{preflight_error}. Check delegation.model/base_url or run "
+            "`python ~/.hermes/scripts/delegation_healthcheck.py --timeout 20`."
+        )
 
     overall_start = time.monotonic()
     results = []
@@ -2763,28 +2865,39 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from runtime and persistent config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Persistent ``config.yaml`` delegation values intentionally override the
+    process-level ``cli.CLI_CONFIG`` snapshot.  Gateway sessions can edit config
+    at runtime via ``hermes config set``/slash commands; preferring the stale
+    startup snapshot makes delegation keep using old child models and timeouts
+    until a gateway restart.  Runtime-only values still act as a fallback for
+    tests/embedded callers when the persistent file has no delegation section.
     """
+    runtime_cfg: dict = {}
     try:
         from cli import CLI_CONFIG
 
-        cfg = CLI_CONFIG.get("delegation") or {}
-        if cfg:
-            return cfg
+        maybe = CLI_CONFIG.get("delegation") or {}
+        if isinstance(maybe, dict):
+            runtime_cfg = dict(maybe)
     except Exception:
-        pass
+        runtime_cfg = {}
+
+    persistent_cfg: dict = {}
     try:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation") or {}
+        maybe = full.get("delegation") or {}
+        if isinstance(maybe, dict):
+            persistent_cfg = dict(maybe)
     except Exception:
-        return {}
+        persistent_cfg = {}
+
+    merged = dict(runtime_cfg)
+    merged.update(persistent_cfg)
+    return merged
 
 
 # ---------------------------------------------------------------------------

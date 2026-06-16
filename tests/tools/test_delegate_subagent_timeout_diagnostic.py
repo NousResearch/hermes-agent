@@ -9,10 +9,11 @@ opaque "subagent timed out" error.
 
 These tests pin:
 - the diagnostic writer's output format and content
-- the timeout branch in _run_single_child only dumps when api_calls == 0
+- the timeout branch in _run_single_child writes a diagnostic for both 0-call
+  and in-flight API timeout cases
 - the error message surfaces the diagnostic path
-- api_calls > 0 timeouts do NOT write a dump (the old "stuck on slow API
-  call" explanation still applies)
+- api_calls > 0 timeouts also write a dump because local/provider stalls can
+  happen after the first API request starts
 """
 from __future__ import annotations
 
@@ -266,19 +267,18 @@ class TestRunSingleChildTimeoutDump:
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
 
-    def test_nonzero_api_calls_skips_dump_and_uses_old_message(self, hermes_home, monkeypatch):
+    def test_nonzero_api_calls_writes_dump_and_surfaces_path(self, hermes_home, monkeypatch):
         child = _StubChild(api_call_count=5, hang_seconds=10.0)
         result = self._invoke_with_short_timeout(child, monkeypatch)
 
         assert result["status"] == "timeout"
         assert result["api_calls"] == 5
-        # No diagnostic file should be written for timeouts that made
-        # actual API calls — the old generic "stuck on slow call" message
-        # still applies.
-        assert result.get("diagnostic_path") is None
+        assert result.get("diagnostic_path") is not None
+        dump_path = Path(result["diagnostic_path"])
+        assert dump_path.is_file()
         assert "stuck on a slow API call" in result["error"]
-        # And no subagent-timeout-* file should exist under logs/
-        logs_dir = hermes_home / "logs"
-        if logs_dir.is_dir():
-            dumps = list(logs_dir.glob("subagent-timeout-*.log"))
-            assert dumps == []
+        assert "Diagnostic:" in result["error"]
+        assert str(dump_path) in result["error"]
+        content = dump_path.read_text()
+        assert "api_call_count: 5" in content
+        assert "1+-API-call timeouts" in content

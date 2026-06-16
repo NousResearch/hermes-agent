@@ -140,6 +140,18 @@ delegation:
   provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
+For local OpenAI-compatible delegation endpoints (Ollama, llama.cpp, vLLM, etc.), Hermes preflights loopback endpoints before spawning children. This prevents a stalled local model from burning the full child timeout for every subagent:
+
+```yaml
+delegation:
+  base_url: "http://127.0.0.1:11434/v1"
+  model: "llama3.1:8b"
+  preflight_enabled: true
+  preflight_timeout_seconds: 20
+```
+
+If the preflight fails, `delegate_task` returns a tool error before child construction/fan-out. Non-loopback/cloud endpoints are not preflighted.
+
 If omitted, subagents use the same model as the parent.
 
 ## Toolset Selection Tips

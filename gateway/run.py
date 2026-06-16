@@ -87,6 +87,123 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _as_positive_int(value: Any, default: int) -> int:
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = int(value)
+        return parsed if parsed > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _codex_budget_config(user_config: Dict[str, Any], platform_key: str) -> Dict[str, Any]:
+    """Return effective gateway Codex budget guard settings."""
+    gateway_cfg = user_config.get("gateway", {}) if isinstance(user_config, dict) else {}
+    if not isinstance(gateway_cfg, dict):
+        gateway_cfg = {}
+    cfg = gateway_cfg.get("codex_budget", {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    platforms = cfg.get("platforms", ["telegram"])
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    platforms = {str(p).strip().lower() for p in platforms if str(p).strip()}
+    return {
+        "enabled": _as_bool(cfg.get("enabled"), True),
+        "platform_enabled": not platforms or platform_key.lower() in platforms,
+        "warn_api_calls": _as_positive_int(cfg.get("warn_api_calls"), 40),
+        "max_api_calls": _as_positive_int(cfg.get("max_api_calls"), 80),
+        "warn_accounted_tokens": _as_positive_int(cfg.get("warn_accounted_tokens"), 5_000_000),
+        "max_accounted_tokens": _as_positive_int(cfg.get("max_accounted_tokens"), 10_000_000),
+    }
+
+
+def _codex_session_usage_snapshot(session_id: str) -> Dict[str, int]:
+    """Read current persisted usage counters for a session from state.db."""
+    empty = {
+        "api_call_count": 0,
+        "message_count": 0,
+        "tool_call_count": 0,
+        "input_tokens": 0,
+        "cache_read_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "accounted_tokens": 0,
+    }
+    if not session_id:
+        return empty
+    raw_db_path = os.environ.get("HERMES_STATE_DB", "")
+    db_path = Path(raw_db_path) if raw_db_path else Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "state.db"
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT api_call_count, message_count, tool_call_count,
+                       input_tokens, cache_read_tokens, output_tokens,
+                       reasoning_tokens
+                  FROM sessions
+                 WHERE id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+    except Exception:
+        return empty
+    if not row:
+        return empty
+    result = {k: int(row[k] or 0) for k in empty if k != "accounted_tokens"}
+    result["accounted_tokens"] = (
+        result["input_tokens"]
+        + result["cache_read_tokens"]
+        + result["output_tokens"]
+        + result["reasoning_tokens"]
+    )
+    return result
+
+
+def _codex_budget_reason(
+    *,
+    model: str,
+    provider: str,
+    platform_key: str,
+    user_config: Dict[str, Any],
+    usage: Dict[str, int],
+    message_count: int,
+    hard_message_limit: int,
+) -> Optional[str]:
+    """Return a human-readable reason to compress/stop before another Codex call."""
+    try:
+        from agent.auxiliary_client import _is_codex_gpt55
+        is_codex = _is_codex_gpt55(model, provider)
+    except Exception:
+        is_codex = "gpt-5.5" in (model or "").lower() and "codex" in (provider or "").lower()
+    if not is_codex:
+        return None
+    budget = _codex_budget_config(user_config, platform_key)
+    if not budget["enabled"] or not budget["platform_enabled"]:
+        return None
+    if message_count >= hard_message_limit:
+        return f"message count {message_count} reached hard limit {hard_message_limit}"
+    if usage.get("api_call_count", 0) >= budget["max_api_calls"]:
+        return f"API calls {usage.get('api_call_count', 0)} reached budget {budget['max_api_calls']}"
+    if usage.get("accounted_tokens", 0) >= budget["max_accounted_tokens"]:
+        return (
+            f"accounted tokens {usage.get('accounted_tokens', 0):,} reached budget "
+            f"{budget['max_accounted_tokens']:,}"
+        )
+    return None
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -8469,7 +8586,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
-            _hyg_hard_msg_limit = 400
+            _hyg_hard_msg_limit = 160
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
@@ -8597,19 +8714,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # compression.hygiene_hard_message_limit.
                 # (#2153)
                 _HARD_MSG_LIMIT = _hyg_hard_msg_limit
+                _usage_snapshot = _codex_session_usage_snapshot(session_entry.session_id)
+                _budget_reason = _codex_budget_reason(
+                    model=_hyg_model,
+                    provider=_hyg_provider or "",
+                    platform_key=_platform_config_key(source.platform),
+                    user_config=_hyg_data if isinstance(_hyg_data, dict) else {},
+                    usage=_usage_snapshot,
+                    message_count=max(_msg_count, _usage_snapshot.get("message_count", 0)),
+                    hard_message_limit=_HARD_MSG_LIMIT,
+                )
+                _hard_message_reason = (
+                    f"message count {_msg_count} reached hard limit {_HARD_MSG_LIMIT}"
+                    if _msg_count >= _HARD_MSG_LIMIT
+                    else None
+                )
                 _needs_compress = (
                     _approx_tokens >= _compress_token_threshold
-                    or _msg_count >= _HARD_MSG_LIMIT
+                    or _hard_message_reason is not None
+                    or _budget_reason is not None
                 )
 
                 if _needs_compress:
                     logger.info(
-                        "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                        "(threshold: %s%% of %s = %s tokens)",
+                        "Session hygiene: %s messages, ~%s tokens (%s), %s API calls, %s accounted tokens — auto-compressing "
+                        "(threshold: %s%% of %s = %s tokens; reason: %s)",
                         _msg_count, f"{_approx_tokens:,}", _token_source,
+                        _usage_snapshot.get("api_call_count", 0),
+                        f"{_usage_snapshot.get('accounted_tokens', 0):,}",
                         int(_hyg_threshold_pct * 100),
                         f"{_hyg_context_length:,}",
                         f"{_compress_token_threshold:,}",
+                        _budget_reason or _hard_message_reason or "token threshold",
                     )
 
                     _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -8704,11 +8840,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         _warn_msg = (
                                             "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
+                                            f"({_err}). No messages were dropped. "
+                                            "I stopped before making another GPT-5.5 call because this "
+                                            "session is already past the Codex safety budget. Run /compress "
+                                            "to retry, /reset for a clean session, or explicitly ask me to continue "
+                                            "after checking `auxiliary.compression.model`."
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
@@ -8719,6 +8855,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                                 "Failed to deliver compression-failure warning to user: %s",
                                                 _werr,
                                             )
+                                        if _budget_reason is not None:
+                                            logger.warning(
+                                                "Session hygiene: fail-closed after compression abort for session %s (%s)",
+                                                session_entry.session_id,
+                                                _budget_reason,
+                                            )
+                                            return _warn_msg
                                     # Separately: if the user's CONFIGURED aux
                                     # model failed and we recovered by falling
                                     # back to the main model, tell them — a
@@ -8754,6 +8897,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.warning(
                             "Session hygiene auto-compress failed: %s", e
                         )
+                        if _budget_reason is not None:
+                            _fail_msg = (
+                                "⚠️ I stopped before making another GPT-5.5 call because "
+                                "this session is already past the Codex safety budget and "
+                                f"automatic compression failed ({e}). Run /compress to retry "
+                                "or /reset for a clean session."
+                            )
+                            try:
+                                _adapter = self.adapters.get(source.platform)
+                                if _adapter and source.chat_id:
+                                    await _adapter.send(source.chat_id, _fail_msg, metadata=_hyg_meta)
+                            except Exception:
+                                logger.debug("Failed to deliver Codex budget stop notice", exc_info=True)
+                            return _fail_msg
 
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():

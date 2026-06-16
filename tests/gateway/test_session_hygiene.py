@@ -761,7 +761,7 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     monkeypatch, tmp_path
 ):
     """Sanity check for the companion test above: without config override,
-    12 messages must NOT trigger the 400-message hard limit.  If this test
+    12 messages must NOT trigger the default hard limit. If this test
     passes without changes, the override test's finding is meaningful."""
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -848,7 +848,172 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # No compression agent instantiated — 12 messages well under 400 default.
+    # No compression agent instantiated — 12 messages are well under the default hard limit.
     assert FakeCompressAgent.last_instance is None, (
-        "Compression should NOT fire at 12 messages with default hard_limit=400"
+        "Compression should NOT fire at 12 messages with the default hard limit"
     )
+
+
+
+@pytest.mark.asyncio
+async def test_codex_budget_fail_closed_when_compression_aborts(monkeypatch, tmp_path):
+    """A over-budget Codex/GPT-5.5 Telegram session must not make another model call.
+
+    This is the synthetic 170+ message guard test: 170 persisted messages are
+    enough to cross the default hygiene_hard_message_limit=160. If compression
+    aborts, the gateway returns a stop notice and never calls _run_agent.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeAbortCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            self.model = kwargs.get("model")
+            self.session_id = kwargs.get("session_id", "sess-1")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+            self.context_compressor = SimpleNamespace(
+                _last_compress_aborted=True,
+                _last_summary_error="synthetic compression failure",
+                _last_aux_model_failure_model=None,
+            )
+            type(self).last_instance = self
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            return (messages, None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeAbortCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: gpt-5.5\n"
+        "  provider: openai-codex\n"
+        "compression:\n"
+        "  enabled: true\n"
+        "  hygiene_hard_message_limit: 160\n"
+        "gateway:\n"
+        "  codex_budget:\n"
+        "    enabled: true\n"
+        "    platforms: [telegram]\n"
+        "    max_api_calls: 80\n"
+        "    max_accounted_tokens: 10000000\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(170, content_size=40)
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner.session_store._save = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._resolve_session_agent_runtime = lambda **_kw: (
+        "gpt-5.5",
+        {"provider": "openai-codex", "api_key": "fake", "base_url": "https://chatgpt.com/backend-api/codex/"},
+    )
+    runner._sync_telegram_topic_binding = MagicMock()
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._run_agent = AsyncMock(return_value={"final_response": "SHOULD NOT RUN"})
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_codex_session_usage_snapshot", lambda _sid: {
+        "api_call_count": 81,
+        "message_count": 170,
+        "tool_call_count": 70,
+        "input_tokens": 9_000_000,
+        "cache_read_tokens": 2_000_000,
+        "output_tokens": 10_000,
+        "reasoning_tokens": 1_000,
+        "accounted_tokens": 11_011_000,
+    })
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 272_000,
+    )
+
+    event = MessageEvent(
+        text="continue giant loop",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert "stopped before making another GPT-5.5 call" in result
+    assert "synthetic compression failure" in result
+    runner._run_agent.assert_not_called()
+    assert adapter.sent, "Expected visible stop notice to be sent"
+    assert "stopped before making another GPT-5.5 call" in adapter.sent[-1]["content"]
+
+
+def test_codex_budget_reason_trips_for_api_calls_and_tokens():
+    gateway_run = importlib.import_module("gateway.run")
+    reason = gateway_run._codex_budget_reason(
+        model="gpt-5.5",
+        provider="openai-codex",
+        platform_key="telegram",
+        user_config={"gateway": {"codex_budget": {"max_api_calls": 80, "max_accounted_tokens": 10_000_000}}},
+        usage={"api_call_count": 81, "accounted_tokens": 1_000},
+        message_count=20,
+        hard_message_limit=160,
+    )
+    assert "API calls 81 reached budget 80" == reason
+
+    reason = gateway_run._codex_budget_reason(
+        model="gpt-5.5",
+        provider="openai-codex",
+        platform_key="telegram",
+        user_config={"gateway": {"codex_budget": {"max_api_calls": 80, "max_accounted_tokens": 10_000_000}}},
+        usage={"api_call_count": 10, "accounted_tokens": 10_000_001},
+        message_count=20,
+        hard_message_limit=160,
+    )
+    assert "accounted tokens 10,000,001 reached budget 10,000,000" == reason
+
+
+def test_cost_saver_defaults_are_preserved_in_generated_config():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == "medium"
+    assert DEFAULT_CONFIG["compression"]["hygiene_hard_message_limit"] == 160
+    assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is False
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["enabled"] is True
+    assert DEFAULT_CONFIG["gateway"]["codex_budget"]["max_api_calls"] == 80
+

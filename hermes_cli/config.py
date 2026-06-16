@@ -816,6 +816,12 @@ DEFAULT_CONFIG = {
     "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
+        # Main-agent reasoning effort. Medium is the safe default for
+        # high-context gateway/chat use: strong enough for normal work, but it
+        # avoids silently re-enabling the highest Codex reasoning spend during
+        # config regeneration or upgrades. Users who need maximum reasoning can
+        # still set this to "high" explicitly in config.yaml.
+        "reasoning_effort": "medium",
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -1152,7 +1158,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
+        "hygiene_hard_message_limit": 160,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
                                       # (which is always implicitly protected). Set to
@@ -1170,7 +1176,7 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
+        "codex_gpt55_autoraise": False,  # When True, gpt-5.5 on the ChatGPT Codex OAuth
                                       # route raises its compaction trigger to 85% (vs the
                                       # global `threshold` above). Codex hard-caps gpt-5.5
                                       # at a 272K window, so the default 50% would compact
@@ -2290,6 +2296,20 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Codex/GPT-5.5 runaway protection for long-lived gateway chats.
+        # Before each new model turn, the gateway checks the active session's
+        # API-call count, accounted tokens, and message count. If the session
+        # is past the hard region, Hermes compresses first; if compression
+        # fails, it stops and asks the user to /reset or explicitly continue
+        # instead of spending another GPT-5.5 call blindly.
+        "codex_budget": {
+            "enabled": True,
+            "platforms": ["telegram"],
+            "warn_api_calls": 40,
+            "max_api_calls": 80,
+            "warn_accounted_tokens": 5000000,
+            "max_accounted_tokens": 10000000,
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

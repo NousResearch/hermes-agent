@@ -487,3 +487,64 @@ class TestBaseProfile:
         eb, tl = p.build_api_kwargs_extras()
         assert eb == {}
         assert tl == {}
+
+    def test_fetch_models_uses_base_url_override(self):
+        """fetch_models() with base_url param should use it over self.base_url."""
+        from unittest.mock import patch, MagicMock
+        import json
+
+        fake_models = [{"id": "custom-model-1"}, {"id": "custom-model-2"}]
+        mock_read = MagicMock(return_value=json.dumps({"data": fake_models}).encode())
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read = mock_read
+
+        p = ProviderProfile(
+            name="deepseek",
+            base_url="https://api.deepseek.com/v1",
+        )
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
+             patch("urllib.request.Request") as mock_req_class:
+            mock_req = MagicMock()
+            mock_req_class.return_value = mock_req
+
+            # Call with base_url override
+            result = p.fetch_models(
+                api_key="sk-test",
+                base_url="https://custom-proxy.internal/v1",
+            )
+            assert result == ["custom-model-1", "custom-model-2"]
+            # Verify the URL was built from the override, not self.base_url
+            req_url = mock_req_class.call_args[0][0]
+            assert req_url == "https://custom-proxy.internal/v1/models"
+
+    def test_fetch_models_falls_back_to_self_base_url(self):
+        """fetch_models() without base_url should use self.base_url."""
+        from unittest.mock import patch, MagicMock
+        import json
+
+        fake_models = [{"id": "default-model"}]
+        mock_read = MagicMock(return_value=json.dumps({"data": fake_models}).encode())
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read = mock_read
+
+        p = ProviderProfile(
+            name="deepseek",
+            base_url="https://api.deepseek.com/v1",
+        )
+
+        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen, \
+             patch("urllib.request.Request") as mock_req_class:
+            mock_req = MagicMock()
+            mock_req_class.return_value = mock_req
+
+            # Call without base_url override
+            result = p.fetch_models(api_key="sk-test")
+            assert result == ["default-model"]
+            # Verify the URL was built from self.base_url
+            req_url = mock_req_class.call_args[0][0]
+            assert req_url == "https://api.deepseek.com/v1/models"

@@ -3415,13 +3415,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
         )
         # busy_input_mode: "interrupt" (Enter interrupts current run),
-        # "queue" (Enter queues for next turn), or "steer" (Enter injects
-        # mid-run via /steer, arriving after the next tool call).
+        # "queue" (Enter queues for next turn), "steer" (Enter injects
+        # mid-run via /steer, arriving after the next tool call), or "menu"
+        # (gateway platforms render an action menu; CLI degrades to queue).
         _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
         if _bim == "queue":
             self.busy_input_mode = "queue"
         elif _bim == "steer":
             self.busy_input_mode = "steer"
+        elif _bim == "menu":
+            self.busy_input_mode = "menu"
         else:
             self.busy_input_mode = "interrupt"
 
@@ -8305,6 +8308,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._reload_skills()
         elif canonical == "bundles":
             self._handle_bundles_command(cmd_original)
+        elif canonical == "download":
+            parts = cmd_original.split(None, 1)
+            url = parts[1].strip() if len(parts) > 1 else ""
+            try:
+                from hermes_cli.media_download import DownloadError, download_public_media
+                with self._busy_command("Downloading public media…"):
+                    result = download_public_media(url)
+                _cprint(result.render_text())
+            except DownloadError as exc:
+                message = str(exc)
+                if message == "Access restricted: direct download unavailable without authorized access.":
+                    message += (
+                        "\nProvide one of: a direct public media URL, the actual video file, "
+                        "a transcript/caption, or an authorized session / platform-approved API route."
+                    )
+                _cprint(message)
+            except Exception as exc:
+                _cprint(f"Download failed: {exc}")
         elif canonical == "browser":
             self._handle_browser_command(cmd_original)
         elif canonical == "plugins":
@@ -12753,6 +12774,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     _effective_mode = self.busy_input_mode
+                    if _effective_mode == "menu":
+                        # Menus are implemented by gateway adapters (Telegram
+                        # inline keyboards today).  The terminal has no inline
+                        # action surface, so preserve input by queueing it.
+                        _effective_mode = "queue"
                     if _effective_mode == "steer":
                         # Route Enter through /steer — inject mid-run after the
                         # next tool call.  Images can't ride along (steer only

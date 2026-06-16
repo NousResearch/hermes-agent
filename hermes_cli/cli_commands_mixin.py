@@ -2429,6 +2429,7 @@ class CLICommandsMixin:
             /busy queue         Queue input for the next turn instead of interrupting
             /busy steer         Inject Enter mid-run via /steer (after next tool call)
             /busy interrupt     Interrupt the current run on Enter (default)
+            /busy menu          Show an action menu on messaging platforms that support it
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2438,16 +2439,18 @@ class CLICommandsMixin:
                 _behavior = "queues for next turn"
             elif self.busy_input_mode == "steer":
                 _behavior = "steers into current run (after next tool call)"
+            elif self.busy_input_mode == "menu":
+                _behavior = "shows an action menu on supported messaging platforms"
             else:
                 _behavior = "interrupts current run"
             _cprint(f"  {_DIM}Enter while busy: {_behavior}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|menu|status]{_RST}")
             return
 
         arg = parts[1].strip().lower()
-        if arg not in {"queue", "interrupt", "steer"}:
+        if arg not in {"queue", "interrupt", "steer", "menu"}:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|menu|status]{_RST}")
             return
 
         self.busy_input_mode = arg
@@ -2456,6 +2459,8 @@ class CLICommandsMixin:
                 behavior = "Enter will queue follow-up input while Hermes is busy."
             elif arg == "steer":
                 behavior = "Enter will steer your message into the current run (after the next tool call)."
+            elif arg == "menu":
+                behavior = "Messaging-platform follow-ups will show an action menu when Hermes is busy."
             else:
                 behavior = "Enter will interrupt the current run while Hermes is busy."
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")

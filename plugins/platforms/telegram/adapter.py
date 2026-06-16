@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import html as _html
 import re
@@ -1385,10 +1386,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] sendRichMessage transient failure (no legacy resend): %s",
                 self.name, exc,
             )
+            retry_after = getattr(exc, "retry_after", None)
             return SendResult(
                 success=False,
                 error=str(exc),
-                retryable=(is_connect_timeout or not is_timeout),
+                retryable=(is_connect_timeout or retry_after is not None or not is_timeout),
+                retry_after=float(retry_after) if retry_after is not None else None,
             )
 
         message_id = None
@@ -2890,10 +2893,12 @@ class TelegramAdapter(BasePlatformAdapter):
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             is_connect_timeout = self._looks_like_connect_timeout(e)
             is_pool_timeout = self._looks_like_pool_timeout(e)
+            retry_after = getattr(e, "retry_after", None)
             return SendResult(
                 success=False,
                 error=str(e),
-                retryable=(is_connect_timeout or is_pool_timeout or not is_timeout),
+                retryable=(is_connect_timeout or is_pool_timeout or retry_after is not None or not is_timeout),
+                retry_after=float(retry_after) if retry_after is not None else None,
                 error_kind=error_kind,
             )
 
@@ -3314,6 +3319,47 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return False
 
+    async def pin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Pin a Telegram message silently. Failures are non-fatal."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.pin_chat_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                disable_notification=True,
+            )
+            return True
+        except Exception as e:
+            logger.debug("[%s] Failed to pin Telegram message %s: %s", self.name, message_id, e)
+            return False
+
+    async def unpin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Unpin a Telegram message. Failures are non-fatal."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.unpin_chat_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.debug("[%s] Failed to unpin Telegram message %s: %s", self.name, message_id, e)
+            return False
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,
@@ -3460,6 +3506,71 @@ class TelegramAdapter(BasePlatformAdapter):
                 retry_kwargs.pop("message_thread_id", None)
                 return await self._bot.send_message(**retry_kwargs)
             raise
+
+    async def send_busy_input_menu(
+        self,
+        chat_id: str,
+        prompt,
+        *,
+        actions,
+        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a Telegram inline keyboard for a busy-session follow-up."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            preview = (getattr(getattr(prompt, "event", None), "text", "") or "").strip()
+            if len(preview) > 220:
+                preview = preview[:217] + "…"
+            if not preview:
+                preview = "[media or attachment]"
+            active = bool((getattr(prompt, "metadata", {}) or {}).get("has_active_run"))
+            subagents = bool((getattr(prompt, "metadata", {}) or {}).get("has_subagents"))
+            if not active:
+                title = "The previous task may have finished. What should I do with this follow-up?"
+            elif subagents:
+                title = "I’m busy and subagents may be working. Choose how to handle this follow-up:"
+            else:
+                title = "I’m busy. Choose how to handle this follow-up:"
+            text = self.format_message(f"⚙ *Busy follow-up*\n\n{title}\n\n`{preview}`")
+
+            rows = []
+            current_row = []
+            for action in actions:
+                key = getattr(action, "key", "")
+                label = getattr(action, "label", key)
+                current_row.append(
+                    InlineKeyboardButton(label, callback_data=f"bi:{key}:{prompt.prompt_id}")
+                )
+                if len(current_row) == 2:
+                    rows.append(current_row)
+                    current_row = []
+            if current_row:
+                rows.append(current_row)
+            keyboard = InlineKeyboardMarkup(rows)
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+                **self._notification_kwargs(metadata),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_busy_input_menu failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
@@ -4170,6 +4281,229 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    def _voiceclone_backend_path(self) -> _Path:
+        try:
+            from hermes_constants import get_hermes_home
+            return get_hermes_home() / "plugins" / "native-voice-clone" / "voice_clone_backend.py"
+        except Exception:
+            return _Path.home() / ".hermes" / "plugins" / "native-voice-clone" / "voice_clone_backend.py"
+
+    def _run_voiceclone_backend(self, args: List[str], timeout: int = 30) -> Dict[str, Any]:
+        backend = self._voiceclone_backend_path()
+        if not backend.exists():
+            return {"success": False, "error": f"native-voice-clone backend not found at {backend}"}
+        proc = subprocess.run(
+            [sys.executable, str(backend), *args],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+        raw = proc.stdout if proc.returncode == 0 else proc.stderr or proc.stdout
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"success": proc.returncode == 0, "raw": raw.strip()}
+        if proc.returncode != 0:
+            payload.setdefault("success", False)
+        return payload if isinstance(payload, dict) else {"success": False, "error": "invalid backend response"}
+
+    def _voiceclone_status_payload(self) -> Dict[str, Any]:
+        return self._run_voiceclone_backend(["status"], timeout=30)
+
+    def _voiceclone_current_voice(self, payload: Optional[Dict[str, Any]] = None) -> str:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            tts = cfg.get("tts", {}) if isinstance(cfg, dict) else {}
+            voice = tts.get("voice") if isinstance(tts, dict) else None
+            if isinstance(voice, str) and voice.strip():
+                return voice.strip()
+        except Exception:
+            pass
+        payload = payload or self._voiceclone_status_payload()
+        default = payload.get("default_voice") if isinstance(payload, dict) else None
+        return str(default or "")
+
+    def _set_voiceclone_default(self, voice_id: str) -> None:
+        from hermes_cli.config import load_config, save_config
+        cfg = load_config()
+        tts = cfg.setdefault("tts", {})
+        tts["provider"] = "voice-clone"
+        tts["voice"] = voice_id
+        save_config(cfg)
+
+        # Keep the plugin's own fallback default in sync for direct tool calls.
+        try:
+            from hermes_constants import get_hermes_home
+            state_dir = get_hermes_home() / "voice-clone"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            config_path = state_dir / "config.json"
+            plugin_cfg: Dict[str, Any] = {}
+            if config_path.exists():
+                plugin_cfg = json.loads(config_path.read_text() or "{}")
+            plugin_cfg["default_voice"] = voice_id
+            config_path.write_text(json.dumps(plugin_cfg, indent=2, sort_keys=True))
+        except Exception as exc:
+            logger.debug("Could not sync voice-clone config.json default: %s", exc)
+
+    def _voiceclone_label(self, voice: Dict[str, Any], current: str = "") -> str:
+        voice_id = str(voice.get("voice_id") or "")
+        display = str(voice.get("display_name") or voice_id.removeprefix("sagan-clone-") or voice_id)
+        label = display[:28]
+        if voice_id == current:
+            label = f"✓ {label}"
+        return label
+
+    def _build_voiceclone_keyboard(self, payload: Optional[Dict[str, Any]] = None) -> "InlineKeyboardMarkup":
+        payload = payload or self._voiceclone_status_payload()
+        current = self._voiceclone_current_voice(payload)
+        voices = payload.get("voices") or []
+        buttons = []
+        for voice in voices:
+            if not isinstance(voice, dict):
+                continue
+            voice_id = str(voice.get("voice_id") or "")
+            if not voice_id:
+                continue
+            buttons.append(InlineKeyboardButton(self._voiceclone_label(voice, current), callback_data=f"vc:pick:{voice_id}"))
+        rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)] or [[InlineKeyboardButton("Refresh", callback_data="vc:menu")]]
+        rows.append([
+            InlineKeyboardButton("🔄 Refresh", callback_data="vc:menu"),
+            InlineKeyboardButton("✗ Close", callback_data="vc:close"),
+        ])
+        return InlineKeyboardMarkup(rows)
+
+    def _voiceclone_menu_text(self, payload: Optional[Dict[str, Any]] = None) -> str:
+        payload = payload or self._voiceclone_status_payload()
+        current = self._voiceclone_current_voice(payload)
+        voices = payload.get("voices") or []
+        if not payload.get("success", True):
+            return f"🎙 *Voice Clone Manager*\n\nBackend error: `{payload.get('error') or payload}`"
+        return (
+            "🎙 *Voice Clone Manager*\n\n"
+            f"Current voice: `{current or 'not set'}`\n"
+            f"Available cloned voices: *{len(voices)}*\n\n"
+            "Tap a voice to manage it."
+        )
+
+    async def _send_voiceclone_keyboard(self, msg: "Message") -> None:
+        payload = await asyncio.to_thread(self._voiceclone_status_payload)
+        kwargs: Dict[str, Any] = {
+            "chat_id": int(msg.chat_id),
+            "text": self.format_message(self._voiceclone_menu_text(payload)),
+            "parse_mode": ParseMode.MARKDOWN_V2,
+            "reply_markup": self._build_voiceclone_keyboard(payload),
+            **self._link_preview_kwargs(),
+        }
+        thread_id = getattr(msg, "message_thread_id", None)
+        if thread_id is not None:
+            kwargs.update(self._thread_kwargs_for_send(str(msg.chat_id), str(thread_id), {"thread_id": str(thread_id)}, reply_to_mode=self._reply_to_mode))
+        await self._send_message_with_thread_fallback(**kwargs)
+
+    def _voiceclone_selected_text(self, voice_id: str) -> str:
+        return (
+            "🎙 *Voice selected*\n\n"
+            f"Voice: `{voice_id}`\n\n"
+            "Choose an action."
+        )
+
+    def _voiceclone_selected_keyboard(self, voice_id: str) -> "InlineKeyboardMarkup":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Set default", callback_data=f"vc:set:{voice_id}"), InlineKeyboardButton("🔊 Test", callback_data=f"vc:test:{voice_id}")],
+            [InlineKeyboardButton("◀ Back", callback_data="vc:menu"), InlineKeyboardButton("✗ Close", callback_data="vc:close")],
+        ])
+
+    async def _handle_voiceclone_callback(self, query: Any, data: str) -> None:
+        caller_id = str(getattr(query.from_user, "id", ""))
+        msg = getattr(query, "message", None)
+        chat = getattr(msg, "chat", None)
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=getattr(msg, "chat_id", None),
+            chat_type=str(getattr(chat, "type", "")) if chat is not None else None,
+            thread_id=str(getattr(msg, "message_thread_id", "")) if msg is not None and getattr(msg, "message_thread_id", None) is not None else None,
+            user_name=getattr(query.from_user, "first_name", None),
+        ):
+            await query.answer(text="⛔ You are not authorized to manage voices.")
+            return
+
+        if data == "vc:close":
+            await query.answer(text="Closed")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        if data == "vc:menu":
+            payload = await asyncio.to_thread(self._voiceclone_status_payload)
+            await query.edit_message_text(
+                text=self.format_message(self._voiceclone_menu_text(payload)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=self._build_voiceclone_keyboard(payload),
+            )
+            await query.answer(text="Refreshed")
+            return
+
+        if data.startswith("vc:pick:"):
+            voice_id = data.split(":", 2)[2]
+            await query.edit_message_text(
+                text=self.format_message(self._voiceclone_selected_text(voice_id)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=self._voiceclone_selected_keyboard(voice_id),
+            )
+            await query.answer(text=voice_id)
+            return
+
+        if data.startswith("vc:set:"):
+            voice_id = data.split(":", 2)[2]
+            try:
+                await asyncio.to_thread(self._set_voiceclone_default, voice_id)
+                payload = await asyncio.to_thread(self._voiceclone_status_payload)
+                await query.edit_message_text(
+                    text=self.format_message(self._voiceclone_menu_text(payload)),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=self._build_voiceclone_keyboard(payload),
+                )
+                await query.answer(text=f"Default voice set: {voice_id}")
+            except Exception as exc:
+                logger.error("Voiceclone set-default callback failed: %s", exc, exc_info=True)
+                await query.answer(text="Failed to set voice.")
+            return
+
+        if data.startswith("vc:test:"):
+            voice_id = data.split(":", 2)[2]
+            await query.answer(text="Rendering test voice…")
+            try:
+                from hermes_constants import get_hermes_home
+                out = get_hermes_home() / "voice-clone" / "outputs" / f"telegram-test-{voice_id}.ogg"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                test_text = f"Pascal test. This is the {voice_id} cloned voice."
+                payload = await asyncio.to_thread(
+                    self._run_voiceclone_backend,
+                    ["synthesize", "--text", test_text, "--output", str(out), "--voice", voice_id, "--format", "ogg"],
+                    480,
+                )
+                if not payload.get("success"):
+                    raise RuntimeError(payload.get("error") or payload)
+                metadata = None
+                if msg is not None and getattr(msg, "message_thread_id", None) is not None:
+                    metadata = {"thread_id": str(getattr(msg, "message_thread_id"))}
+                await self.send_voice(str(msg.chat_id), str(out), caption=f"Test: {voice_id}", metadata=metadata)
+            except Exception as exc:
+                logger.error("Voiceclone test callback failed: %s", exc, exc_info=True)
+                if msg is not None:
+                    await self._send_message_with_thread_fallback(
+                        chat_id=int(msg.chat_id),
+                        text=self.format_message(f"❌ Voice test failed: {exc}"),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        **self._link_preview_kwargs(),
+                    )
+            return
+
+        await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4184,6 +4518,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Voice-clone manager callbacks ---
+        if data.startswith("vc:"):
+            await self._handle_voiceclone_callback(query, data)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
@@ -4478,6 +4817,63 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Busy-input menu callbacks (bi:action:prompt_id) ---
+        if data.startswith("bi:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3:
+                await query.answer(text="Invalid busy-menu data.")
+                return
+            action = parts[1]
+            prompt_id = parts[2]
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to use this menu.")
+                return
+
+            runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+            resolver = getattr(runner, "resolve_busy_input_choice", None)
+            if not callable(resolver):
+                await query.answer(text="Busy menu is unavailable after restart.")
+                return
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            try:
+                result_text = await resolver(prompt_id, action, resolved_by=caller_id)
+            except Exception as exc:
+                logger.error("[%s] busy-input callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text="Busy action failed.")
+                return
+
+            await query.answer(text=result_text[:200] if result_text else "Done.")
+            label_map = {
+                "queue": "⏳ Queued",
+                "context": "💬 Context",
+                "steer": "⏩ Steered",
+                "interrupt": "⚡ Interrupting",
+                "stop": "🛑 Stopped",
+                "cancel": "✖ Discarded",
+                "run_now": "▶️ Started",
+                "delete_queued": "🗑 Deleted queue",
+            }
+            label = label_map.get(action, "Resolved")
+            try:
+                base_text = getattr(getattr(query, "message", None), "text", "") or "Busy follow-up"
+                await query.edit_message_text(
+                    text=f"{_html.escape(base_text)}\n\n<b>{_html.escape(label)}</b> by {_html.escape(user_display)}\n<i>{_html.escape(result_text or '')}</i>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
             return
 
         # --- Update prompt callbacks ---
@@ -6227,6 +6623,14 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(msg)
+
+        command_text = (msg.text or "").strip()
+        command_token = command_text.split(maxsplit=1)[0] if command_text else ""
+        command_name = command_token.lstrip("/").split("@", 1)[0].replace("_", "-").lower()
+        command_args = command_text.split(maxsplit=1)[1].strip() if len(command_text.split(maxsplit=1)) > 1 else ""
+        if command_name == "voiceclone" and command_args.lower() in {"", "menu", "keyboard", "manage"}:
+            await self._send_voiceclone_keyboard(msg)
+            return
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)

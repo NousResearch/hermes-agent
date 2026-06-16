@@ -1004,7 +1004,7 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
-        from hermes_cli.commands import gateway_help_lines
+        from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
         raw_args = event.get_command_args().strip()
         if raw_args:
@@ -1015,42 +1015,91 @@ class GatewaySlashCommandsMixin:
         else:
             requested_page = 1
 
-        # Build combined entry list: built-in commands + skill commands
-        entries = list(gateway_help_lines())
+        def _trim_desc(value: str, limit: int = 58) -> str:
+            text = " ".join((value or "").split())
+            if len(text) <= limit:
+                return text
+            return text[: limit - 1].rstrip() + "…"
+
+        # Build structured entries first, then render after pagination.  The
+        # old /commands output was a long flat wall of nearly-identical lines;
+        # grouping by category makes Telegram's narrow chat view much easier
+        # to scan and avoids dangling section headers at page boundaries.
+        entries: list[tuple[str, str]] = []
+        buckets: dict[str, list[str]] = {}
+        category_order = [
+            "Session",
+            "Configuration",
+            "Tools",
+            "Gateway",
+            "Utility",
+            "Info",
+            "Skills",
+        ]
+
+        def _add_entry(category: str, rendered: str) -> None:
+            buckets.setdefault(category, []).append(rendered)
+        try:
+            overrides = _resolve_config_gates()
+        except Exception:
+            overrides = {}
+        for cmd in COMMAND_REGISTRY:
+            if not _is_gateway_available(cmd, overrides):
+                continue
+            # Keep slash commands as bare plain text (not inline code, and no
+            # argument placeholders) so Telegram recognizes them as tappable
+            # bot-command entities.  Argument hints in brackets make Telegram's
+            # Markdown renderer escape/collapse the line; the command itself is
+            # the clickable target and the description explains the intent.
+            _add_entry(cmd.category, f"- /{cmd.name} — {_trim_desc(cmd.description)}")
+
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
-            if skill_cmds:
-                entries.append("")
-                entries.append(t("gateway.commands.skill_header"))
-                for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
-                    entries.append(f"`{cmd}` — {desc}")
+            for cmd in sorted(skill_cmds):
+                desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
+                _add_entry("Skills", f"• {cmd} — {_trim_desc(desc)}")
         except Exception:
             pass
+
+        for category in category_order:
+            for rendered in buckets.pop(category, []):
+                entries.append((category, rendered))
+        for category in sorted(buckets):
+            for rendered in buckets[category]:
+                entries.append((category, rendered))
 
         if not entries:
             return t("gateway.commands.none")
 
         from gateway.config import Platform
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        page_size = 12 if event.source.platform == Platform.TELEGRAM else 16
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
         page = max(1, min(requested_page, total_pages))
         start = (page - 1) * page_size
         page_entries = entries[start:start + page_size]
 
         lines = [
-            t("gateway.commands.header", total=len(entries), page=page, total_pages=total_pages),
+            f"**Slash commands** · page {page}/{total_pages}",
+            f"{len(entries)} total. Tap a command, then edit/add args if needed.",
             "",
-            *page_entries,
         ]
+        current_category: str | None = None
+        for category, rendered in page_entries:
+            if category != current_category:
+                if current_category is not None:
+                    lines.append("")
+                lines.append(f"**{category}**")
+                current_category = category
+            lines.append(rendered)
+
         if total_pages > 1:
             nav_parts = []
             if page > 1:
-                nav_parts.append(t("gateway.commands.nav_prev", page=page - 1))
+                nav_parts.append(f"← /commands {page - 1}")
             if page < total_pages:
-                nav_parts.append(t("gateway.commands.nav_next", page=page + 1))
-            lines.extend(["", " | ".join(nav_parts)])
+                nav_parts.append(f"/commands {page + 1} →")
+            lines.extend(["", " · ".join(nav_parts)])
         if page != requested_page:
             lines.append(t("gateway.commands.out_of_range", requested=requested_page, page=page))
         return _telegramize_command_mentions(
@@ -3781,6 +3830,26 @@ class GatewaySlashCommandsMixin:
         lines.append("")
         lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
         return "\n".join(lines)
+
+    async def _handle_download_command(self, event: MessageEvent) -> str:
+        """Handle /download <url> — safely fetch public direct media/files."""
+        url = event.get_command_args().strip()
+        try:
+            from hermes_cli.media_download import DownloadError, download_public_media
+
+            result = await asyncio.to_thread(download_public_media, url)
+            return result.render_text()
+        except DownloadError as exc:
+            message = str(exc)
+            if message == "Access restricted: direct download unavailable without authorized access.":
+                message += (
+                    "\nProvide one of: a direct public media URL, the actual video file, "
+                    "a transcript/caption, or an authorized session / platform-approved API route."
+                )
+            return message
+        except Exception as exc:
+            logger.warning("Download command failed: %s", exc)
+            return f"Download failed: {exc}"
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).

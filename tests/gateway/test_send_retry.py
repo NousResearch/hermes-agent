@@ -191,6 +191,50 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
+    async def test_retry_after_delay_is_honored(self):
+        """Flood-control failures must wait the platform RetryAfter window.
+
+        Retrying after the generic 2s/4s backoff exhausts attempts while
+        Telegram is still returning flood control, leaving only a streamed
+        preview with the cursor visible.
+        """
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="Flood control exceeded. Retry in 30 seconds",
+                retryable=True,
+                retry_after=30.0,
+            ),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert result.success
+        assert len(adapter._send_calls) == 2
+        assert mock_sleep.await_args is not None
+        slept = mock_sleep.await_args.args[0]
+        assert 30.0 <= slept < 31.1
+
+    @pytest.mark.asyncio
+    async def test_retry_after_parsed_from_error_string(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(
+                success=False,
+                error="Flood control exceeded. Retry in 12 seconds",
+                retryable=True,
+            ),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+        assert result.success
+        assert mock_sleep.await_args is not None
+        slept = mock_sleep.await_args.args[0]
+        assert 12.0 <= slept < 13.1
+
+    @pytest.mark.asyncio
     async def test_network_to_nonnetwork_transition_falls_back_to_plaintext(self):
         """If error switches from network to formatting mid-retry, fall through to plain-text fallback."""
         adapter = _StubAdapter()

@@ -774,3 +774,80 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=live_task
         ) is True
+
+
+class TestBusyMenuMode:
+    @pytest.mark.asyncio
+    async def test_menu_mode_sends_action_menu_instead_of_interrupting(self):
+        """busy_input_mode=menu should ask for a choice and not queue/interrupt yet."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "menu"
+        runner._queued_events = {}
+        runner._session_run_generation = {}
+        adapter = _make_adapter()
+        adapter.send_busy_input_menu = AsyncMock(return_value=MagicMock(success=True, message_id="menu1"))
+
+        event = _make_event(text="follow-up needing choice")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        adapter.send_busy_input_menu.assert_called_once()
+        agent.interrupt.assert_not_called()
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_busy_menu_queue_after_completion_replays_immediately(self):
+        """Queue clicked after the original run ended must not strand a pending event."""
+        from gateway.busy_input import BusyInputManager
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_manager = BusyInputManager()
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        event = _make_event(text="late queue click")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        prompt = runner._busy_input_manager.new_prompt(
+            session_key=sk,
+            event=event,
+            run_generation=1,
+            metadata={"has_active_run": True},
+        )
+        # Simulate completion: no _running_agents entry remains.
+        runner._running_agents.pop(sk, None)
+
+        result = await runner.resolve_busy_input_choice(prompt.prompt_id, "queue", resolved_by="user1")
+
+        assert "starting that message now" in result
+        adapter.handle_message.assert_awaited_once_with(event)
+        assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_busy_menu_duplicate_click_is_idempotent(self):
+        """The first busy-menu click wins; duplicate callbacks do not replay."""
+        from gateway.busy_input import BusyInputManager
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_manager = BusyInputManager()
+        runner._queued_events = {}
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        event = _make_event(text="duplicate")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+        prompt = runner._busy_input_manager.new_prompt(session_key=sk, event=event)
+
+        first = await runner.resolve_busy_input_choice(prompt.prompt_id, "queue", resolved_by="user1")
+        second = await runner.resolve_busy_input_choice(prompt.prompt_id, "queue", resolved_by="user1")
+
+        assert "starting that message now" in first
+        assert "already handled" in second
+        adapter.handle_message.assert_awaited_once_with(event)

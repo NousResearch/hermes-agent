@@ -175,6 +175,13 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        # Set once the queue's DONE sentinel has been observed.  The gateway's
+        # shutdown/finally path may cancel this task after a short timeout; a
+        # cancel before DONE means we may only have a prefix of the assistant
+        # response.  In that case best-effort editing must not set the final
+        # delivery flags, or the gateway will suppress its normal full-response
+        # send and leave the user with a clipped Telegram/Discord message.
+        self._saw_done = False
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -501,6 +508,7 @@ class GatewayStreamConsumer:
                     try:
                         item = self._queue.get_nowait()
                         if item is _DONE:
+                            self._saw_done = True
                             got_done = True
                             break
                         if item is _NEW_SEGMENT:
@@ -744,10 +752,36 @@ class GatewayStreamConsumer:
             # Best-effort final edit on cancellation.  finalize=True so
             # REQUIRES_EDIT_FINALIZE platforms (Telegram) apply final
             # formatting — a plain edit here would leave the entire reply
-            # rendered as a raw streaming preview while the success flags
-            # below suppress the gateway's formatted re-send.
+            # rendered with raw markdown markers.
+            #
             # is_turn_final=False keeps _try_fresh_final from setting
             # _final_response_sent itself; this handler owns the flags.
+            #
+            # Before attempting the edit, drain any queued deltas that arrived
+            # before cancellation.  If we find DONE, _accumulated now represents
+            # the complete response and a successful best-effort edit may safely
+            # suppress the gateway's normal final send.  If DONE is absent, this
+            # task was cancelled mid-stream; editing a prefix is still useful as
+            # a preview, but it must NOT be marked as final delivery.
+            try:
+                while True:
+                    item = self._queue.get_nowait()
+                    if item is _DONE:
+                        self._saw_done = True
+                        self._flush_think_buffer()
+                        break
+                    if item is _NEW_SEGMENT:
+                        # A segment boundary means the accumulated text is an
+                        # interim preamble, not the final answer.  Stop draining
+                        # so cancellation cannot promote it to final delivery.
+                        break
+                    if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
+                        break
+                    if isinstance(item, str):
+                        self._filter_and_accumulate(item)
+            except queue.Empty:
+                pass
+
             _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
@@ -759,13 +793,11 @@ class GatewayStreamConsumer:
                 except Exception:
                     pass
             # Only confirm final delivery if the best-effort send above
-            # actually succeeded OR if the final response was already
-            # confirmed before we were cancelled.  Previously this
-            # promoted any partial send (already_sent=True) to
-            # final_response_sent — which suppressed the gateway's
-            # fallback send even when only intermediate text (e.g.
-            # "Let me search…") had been delivered, not the real answer.
-            if _best_effort_ok and not self._final_response_sent:
+            # actually succeeded AND this consumer observed DONE.  Previously
+            # a cancellation after only a partial preview could set
+            # final_response_sent, suppressing the gateway's normal full final
+            # send and leaving users with clipped Telegram/Discord messages.
+            if _best_effort_ok and not self._final_response_sent and self._saw_done:
                 self._final_response_sent = True
                 self._final_content_delivered = True
         except Exception as e:

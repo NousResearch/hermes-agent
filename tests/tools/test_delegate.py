@@ -32,6 +32,8 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _normalize_model_profiles,
+    _resolve_task_credentials,
 )
 
 
@@ -2793,6 +2795,458 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+# A NIM-style global credential bundle: two models served from one endpoint.
+# Mirrors what _resolve_delegation_credentials returns for a direct base_url.
+_NIM_GLOBAL_CREDS = {
+    "model": "nvidia/nemotron-3-nano-30b-a3b",
+    "provider": "custom",
+    "base_url": "https://nim.example/v1",
+    "api_key": "nim-key",
+    "api_mode": "chat_completions",
+}
+_EMPTY_CREDS = {
+    "model": None,
+    "provider": None,
+    "base_url": None,
+    "api_key": None,
+    "api_mode": None,
+}
+_SUPER = "nvidia/nemotron-3-super-120b-a12b"
+_NANO = "nvidia/nemotron-3-nano-30b-a3b"
+
+
+class TestModelProfileNormalization(unittest.TestCase):
+    """Unit tests for _normalize_model_profiles (delegation.models parsing)."""
+
+    def test_mapping_form(self):
+        cfg = {"models": {"research": {"model": _SUPER, "provider": "nvidia"}}}
+        out = _normalize_model_profiles(cfg)
+        self.assertEqual(out["research"]["model"], _SUPER)
+        self.assertEqual(out["research"]["provider"], "nvidia")
+
+    def test_string_shorthand_expands_to_model(self):
+        cfg = {"models": {"summarize": _NANO}}
+        out = _normalize_model_profiles(cfg)
+        self.assertEqual(out, {"summarize": {"model": _NANO}})
+
+    def test_invalid_shapes_skipped(self):
+        cfg = {"models": {"good": _NANO, "bad": 123, "": "x", "obj": {"model": "y"}}}
+        out = _normalize_model_profiles(cfg)
+        self.assertEqual(set(out), {"good", "obj"})
+
+    def test_no_models_key_returns_empty(self):
+        self.assertEqual(_normalize_model_profiles({}), {})
+        self.assertEqual(_normalize_model_profiles({"models": "nonsense"}), {})
+
+
+class TestResolveTaskCredentials(unittest.TestCase):
+    """Unit tests for per-task model/provider/profile credential resolution."""
+
+    def test_model_only_swap_keeps_global_endpoint(self):
+        """A bare per-task model keeps the global endpoint/key — same NIM
+        endpoint, different model (the motivating multi-specialty case)."""
+        r = _resolve_task_credentials(
+            task={"goal": "x", "model": _SUPER},
+            top_model=None, top_provider=None, top_profile=None,
+            global_creds=_NIM_GLOBAL_CREDS, cfg={}, parent_agent=None,
+        )
+        self.assertEqual(r["model"], _SUPER)
+        self.assertEqual(r["base_url"], _NIM_GLOBAL_CREDS["base_url"])
+        self.assertEqual(r["api_key"], _NIM_GLOBAL_CREDS["api_key"])
+        self.assertEqual(r["provider"], _NIM_GLOBAL_CREDS["provider"])
+
+    def test_no_override_returns_global_bundle_unchanged(self):
+        r = _resolve_task_credentials(
+            task={"goal": "x"},
+            top_model=None, top_provider=None, top_profile=None,
+            global_creds=_NIM_GLOBAL_CREDS, cfg={}, parent_agent=None,
+        )
+        self.assertEqual(r, _NIM_GLOBAL_CREDS)
+
+    def test_model_only_with_empty_global_defers_to_parent(self):
+        """With no global delegation config, a per-task model swaps the model
+        but leaves credentials None so _build_child_agent inherits the parent's
+        endpoint/key — the runtime fallback path."""
+        r = _resolve_task_credentials(
+            task={"goal": "x", "model": _SUPER},
+            top_model=None, top_provider=None, top_profile=None,
+            global_creds=_EMPTY_CREDS, cfg={}, parent_agent=None,
+        )
+        self.assertEqual(r["model"], _SUPER)
+        self.assertIsNone(r["provider"])
+        self.assertIsNone(r["base_url"])
+        self.assertIsNone(r["api_key"])
+
+    def test_profile_mapping_form(self):
+        cfg = {"models": {"research": {"model": _SUPER}}}
+        r = _resolve_task_credentials(
+            task={"goal": "x", "model_profile": "research"},
+            top_model=None, top_provider=None, top_profile=None,
+            global_creds=_NIM_GLOBAL_CREDS, cfg=cfg, parent_agent=None,
+        )
+        self.assertEqual(r["model"], _SUPER)
+        self.assertEqual(r["base_url"], _NIM_GLOBAL_CREDS["base_url"])
+
+    def test_profile_string_form(self):
+        cfg = {"models": {"summarize": _NANO}}
+        r = _resolve_task_credentials(
+            task={"goal": "x", "model_profile": "summarize"},
+            top_model=None, top_provider=None, top_profile=None,
+            global_creds=_NIM_GLOBAL_CREDS, cfg=cfg, parent_agent=None,
+        )
+        self.assertEqual(r["model"], _NANO)
+
+    def test_precedence_task_beats_top_beats_profile(self):
+        cfg = {"models": {"research": {"model": _SUPER}}}
+        # explicit per-task model wins over top-level and profile
+        r = _resolve_task_credentials(
+            task={"goal": "x", "model": "explicit-win"},
+            top_model="top-model", top_provider=None, top_profile="research",
+            global_creds=_NIM_GLOBAL_CREDS, cfg=cfg, parent_agent=None,
+        )
+        self.assertEqual(r["model"], "explicit-win")
+        # top-level beats profile when no per-task model
+        r = _resolve_task_credentials(
+            task={"goal": "x"},
+            top_model="top-model", top_provider=None, top_profile="research",
+            global_creds=_NIM_GLOBAL_CREDS, cfg=cfg, parent_agent=None,
+        )
+        self.assertEqual(r["model"], "top-model")
+
+    def test_unknown_profile_raises_valueerror(self):
+        cfg = {"models": {"research": {"model": _SUPER}}}
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_task_credentials(
+                task={"goal": "x", "model_profile": "nope"},
+                top_model=None, top_provider=None, top_profile=None,
+                global_creds=_NIM_GLOBAL_CREDS, cfg=cfg, parent_agent=None,
+            )
+        msg = str(ctx.exception)
+        self.assertIn("nope", msg)
+        self.assertIn("research", msg)  # lists available profiles
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_override_triggers_full_resolution(self, mock_resolve):
+        """A per-task provider re-resolves the full bundle via the same path
+        the global delegation.provider uses (cross-provider per task)."""
+        mock_resolve.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or",
+            "api_mode": "chat_completions",
+        }
+        r = _resolve_task_credentials(
+            task={"goal": "x", "provider": "openrouter", "model": "google/gemini-3-flash-preview"},
+            top_model=None, top_provider=None, top_profile=None,
+            global_creds=_NIM_GLOBAL_CREDS, cfg={}, parent_agent=None,
+        )
+        mock_resolve.assert_called_once()
+        synthetic_cfg = mock_resolve.call_args[0][0]
+        self.assertEqual(synthetic_cfg["provider"], "openrouter")
+        self.assertEqual(synthetic_cfg["model"], "google/gemini-3-flash-preview")
+        self.assertEqual(r["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(r["provider"], "openrouter")
+
+
+class TestPerTaskModelAssignment(unittest.TestCase):
+    """Integration: delegate_task assigns distinct models to distinct children.
+
+    Both halves of the requirement:
+      * runtime  — orchestrator passes per-task `model`
+      * human-config — operator defines delegation.models profiles
+    Each child is built with its own resolved credential bundle.
+    """
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_runtime_batch_per_task_models(self, mock_build, mock_run, mock_creds, mock_cfg):
+        """task A -> super, task B -> nano in one batch."""
+        mock_creds.return_value = dict(_NIM_GLOBAL_CREDS)
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        mock_build.return_value = MagicMock()
+        parent = _make_mock_parent()
+
+        delegate_task(
+            tasks=[
+                {"goal": "deep research", "model": _SUPER},
+                {"goal": "quick summary", "model": _NANO},
+            ],
+            parent_agent=parent,
+        )
+
+        self.assertEqual(mock_build.call_count, 2)
+        models = [c.kwargs["model"] for c in mock_build.call_args_list]
+        self.assertEqual(models, [_SUPER, _NANO])
+        # Same endpoint, different model: the global base_url/api_key ride along.
+        for call in mock_build.call_args_list:
+            self.assertEqual(call.kwargs["override_base_url"], _NIM_GLOBAL_CREDS["base_url"])
+            self.assertEqual(call.kwargs["override_api_key"], _NIM_GLOBAL_CREDS["api_key"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_human_config_model_profiles(self, mock_build, mock_run, mock_creds, mock_cfg):
+        """Operator pre-assigns models via delegation.models; tasks reference
+        them by profile name."""
+        mock_cfg.return_value = {
+            "models": {
+                "research": {"model": _SUPER},
+                "summarize": {"model": _NANO},
+            }
+        }
+        mock_creds.return_value = dict(_NIM_GLOBAL_CREDS)
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        mock_build.return_value = MagicMock()
+        parent = _make_mock_parent()
+
+        delegate_task(
+            tasks=[
+                {"goal": "investigate", "model_profile": "research"},
+                {"goal": "condense", "model_profile": "summarize"},
+            ],
+            parent_agent=parent,
+        )
+
+        models = [c.kwargs["model"] for c in mock_build.call_args_list]
+        self.assertEqual(models, [_SUPER, _NANO])
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_single_task_top_level_model(self, mock_build, mock_run, mock_creds, mock_cfg):
+        mock_creds.return_value = dict(_EMPTY_CREDS)
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        mock_build.return_value = MagicMock()
+        parent = _make_mock_parent()
+
+        delegate_task(goal="research the thing", model=_SUPER, parent_agent=parent)
+
+        self.assertEqual(mock_build.call_args.kwargs["model"], _SUPER)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_no_model_falls_back_to_global_then_parent(self, mock_build, mock_run, mock_creds, mock_cfg):
+        """When no per-task/top-level model is given, the global delegation
+        model is used; when that is also empty, None is passed so
+        _build_child_agent inherits the parent's model."""
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        mock_build.return_value = MagicMock()
+        parent = _make_mock_parent()
+
+        # global default present
+        mock_creds.return_value = {**_EMPTY_CREDS, "model": "global-default"}
+        delegate_task(goal="x", parent_agent=parent)
+        self.assertEqual(mock_build.call_args.kwargs["model"], "global-default")
+
+        # no global model -> None passed (parent fallback happens downstream)
+        mock_build.reset_mock()
+        mock_creds.return_value = dict(_EMPTY_CREDS)
+        delegate_task(goal="x", parent_agent=parent)
+        self.assertIsNone(mock_build.call_args.kwargs["model"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    def test_unknown_profile_errors_before_building_children(self, mock_build, mock_run, mock_creds, mock_cfg):
+        mock_cfg.return_value = {"models": {"research": {"model": _SUPER}}}
+        mock_creds.return_value = dict(_NIM_GLOBAL_CREDS)
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(tasks=[{"goal": "x", "model_profile": "ghost"}], parent_agent=parent)
+        )
+        self.assertIn("error", result)
+        self.assertIn("ghost", result["error"])
+        self.assertIn("Task 0", result["error"])
+        mock_build.assert_not_called()
+        mock_run.assert_not_called()
+
+
+class TestPerTaskModelSchemaAndDispatch(unittest.TestCase):
+    """Schema exposure + run_agent dispatch forwarding for the new fields."""
+
+    def test_schema_exposes_model_fields_both_levels(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        for field in ("model", "provider", "model_profile"):
+            self.assertIn(field, props, f"top-level '{field}' missing from schema")
+        task_props = props["tasks"]["items"]["properties"]
+        for field in ("model", "provider", "model_profile"):
+            self.assertIn(field, task_props, f"per-task '{field}' missing from schema")
+
+    def test_dispatch_forwards_model_fields(self):
+        """_dispatch_delegate_task threads the new fields through to
+        delegate_task (run_agent.py is the single call site)."""
+        from run_agent import AIAgent
+
+        with patch("tools.delegate_tool.delegate_task") as mock_dt:
+            mock_dt.return_value = "{}"
+            sentinel_parent = object()
+            AIAgent._dispatch_delegate_task(
+                sentinel_parent,
+                {
+                    "goal": "x",
+                    "model": "m1",
+                    "provider": "openrouter",
+                    "model_profile": "research",
+                },
+            )
+            _, kwargs = mock_dt.call_args
+            self.assertEqual(kwargs["model"], "m1")
+            self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertEqual(kwargs["model_profile"], "research")
+            self.assertIs(kwargs["parent_agent"], sentinel_parent)
+
+
+class TestExplicitOverrideSuppressesFallback(unittest.TestCase):
+    """An explicit per-sub-agent model override must NOT inherit the parent's
+    fallback chain. Otherwise an error on the explicitly-chosen model would
+    silently fail the child over to the parent's fallback model, overriding the
+    caller's explicit choice. With no override, today's inherit behavior is
+    preserved (global delegation.model and parent-model cases unaffected).
+    """
+
+    _CHAIN = [{"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}]
+
+    def _parent_with_chain(self):
+        parent = _make_mock_parent()
+        parent._fallback_chain = list(self._CHAIN)
+        return parent
+
+    # ── unit: _build_child_agent honors the flag ───────────────────────────
+    def test_build_child_explicit_override_suppresses_fallback(self):
+        parent = self._parent_with_chain()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=None,
+                model="explicit/model", max_iterations=10, task_count=1,
+                parent_agent=parent, explicit_model_override=True,
+            )
+            _, kwargs = MockAgent.call_args
+            self.assertIsNone(kwargs["fallback_model"])
+
+    def test_build_child_no_override_inherits_fallback(self):
+        parent = self._parent_with_chain()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=None,
+                model=None, max_iterations=10, task_count=1,
+                parent_agent=parent,  # explicit_model_override defaults to False
+            )
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["fallback_model"], self._CHAIN)
+
+    # ── integration: delegate_task wires explicitness per task ──────────────
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_per_task_model_suppresses_only_overridden_child(self, mock_run, mock_creds, mock_cfg):
+        """In one batch: the explicit-model child loses the fallback chain; the
+        non-override child still inherits it."""
+        mock_creds.return_value = dict(_EMPTY_CREDS)
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        parent = self._parent_with_chain()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            delegate_task(
+                tasks=[
+                    {"goal": "explicit", "model": _SUPER},
+                    {"goal": "inherit"},  # no override
+                ],
+                parent_agent=parent,
+            )
+            fb = [c.kwargs["fallback_model"] for c in MockAgent.call_args_list]
+            self.assertIsNone(fb[0])               # explicit override → suppressed
+            self.assertEqual(fb[1], self._CHAIN)   # no override → inherited
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_provider_and_profile_overrides_suppress_fallback(self, mock_run, mock_creds, mock_cfg):
+        """provider and model_profile count as explicit overrides too."""
+        mock_cfg.return_value = {"models": {"research": {"model": _SUPER}}}
+        mock_creds.return_value = {
+            "model": _SUPER, "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk", "api_mode": "chat_completions",
+        }
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        parent = self._parent_with_chain()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            delegate_task(
+                tasks=[
+                    {"goal": "by-provider", "provider": "openrouter"},
+                    {"goal": "by-profile", "model_profile": "research"},
+                ],
+                parent_agent=parent,
+            )
+            fb = [c.kwargs["fallback_model"] for c in MockAgent.call_args_list]
+            self.assertIsNone(fb[0])  # provider override
+            self.assertIsNone(fb[1])  # model_profile override
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_single_task_top_level_model_suppresses_fallback(self, mock_run, mock_creds, mock_cfg):
+        mock_creds.return_value = dict(_EMPTY_CREDS)
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        parent = self._parent_with_chain()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            delegate_task(goal="single", model=_SUPER, parent_agent=parent)
+            _, kwargs = MockAgent.call_args
+            self.assertIsNone(kwargs["fallback_model"])
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_no_override_preserves_parent_fallback(self, mock_run, mock_creds, mock_cfg):
+        """Global delegation.model (no per-task override) keeps today's
+        inherit behavior."""
+        mock_creds.return_value = {**_EMPTY_CREDS, "model": "global-default"}
+        mock_run.return_value = {
+            "task_index": 0, "status": "completed", "summary": "ok",
+            "api_calls": 1, "duration_seconds": 1.0,
+        }
+        parent = self._parent_with_chain()
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            delegate_task(goal="single", parent_agent=parent)
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["fallback_model"], self._CHAIN)
 
 
 if __name__ == "__main__":

@@ -952,10 +952,36 @@ delegation:
                                               # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
                                               # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
-  # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
-  # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
+  # model: "google/gemini-3-flash-preview"    # Default model for subagents (empty = inherit parent)
+  # provider: "openrouter"                    # Default provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # ---------------------------------------------------------------------------
+  # Per-subagent model assignment (assign DIFFERENT models to DIFFERENT subagents)
+  # ---------------------------------------------------------------------------
+  # `model`/`provider` above are the single default applied to every subagent.
+  # To give distinct subagents distinct models there are two mechanisms:
+  #
+  #   1. Runtime (agent-chosen): the orchestrating agent passes a per-task
+  #      `model` (and optionally `provider`) in a delegate_task batch — e.g.
+  #      task A -> a capable model, task B -> a small model. No config needed.
+  #
+  #   2. Human-config (operator-assigned): define NAMED model profiles here and
+  #      have the agent reference them per task by `model_profile`. You control
+  #      which model each profile maps to; the agent only picks the profile by
+  #      intent. A bare profile value is shorthand for {model: "<id>"}.
+  #
+  # A per-task model that omits provider/base_url runs on the SAME endpoint as
+  # the active delegation/parent credentials (just a different model id) — ideal
+  # for several models served from one provider (e.g. NVIDIA NIM). Set provider
+  # or base_url in a profile to route a subagent to a different provider.
+  #
+  # models:
+  #   research:  { model: "nvidia/nemotron-3-super-120b-a12b" }   # capable
+  #   summarize: { model: "nvidia/nemotron-3-nano-30b-a3b" }        # small/fast
+  #   cheap:     { model: "google/gemini-3-flash-preview", provider: "openrouter" }  # cross-provider
+  #   # shorthand string form (model id only):
+  #   draft: "nvidia/nemotron-3-nano-30b-a3b"
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

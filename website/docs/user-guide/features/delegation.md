@@ -131,7 +131,7 @@ Single-task delegation runs directly without thread pool overhead.
 
 ## Model Override
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+You can configure a different model for **all** subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -141,6 +141,95 @@ delegation:
 ```
 
 If omitted, subagents use the same model as the parent.
+
+## Per-Agent Model Assignment
+
+`delegation.model` sets **one** model for every subagent. When a workflow needs
+**different models for different subagents** — for example a capable model for a
+"research" subagent and a small/fast model for a "summarize" subagent — there are
+two complementary mechanisms. Both preserve the global default and parent fallback:
+when no per-task model is given, a subagent uses `delegation.model`, then the
+parent's model, exactly as before.
+
+### 1. Runtime — the agent assigns models per task
+
+The orchestrating agent can set a `model` (and optionally `provider`) on each task
+in a `delegate_task` batch, with no configuration required:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Research the state of WebAssembly in 2025",
+        "toolsets": ["web"],
+        "model": "nvidia/nemotron-3-super-120b-a12b",   # capable model
+    },
+    {
+        "goal": "Summarize the research into 5 bullet points",
+        "model": "nvidia/nemotron-3-nano-30b-a3b",         # small, fast model
+    },
+])
+```
+
+A bare `model` id runs that subagent on the **same endpoint** as the active
+delegation/parent credentials — only the model id changes. This is the common case
+when several models are served from one provider (e.g. NVIDIA NIM). To route a task
+to a *different* provider, also set `provider` (resolves that provider's base URL and
+API key automatically, like `delegation.provider`).
+
+`model`/`provider` also work at the top level for single-task delegation, and act as
+the default for any batch task that doesn't set its own.
+
+### 2. Human-config — operator pre-assigns models via named profiles
+
+An operator can pin specific models to specific *kinds* of subagent in `config.yaml`
+under `delegation.models`, then have the agent reference them per task by name with
+`model_profile`. The operator controls which model each profile maps to; the agent
+only chooses the profile by intent:
+
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  model: "nvidia/nemotron-3-nano-30b-a3b"   # global default (fallback)
+  base_url: "https://your-nim-endpoint/v1"
+  api_key: "..."                           # or rely on the parent's key
+  models:
+    research:  { model: "nvidia/nemotron-3-super-120b-a12b" }   # capable
+    summarize: { model: "nvidia/nemotron-3-nano-30b-a3b" }        # small/fast
+    cheap:     { model: "google/gemini-3-flash-preview", provider: "openrouter" }  # cross-provider
+    draft: "nvidia/nemotron-3-nano-30b-a3b"  # shorthand: bare string == {model: "<id>"}
+```
+
+```python
+delegate_task(tasks=[
+    {"goal": "Investigate the failing integration test", "model_profile": "research"},
+    {"goal": "Write a one-paragraph summary of the findings", "model_profile": "summarize"},
+])
+```
+
+A profile may carry just a `model`, or a full credential bundle (`model`, `provider`,
+`base_url`, `api_key`, `api_mode`) when the subagent should run on a different
+provider. Referencing an undefined profile returns a tool error listing the available
+profile names (no subagent is spawned).
+
+### Precedence
+
+For each task, the effective model/provider is resolved highest-first:
+
+1. Explicit per-task `model` / `provider`
+2. Top-level `model` / `provider` arguments to `delegate_task`
+3. Named `model_profile` → `delegation.models.<name>`
+4. Global `delegation.model` / `delegation.provider`
+5. The parent agent's model (inherited)
+
+Each subagent's **resolved** model is recorded in the delegation result (the `model`
+field of each result entry) and in the `/agents` overlay, so you can confirm which
+child ran which model.
+
+When you give a sub-agent an **explicit** model (a per-task or top-level
+`model` / `provider` / `model_profile`), that child does **not** inherit the parent's
+fallback-model chain. An explicit choice is honored or fails loudly — it is never
+silently swapped for the parent's fallback model on an error. Sub-agents that take no
+override keep the parent's fallback chain as before.
 
 ## Toolset Selection Tips
 
@@ -271,9 +360,12 @@ delegation:
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
-  model: "google/gemini-3-flash-preview"             # Optional provider/model override
+  model: "google/gemini-3-flash-preview"             # Optional default provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
+  models:                                            # Optional: per-subagent model profiles (see "Per-Agent Model Assignment")
+    research:  { model: "nvidia/nemotron-3-super-120b-a12b" }
+    summarize: { model: "nvidia/nemotron-3-nano-30b-a3b" }
 
 # Or use a direct custom endpoint instead of provider:
 delegation:

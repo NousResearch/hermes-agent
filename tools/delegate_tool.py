@@ -990,6 +990,10 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # True when the caller explicitly chose this child's model (per-task or
+    # top-level model/provider/model_profile). Suppresses the parent fallback
+    # chain so the explicit model can't be silently swapped — see below.
+    explicit_model_override: bool = False,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1184,7 +1188,20 @@ def _build_child_agent(
     # from rate-limits and credential exhaustion exactly like the top-level
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
-    parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    #
+    # EXCEPTION — explicit model override: when the caller explicitly chose
+    # this child's model (per-task/top-level model/provider/model_profile),
+    # suppress the parent fallback chain. Otherwise an error on the
+    # explicitly-chosen model would silently fail the child over to the
+    # PARENT's fallback model, overriding the caller's explicit choice without
+    # their knowledge. An explicit override must be honored or fail loudly —
+    # never silently swapped. (No override → today's inherit behavior, so the
+    # global delegation.model and parent-model cases are unaffected.)
+    parent_fallback = (
+        None
+        if explicit_model_override
+        else (getattr(parent_agent, "_fallback_chain", None) or None)
+    )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -2072,6 +2089,9 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    model_profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2085,6 +2105,14 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    Per-agent model assignment: 'model'/'provider'/'model_profile' select the
+    model for the spawned subagent(s). In batch mode each task may set its own
+    'model'/'provider'/'model_profile', so distinct subagents in one workflow
+    run on distinct models. Per-task values beat the top-level args, which beat
+    a named profile (delegation.models.<name>), which beats the global
+    delegation.model, which beats the parent's model. Omit them all to keep the
+    existing global-default + parent-fallback behavior unchanged.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2190,6 +2218,50 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    # Resolve per-task credentials UP FRONT so a bad model_profile or
+    # unresolvable provider fails before any child agent is constructed —
+    # otherwise we'd leak half-built children (registered for interrupt
+    # propagation, holding tool resources) on an early return. Each entry is
+    # a full credential bundle; the model-only case keeps the global bundle
+    # and just swaps the model (see _resolve_task_credentials).
+    #
+    # task_explicit_list[i] records whether the CALLER explicitly chose this
+    # child's model — via a per-task or top-level model/provider/model_profile.
+    # When true, the parent's fallback chain is suppressed for that child (see
+    # _build_child_agent) so an error on the chosen model can't silently fail
+    # over to the parent's fallback model. The global delegation.model/provider
+    # is NOT an explicit per-task override and keeps today's fallback behavior.
+    task_creds_list: List[Dict[str, Any]] = []
+    task_explicit_list: List[bool] = []
+    for i, t in enumerate(task_list):
+        task_explicit_list.append(
+            any(
+                str(v or "").strip()
+                for v in (
+                    t.get("model"),
+                    t.get("provider"),
+                    t.get("model_profile"),
+                    model,
+                    provider,
+                    model_profile,
+                )
+            )
+        )
+        try:
+            task_creds_list.append(
+                _resolve_task_credentials(
+                    task=t,
+                    top_model=model,
+                    top_provider=provider,
+                    top_profile=model_profile,
+                    global_creds=creds,
+                    cfg=cfg,
+                    parent_agent=parent_agent,
+                )
+            )
+        except ValueError as exc:
+            return tool_error(f"Task {i}: {exc}")
+
     overall_start = time.monotonic()
     results = []
 
@@ -2214,28 +2286,33 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task credential bundle (model/provider/profile override of the
+            # global creds) resolved in the pre-pass above. Falls back to the
+            # global bundle, then to parent inheritance inside _build_child_agent.
+            task_creds = task_creds_list[i]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
+                explicit_model_override=task_explicit_list[i],
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2799,6 +2876,151 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _normalize_model_profiles(cfg: dict) -> Dict[str, Dict[str, Any]]:
+    """Return ``delegation.models`` as a ``name -> profile-dict`` mapping.
+
+    ``delegation.models`` lets a human pre-assign distinct models to distinct
+    kinds of subagent (the human-config half of per-agent model assignment).
+    Each profile may carry a full or partial credential bundle — the same keys
+    ``_resolve_delegation_credentials`` understands::
+
+        delegation:
+          models:
+            research:  {model: "nvidia/nemotron-3-super-120b-a12b"}
+            summarize: {model: "nvidia/nemotron-3-nano-8b-v1"}
+            # cross-provider profile (optional):
+            cheap:     {model: "google/gemini-3-flash-preview", provider: "openrouter"}
+
+    A bare string value is shorthand for ``{"model": "<string>"}``::
+
+        delegation:
+          models:
+            summarize: "nvidia/nemotron-3-nano-8b-v1"
+
+    Invalid shapes are skipped with a warning rather than raising, so one bad
+    profile entry never breaks every delegation.
+    """
+    raw = cfg.get("models")
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, val in raw.items():
+        key = str(name).strip()
+        if not key:
+            continue
+        if isinstance(val, str):
+            model_id = val.strip()
+            if model_id:
+                out[key] = {"model": model_id}
+        elif isinstance(val, dict):
+            out[key] = dict(val)
+        else:
+            logger.warning(
+                "delegation.models['%s'] must be a model-id string or a "
+                "mapping of credential fields; got %s — skipping",
+                key,
+                type(val).__name__,
+            )
+    return out
+
+
+def _resolve_task_credentials(
+    *,
+    task: Dict[str, Any],
+    top_model: Optional[str],
+    top_provider: Optional[str],
+    top_profile: Optional[str],
+    global_creds: Dict[str, Any],
+    cfg: dict,
+    parent_agent,
+) -> Dict[str, Any]:
+    """Resolve the effective credential bundle for ONE delegated task.
+
+    This is the core of per-agent model assignment: it layers per-task model /
+    provider / profile overrides on top of the single global delegation bundle
+    so distinct subagents in one workflow can run on distinct models.
+
+    Precedence (highest first):
+      1. Explicit per-task ``model`` / ``provider`` fields.
+      2. Top-level ``model`` / ``provider`` args (the single-task choice, and
+         the batch default for tasks that don't set their own).
+      3. Named ``model_profile`` -> ``delegation.models.<name>`` (human-config).
+      4. Global delegation creds (``delegation.model`` / ``provider`` / ...).
+      5. Parent-agent inheritance (applied later in ``_build_child_agent``,
+         where ``effective_model = model or parent_agent.model`` etc.).
+
+    Returns a dict with the same shape as ``_resolve_delegation_credentials``:
+    ``{model, provider, base_url, api_key, api_mode[, command, args]}``.
+
+    Two resolution paths:
+
+    * **Model-only swap** (no provider/base_url override): keep the global
+      credential bundle untouched and only replace the model id. This is the
+      common, motivating case — several models served from one endpoint (e.g.
+      two NVIDIA NIM models behind a single ``base_url``/``api_key``). It also
+      covers the pure-parent case: with no global delegation config the bundle
+      is all-``None`` except the swapped model, so the child runs the chosen
+      model on the parent's own provider/base_url/api_key.
+    * **Credential re-resolution** (a provider or direct ``base_url`` is given,
+      via the per-task field or a profile): resolve a fresh bundle through the
+      very same ``_resolve_delegation_credentials`` path the global config uses,
+      so a per-task model can also live on a different provider.
+
+    Raises ``ValueError`` with a task-scoped message on profile/provider
+    failure (caught by the caller, surfaced as a tool error citing the task).
+    """
+    # 1. Resolve the named profile (lowest of the explicit override layers).
+    profile_name = (task.get("model_profile") or top_profile or "").strip() or None
+    profile: Dict[str, Any] = {}
+    if profile_name:
+        profiles = _normalize_model_profiles(cfg)
+        if profile_name not in profiles:
+            available = ", ".join(sorted(profiles)) or "(none configured)"
+            raise ValueError(
+                f"unknown delegation model_profile '{profile_name}'. Define it "
+                f"under delegation.models in config.yaml. Available profiles: "
+                f"{available}."
+            )
+        profile = profiles[profile_name]
+
+    # 2. Collapse the override layers (explicit per-task > top-level > profile).
+    def _pick(*candidates: Any) -> Optional[str]:
+        for c in candidates:
+            text = str(c or "").strip()
+            if text:
+                return text
+        return None
+
+    model_override = _pick(task.get("model"), top_model, profile.get("model"))
+    provider_override = _pick(task.get("provider"), top_provider, profile.get("provider"))
+    base_url_override = _pick(profile.get("base_url"))
+    api_key_override = _pick(profile.get("api_key"))
+    api_mode_override = _pick(task.get("api_mode"), profile.get("api_mode"))
+
+    # 3a. No credential-routing override → keep the global bundle, swap model.
+    if not provider_override and not base_url_override:
+        merged = dict(global_creds)
+        if model_override:
+            merged["model"] = model_override
+        if api_mode_override:
+            merged["api_mode"] = api_mode_override
+        if api_key_override:
+            merged["api_key"] = api_key_override
+        return merged
+
+    # 3b. Provider or direct endpoint given → resolve a full bundle the same
+    # way the global delegation config does (handles base_url auto-detection,
+    # built-in provider credential lookup, ACP command/args, etc.).
+    task_cfg = {
+        "model": model_override,
+        "provider": provider_override,
+        "base_url": base_url_override,
+        "api_key": api_key_override,
+        "api_mode": api_mode_override,
+    }
+    return _resolve_delegation_credentials(task_cfg, parent_agent)
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -3051,6 +3273,42 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Model override for the spawned subagent (single-task mode), "
+                    "and the default model for any batch task that doesn't set its "
+                    "own. A bare model id (e.g. 'nvidia/nemotron-3-nano-8b-v1') "
+                    "runs the child on that model using the active "
+                    "delegation/parent credentials — same endpoint, different "
+                    "model. For per-subagent differences in a batch, prefer "
+                    "setting 'model' inside each tasks[] item. Omit to use "
+                    "delegation.model from config, then the parent's model."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional provider override for the subagent(s) (e.g. "
+                    "'openrouter', 'nous'). Resolves that provider's base_url / "
+                    "api_key automatically, the same way delegation.provider does. "
+                    "Only needed when the chosen model lives on a DIFFERENT "
+                    "provider than the active credentials; for a same-endpoint "
+                    "model swap just set 'model'."
+                ),
+            },
+            "model_profile": {
+                "type": "string",
+                "description": (
+                    "Name of an operator-defined model profile under "
+                    "delegation.models in config.yaml (human-assigned). Lets an "
+                    "operator pin specific models to specific subagent kinds (e.g. "
+                    "'research' -> a capable model, 'summarize' -> a small model) "
+                    "while you only choose the profile by intent. Explicit "
+                    "'model'/'provider' override the profile. Per-task "
+                    "'model_profile' inside tasks[] beats this top-level one."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3065,6 +3323,41 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override — assign THIS subagent a "
+                                "specific model so different tasks in the batch run "
+                                "on different models (e.g. a capable model for a "
+                                "research task, a small fast model for a summarize "
+                                "task). A bare model id runs the child on that model "
+                                "using the active delegation/parent credentials "
+                                "(same endpoint, different model). Omit to inherit "
+                                "the top-level model, then delegation.model, then "
+                                "the parent's model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override (e.g. 'openrouter', "
+                                "'nous'). Only needed when this task's model lives "
+                                "on a DIFFERENT provider than the active "
+                                "credentials; for a same-endpoint model swap set "
+                                "only 'model'. Resolves the provider's base_url / "
+                                "api_key automatically."
+                            ),
+                        },
+                        "model_profile": {
+                            "type": "string",
+                            "description": (
+                                "Name of an operator-defined model profile under "
+                                "delegation.models in config.yaml (e.g. 'research', "
+                                "'summarize'). Lets a human pin which model each kind "
+                                "of subagent uses while you pick the profile by "
+                                "intent. Explicit 'model'/'provider' override it."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
@@ -3171,6 +3464,9 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        model_profile=args.get("model_profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

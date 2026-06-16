@@ -5083,65 +5083,75 @@ function focusWindow(win) {
   win.focus()
 }
 
+function spawnSecondaryWindow({ sessionId, watch, newSession } = {}) {
+  const icon = getAppIconPath()
+  const win = new BrowserWindow({
+    width: SESSION_WINDOW_MIN_WIDTH,
+    height: SESSION_WINDOW_MIN_HEIGHT,
+    minWidth: SESSION_WINDOW_MIN_WIDTH,
+    minHeight: SESSION_WINDOW_MIN_HEIGHT,
+    title: 'Hermes',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: getTitleBarOverlayOptions(),
+    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
+    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    opacity: windowOpacity(),
+    icon,
+    // Don't show until the renderer's first themed paint is ready. macOS
+    // `vibrancy` ignores `backgroundColor` and paints a translucent OS
+    // material (which follows the OS appearance, not the app theme), so a
+    // dark-themed app on a light-mode Mac flashes white until the renderer
+    // covers it. ready-to-show fires after the boot-time paint in
+    // themes/context.tsx, so the window appears already themed.
+    show: false,
+    backgroundColor: getWindowBackgroundColor(),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      webviewTag: true,
+      sandbox: true,
+      nodeIntegration: false,
+      devTools: true
+    }
+  })
+
+  if (IS_MAC) {
+    win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
+  }
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show()
+  })
+
+  win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('enter-full-screen', () => sendWindowStateChanged(true))
+  win.on('will-leave-full-screen', () => sendWindowStateChanged(false))
+  win.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  wireCommonWindowHandlers(win)
+
+  win.loadURL(
+    buildSessionWindowUrl(sessionId, {
+      devServer: DEV_SERVER,
+      rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+      watch,
+      newSession
+    })
+  )
+
+  return win
+}
+
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => {
-    const icon = getAppIconPath()
-    const win = new BrowserWindow({
-      width: SESSION_WINDOW_MIN_WIDTH,
-      height: SESSION_WINDOW_MIN_HEIGHT,
-      minWidth: SESSION_WINDOW_MIN_WIDTH,
-      minHeight: SESSION_WINDOW_MIN_HEIGHT,
-      title: 'Hermes',
-      titleBarStyle: 'hidden',
-      titleBarOverlay: getTitleBarOverlayOptions(),
-      trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-      vibrancy: IS_MAC ? 'sidebar' : undefined,
-      opacity: windowOpacity(),
-      icon,
-      // Don't show until the renderer's first themed paint is ready. macOS
-      // `vibrancy` ignores `backgroundColor` and paints a translucent OS
-      // material (which follows the OS appearance, not the app theme), so a
-      // dark-themed app on a light-mode Mac flashes white until the renderer
-      // covers it. ready-to-show fires after the boot-time paint in
-      // themes/context.tsx, so the window appears already themed.
-      show: false,
-      backgroundColor: getWindowBackgroundColor(),
-      webPreferences: {
-        preload: path.join(__dirname, 'preload.cjs'),
-        contextIsolation: true,
-        webviewTag: true,
-        sandbox: true,
-        nodeIntegration: false,
-        devTools: true
-      }
-    })
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+}
 
-    if (IS_MAC) {
-      win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-    }
-
-    win.once('ready-to-show', () => {
-      if (!win.isDestroyed()) win.show()
-    })
-
-    win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
-    win.on('enter-full-screen', () => sendWindowStateChanged(true))
-    win.on('will-leave-full-screen', () => sendWindowStateChanged(false))
-    win.on('leave-full-screen', () => sendWindowStateChanged(false))
-
-    wireCommonWindowHandlers(win)
-
-    win.loadURL(
-      buildSessionWindowUrl(sessionId, {
-        devServer: DEV_SERVER,
-        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
-        watch
-      })
-    )
-
-    return win
-  })
+// Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
+// like ⌘N in a browser, every press opens a new window — and a draft window that
+// later converts to a real session must not get refocused as if it were blank.
+function createNewSessionWindow() {
+  return spawnSecondaryWindow({ newSession: true })
 }
 
 function createWindow() {
@@ -5325,6 +5335,11 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   }
 
   createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+
+  return { ok: true }
+})
+ipcMain.handle('hermes:window:openNewSession', async () => {
+  createNewSessionWindow()
 
   return { ok: true }
 })

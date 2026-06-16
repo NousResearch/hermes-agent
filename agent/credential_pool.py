@@ -891,23 +891,41 @@ class CredentialPool:
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
-                # Adopt fresher tokens from auth.json before spending the
-                # refresh_token — single-use tokens consumed by another Hermes
-                # process sharing the same auth.json singleton would otherwise
-                # trigger ``refresh_token_reused`` on the next POST.
-                synced = self._sync_codex_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                refreshed = auth_mod.refresh_codex_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
-                )
-                updated = replace(
-                    entry,
-                    access_token=refreshed["access_token"],
-                    refresh_token=refreshed["refresh_token"],
-                    last_refresh=refreshed.get("last_refresh"),
-                )
+                shared_auth_path = auth_mod._shared_codex_auth_file_path()
+                if shared_auth_path is not None and entry.source == "device_code":
+                    # Shared-auth mode (HERMES_CODEX_SHARED_AUTH_FILE): Codex
+                    # refresh tokens are single-use and OpenAI revokes the
+                    # whole token family on reuse, so the rotation may only
+                    # ever be spent under the shared-file lock. Spending
+                    # entry.refresh_token here would fork the family and kill
+                    # Codex auth for every profile sharing the subscription.
+                    # Delegate to the shared resolver — it re-reads the file
+                    # under the lock, refreshes only when expiring, persists
+                    # the rotation back, and mirrors the profile store +
+                    # pool — then adopt the mirrored tokens.
+                    auth_mod.resolve_codex_runtime_credentials(
+                        force_refresh=force,
+                        refresh_if_expiring=True,
+                    )
+                    updated = self._sync_codex_entry_from_auth_store(entry)
+                else:
+                    # Adopt fresher tokens from auth.json before spending the
+                    # refresh_token — single-use tokens consumed by another Hermes
+                    # process sharing the same auth.json singleton would otherwise
+                    # trigger ``refresh_token_reused`` on the next POST.
+                    synced = self._sync_codex_entry_from_auth_store(entry)
+                    if synced is not entry:
+                        entry = synced
+                    refreshed = auth_mod.refresh_codex_oauth_pure(
+                        entry.access_token,
+                        entry.refresh_token,
+                    )
+                    updated = replace(
+                        entry,
+                        access_token=refreshed["access_token"],
+                        refresh_token=refreshed["refresh_token"],
+                        last_refresh=refreshed.get("last_refresh"),
+                    )
             elif self.provider == "xai-oauth":
                 # Adopt fresher tokens from auth.json before spending the
                 # refresh_token — single-use tokens consumed by another

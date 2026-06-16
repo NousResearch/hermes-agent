@@ -110,9 +110,22 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+def _env_value(name: str) -> str:
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:
+        val = None
+
+    if val is None:
+        val = os.getenv(name, "")
+
+    return (val or "").strip()
+
+
 def _has_env(name: str) -> bool:
-    val = os.getenv(name)
-    return bool(val and val.strip())
+    return bool(_env_value(name))
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -1299,7 +1312,7 @@ if __name__ == "__main__":
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
         elif backend == "searxng":
-            print(f"   Using SearXNG (search only): {os.getenv('SEARXNG_URL', '').strip()}")
+            print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":

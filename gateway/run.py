@@ -741,6 +741,41 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     return bool(mt)
 
 
+def _flatten_observed_content(content: Any) -> str:
+    """Render an observed-group message's content as plain text.
+
+    Observed group chatter is replayed as a *text* prefix on the addressed turn
+    (see ``_wrap_current_message_with_observed_context``), so multimodal content
+    must be flattened to text. A photo arrives as a multimodal parts list
+    (``[{"type": "text", ...}, {"type": "image_url", ...}]``); calling
+    ``str()`` on that list yields a Python ``repr`` — corrupting the image and
+    polluting the context prefix with ``{'type': 'image_url', ...}`` noise. We
+    keep text parts verbatim and replace non-text parts (images, audio) with a
+    short placeholder so the model still knows an attachment was sent without
+    receiving a garbled blob.
+    """
+
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: List[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                parts.append(str(part))
+                continue
+            part_type = part.get("type")
+            if part_type == "text":
+                text = part.get("text", "")
+                if text:
+                    parts.append(text)
+            elif part_type == "image_url":
+                parts.append("[image attachment]")
+            elif part_type:
+                parts.append(f"[{part_type} attachment]")
+        return " ".join(parts).strip()
+    return str(content).strip()
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -788,7 +823,7 @@ def _build_gateway_agent_history(
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
         if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+            observed_group_context.append(_flatten_observed_content(content))
             continue
 
         # Rich agent messages (tool_calls, tool results) must be passed through

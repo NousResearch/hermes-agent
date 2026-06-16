@@ -300,6 +300,45 @@ def test_observed_group_context_wraps_multimodal_current_message_without_mutatin
     assert wrapped[1] == original[1]
 
 
+def test_observed_group_context_flattens_multimodal_message_to_text():
+    """An observed group photo must not be str()-ed into a Python repr.
+
+    A photo sent without an @mention is stored as an observed multimodal
+    message (text part + image_url part). It is replayed as a *text* prefix,
+    so the image_url part must become a placeholder, never a stringified dict.
+    """
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {
+            "role": "user",
+            "observed": True,
+            "content": [
+                {"type": "text", "text": "[Alice|111]\nhere's the desk sheet"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        },
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Telegram group context",
+    )
+    api_message = _wrap_current_message_with_observed_context("[Bob|222]\ncambio", observed_context)
+
+    assert agent_history == []
+    # The text part survives; the image becomes a placeholder.
+    assert "here's the desk sheet" in api_message
+    assert "[image attachment]" in api_message
+    # The bug: the raw image_url dict must never leak into the prefix as a repr.
+    assert "image_url" not in api_message
+    assert "data:image/png" not in api_message
+    assert "{'type'" not in api_message
+
+
 def test_observed_group_context_replays_normally_without_telegram_prompt():
     from gateway.run import _build_gateway_agent_history
 

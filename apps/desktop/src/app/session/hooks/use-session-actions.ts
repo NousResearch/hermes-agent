@@ -15,6 +15,10 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $messages,
   $sessions,
   $yoloActive,
@@ -42,6 +46,7 @@ import {
   setYoloActive,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { reportBackendContract } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
@@ -406,13 +411,13 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // New chats start in the configured default project dir when set,
-      // otherwise the sticky last-used workspace (PR #37586).
-      setCurrentModel('')
-      setCurrentProvider('')
-      setCurrentReasoningEffort('')
+      // The composer's model/effort/fast is sticky UI state (persisted in
+      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
+      // back to the profile default, so we deliberately don't reset it here. The
+      // profile default still owns first-run seeding and profile switches (see
+      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
+      // is cleared.
       setCurrentServiceTier('')
-      setCurrentFastMode(false)
       setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
@@ -442,11 +447,23 @@ export function useSessionActions({
         const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
         await ensureGatewayProfile(newChatProfile)
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
+        // The composer's model/effort/fast is sticky UI state ($currentModel,
+        // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it
+        // with every session.create so the new chat opens on whatever the picker
+        // shows — applied as per-session overrides, never written to the profile
+        // default (that lives in Settings → Model).
+        const uiModel = $currentModel.get().trim()
+        const uiProvider = $currentProvider.get().trim()
+        const uiEffort = $currentReasoningEffort.get().trim()
+        const uiFast = $currentFastMode.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
-          ...(newChatProfile ? { profile: newChatProfile } : {})
+          ...(newChatProfile ? { profile: newChatProfile } : {}),
+          ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
+          ...(uiEffort ? { reasoning_effort: uiEffort } : {}),
+          ...(uiFast ? { fast: true } : {})
         })
 
         const stored = created.stored_session_id ?? null
@@ -472,6 +489,9 @@ export function useSessionActions({
           // server later returns its own preview/title and supersedes this.
           upsertOptimisticSession(created, stored, null, preview?.trim() || null)
           navigate(sessionRoute(stored), { replace: true })
+          // Other windows (e.g. the main window when this is the pop-out) can't
+          // see this session until they re-pull the shared list.
+          broadcastSessionsChanged()
         }
 
         setFreshDraftReady(false)

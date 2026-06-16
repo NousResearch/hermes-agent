@@ -4,7 +4,8 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -36,9 +37,11 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     from gateway.run import GatewayRunner
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner.config = SimpleNamespace(platforms={})
     runner._voice_mode = {}
     runner._session_db = session_db
     runner._running_agents = {}
+    runner._is_user_authorized = lambda _source: True
 
     # Compute the real session key if an event is provided
     session_key = build_session_key(event.source) if event else "agent:main:telegram:dm"
@@ -357,4 +360,65 @@ class TestHandleResumeCommand:
         assert "not found" not in str(result).lower(), (
             f"session-id lookup failed: {result!r}"
         )
+        db.close()
+
+
+
+class TestHandleSessionsCommand:
+    """Tests for GatewayRunner._handle_sessions_command."""
+
+    @pytest.mark.asyncio
+    async def test_sessions_command_lists_current_platform_sessions(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("tg_session", "telegram")
+        db.set_session_title("tg_session", "Telegram Work")
+        db.create_session("discord_session", "discord")
+        db.set_session_title("discord_session", "Discord Work")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Sessions" in result
+        assert "Telegram Work" in result
+        assert "tg_session" in result
+        assert "Discord Work" not in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_all_full_lists_cross_platform_unnamed_sessions(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("tg_named", "telegram")
+        db.set_session_title("tg_named", "Telegram Work")
+        db.create_session("discord_unnamed", "discord")
+        db.append_message("discord_unnamed", "user", "discord first prompt")
+
+        event = _make_event(text="/sessions all full")
+        runner = _make_runner(session_db=db, event=event)
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "Telegram Work" in result
+        assert "discord_unnamed" in result
+        assert "discord" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_gateway_dispatches_sessions_command(self, tmp_path):
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("tg_session", "telegram")
+        db.set_session_title("tg_session", "Telegram Work")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+        runner._handle_sessions_command = AsyncMock(return_value="sessions output")
+
+        result = await runner._handle_message(event)
+
+        assert result == "sessions output"
+        runner._handle_sessions_command.assert_awaited_once_with(event)
         db.close()

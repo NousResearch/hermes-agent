@@ -447,9 +447,13 @@ export interface Translations {
       collapse: string
       connectAnother: string
       otherProviders: string
+      disconnect: string
+      disconnectInTerminal: string
       removeConfirm: (provider: string) => string
-      removeExternal: (provider: string, command: string) => string
+      removeExternalGeneric: (provider: string) => string
       removeKeyManaged: (provider: string) => string
+      removeTerminalConfirm: (provider: string, command: string) => string
+      removeTerminalRunning: (provider: string) => string
       removedTitle: string
       removedMessage: (provider: string) => string
       failedRemove: (provider: string) => string
@@ -1141,8 +1145,6 @@ export interface Translations {
     unknown: string
     search: string
     noModels: string
-    persistGlobalSession: string
-    persistGlobal: string
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string

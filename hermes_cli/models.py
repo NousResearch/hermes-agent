@@ -257,6 +257,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
     ],
     "zai": [
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -281,6 +282,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
@@ -2368,6 +2370,22 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
+                    # Merge static curated list with live API results so
+                    # models that the live endpoint omits (stale cache,
+                    # partial rollout) still appear in the picker.
+                    # Curated entries come first so deliberately-surfaced
+                    # newest models (e.g. kimi-k2.7-code, #46309) stay at
+                    # the top of the picker; live-only entries are appended
+                    # afterwards for discovery.  (#46850)
+                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    if curated:
+                        merged = list(curated)
+                        merged_lower = {m.lower() for m in curated}
+                        for m in live:
+                            if m.lower() not in merged_lower:
+                                merged.append(m)
+                                merged_lower.add(m.lower())
+                        return merged
                     return live
             # Use profile's fallback_models if defined
             if _p.fallback_models:
@@ -3922,6 +3940,24 @@ def validate_requested_model(
             suggestion_text = ""
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+
+            # Model not in live /v1/models — check the curated catalog
+            # before rejecting.  Providers may omit models from their live
+            # listing that are still valid (stale cache, partial rollout,
+            # gated previews).  Use the pure-catalog helper (no extra live
+            # fetch) so we only accept models Hermes actually ships.  (#46850)
+            if _model_in_provider_catalog(
+                requested_for_lookup.lower(), _provider_keys(normalized)
+            ):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": (
+                        f"Note: `{requested}` was not found in the live /v1/models listing "
+                        f"but exists in the curated catalog — accepted."
+                    ),
+                }
 
         return {
             "accepted": False,

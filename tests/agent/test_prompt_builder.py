@@ -190,6 +190,34 @@ class TestTruncateContent:
         assert "context_file_max_chars" in warnings[0]
         assert "CONTEXT_FILE_MAX_CHARS" not in warnings[0]
 
+    def test_warnings_isolated_across_contexts(self, monkeypatch):
+        """Truncation warnings accumulate per-context — a concurrent build in
+        a separate context must not see or drain this context's warnings."""
+        import contextvars
+
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        # Generate a warning in a fresh child context, then assert it did NOT
+        # leak into the parent context's accumulator.
+        def _child():
+            _truncate_content("x" * 180, "child.md")
+            # Inside the child context, the warning is visible & drainable.
+            assert any("child.md" in w for w in drain_truncation_warnings())
+
+        contextvars.copy_context().run(_child)
+
+        # Parent context never saw the child's warning.
+        assert drain_truncation_warnings() == []
+
+        # And a warning raised in the parent stays in the parent.
+        _truncate_content("y" * 180, "parent.md")
+        parent_warnings = drain_truncation_warnings()
+        assert len(parent_warnings) == 1
+        assert "parent.md" in parent_warnings[0]
+
 
 # =========================================================================
 # _parse_skill_file — single-pass skill file reading

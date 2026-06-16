@@ -8,6 +8,7 @@ import json
 import logging
 from unittest.mock import MagicMock, patch
 
+import tools.file_tools as file_tools
 from tools.file_tools import (
     PATCH_SCHEMA,
 )
@@ -395,6 +396,24 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
+
+
+class TestWindowsMsysPathResolution:
+    def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        resolved = file_tools._resolve_path_for_task("/c/Users/Mark/project/app.py")
+        assert str(resolved) == r"C:\Users\Mark\project\app.py"
+
+    def test_relative_path_uses_normalized_msys_cwd(self, monkeypatch):
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": "/c/Users/Mark/project",
+        )
+
+        resolved = file_tools._resolve_path_for_task("src/app.py", task_id="msys")
+        assert str(resolved) == r"C:\Users\Mark\project\src\app.py"
 
 
 # ---------------------------------------------------------------------------

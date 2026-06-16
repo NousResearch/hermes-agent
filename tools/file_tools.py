@@ -5,7 +5,9 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
+import sys
 from pathlib import Path
 
 from agent.file_safety import get_read_block_error
@@ -124,6 +126,28 @@ def _configured_terminal_cwd() -> str | None:
     return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
 
 
+def _normalize_windows_shell_path(path: str | None) -> str | None:
+    """Translate MSYS/Cygwin-style drive paths to native Windows form."""
+    if not path or sys.platform != "win32":
+        return path
+
+    m = re.match(r"^/([a-zA-Z])(?:/(.*))?$", path)
+    if m:
+        drive = m.group(1).upper()
+        rest = m.group(2) or ""
+        tail = rest.replace("/", chr(92))
+        return f"{drive}:{chr(92)}{tail}" if tail else f"{drive}:{chr(92)}"
+
+    m = re.match(r"^/(?:cygdrive|mnt)/([a-zA-Z])(?:/(.*))?$", path)
+    if m:
+        drive = m.group(1).upper()
+        rest = m.group(2) or ""
+        tail = rest.replace("/", chr(92))
+        return f"{drive}:{chr(92)}{tail}" if tail else f"{drive}:{chr(92)}"
+
+    return path
+
+
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     """Return a registered cwd override for the raw task id, when available.
 
@@ -221,6 +245,15 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     the process cwd only as a last resort, deterministically.
     """
     root = _authoritative_workspace_root(task_id)
+    if sys.platform == "win32":
+        import ntpath
+
+        base_text = _normalize_windows_shell_path(root) if root else os.getcwd()
+        expanded = ntpath.expanduser(base_text)
+        if not ntpath.isabs(expanded):
+            expanded = ntpath.join(ntpath.realpath(os.getcwd()), expanded)
+        return Path(ntpath.realpath(expanded))
+
     if root:
         base = Path(root).expanduser()
     else:
@@ -239,6 +272,15 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
+    if sys.platform == "win32":
+        import ntpath
+
+        normalized = _normalize_windows_shell_path(filepath) or filepath
+        expanded = ntpath.expanduser(normalized)
+        if ntpath.isabs(expanded):
+            return Path(ntpath.realpath(expanded))
+        return Path(ntpath.realpath(ntpath.join(str(_resolve_base_dir(task_id)), expanded)))
+
     p = Path(filepath).expanduser()
     if p.is_absolute():
         return p.resolve()
@@ -261,7 +303,13 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(filepath).expanduser().is_absolute():
+        if sys.platform == "win32":
+            import ntpath
+
+            normalized = _normalize_windows_shell_path(filepath) or filepath
+            if ntpath.isabs(ntpath.expanduser(normalized)):
+                return None
+        elif Path(filepath).expanduser().is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:

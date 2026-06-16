@@ -1224,6 +1224,17 @@ def _default_hermes_root_is_opt_data() -> bool:
     return root == _HOSTED_MANAGED_FILES_ROOT
 
 
+def _dashboard_hosted_agent_mode() -> bool:
+    """Return true for the hosted/container dashboard layout.
+
+    Hosted agent dashboards run with the Hermes root at ``/opt/data``.  This is
+    the same signal the Files page uses to lock browsing to the managed data
+    directory, and it keeps local remote-auth dashboards from being mistaken for
+    hosted service instances.
+    """
+    return _default_hermes_root_is_opt_data()
+
+
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
@@ -1654,6 +1665,7 @@ async def get_status():
         "release_date": __release_date__,
         "config_version": current_ver,
         "latest_config_version": latest_ver,
+        "can_update_hermes": not _dashboard_hosted_agent_mode(),
         "gateway_running": gateway_running,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
@@ -2165,6 +2177,21 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    if _dashboard_hosted_agent_mode():
+        message = (
+            "Hermes updates are managed by the hosted agent service for this "
+            "dashboard. The built-in local updater is disabled here."
+        )
+        _record_completed_action("hermes-update", message, exit_code=1)
+        return {
+            "ok": False,
+            "pid": None,
+            "name": "hermes-update",
+            "error": "hosted_update_managed",
+            "message": message,
+            "update_command": "managed by hosted agent service",
+        }
+
     install_method = detect_install_method(PROJECT_ROOT)
     if install_method == "docker":
         message = format_docker_update_message()
@@ -2264,6 +2291,17 @@ async def check_hermes_update(force: bool = False):
                  desktop's remote update overlay renders this as "what's
                  changed". Additive: existing consumers ignore it.
     """
+    if _dashboard_hosted_agent_mode():
+        return {
+            "install_method": "hosted",
+            "current_version": __version__,
+            "behind": None,
+            "update_available": False,
+            "can_apply": False,
+            "update_command": "managed by hosted agent service",
+            "message": "Hermes updates are managed by the hosted agent service.",
+        }
+
     install_method = detect_install_method(PROJECT_ROOT)
     update_command = recommended_update_command_for_method(install_method)
 

@@ -145,6 +145,40 @@ def _derive_category_from_install_path(install_path: str) -> str:
     return "" if parent == "." else parent
 
 
+def _inspect_local_skill(identifier: str) -> Optional[dict]:
+    """Return metadata and preview for an installed local skill, if present."""
+    try:
+        from tools.skills_tool import skill_view
+    except Exception:
+        return None
+
+    try:
+        raw = skill_view(identifier, preprocess=False)
+        data = json.loads(raw)
+    except Exception:
+        return None
+
+    if not data.get("success"):
+        return None
+
+    content = str(data.get("content") or "")
+    lines = content.split("\n")
+    preview = "\n".join(lines[:50])
+    if len(lines) > 50:
+        preview += f"\n\n... ({len(lines) - 50} more lines)"
+
+    return {
+        "name": data.get("name") or identifier,
+        "description": data.get("description") or "",
+        "source": "local",
+        "identifier": identifier,
+        "trust": "local",
+        "tags": [],
+        "path": data.get("path") or data.get("skill_dir"),
+        "skill_md_preview": preview,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Interactive name/category resolution for URL-installed skills
 # ---------------------------------------------------------------------------
@@ -749,6 +783,24 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+    local = _inspect_local_skill(identifier)
+    if local:
+        c.print()
+        info_lines = [
+            f"[bold]Name:[/] {local['name']}",
+            f"[bold]Description:[/] {local['description']}",
+            "[bold]Source:[/] local",
+            "[bold]Trust:[/] [dim]local[/]",
+            f"[bold]Identifier:[/] {local['identifier']}",
+        ]
+        if local.get("path"):
+            info_lines.append(f"[bold]Path:[/] {local['path']}")
+        c.print(Panel("\n".join(info_lines), title=f"Skill: {local['name']}"))
+        if local.get("skill_md_preview"):
+            c.print(Panel(local["skill_md_preview"], title="SKILL.md Preview", subtitle="installed local skill"))
+        c.print()
+        return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
@@ -846,6 +898,18 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
 def inspect_skill(identifier: str) -> Optional[dict]:
     """Skill metadata (+ SKILL.md preview) for programmatic callers."""
     from tools.skills_hub import GitHubAuth, create_source_router
+
+    local = _inspect_local_skill(identifier)
+    if local:
+        return {
+            "name": local["name"],
+            "description": local["description"],
+            "source": "local",
+            "identifier": local["identifier"],
+            "tags": [],
+            "path": local.get("path"),
+            "skill_md_preview": local.get("skill_md_preview", ""),
+        }
 
     class _Q:
         def print(self, *a, **k):

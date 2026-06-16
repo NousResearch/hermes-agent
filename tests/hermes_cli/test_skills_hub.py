@@ -5,7 +5,15 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_inspect,
+    do_install,
+    do_list,
+    do_update,
+    handle_skills_slash,
+    inspect_skill,
+)
 
 
 class _DummyLockFile:
@@ -98,6 +106,23 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
     return sink.getvalue(), installs
 
 
+def _write_local_skill(skills_dir, category: str, name: str) -> None:
+    skill_dir = skills_dir / category / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        "description: local description\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    tags: [local, regression]\n"
+        "---\n"
+        f"# {name}\n\n"
+        "Local skill body from temp HERMES_HOME.\n",
+        encoding="utf-8",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -136,6 +161,51 @@ def test_do_list_filter_local(three_source_env):
     assert "local-skill" in output
     assert "builtin-skill" not in output
     assert "hub-skill" not in output
+
+
+def test_do_inspect_prefers_categorized_local_skill_before_hub_lookup(monkeypatch, tmp_path):
+    """data-contract: local inspect uses a real temp HERMES_HOME skill first."""
+    import tools.skills_tool as skills_tool
+
+    skills_dir = tmp_path / "hermes" / "skills"
+    _write_local_skill(skills_dir, "ops", "local-skill")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(
+        "tools.skills_hub.create_source_router",
+        lambda auth: (_ for _ in ()).throw(AssertionError("hub lookup should not run")),
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect("ops/local-skill", console=console)
+    output = sink.getvalue()
+
+    assert "local-skill" in output
+    assert "local description" in output
+    assert "installed local skill" in output
+    assert "ops/local-skill/SKILL.md" in output
+
+
+def test_programmatic_inspect_returns_categorized_local_skill(monkeypatch, tmp_path):
+    """data-contract: programmatic inspect reads local SKILL.md filesystem state."""
+    import tools.skills_tool as skills_tool
+
+    skills_dir = tmp_path / "hermes" / "skills"
+    _write_local_skill(skills_dir, "ops", "local-skill")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+    monkeypatch.setattr(
+        "tools.skills_hub.create_source_router",
+        lambda auth: (_ for _ in ()).throw(AssertionError("hub lookup should not run")),
+    )
+
+    result = inspect_skill("ops/local-skill")
+
+    assert result["source"] == "local"
+    assert result["name"] == "local-skill"
+    assert result["path"] == "ops/local-skill/SKILL.md"
+    assert "Local skill body from temp HERMES_HOME." in result["skill_md_preview"]
 
 
 def test_do_list_filter_hub(three_source_env):
@@ -780,4 +850,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

@@ -320,9 +320,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     untitled_session:        "제목 없는 세션"
 
   undo:
-    nothing:               "되돌릴 내용이 없습니다."
-    removed:               "↩️ {turns}개 턴을 되돌렸습니다 (메시지 {count}개).\n백업 위치: \"{preview}\"\n위 텍스트를 복사/편집한 후 보내면 여기서 다시 프롬프트할 수 있습니다."
-    invalid_count:         "잘못된 개수 \"{arg}\" — /undo 또는 /undo N을 사용하세요."
+    nothing:               "Nothing to undo."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ /update는 메시징 플랫폼에서만 사용할 수 있습니다. 터미널에서 `hermes update`를 실행하세요."

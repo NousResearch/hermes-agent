@@ -317,9 +317,15 @@ gateway:
     untitled_session:        "Sesión sin título"
 
   undo:
-    nothing:               "Nada que deshacer."
-    removed:               "↩️ {turns} turno(s) deshecho(s) ({count} mensaje(s)).\nRespaldado en: \"{preview}\"\nCopia/edita el texto de arriba y envíalo para volver a preguntar desde aquí."
-    invalid_count:         "Cantidad no válida \"{arg}\" — usa /undo o /undo N."
+    nothing:               "Nothing to undo."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ /update solo está disponible en plataformas de mensajería. Ejecuta `hermes update` desde la terminal."

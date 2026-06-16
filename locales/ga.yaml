@@ -324,9 +324,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     untitled_session:        "Seisiún gan teideal"
 
   undo:
-    nothing:               "Níl aon rud le cealú."
-    removed:               "↩️ Cealaíodh {turns} seal ({count} teachtaireacht).\nCúltacaíodh chuig: \"{preview}\"\nCóipeáil/cuir an téacs thuas in eagar agus seol é chun athleideadh ón áit seo."
-    invalid_count:         "Líon neamhbhailí \"{arg}\" — úsáid /undo nó /undo N."
+    nothing:               "Nothing to undo."
+    removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
+
+  redo:
+    nothing:               "Nothing to redo."
+    restart_lost:          "Nothing to redo — redo history does not survive a restart."
+    restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
+    invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."
 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."

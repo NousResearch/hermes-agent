@@ -262,6 +262,15 @@ class WhatsAppBehaviorMixin:
                 cleaned = re.sub(
                     rf"@{re.escape(bare_id)}\b[,:\-]*\s*", "", cleaned
                 )
+        # Also strip the first occurrence of each custom mention_patterns
+        # wake word (e.g. "(?i)@andy\\b").  The same patterns that gate group
+        # messages should be removed from the body so the wake word does not
+        # leak into the agent prompt.  Use count=1 to keep the replacement
+        # bounded — only remove the leading/standalone occurrence, not
+        # arbitrary in-content matches.  (Closes #47493)
+        if self._mention_patterns:
+            for pattern in self._mention_patterns:
+                cleaned = pattern.sub("", cleaned, count=1)
         return cleaned.strip() or text
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:

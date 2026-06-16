@@ -77,10 +77,7 @@ interface VirtualSessionListProps {
 
 const ROW_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
-const SIDEBAR_SESSION_DND_ID_PREFIX = 'session:'
 const SIDEBAR_SESSION_SORTABLE_TRANSITION = { duration: 150, easing: 'cubic-bezier(0.2, 0, 0, 1)' }
-
-const sidebarSessionDndId = (id: string) => `${SIDEBAR_SESSION_DND_ID_PREFIX}${id}`
 
 function sessionDragPayloadFor(
   session: SessionInfo,
@@ -254,7 +251,7 @@ function VirtualSortableSessionRow({
       sessionId: session.id,
       sourceSectionKey: sectionKey
     },
-    id: sidebarSessionDndId(session.id),
+    id: session.id,
     transition: SIDEBAR_SESSION_SORTABLE_TRANSITION
   })
 
@@ -274,7 +271,7 @@ function VirtualSortableSessionRow({
       data-index={index}
       dragging={isDragging}
       key={session.id}
-      nativeDraggable
+      nativeDraggable={false}
       presence={presence}
       ref={refMerged}
       reorderable

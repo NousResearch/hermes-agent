@@ -91,8 +91,12 @@ def test_fallback_status_uses_reply_context_for_short_followups():
     ev = event("do this")
     ev.reply_to_text = "Investigate the busy Telegram keyboard and make it modular"
     text = fallback_status_text(ev)
-    assert text.startswith("📌 Working: review replied message")
+    assert text.startswith("📌 Working from reply:")
     assert "busy Telegram keyboard" in text
+
+
+def test_fallback_status_for_short_message_is_not_prefixed_with_work_on():
+    assert fallback_status_text(event("Test")) == "📌 Working: Test"
 
 
 @pytest.mark.asyncio

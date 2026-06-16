@@ -244,8 +244,9 @@ def fallback_status_text(event: Any) -> str:
     source = re.sub(r"\s+", " ", source).strip(" .:-")
     if len(source) > 90:
         source = source[:87].rstrip(" ,;:-") + "..."
-    prefix = "review replied message" if reply_to_text and (not current or len(current) <= 24) else "work on"
-    return f"📌 Working: {prefix}: {source}"
+    if reply_to_text and (not current or len(current) <= 24):
+        return f"📌 Working from reply: {source}"
+    return f"📌 Working: {source}"
 
 
 def sanitize_status_label(label: str, *, max_len: int = 110) -> str:

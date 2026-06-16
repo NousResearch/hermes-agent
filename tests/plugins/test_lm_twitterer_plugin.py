@@ -91,6 +91,21 @@ def test_register_exposes_tools_and_cli_command():
     assert ctx.cli_commands[0]["name"] == "lm-twitterer"
 
 
+def test_register_cli_does_not_raise_on_argparse_help():
+    import argparse
+
+    plugin = load_plugin()
+    parser = argparse.ArgumentParser(prog="hermes")
+    subs = parser.add_subparsers(dest="command")
+    plugin_cli = subs.add_parser("lm-twitterer")
+    plugin.cli.register_cli(plugin_cli)
+
+    nested = argparse.ArgumentParser(prog="hermes lm-twitterer")
+    plugin.cli.register_cli(nested.add_subparsers(dest="lm_twitterer_command"))
+    args = parser.parse_args(["lm-twitterer", "status"])
+    assert args.command == "lm-twitterer"
+
+
 def test_defaults_keep_local_hakua_signature():
     plugin = load_plugin()
     core = plugin.core

@@ -100,7 +100,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     edge.add_argument(
         "--user-data-dir",
         default=None,
-        help="Edge User Data directory. Defaults to %LOCALAPPDATA%\\Microsoft\\Edge\\User Data.",
+        help=(
+            "Edge User Data directory. Defaults to "
+            "%%LOCALAPPDATA%%\\Microsoft\\Edge\\User Data on Windows."
+        ),
     )
 
     install = subs.add_parser("install-deps", help="Install X client dependencies into this Python environment")
@@ -1043,6 +1046,10 @@ def _cron_command(args: argparse.Namespace) -> int:
     if bool(getattr(args, "dry_run", False)):
         return _print({"ok": True, "dry_run": True, "jobs": preview})
 
+    timeout_result = _ensure_cron_script_timeout()
+    if not timeout_result.get("ok"):
+        return _print(timeout_result)
+
     jobs = []
     for spec in preview:
         job = create_job(
@@ -1063,6 +1070,7 @@ def _cron_command(args: argparse.Namespace) -> int:
         {
             "ok": True,
             "paused": bool(getattr(args, "paused", False)),
+            "cron_script_timeout": timeout_result,
             "jobs": [
                 {
                     "id": job["id"],
@@ -1083,6 +1091,47 @@ def _cron_command(args: argparse.Namespace) -> int:
             ],
         }
     )
+
+
+_CRON_SCRIPT_TIMEOUT_LIVE_POST = 900
+_CRON_PREFLIGHT_TIMEOUT = 45
+
+
+def _ensure_cron_script_timeout(*, min_seconds: int = _CRON_SCRIPT_TIMEOUT_LIVE_POST) -> dict:
+    """Raise cron.script_timeout_seconds when live post scripts need more than the default."""
+    try:
+        import yaml
+        from hermes_cli.config import ensure_hermes_home, get_config_path, load_config
+        from utils import atomic_yaml_write
+    except Exception as exc:
+        return {"ok": False, "error": f"config update unavailable: {exc}"}
+
+    ensure_hermes_home()
+    current = int(load_config().get("cron", {}).get("script_timeout_seconds") or 120)
+    if current >= min_seconds:
+        return {
+            "ok": True,
+            "updated": False,
+            "script_timeout_seconds": current,
+        }
+
+    config_path = get_config_path()
+    user_config: dict = {}
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as fh:
+                user_config = yaml.safe_load(fh) or {}
+        except Exception:
+            user_config = {}
+    cron_cfg = user_config.setdefault("cron", {})
+    cron_cfg["script_timeout_seconds"] = min_seconds
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    return {
+        "ok": True,
+        "updated": True,
+        "script_timeout_seconds": min_seconds,
+        "config_path": str(config_path),
+    }
 
 
 def _ensure_cron_scripts(
@@ -1175,7 +1224,7 @@ def run_hermes(args, *, timeout):
     )
 
 if PAYLOAD.get("preflight_args"):
-    preflight = run_hermes(PAYLOAD["preflight_args"], timeout=120)
+    preflight = run_hermes(PAYLOAD["preflight_args"], timeout={_CRON_PREFLIGHT_TIMEOUT})
     if preflight.returncode != 0:
         stderr = (preflight.stderr or "").strip()
         stdout = (preflight.stdout or "").strip()

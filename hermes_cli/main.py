@@ -12073,30 +12073,48 @@ def main():
 
             seen_plugin_commands = set()
             for cmd_info in discover_plugin_cli_commands():
-                plugin_parser = subparsers.add_parser(
-                    cmd_info["name"],
-                    help=cmd_info["help"],
-                    description=cmd_info.get("description", ""),
-                    formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-                )
-                cmd_info["setup_fn"](plugin_parser)
-                if cmd_info.get("handler_fn") is not None:
-                    plugin_parser.set_defaults(func=cmd_info["handler_fn"])
-                seen_plugin_commands.add(cmd_info["name"])
+                try:
+                    plugin_parser = subparsers.add_parser(
+                        cmd_info["name"],
+                        help=cmd_info["help"],
+                        description=cmd_info.get("description", ""),
+                        formatter_class=__import__(
+                            "argparse"
+                        ).RawDescriptionHelpFormatter,
+                    )
+                    cmd_info["setup_fn"](plugin_parser)
+                    if cmd_info.get("handler_fn") is not None:
+                        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+                    seen_plugin_commands.add(cmd_info["name"])
+                except Exception as _plugin_exc:
+                    logging.getLogger(__name__).warning(
+                        "Plugin CLI registration failed for %s: %s",
+                        cmd_info.get("name"),
+                        _plugin_exc,
+                    )
 
             discover_plugins()
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
                     continue
-                plugin_parser = subparsers.add_parser(
-                    cmd_info["name"],
-                    help=cmd_info["help"],
-                    description=cmd_info.get("description", ""),
-                    formatter_class=__import__("argparse").RawDescriptionHelpFormatter,
-                )
-                cmd_info["setup_fn"](plugin_parser)
-                if cmd_info.get("handler_fn") is not None:
-                    plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+                try:
+                    plugin_parser = subparsers.add_parser(
+                        cmd_info["name"],
+                        help=cmd_info["help"],
+                        description=cmd_info.get("description", ""),
+                        formatter_class=__import__(
+                            "argparse"
+                        ).RawDescriptionHelpFormatter,
+                    )
+                    cmd_info["setup_fn"](plugin_parser)
+                    if cmd_info.get("handler_fn") is not None:
+                        plugin_parser.set_defaults(func=cmd_info["handler_fn"])
+                except Exception as _plugin_exc:
+                    logging.getLogger(__name__).warning(
+                        "Plugin CLI registration failed for %s: %s",
+                        cmd_info.get("name"),
+                        _plugin_exc,
+                    )
         except Exception as _exc:
             logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
@@ -12670,8 +12688,15 @@ def main():
     _known_cmds = (
         set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
     )
-    _has_cmd_token = any(
-        t in _known_cmds for t in _processed_argv if not t.startswith("-")
+    # Only the first positional token is the subcommand name.  Scanning every
+    # positional breaks plugin routes like ``hermes lm-twitterer status`` when
+    # plugin CLI registration failed: ``status`` would match the top-level
+    # ``status`` subparser instead of lm-twitterer's nested command.
+    _first_positional = next(
+        (t for t in _processed_argv if not t.startswith("-")), None
+    )
+    _has_cmd_token = bool(
+        _first_positional and _first_positional in _known_cmds
     )
 
     if _has_cmd_token:

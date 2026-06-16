@@ -2121,8 +2121,11 @@ DEFAULT_CONFIG = {
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).
-        # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
+        # Also overridable via HERMES_CRON_SCRIPT_TIMEOUT env var.
         "max_parallel_jobs": None,
+        # Timeout for no_agent script jobs (seconds). Default matches scheduler.
+        # LLM-backed scripts (e.g. lm-twitterer post) need 900+.
+        "script_timeout_seconds": 120,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

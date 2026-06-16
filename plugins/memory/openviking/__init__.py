@@ -133,23 +133,25 @@ class _VikingClient:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
 
     def _headers(self) -> dict:
-        # Always send tenant headers when account/user are configured.
-        # OpenViking 0.3.x requires X-OpenViking-Account and X-OpenViking-User
-        # for ROOT API key requests to tenant-scoped APIs — omitting them
-        # causes INVALID_ARGUMENT errors even when account="default".
-        # User-level keys can omit them (server derives tenancy from the key),
-        # but ROOT keys must always include them explicitly.
+        # v0.4.1+ auth: root keys and user keys use different headers.
+        # Root keys (ov-root-*) use X-OpenViking-Root-API-Key for admin ops.
+        # User keys use Authorization: Bearer for data APIs.
+        # Never send X-OpenViking-Account/X-OpenViking-User with api_key mode —
+        # server rejects them as "untrusted mode identity assertion".
         h = {
             "Content-Type": "application/json",
             "X-OpenViking-Agent": self._agent,
         }
-        if self._account:
-            h["X-OpenViking-Account"] = self._account
-        if self._user:
-            h["X-OpenViking-User"] = self._user
         if self._api_key:
-            h["X-API-Key"] = self._api_key
+            if self._api_key.startswith("ov-root-"):
+                h["X-OpenViking-Root-API-Key"] = self._api_key
             h["Authorization"] = "Bearer " + self._api_key
+        else:
+            # v0.3.x dev mode only: tenant headers required
+            if self._account:
+                h["X-OpenViking-Account"] = self._account
+            if self._user:
+                h["X-OpenViking-User"] = self._user
         return h
 
     def _url(self, path: str) -> str:
@@ -252,7 +254,6 @@ SEARCH_SCHEMA = {
                 "type": "string",
                 "description": "Viking URI prefix to scope search (e.g. 'viking://resources/docs/').",
             },
-            "limit": {"type": "integer", "description": "Max results (default: 10)."},
         },
         "required": ["query"],
     },
@@ -766,8 +767,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             payload["mode"] = mode
         if args.get("scope"):
             payload["target_uri"] = args["scope"]
-        if args.get("limit"):
-            payload["top_k"] = args["limit"]
+        # v0.4.1+: server rejects top_k as extra input; limit is not supported
+        # The server returns a default number of results (typically 10)
+        # if args.get("limit"):
+        #     payload["top_k"] = args["limit"]
 
         resp = self._client.post("/api/v1/search/find", payload)
         result = resp.get("result", {})

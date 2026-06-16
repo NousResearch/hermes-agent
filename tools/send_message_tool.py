@@ -12,6 +12,7 @@ import os
 import re
 import ssl
 import time
+import uuid
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
@@ -167,6 +168,39 @@ SEND_MESSAGE_SCHEMA = {
             }
         },
         "required": []
+    }
+}
+
+SEND_FILE_SCHEMA = {
+    "name": "send_file",
+    "description": (
+        "Send a file (audio, image, video, document) to a connected messaging platform.\n\n"
+        "Supports: Feishu, Telegram, Discord, WhatsApp, Signal, Email, and more.\n"
+        "For Feishu open_id (ou_xxx): automatically detected and routed correctly.\n"
+        "For audio files (.mp3, .wav, .ogg, etc.): sent as audio/voice on Feishu/Telegram.\n"
+        "For images: sent as photos. For other files: sent as document attachments."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Delivery target. Format: 'platform' (home channel), 'platform:chat_id', "
+                    "or 'platform:chat_id:thread_id'. "
+                    "Examples: 'feishu', 'feishu:ou_xxx', 'telegram:-1001234567890', 'discord:999888777'"
+                )
+            },
+            "file_path": {
+                "type": "string",
+                "description": "Absolute path to the file to send."
+            },
+            "caption": {
+                "type": "string",
+                "description": "Optional caption / description to include with the file."
+            }
+        },
+        "required": ["target", "file_path"]
     }
 }
 
@@ -1714,15 +1748,22 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
-async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
-    """Send via Feishu/Lark using the adapter's send pipeline."""
+async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None, caption=None):
+    """Send via Feishu/Lark using the adapter's send pipeline.
+
+    Args:
+        message: text content to send (used when no media_files)
+        caption: alias for message when called from send_file (for backward compat)
+    """
+    # Normalize: if caption provided but no message, use caption as message
+    if not message and caption:
+        message = caption
     try:
-        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
+        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE, FEISHU_DOMAIN, LARK_DOMAIN, _AUDIO_EXTENSIONS as _FEISHU_AUDIO_EXTS, _IMAGE_EXTENSIONS as _FEISHU_IMAGE_EXTS, _VIDEO_EXTENSIONS as _FEISHU_VIDEO_EXTS
         if not FEISHU_AVAILABLE:
             return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
-        from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
-    except ImportError:
-        return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
+    except ImportError as e:
+        return {"error": f"Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]': {e}"}
 
     media_files = media_files or []
 
@@ -1733,9 +1774,22 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         adapter._client = adapter._build_lark_client(domain)
         metadata = {"thread_id": thread_id} if thread_id else None
 
+        # Auto-detect Feishu ID type: ou_xxx → open_id, oc_xxx → chat_id
+        id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
+
         last_result = None
-        if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
+        # Only send text if message is non-empty AND no files attached (file-only path sends caption via text message before file)
+        if message.strip() and not media_files:
+            # Use auto-detected ID type for text messages too
+            text_body = adapter._build_create_message_body(
+                receive_id=chat_id,
+                msg_type="text",
+                content=json.dumps({"text": message.strip()}),
+                uuid_value=str(uuid.uuid4()),
+            )
+            text_req = FeishuAdapter._build_create_message_request(id_type, text_body)
+            msg_resp = await asyncio.to_thread(adapter._client.im.v1.message.create, text_req)
+            last_result = adapter._finalize_send_result(msg_resp, "Feishu text send failed")
             if not last_result.success:
                 return _error(f"Feishu send failed: {last_result.error}")
 
@@ -1744,6 +1798,7 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
                 return _error(f"Media file not found: {media_path}")
 
             ext = os.path.splitext(media_path)[1].lower()
+            display_name = os.path.basename(media_path)
             if ext in _IMAGE_EXTS:
                 last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
             elif ext in _VIDEO_EXTS:
@@ -1751,9 +1806,83 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
             elif ext in _VOICE_EXTS and is_voice:
                 last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
             elif ext in _AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                # Upload file first
+                upload_file_type, _ = adapter._resolve_outbound_file_routing(
+                    file_path=display_name,
+                    requested_message_type="file",
+                )
+                with open(media_path, "rb") as f:
+                    body = adapter._build_file_upload_body(
+                        file_type=upload_file_type,
+                        file_name=display_name,
+                        file=f,
+                    )
+                    request = adapter._build_file_upload_request(body)
+                    upload_resp = await asyncio.to_thread(adapter._client.im.v1.file.create, request)
+                file_key = adapter._extract_response_field(upload_resp, "file_key")
+                if not file_key:
+                    return _error(f"Feishu audio upload failed: {getattr(upload_resp, 'msg', 'unknown')}")
+
+                # Send caption text first (if any)
+                if caption and caption.strip():
+                    text_body = adapter._build_create_message_body(
+                        receive_id=chat_id,
+                        msg_type="text",
+                        content=json.dumps({"text": caption.strip()}),
+                        uuid_value=str(uuid.uuid4()),
+                    )
+                    text_req = FeishuAdapter._build_create_message_request(id_type, text_body)
+                    await asyncio.to_thread(adapter._client.im.v1.message.create, text_req)
+
+                # Send audio as file message
+                file_msg_body = adapter._build_create_message_body(
+                    receive_id=chat_id,
+                    msg_type="file",
+                    content=json.dumps({"file_key": file_key}),
+                    uuid_value=str(uuid.uuid4()),
+                )
+                file_msg_req = FeishuAdapter._build_create_message_request(id_type, file_msg_body)
+                msg_resp = await asyncio.to_thread(adapter._client.im.v1.message.create, file_msg_req)
+                last_result = adapter._finalize_send_result(msg_resp, "Feishu audio send failed")
             else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+                # Document / generic file: upload then send as file
+                upload_file_type, resolved_msg_type = adapter._resolve_outbound_file_routing(
+                    file_path=display_name,
+                    requested_message_type="file",
+                )
+                with open(media_path, "rb") as f:
+                    body = adapter._build_file_upload_body(
+                        file_type=upload_file_type,
+                        file_name=display_name,
+                        file=f,
+                    )
+                    request = adapter._build_file_upload_request(body)
+                    upload_resp = await asyncio.to_thread(adapter._client.im.v1.file.create, request)
+                file_key = adapter._extract_response_field(upload_resp, "file_key")
+                if not file_key:
+                    return _error(f"Feishu file upload failed: {getattr(upload_resp, 'msg', 'unknown')}")
+
+                # Send caption text first (if any)
+                if caption and caption.strip():
+                    text_body = adapter._build_create_message_body(
+                        receive_id=chat_id,
+                        msg_type="text",
+                        content=json.dumps({"text": caption.strip()}),
+                        uuid_value=str(uuid.uuid4()),
+                    )
+                    text_req = FeishuAdapter._build_create_message_request(id_type, text_body)
+                    await asyncio.to_thread(adapter._client.im.v1.message.create, text_req)
+
+                # Send file
+                file_msg_body = adapter._build_create_message_body(
+                    receive_id=chat_id,
+                    msg_type=resolved_msg_type,
+                    content=json.dumps({"file_key": file_key}),
+                    uuid_value=str(uuid.uuid4()),
+                )
+                file_msg_req = FeishuAdapter._build_create_message_request(id_type, file_msg_body)
+                msg_resp = await asyncio.to_thread(adapter._client.im.v1.message.create, file_msg_req)
+                last_result = adapter._finalize_send_result(msg_resp, "Feishu file send failed")
 
             if not last_result.success:
                 return _error(f"Feishu media send failed: {last_result.error}")
@@ -1769,6 +1898,113 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         }
     except Exception as e:
         return _error(f"Feishu send failed: {e}")
+
+
+async def _send_file_to_platform(platform, pconfig, chat_id, file_path, message="", caption=None, thread_id=None):
+    """Send a file to the appropriate platform."""
+    import os
+    from gateway.config import Platform
+
+    if not os.path.exists(file_path):
+        return {"error": f"File not found: {file_path}"}
+
+    ext = os.path.splitext(file_path)[1].lower()
+    metadata = {"thread_id": thread_id} if thread_id else None
+
+    if platform == Platform.FEISHU:
+        return await _send_feishu(pconfig, chat_id, message=caption, media_files=[(file_path, False)], thread_id=thread_id, caption=caption)
+
+    if platform == Platform.TELEGRAM:
+        return await _send_telegram(pconfig.token, chat_id, caption or "", media_files=[(file_path, False)], thread_id=thread_id)
+
+    if platform == Platform.DISCORD:
+        return await _send_discord(pconfig.token, chat_id, caption or "", media_files=[(file_path, False)], thread_id=thread_id)
+
+    if platform == Platform.SLACK:
+        return await _send_slack(pconfig.token, chat_id, caption or "", media_files=[(file_path, False)])
+
+    if platform == Platform.WHATSAPP:
+        return await _send_whatsapp(pconfig.extra, chat_id, caption or "", media_files=[(file_path, False)])
+
+    if platform == Platform.SIGNAL:
+        return await _send_signal(pconfig.extra, chat_id, caption or "", media_files=[(file_path, False)])
+
+    if platform == Platform.EMAIL:
+        return await _send_email(pconfig.extra, chat_id, caption or "", media_files=[(file_path, False)])
+
+    if platform == Platform.WECOM:
+        return await _send_wecom(pconfig.extra, chat_id, caption or "", media_files=[(file_path, False)])
+
+    if platform == Platform.MATTERMOST:
+        return await _send_mattermost(pconfig.token, pconfig.extra, chat_id, caption or "", media_files=[(file_path, False)])
+
+    if platform == Platform.MATRIX:
+        return await _send_matrix(pconfig.token, pconfig.extra, chat_id, caption or "", media_files=[(file_path, False)])
+
+    return {"error": f"File sending not yet implemented for {platform.value}"}
+
+
+def send_file_tool(args, **kw):
+    """Handle send_file tool calls."""
+    target = args.get("target", "")
+    file_path = args.get("file_path", "")
+    caption = args.get("caption", "")
+
+    if not target or not file_path:
+        return json.dumps({"error": "Both 'target' and 'file_path' are required"})
+
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
+
+    if target_ref:
+        chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+    else:
+        is_explicit = False
+
+    if target_ref and not is_explicit:
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            resolved = resolve_channel_name(platform_name, target_ref)
+            if resolved:
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+            else:
+                return json.dumps({
+                    "error": f"Could not resolve '{target_ref}' on {platform_name}. "
+                             f"Use send_message(action='list') to see available targets."
+                })
+        except Exception as e:
+            return json.dumps({"error": f"Failed to resolve target: {e}"})
+
+    try:
+        from gateway.config import load_gateway_config, Platform as GPlatform
+    except ImportError:
+        return json.dumps({"error": "Messaging platforms not available"})
+
+    platform_map = {
+        "feishu": GPlatform.FEISHU,
+    }
+    platform = platform_map.get(platform_name)
+
+    config = load_gateway_config()
+
+    if not chat_id:
+        home = config.get_home_channel(platform)
+        if home:
+            chat_id = home.chat_id
+        else:
+            return json.dumps({"error": f"No home channel configured for {platform_name}"})
+
+    pconfig = config.platforms.get(platform)
+
+    try:
+        result = asyncio.run(_send_file_to_platform(platform, pconfig, chat_id, file_path, message="", caption=caption, thread_id=thread_id))
+    except Exception as e:
+        import traceback
+        return json.dumps({"error": f"send_file failed: {e}\n{traceback.format_exc()}"})
+    return json.dumps(result)
 
 
 def _check_send_message():
@@ -1908,4 +2144,13 @@ registry.register(
     handler=send_message_tool,
     check_fn=_check_send_message,
     emoji="📨",
+)
+
+registry.register(
+    name="send_file",
+    toolset="messaging",
+    schema=SEND_FILE_SCHEMA,
+    handler=send_file_tool,
+    check_fn=_check_send_message,
+    emoji="📎",
 )

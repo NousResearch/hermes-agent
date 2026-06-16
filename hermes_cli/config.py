@@ -1508,13 +1508,23 @@ DEFAULT_CONFIG = {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
         },
-        # Gateway runtime-metadata footer appended to the FINAL message of a turn
-        # (disabled by default to keep replies minimal). When enabled, renders
-        # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
+        # Gateway runtime-metadata footer appended to the FINAL message of a turn.
+        # Enabled by default to make runtime provenance visible on messaging
+        # surfaces. Per-platform overrides go under
         # display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
-            "enabled": False,
-            "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
+            "enabled": True,
+            "style": "khal_pulse_dev",
+            "fields": [
+                "model",
+                "provider",
+                "context_bar",
+                "compressions",
+                "api_calls",
+                "cost",
+                "elapsed",
+                "cwd",
+            ],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },

@@ -1,15 +1,17 @@
 """Gateway runtime-metadata footer.
 
-Renders a compact footer showing runtime state (model, context %, cwd) and
-appends it to the FINAL message of an agent turn when enabled.  Off by default
-to keep replies minimal.
+Renders a compact footer showing runtime state (model/provider, context, tool
+calls, approximate cost, elapsed time, cwd) and appends it to the FINAL message
+of an agent turn when enabled.  On by default so gateway users get lightweight
+runtime provenance unless they opt out.
 
 Config (``~/.hermes/config.yaml``)::
 
     display:
       runtime_footer:
-        enabled: true                       # off by default
-        fields: [model, context_pct, cwd]   # order shown; drop any to hide
+        enabled: true
+        style: khal_pulse_dev
+        fields: [model, provider, context_bar, compressions, api_calls, cost, elapsed, cwd]
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
 Users can toggle the global setting with ``/footer on|off`` from both the CLI
@@ -33,6 +35,8 @@ _KHAL_PULSE_FIELDS: tuple[str, ...] = (
     "model", "provider", "context_bar", "compressions",
     "api_calls", "cost", "elapsed", "cwd",
 )
+_DEFAULT_ENABLED = True
+_DEFAULT_STYLE = "khal_pulse_dev"
 _SEP = " · "
 _ONE_MILLION = 1_000_000.0
 _OPENAI_CODEX_SHADOW_SUBSIDY_DIVISOR = 20.0
@@ -209,7 +213,11 @@ def resolve_footer_config(
         2. ``display.runtime_footer``
         3. ``display.platforms.<platform_key>.runtime_footer``
     """
-    resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS), "style": "plain"}
+    resolved = {
+        "enabled": _DEFAULT_ENABLED,
+        "fields": list(_KHAL_PULSE_FIELDS),
+        "style": _DEFAULT_STYLE,
+    }
     cfg = (user_config or {}).get("display") or {}
 
     global_cfg = cfg.get("runtime_footer")

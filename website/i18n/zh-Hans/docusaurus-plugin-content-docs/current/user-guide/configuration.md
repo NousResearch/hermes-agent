@@ -1131,8 +1131,9 @@ display:
   timestamps: false       # 为 true 时，在 CLI/TUI 记录中为用户和 assistant 标签添加 [HH:MM] 时间戳前缀
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
   runtime_footer:         # Gateway：在最终回复中附加运行时上下文页脚
-    enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    enabled: true
+    style: khal_pulse_dev
+    fields: ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"]
   file_mutation_verifier: true    # 当本轮 write_file/patch 调用失败时附加建议性页脚
   language: en            # 静态消息的 UI 语言（审批提示、部分 gateway 回复）。en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
@@ -1176,13 +1177,14 @@ display:
 
 ### 运行时元数据页脚（仅限 gateway）
 
-当 `display.runtime_footer.enabled: true` 时，Hermes 在每个 gateway 轮次的**最终**消息中附加一个小型运行时上下文页脚。目前页脚可显示模型、上下文窗口百分比和当前工作目录。默认关闭；如果您的团队希望每个回复都包含这些来源信息，请按 gateway 选择加入。
+当 `display.runtime_footer.enabled: true`（默认值）时，Hermes 会在每个 gateway 轮次的**最终**消息中附加一个紧凑的 KHAL Pulse 运行时上下文页脚。页脚可显示模型、provider、上下文窗口条、压缩次数、API 调用次数、估算成本、耗时和当前工作目录。可在全局或 `display.platforms.<platform>.runtime_footer` 下设置 `enabled: false` 来关闭。
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
+    style: khal_pulse_dev
+    fields: ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"]
 ```
 
 `/footer` 斜杠命令在任何会话中运行时切换此功能。

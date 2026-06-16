@@ -1310,8 +1310,9 @@ display:
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
-    enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    enabled: true
+    style: khal_pulse_dev
+    fields: ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
@@ -1358,21 +1359,23 @@ Tool progress requires a gateway adapter that can display progress updates safel
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true` (the default), Hermes appends a compact KHAL Pulse runtime-context footer to the **final** message of each gateway turn. The footer can show the model, provider, context-window bar, compression count, API-call count, estimated cost, elapsed time, and current working directory. Set `enabled: false` globally or under `display.platforms.<platform>.runtime_footer` to opt out.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
+    style: khal_pulse_dev
+    fields: ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"]
 ```
 
 The `/footer` slash command toggles this at runtime in any session.
 
 Example footer appended to a Telegram/Discord/Slack reply:
 
-```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+```text
+⚕ gpt-5.5 · 🧭 openai-codex · 🧠185K/272K ███████░░░ 68% · 🗜2
+🔁23 · 💸~$0.012 · ✓23s · 📁~/workspace/khal
 ```
 
 Only the **final** message of a turn gets the footer; interim updates stay clean.

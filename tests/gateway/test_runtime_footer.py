@@ -195,16 +195,20 @@ def test_format_footer_openai_codex_gpt55_shadow_cost_is_subsidized_and_approxim
 # resolve_footer_config
 # ---------------------------------------------------------------------------
 
-def test_resolve_defaults_off_empty_config():
+def test_resolve_defaults_to_khal_pulse_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "style": "plain"}
+    assert cfg == {
+        "enabled": True,
+        "fields": ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"],
+        "style": "khal_pulse_dev",
+    }
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
-    assert cfg["fields"] == ["model", "context_pct", "cwd"]
+    assert cfg["fields"] == ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"]
 
 
 def test_resolve_platform_override_wins():
@@ -233,17 +237,18 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "context_pct", "cwd"]
+    assert tg["fields"] == ["model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
 
 
 def test_resolve_ignores_malformed_config():
-    # Non-dict runtime_footer shouldn't crash
+    # Non-dict runtime_footer shouldn't crash or disable the default.
     user = {"display": {"runtime_footer": "on"}}
     cfg = resolve_footer_config(user, "telegram")
-    assert cfg["enabled"] is False
+    assert cfg["enabled"] is True
+    assert cfg["style"] == "khal_pulse_dev"
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +257,7 @@ def test_resolve_ignores_malformed_config():
 
 def test_build_footer_empty_when_disabled():
     out = build_footer_line(
-        user_config={},
+        user_config={"display": {"runtime_footer": {"enabled": False}}},
         platform_key="telegram",
         model="openai/gpt-5.4",
         context_tokens=10, context_length=100,
@@ -292,10 +297,10 @@ def test_build_footer_per_platform_off_suppresses():
     assert out == ""
 
 
-def test_build_footer_no_data_returns_empty_even_when_enabled():
-    # Enabled, but context_length is None AND cwd empty AND model empty ⇒ no fields
+def test_build_footer_no_data_returns_empty_for_plain_fields():
+    # Plain footer with no model/context/cwd data still suppresses the line.
     out = build_footer_line(
-        user_config={"display": {"runtime_footer": {"enabled": True}}},
+        user_config={"display": {"runtime_footer": {"enabled": True, "style": "plain"}}},
         platform_key="telegram",
         model="",
         context_tokens=0, context_length=None,

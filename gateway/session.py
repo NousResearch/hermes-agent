@@ -1407,6 +1407,60 @@ class SessionStore:
             "target_text": target_text,
         }
 
+    def has_meaningful_transcript(self, session_id: str) -> bool:
+        """Return True when the transcript contains at least one real turn.
+
+        Empty placeholder rows can be created by metadata-only platform events.
+        Those should not count as active conversational context for restart
+        recovery or thread-session routing.
+        """
+        history = self.load_transcript(session_id)
+        for message in history:
+            if not isinstance(message, dict):
+                if message:
+                    return True
+                continue
+
+            role = message.get("role")
+            if role in {"system", "session_meta"} or message.get("observed"):
+                continue
+
+            content = message.get("content")
+            if isinstance(content, str):
+                if content.strip():
+                    return True
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str):
+                        if part.strip():
+                            return True
+                        continue
+                    if not isinstance(part, dict):
+                        if part:
+                            return True
+                        continue
+
+                    part_type = str(part.get("type") or "")
+                    if part_type not in {"", "text", "input_text", "output_text"}:
+                        return True
+
+                    part_text = part.get("text")
+                    if isinstance(part_text, str):
+                        if part_text.strip():
+                            return True
+                    elif part_text:
+                        return True
+
+                    if part.get("image_url") or part.get("file_url") or part.get("source"):
+                        return True
+            elif content:
+                return True
+
+            if message.get("tool_calls") or message.get("tool_call_id"):
+                return True
+
+        return False
+
 
 def build_session_context(
     source: SessionSource,

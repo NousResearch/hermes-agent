@@ -2596,6 +2596,7 @@ class TestThreadReplyHandling:
         store = MagicMock()
         store._entries = {}
         store._ensure_loaded = MagicMock()
+        store.has_meaningful_transcript = MagicMock(return_value=True)
         store.config = MagicMock()
         store.config.group_sessions_per_user = True
         return store
@@ -2719,6 +2720,85 @@ class TestThreadReplyHandling:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_transcriptless_session_does_not_block_thread_context_recovery(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Empty placeholder sessions should not suppress thread rehydration."""
+        session_key = "agent:main:slack:group:C123:123.000"
+        mock_session_store._entries = {
+            session_key: MagicMock(session_id="sid-empty")
+        }
+        mock_session_store.config.group_sessions_per_user = False
+        mock_session_store.has_meaningful_transcript.return_value = False
+
+        adapter_with_session_store._bot_message_ts.add("123.000")
+        adapter_with_session_store._fetch_thread_context = AsyncMock(
+            return_value="[Thread context]\n"
+        )
+        adapter_with_session_store._fetch_thread_parent_text = AsyncMock(
+            return_value="Earlier question"
+        )
+        adapter_with_session_store._resolve_user_name = AsyncMock(
+            return_value="Sawyer Beckett"
+        )
+
+        event = {
+            "text": "Yes save and continue",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+
+        adapter_with_session_store._fetch_thread_context.assert_awaited_once()
+        adapter_with_session_store.handle_message.assert_called_once()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("[Thread context]\n")
+
+    @pytest.mark.asyncio
+    async def test_contentless_thread_event_is_ignored_before_thread_recovery(
+        self, adapter_with_session_store
+    ):
+        """Metadata-only thread events should not fetch context or create sessions."""
+        adapter_with_session_store._bot_message_ts.add("123.000")
+        adapter_with_session_store._fetch_thread_context = AsyncMock()
+
+        event = {
+            "text": "",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+
+        adapter_with_session_store._fetch_thread_context.assert_not_called()
+        adapter_with_session_store.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_contentless_dm_message_event_is_ignored(adapter):
+    """Metadata-only Slack message events must not create a user turn."""
+    event = {
+        "text": "",
+        "user": "U_USER",
+        "channel": "D123",
+        "ts": "171.111",
+        "thread_ts": "171.000",
+        "channel_type": "im",
+        "team": "T_TEAM",
+    }
+
+    await adapter._handle_slack_message(event)
+
+    adapter.handle_message.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

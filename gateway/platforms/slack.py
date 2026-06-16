@@ -2486,6 +2486,22 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        files = event.get("files", [])
+
+        # Slack can redeliver metadata-only thread events during restart /
+        # rehydration windows. They carry routing fields but no user payload,
+        # so letting them through creates blank sessions that later suppress
+        # thread-context recovery. Check before fetching thread context, since
+        # context injection must not turn a contentless event into a user turn.
+        if not text.strip() and not files:
+            logger.debug(
+                "[Slack] Ignoring contentless message event channel=%s ts=%s thread_ts=%s subtype=%s",
+                channel_id,
+                ts,
+                thread_ts,
+                subtype or "",
+            )
+            return
 
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -2563,7 +2579,6 @@ class SlackAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         attachment_notices: List[str] = []
-        files = event.get("files", [])
         for f in files:
             # Slack Connect channels return stub file objects with
             # file_access="check_file_info" and no URL fields. We must
@@ -2782,6 +2797,16 @@ class SlackAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             else:
                 msg_type = MessageType.DOCUMENT
+
+        if not text.strip() and not media_urls:
+            logger.debug(
+                "[Slack] Ignoring contentless message event channel=%s ts=%s thread_ts=%s subtype=%s",
+                channel_id,
+                ts,
+                thread_ts,
+                subtype or "",
+            )
+            return
 
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
@@ -3631,7 +3656,13 @@ class SlackAdapter(BasePlatformAdapter):
             )
 
             session_store._ensure_loaded()
-            return session_key in session_store._entries
+            entry = session_store._entries.get(session_key)
+            if entry is None:
+                return False
+            try:
+                return bool(session_store.has_meaningful_transcript(entry.session_id))
+            except Exception:
+                return True
         except Exception:
             return False
 

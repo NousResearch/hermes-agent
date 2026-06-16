@@ -320,6 +320,25 @@ class TestClearResumePending:
         assert store.clear_resume_pending("no-such-key") is False
 
 
+class TestMeaningfulTranscript:
+    def test_system_only_transcript_is_not_meaningful(self, tmp_path):
+        store = _make_store(tmp_path)
+        store.load_transcript = MagicMock(return_value=[
+            {"role": "session_meta", "content": "tools:{}"},
+            {"role": "system", "content": "gateway bookkeeping"},
+        ])
+
+        assert store.has_meaningful_transcript("sid") is False
+
+    def test_user_text_transcript_is_meaningful(self, tmp_path):
+        store = _make_store(tmp_path)
+        store.load_transcript = MagicMock(return_value=[
+            {"role": "user", "content": "keep going"}
+        ])
+
+        assert store.has_meaningful_transcript("sid") is True
+
+
 # ---------------------------------------------------------------------------
 # SessionStore.get_or_create_session resume_pending behaviour
 # ---------------------------------------------------------------------------
@@ -889,6 +908,7 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner.session_store.has_meaningful_transcript = MagicMock(return_value=True)
     adapter.handle_message = AsyncMock()
 
     scheduled = runner._schedule_resume_pending_sessions()
@@ -931,6 +951,7 @@ async def test_startup_auto_resume_includes_crash_recovery():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner.session_store.has_meaningful_transcript = MagicMock(return_value=True)
     adapter.handle_message = AsyncMock()
 
     scheduled = runner._schedule_resume_pending_sessions()
@@ -967,6 +988,40 @@ async def test_startup_auto_resume_skips_stale_entries():
 
     assert scheduled == 0
     adapter.handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_skips_transcriptless_entries():
+    """Resume-pending placeholders with no transcript should not auto-run."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="empty-chat")
+    empty_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:empty-chat",
+        session_id="sid-empty",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    session_store = MagicMock()
+    session_store._lock = MagicMock()
+    session_store._lock.__enter__.return_value = None
+    session_store._lock.__exit__.return_value = None
+    session_store._entries = {empty_entry.session_key: empty_entry}
+    session_store._ensure_loaded_locked = MagicMock()
+    session_store.has_meaningful_transcript = MagicMock(return_value=False)
+    runner.session_store = session_store
+    adapter.handle_message = AsyncMock()
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 0
+    adapter.handle_message.assert_not_called()
+    session_store.has_meaningful_transcript.assert_called_once_with("sid-empty")
 
 
 @pytest.mark.asyncio

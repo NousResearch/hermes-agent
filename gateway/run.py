@@ -4887,6 +4887,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            try:
+                has_history = bool(
+                    self.session_store.has_meaningful_transcript(entry.session_id)
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Could not inspect transcript before auto-resume for %s: %s",
+                    entry.session_key,
+                    exc,
+                )
+                has_history = True
+            if not has_history:
+                logger.debug(
+                    "Skipping auto-resume for %s: transcript has no meaningful content",
+                    entry.session_key,
+                )
+                continue
+
             # Claim the session slot *before* spawning the task so that an
             # inbound message arriving between task creation and the task's
             # first await (where _process_message_background sets the real

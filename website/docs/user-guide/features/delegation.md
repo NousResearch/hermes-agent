@@ -37,6 +37,15 @@ Profile-backed delegation is intentionally lighter than Kanban: the result retur
 
 For batch calls, profile-backed delegation is all-or-nothing: provide a top-level `profile` for the whole batch, or set `profile` on every task. You cannot mix real-profile subprocess tasks with ordinary in-process subagents in one `tasks` array.
 
+You can tune the profile subprocess timeout via `config.yaml` under the `delegation` section:
+
+```yaml
+delegation:
+  profile_timeout_seconds: 600
+```
+
+If not configured, the default is 600 seconds. Setting it to `null` or a non-positive value keeps the default.
+
 ## Parallel Batch
 
 Up to 3 concurrent subagents by default (configurable, no hard ceiling):

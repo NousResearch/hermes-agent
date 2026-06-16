@@ -2213,6 +2213,8 @@ def _run_profile_delegate(
             "duration_seconds": round(time.monotonic() - start, 2),
         }
     except Exception as exc:
+        if proc is not None:
+            _terminate_profile_delegate_process(proc)
         return {
             "task_index": task_index,
             "status": "error",

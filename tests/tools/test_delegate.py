@@ -359,6 +359,53 @@ class TestDelegateTask(unittest.TestCase):
             ["terminal", "file"],
         )
 
+    @patch("tools.delegate_tool._resolve_profile_delegate_env")
+    @patch("tools.delegate_tool._run_profile_delegate")
+    def test_profile_background_registered_handler_returns_before_runner_finishes(
+        self, mock_run_profile, mock_profile_env
+    ):
+        from tools import async_delegation
+
+        async_delegation._reset_for_tests()
+        mock_profile_env.return_value = ("qa", "/tmp/hermes/profiles/qa")
+        runner_started = threading.Event()
+        release_runner = threading.Event()
+
+        def slow_profile_runner(**kwargs):
+            runner_started.set()
+            release_runner.wait(timeout=5)
+            return {"task_index": 0, "status": "completed", "summary": "ok"}
+
+        mock_run_profile.side_effect = slow_profile_runner
+        parent = _make_mock_parent()
+        entry = delegate_mod.registry.get_entry("delegate_task")
+        assert entry is not None
+
+        try:
+            start = time.monotonic()
+            raw = entry.handler(
+                {
+                    "goal": "Review later",
+                    "toolsets": ["terminal", "file"],
+                    "profile": "qa",
+                    "background": True,
+                },
+                parent_agent=parent,
+            )
+            elapsed = time.monotonic() - start
+            result = json.loads(raw)
+
+            self.assertEqual(result["status"], "dispatched")
+            self.assertIn("delegation_id", result)
+            self.assertEqual(result["profile"], "qa")
+            self.assertLess(elapsed, 0.5)
+            self.assertTrue(runner_started.wait(timeout=1))
+            self.assertEqual(async_delegation.active_count(), 1)
+        finally:
+            release_runner.set()
+            time.sleep(0.05)
+            async_delegation._reset_for_tests()
+
     def test_profile_batch_rejects_mixed_profile_and_in_process_tasks(self):
         parent = _make_mock_parent()
         result = json.loads(

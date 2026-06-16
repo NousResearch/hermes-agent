@@ -772,7 +772,18 @@ class SessionDB:
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
-        return "no such module" in err and "fts5" in err
+        if "no such module" in err and "fts5" in err:
+            return True
+        # SQLite builds that have FTS5 but lack the optional trigram tokenizer
+        # raise "no such tokenizer: trigram" instead of "no such module".
+        if "no such tokenizer" in err:
+            return True
+        return False
+
+    @staticmethod
+    def _is_tokenizer_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        """Check if the error is about a specific tokenizer (not the whole FTS5 module)."""
+        return "no such tokenizer" in str(exc).lower()
 
     def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
         self._fts_enabled = False
@@ -844,7 +855,9 @@ class SessionDB:
             return True
         except sqlite3.OperationalError as exc:
             if self._is_fts5_unavailable_error(exc):
-                self._warn_fts5_unavailable(exc)
+                # Only disable FTS entirely when the whole module is missing.
+                if not self._is_tokenizer_unavailable_error(exc):
+                    self._warn_fts5_unavailable(exc)
                 return None
             if "no such table" in str(exc).lower():
                 return False
@@ -868,7 +881,11 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
                 raise
-            self._warn_fts5_unavailable(exc)
+            # Only disable FTS entirely when the whole FTS5 module is missing.
+            # A missing specific tokenizer (e.g. trigram) means only that
+            # particular table cannot be created — the base FTS5 table is fine.
+            if not self._is_tokenizer_unavailable_error(exc):
+                self._warn_fts5_unavailable(exc)
             return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -1166,7 +1183,8 @@ class SessionDB:
                         except sqlite3.OperationalError as exc:
                             if not self._is_fts5_unavailable_error(exc):
                                 raise
-                            self._warn_fts5_unavailable(exc)
+                            if not self._is_tokenizer_unavailable_error(exc):
+                                self._warn_fts5_unavailable(exc)
                             fts5_available = False
                             fts_migrations_complete = False
                             break

@@ -50,6 +50,20 @@ class _NoFtsExistingTableConnection(sqlite3.Connection):
         return super().cursor(factory or _NoFtsExistingTableCursor)
 
 
+class _NoTrigramCursor(sqlite3.Cursor):
+    """Simulate a SQLite build with FTS5 but without the trigram tokenizer."""
+
+    def executescript(self, sql_script):
+        if "tokenize='trigram'" in sql_script:
+            raise sqlite3.OperationalError("no such tokenizer: trigram")
+        return super().executescript(sql_script)
+
+
+class _NoTrigramConnection(sqlite3.Connection):
+    def cursor(self, factory=None):
+        return super().cursor(factory or _NoTrigramCursor)
+
+
 @pytest.fixture()
 def db(tmp_path):
     """Create a SessionDB with a temp database file."""
@@ -329,6 +343,46 @@ class TestSessionLifecycle:
             assert len(restored.search_messages("indexed")) == 2
         finally:
             restored.close()
+
+    def test_is_fts5_unavailable_error_catches_trigram_tokenizer(self):
+        """Unit test: _is_fts5_unavailable_error matches 'no such tokenizer'."""
+        fts5_err = sqlite3.OperationalError("no such module: fts5")
+        trigram_err = sqlite3.OperationalError("no such tokenizer: trigram")
+        unrelated_err = sqlite3.OperationalError("no such table: foo")
+
+        assert SessionDB._is_fts5_unavailable_error(fts5_err) is True
+        assert SessionDB._is_fts5_unavailable_error(trigram_err) is True
+        assert SessionDB._is_fts5_unavailable_error(unrelated_err) is False
+
+    def test_db_initializes_without_trigram_tokenizer(self, tmp_path, monkeypatch):
+        """SessionDB must not crash when FTS5 exists but trigram tokenizer is missing."""
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            # Base FTS5 should still work (trigram is optional).
+            assert db._fts_enabled is True
+            assert db._fts_table_exists("messages_fts") is True
+            # Trigram table should NOT have been created.
+            assert db._fts_table_exists("messages_fts_trigram") is False
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="hello without trigram")
+
+            messages = db.get_messages("s1")
+            assert len(messages) == 1
+            assert messages[0]["content"] == "hello without trigram"
+
+            # FTS5 keyword search should still work.
+            assert len(db.search_messages("hello")) == 1
+        finally:
+            db.close()
 
 
 # =========================================================================

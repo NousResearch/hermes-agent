@@ -13453,16 +13453,41 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 @app.get("/api/dashboard/plugins")
 async def get_dashboard_plugins():
-    """Return discovered dashboard plugins (excludes user-hidden ones)."""
+    """Return discovered dashboard plugins (excludes user-hidden and non-enabled ones)."""
     plugins = _get_dashboard_plugins()
     # Read user's hidden plugins list from config.
     config = load_config()
     hidden: list = cfg_get(config, "dashboard", "hidden_plugins", default=[]) or []
-    # Strip internal fields before sending to frontend and filter out hidden.
+    # Gate: only serve user plugins that are in plugins.enabled and not
+    # in plugins.disabled.  This prevents the frontend from loading JS/CSS
+    # from plugins the user has not explicitly activated.  (#46435)
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
+    def _is_active(p: dict) -> bool:
+        name = p.get("name", "")
+        if name in hidden:
+            return False
+        if p.get("source") == "user":
+            if name in disabled_set:
+                return False
+            if name not in enabled_set:
+                return False
+        elif p.get("source") == "bundled":
+            if name in disabled_set:
+                return False
+        return True
+
+    # Strip internal fields before sending to frontend.
     return [
         {k: v for k, v in p.items() if not k.startswith("_")}
         for p in plugins
-        if p["name"] not in hidden
+        if _is_active(p)
     ]
 
 
@@ -13759,11 +13784,26 @@ async def serve_plugin_asset(plugin_name: str, file_path: str):
     allowlist, anyone on the loopback port can curl the ``.py`` source
     of a private third-party plugin. Reject everything outside the
     browser-asset set.
+
+    User plugins must be in plugins.enabled before their assets are
+    served. (#46435, GHSA-mcfc-hp25-cjv7)
     """
     plugins = _get_dashboard_plugins()
     plugin = next((p for p in plugins if p["name"] == plugin_name), None)
     if not plugin:
         raise HTTPException(status_code=404, detail="Plugin not found")
+
+    # Gate: user plugins must be enabled to serve assets.
+    if plugin.get("source") == "user":
+        try:
+            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+            enabled_set = _get_enabled_set()
+            disabled_set = _get_disabled_set()
+        except Exception:
+            enabled_set = set()
+            disabled_set = set()
+        if plugin_name in disabled_set or plugin_name not in enabled_set:
+            raise HTTPException(status_code=404, detail="Plugin not found")
 
     base = Path(plugin["_dir"])
     target = (base / file_path).resolve()
@@ -13824,11 +13864,52 @@ def _mount_plugin_api_routes():
     opens a malicious repo; they can extend the dashboard UI via
     static JS/CSS but their Python ``api`` file is never auto-imported
     by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
+
+    Additionally, user plugins must be explicitly enabled via the
+    ``plugins.enabled`` allow-list in config.yaml before their backend
+    code is imported. Without this gate, an installed-but-not-enabled
+    plugin's Python code would execute at dashboard startup — a code
+    execution vector that bypasses the user's intent. (#46435,
+    GHSA-mcfc-hp25-cjv7)
     """
+    # Load the enabled/disabled sets once for the loop.
+    try:
+        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        enabled_set = _get_enabled_set()
+        disabled_set = _get_disabled_set()
+    except Exception:
+        enabled_set = set()
+        disabled_set = set()
+
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
+        plugin_name = plugin.get("name", "")
+        # Gate: user plugins must be in plugins.enabled and not in
+        # plugins.disabled before we import their Python code.
+        # Bundled plugins are trusted (they ship with the release) but
+        # still respect an explicit disable.
+        if plugin.get("source") == "user":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
+            if plugin_name not in enabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (not in plugins.enabled)",
+                    plugin_name,
+                )
+                continue
+        elif plugin.get("source") == "bundled":
+            if plugin_name in disabled_set:
+                _log.debug(
+                    "Plugin %s: skipping API mount (explicitly disabled)",
+                    plugin_name,
+                )
+                continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "

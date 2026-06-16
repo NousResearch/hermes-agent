@@ -556,6 +556,30 @@ def run_doctor(args):
     except Exception as e:
         # Never let a bug in the advisory check block the rest of doctor.
         check_warn(f"Security advisory check failed: {e}")
+
+    _section("MCP Server Security")
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_security import validate_mcp_server_entry
+
+        servers = load_config().get("mcp_servers") or {}
+        suspicious = 0
+        if isinstance(servers, dict):
+            for name, entry in sorted(servers.items()):
+                if not isinstance(entry, dict):
+                    continue
+                issues_found = validate_mcp_server_entry(name, entry)
+                if not issues_found:
+                    continue
+                suspicious += 1
+                check_warn(f"MCP server '{name}' has suspicious stdio command", "; ".join(issues_found))
+                manual_issues.append(
+                    f"Review/remove mcp_servers.{name} in config.yaml; rotate any credentials that may have been exposed."
+                )
+        if suspicious == 0:
+            check_ok("No suspicious MCP stdio commands")
+    except Exception as e:
+        check_warn(f"MCP security check failed: {e}")
     
     _section("Python Environment")
     py_version = sys.version_info
@@ -772,6 +796,7 @@ def run_doctor(args):
                 "huggingface",
                 "lmstudio",
                 "nous",
+                "nvidia",
             }
             provider_accepts_vendor_slug = (
                 provider_policy_id in providers_accepting_vendor_slugs

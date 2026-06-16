@@ -1164,7 +1164,7 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
-    disabled = get_disabled_skill_names()
+    disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),

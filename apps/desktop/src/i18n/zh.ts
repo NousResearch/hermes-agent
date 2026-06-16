@@ -185,6 +185,7 @@ export const zh: Translations = {
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
+      'session.newWindow': '在新窗口中新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',
@@ -1093,7 +1094,8 @@ export const zh: Translations = {
       feishu: '创建飞书 / Lark 应用，配置机器人能力，复制 App ID、App secret 和事件加密密钥。',
       wecom: '在企业微信中添加群机器人，复制其 webhook key 作为 WECOM_BOT_ID。仅可发送——双向请用企业微信 (应用) 选项。',
       wecom_callback: '设置一个企业微信自建应用，暴露其回调 URL，并提供 corp ID、secret、agent ID 和 AES key。',
-      weixin: '登录微信公众平台，复制 AppID 和 Token，并把消息回调 URL 指向 Hermes。',
+      weixin:
+        '运行 `hermes gateway setup`，选择 Weixin，然后使用个人微信账号扫描并确认二维码。Hermes 会通过腾讯 iLink Bot API 连接并保存凭据。',
       qqbot: '在 QQ 开放平台 (q.qq.com) 注册一个应用，复制 App ID 和 Client Secret。',
       api_server:
         '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥，然后把 Open WebUI / LobeChat 等指向 host:port。',

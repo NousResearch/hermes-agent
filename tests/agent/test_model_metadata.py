@@ -220,6 +220,31 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_glm_52_context_1m(self):
+        """GLM-5.2 must resolve to 1M, not the generic GLM fallback of 202K.
+
+        Context window was verified empirically via needle-in-a-haystack
+        retrieval at 789K prompt tokens on api.z.ai/api/coding/paas/v4
+        (2026-06-13).
+        """
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        assert DEFAULT_CONTEXT_LENGTHS["glm-5.2"] == 1_048_576
+        assert DEFAULT_CONTEXT_LENGTHS["glm"] == 202752
+
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            # GLM-5.2 (1M) must NOT fall through to the generic 202K entry
+            assert get_model_context_length("glm-5.2") == 1_048_576
+            # Vendor-prefixed forms (zai provider, zhipu alias)
+            assert get_model_context_length("zai/glm-5.2") == 1_048_576
+            assert get_model_context_length("zhipu/glm-5.2") == 1_048_576
+            # Older GLM variants still resolve to the generic 202K fallback
+            assert get_model_context_length("glm-5") == 202752
+            assert get_model_context_length("glm-5.1") == 202752
+
     def test_openrouter_live_metadata_beats_hardcoded_catchall(self):
         """OpenRouter-routed slugs resolve via the live OR catalog before the
         hardcoded family catch-all.
@@ -1083,6 +1108,78 @@ class TestFetchModelMetadata:
         mm._model_metadata_cache = {}
         mm._model_metadata_cache_time = 0
 
+    def _isolate_disk_cache(self, monkeypatch, tmp_path):
+        import agent.model_metadata as mm
+        cache_path = tmp_path / "openrouter_model_metadata.json"
+        monkeypatch.setattr(mm, "_get_model_metadata_cache_path", lambda: cache_path)
+        return cache_path
+
+    def test_fresh_disk_cache_skips_network(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        cache_path.write_text(
+            '{"test/model":{"context_length":12345,"name":"Cached","pricing":{}}}',
+            encoding="utf-8",
+        )
+
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            result = fetch_model_metadata()
+
+        mock_get.assert_not_called()
+        assert result["test/model"]["context_length"] == 12345
+
+    def test_force_refresh_bypasses_fresh_disk_cache(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        cache_path.write_text(
+            '{"test/model":{"context_length":12345,"name":"Cached","pricing":{}}}',
+            encoding="utf-8",
+        )
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "live/model", "context_length": 67890, "name": "Live"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("agent.model_metadata.requests.get", return_value=mock_response) as mock_get:
+            result = fetch_model_metadata(force_refresh=True)
+
+        assert mock_get.call_count == 1
+        assert "live/model" in result
+        assert "test/model" not in result
+
+    def test_network_success_writes_disk_cache(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "live/model", "context_length": 67890, "name": "Live"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("agent.model_metadata.requests.get", return_value=mock_response):
+            fetch_model_metadata(force_refresh=True)
+
+        assert cache_path.exists()
+        assert "live/model" in cache_path.read_text(encoding="utf-8")
+
+    def test_network_failure_falls_back_to_stale_disk_cache(self, tmp_path, monkeypatch):
+        self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
+        cache_path.write_text(
+            '{"stale/model":{"context_length":50000,"name":"Stale","pricing":{}}}',
+            encoding="utf-8",
+        )
+        old = time.time() - _MODEL_CACHE_TTL - 60
+        import os
+        os.utime(cache_path, (old, old))
+
+        with patch("agent.model_metadata.requests.get", side_effect=Exception("Network error")):
+            result = fetch_model_metadata(force_refresh=True)
+
+        assert result["stale/model"]["context_length"] == 50000
+
     @patch("agent.model_metadata.requests.get")
     def test_caches_result(self, mock_get):
         self._reset_cache()
@@ -1162,10 +1259,11 @@ class TestFetchModelMetadata:
         assert result["test-model"]["context_length"] == 123456
 
     @patch("agent.model_metadata.requests.get")
-    def test_ttl_expiry_triggers_refetch(self, mock_get):
+    def test_ttl_expiry_triggers_refetch(self, mock_get, tmp_path, monkeypatch):
         """Cache expires after _MODEL_CACHE_TTL seconds."""
         import agent.model_metadata as mm
         self._reset_cache()
+        cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -1177,8 +1275,11 @@ class TestFetchModelMetadata:
         fetch_model_metadata(force_refresh=True)
         assert mock_get.call_count == 1
 
-        # Simulate TTL expiry
+        # Simulate both memory and disk TTL expiry.
         mm._model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL - 1
+        old = time.time() - _MODEL_CACHE_TTL - 1
+        import os
+        os.utime(cache_path, (old, old))
         fetch_model_metadata()
         assert mock_get.call_count == 2  # refetched
 

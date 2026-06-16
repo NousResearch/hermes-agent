@@ -1228,12 +1228,12 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
     _register_session_cwd(session)
-    db = _get_db()
-    if db is not None:
-        try:
-            db.update_session_cwd(session.get("session_key", ""), resolved)
-        except Exception:
-            logger.debug("failed to persist session cwd", exc_info=True)
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.update_session_cwd(session.get("session_key", ""), resolved)
+            except Exception:
+                logger.debug("failed to persist session cwd", exc_info=True)
     try:
         from tools.terminal_tool import cleanup_vm
 
@@ -1961,11 +1961,14 @@ def _apply_model_switch(
     *,
     confirm_expensive_model: bool = False,
     pin_session_override: bool = True,
+    parsed_flags: tuple[str, str, bool, bool] | None = None,
 ) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
+    if parsed_flags is None:
+        parsed_flags = parse_model_flags(raw_input)
+    model_input, explicit_provider, persist_global, _force_refresh = parsed_flags
     if not model_input:
         raise ValueError("model value required")
 
@@ -1976,20 +1979,24 @@ def _apply_model_switch(
         current_base_url = getattr(agent, "base_url", "") or ""
         current_api_key = getattr(agent, "api_key", "") or ""
     else:
-        runtime = resolve_runtime_provider(requested=None)
-        current_provider = str(runtime.get("provider", "") or "")
         current_model = _resolve_model()
-        current_base_url = str(runtime.get("base_url", "") or "")
-        # Preserve a callable api_key (Azure Foundry Entra ID bearer
-        # provider) unchanged — ``str(...)`` would produce
-        # ``"<function ...>"`` and poison downstream switch_model
-        # validation. Match the agent-present branch's behavior at the
-        # top of this block.
-        _runtime_key = runtime.get("api_key", "")
-        if callable(_runtime_key) and not isinstance(_runtime_key, str):
-            current_api_key = _runtime_key
-        else:
-            current_api_key = str(_runtime_key or "")
+        current_provider = explicit_provider.strip()
+        current_base_url = ""
+        current_api_key = ""
+        if not explicit_provider:
+            runtime = resolve_runtime_provider(requested=None)
+            current_provider = str(runtime.get("provider", "") or "")
+            current_base_url = str(runtime.get("base_url", "") or "")
+            # Preserve a callable api_key (Azure Foundry Entra ID bearer
+            # provider) unchanged — ``str(...)`` would produce
+            # ``"<function ...>"`` and poison downstream switch_model
+            # validation. Match the agent-present branch's behavior at the
+            # top of this block.
+            _runtime_key = runtime.get("api_key", "")
+            if callable(_runtime_key) and not isinstance(_runtime_key, str):
+                current_api_key = _runtime_key
+            else:
+                current_api_key = str(_runtime_key or "")
 
     # Load user-defined providers so switch_model can resolve named custom
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
@@ -3428,7 +3435,15 @@ def _make_agent(
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+def _init_session(
+    sid: str,
+    key: str,
+    agent,
+    history: list,
+    cols: int = 80,
+    cwd: str | None = None,
+    session_db=None,
+):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -3443,7 +3458,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             "running": False,
             "attached_images": [],
             "image_counter": 0,
-            "cwd": _completion_cwd(),
+            "cwd": cwd or _completion_cwd(),
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -3458,7 +3473,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
-    db = _get_db()
+    db = session_db if session_db is not None else _get_db()
     if db is not None:
         row = db.get_session(key)
         if row and row.get("cwd"):
@@ -4071,6 +4086,10 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    profile_resume_cwd = str(found.get("cwd") or "").strip() or _profile_configured_cwd(
+        profile_home
+    )
+
     def _reuse_live_payload(sid: str, session: dict) -> dict:
         payload = _live_session_payload(
             sid,
@@ -4118,7 +4137,7 @@ def _(rid, params: dict) -> dict:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
         messages = _history_to_messages(history)
-        cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
         now = time.time()
         # A delegated child mid-run emits no native session events of its own —
         # report its liveness from the relay registry so the window paints a
@@ -4261,7 +4280,24 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
-            _init_session(sid, target, agent, history, cols=cols)
+            init_home_token = (
+                set_hermes_home_override(str(profile_home))
+                if profile_home is not None
+                else None
+            )
+            try:
+                _init_session(
+                    sid,
+                    target,
+                    agent,
+                    history,
+                    cols=cols,
+                    cwd=profile_resume_cwd,
+                    session_db=db,
+                )
+            finally:
+                if init_home_token is not None:
+                    reset_hermes_home_override(init_home_token)
             if sid in _sessions:
                 if stored_runtime_overrides.get("model_override") is not None:
                     _sessions[sid]["model_override"] = stored_runtime_overrides[
@@ -5559,6 +5595,11 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
             evt.get("message", ""),
             evt.get("suppressed", 0),
         )
+    if evt_type == "async_delegation":
+        # Async-delegation completions have no process session_id; without
+        # this the fallthrough keys every one as ("", "async_delegation")
+        # and the second completion's status update is suppressed forever.
+        return (evt.get("delegation_id", ""), evt_type)
     return (evt_sid, evt_type)
 
 
@@ -6967,7 +7008,11 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                if session.get("agent") is None:
+                from hermes_cli.model_switch import parse_model_flags
+
+                parsed_flags = parse_model_flags(value)
+                _model_input, explicit_provider, _persist_global, _force_refresh = parsed_flags
+                if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)
                     init_err = _wait_agent(session, rid)
@@ -6982,6 +7027,7 @@ def _(rid, params: dict) -> dict:
                     confirm_expensive_model=bool(
                         params.get("confirm_expensive_model", False)
                     ),
+                    parsed_flags=parsed_flags,
                 )
             else:
                 result = _apply_model_switch(

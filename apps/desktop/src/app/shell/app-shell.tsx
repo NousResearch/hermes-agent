@@ -16,7 +16,7 @@ import {
 } from '@/store/layout'
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
-import { isSecondaryWindow } from '@/store/windows'
+import { isNewSessionWindow, isSecondaryWindow } from '@/store/windows'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
@@ -80,6 +80,7 @@ export function AppShell({
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
   const isFullscreen = Boolean(connection?.isFullscreen) || viewportFullscreen
+  const hideTitlebarControls = isNewSessionWindow()
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
   // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero
   // on macOS, where window controls sit on the left and are reported via
@@ -162,7 +163,9 @@ export function AppShell({
         } as CSSProperties
       }
     >
-      <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+      {!hideTitlebarControls && (
+        <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+      )}
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
         <PaneShell className="min-h-0 flex-1">
@@ -183,7 +186,9 @@ export function AppShell({
             the panes' z-20 resize handles, keeping every pane resizable. */}
         {mainOverlays}
 
-        <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />
+        {/* The compact pop-out drops the statusbar — it's a scratch window, not
+            the full shell. */}
+        {!isSecondaryWindow() && <StatusbarControls items={statusbarItems} leftItems={leftStatusbarItems} />}
       </main>
 
       {overlays}

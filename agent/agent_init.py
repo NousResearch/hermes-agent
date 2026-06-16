@@ -52,6 +52,43 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches
 
+
+def _default_codex_reasoning_replay_enabled(
+    config: Optional[Dict[str, Any]],
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+) -> bool:
+    """Return whether encrypted Codex reasoning should be replayed.
+
+    Replaying ``reasoning.encrypted_content`` was enabled globally on Jun 14
+    to improve Responses continuity, but Hermes telemetry showed a severe
+    prompt-cache regression on the Telegram ``openai-codex`` + ``gpt-5.5``
+    path: fresh input jumped from ~4–6% to 48–70% because every subsequent
+    turn replayed an ever-growing chain of opaque encrypted blobs. Keep the
+    feature opt-in for that expensive route while preserving the old default
+    elsewhere.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    raw_agent_cfg = cfg.get("agent")
+    raw_codex_cfg = cfg.get("codex")
+    agent_cfg: Dict[str, Any] = raw_agent_cfg if isinstance(raw_agent_cfg, dict) else {}
+    codex_cfg: Dict[str, Any] = raw_codex_cfg if isinstance(raw_codex_cfg, dict) else {}
+
+    for key, section in (
+        ("codex_reasoning_replay_enabled", agent_cfg),
+        ("reasoning_replay_enabled", codex_cfg),
+    ):
+        if key in section:
+            return bool(section.get(key))
+
+    provider_slug = (provider or "").strip().lower()
+    model_slug = (model or "").strip().lower()
+    if provider_slug == "openai-codex" and model_slug == "gpt-5.5":
+        return False
+    return True
+
+
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
 # capture our warnings.  (run_agent.py also does
 # ``logger = logging.getLogger(__name__)``, which resolves to "run_agent"
@@ -1056,6 +1093,7 @@ def init_agent(
     # When that happens we disable replay for the rest of the session and
     # fall back to stateless continuity.  See
     # agent/conversation_loop.py's invalid_encrypted_content retry branch.
+    # The default may be tightened after config is loaded below.
     agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
@@ -1093,6 +1131,11 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    agent._codex_reasoning_replay_enabled = _default_codex_reasoning_replay_enabled(
+        _agent_cfg,
+        provider=getattr(agent, "provider", None),
+        model=getattr(agent, "model", None),
+    )
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

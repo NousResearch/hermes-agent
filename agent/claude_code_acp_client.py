@@ -479,17 +479,23 @@ class ClaudeCodeACPClient:
         self.api_key = api_key or self._provider_label
         self.base_url = base_url or self._marker_base_url
         self._default_headers = dict(default_headers or {})
-        # Fixed subprocess launch argv — always npx + npm package, never user-configurable.
-        # The acp_command parameter passed by delegate_task is a routing placeholder
-        # (e.g. "claude-code-acp") to distinguish Claude vs Copilot providers — it is
-        # NOT used for subprocess argv. The real launch command comes from
-        # _resolve_command() (env var / default "npx"); the launch args come from
-        # _resolve_args() (env var / default ["-y", "<npm package>"]).
+        # Subprocess launch argv (consumed by subprocess.Popen at L602):
+        # [_launch_command] + _launch_args, resolved from _resolve_command()
+        # (env / "npx") and _resolve_args() (env / ["-y", "<npm>"]). Not
+        # influenced by any __init__ kwarg.
+        #
+        # Routing placeholders (NOT argv): acp_command / command are
+        # caller-compat kwargs — delegate_task passes e.g. "claude-code-acp"
+        # to pick Claude vs Copilot provider. Never read by this class.
+        # Kept to avoid breaking the delegate_task routing layer.
+        # See B4/B5 review (2026-06-16).
+        #
+        # Runtime ACP config directives (NOT argv): acp_args / args carry
+        # --model, --effort, --permission-mode, etc. Scanned by
+        # _apply_acp_arg_directives() (L1285) into _pending_session_configs,
+        # flushed via session/set_config_option after session/new.
         self._launch_command = self._resolve_command()
         self._launch_args = self._resolve_args()
-        # Runtime ACP config directives (--model, --effort, --permission-mode).
-        # Parsed by _apply_acp_arg_directives() into _pending_session_configs,
-        # flushed to session/set_config_option after session/new.
         self._acp_args = list(acp_args or args or [])
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)

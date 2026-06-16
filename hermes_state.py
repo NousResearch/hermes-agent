@@ -2947,6 +2947,21 @@ class SessionDB:
             current = child_id
         return current
 
+    # All sessions columns except the large system_prompt blob, each prefixed
+    # with the "s" table alias used in list_sessions_rich/_get_session_rich_row
+    # queries.  Used when compact_rows=True to avoid reading the blob for
+    # dashboard and picker callers that only need lightweight metadata.
+    _SESSION_COMPACT_COLS = (
+        "s.id, s.source, s.user_id, s.model, s.model_config, "
+        "s.parent_session_id, s.started_at, s.ended_at, s.end_reason, "
+        "s.message_count, s.tool_call_count, s.input_tokens, s.output_tokens, "
+        "s.cache_read_tokens, s.cache_write_tokens, s.reasoning_tokens, "
+        "s.cwd, s.billing_provider, s.billing_base_url, s.billing_mode, "
+        "s.estimated_cost_usd, s.actual_cost_usd, s.cost_status, s.cost_source, "
+        "s.pricing_version, s.title, s.api_call_count, s.handoff_state, "
+        "s.handoff_platform, s.handoff_error, s.rewind_count, s.archived"
+    )
+
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.
 
@@ -2988,6 +3003,7 @@ class SessionDB:
         archived_only: bool = False,
         id_query: str = None,
         search_query: str = None,
+        compact_rows: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3021,6 +3037,12 @@ class SessionDB:
         its forward compression chain). A punctuation-stripped variant is also
         matched so e.g. ``an94`` finds ``AN-94``. Only honored in the
         ``order_by_last_active`` path.
+
+        Pass ``compact_rows=True`` for dashboard and picker callers that only
+        need lightweight metadata. This omits the ``system_prompt`` blob from
+        the SELECT so SQLite never copies it out of the B-tree page — a
+        significant I/O saving on large databases where the blob routinely
+        runs to tens of kilobytes per row.
         """
         where_clauses = []
         params = []
@@ -3138,6 +3160,7 @@ class SessionDB:
                 outer_where = (
                     f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"
                 )
+            _sel = self._SESSION_COMPACT_COLS if compact_rows else "s.*"
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -3161,7 +3184,7 @@ class SessionDB:
                     FROM chain
                     GROUP BY root_id
                 )
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3184,8 +3207,9 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
+            _sel = self._SESSION_COMPACT_COLS if compact_rows else "s.*"
             query = f"""
-                SELECT s.*,
+                SELECT {_sel},
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                          FROM messages m
@@ -3322,13 +3346,17 @@ class SessionDB:
             runs.append(s)
         return runs
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
+
+        Pass ``compact_rows=True`` to omit the ``system_prompt`` blob (see
+        ``list_sessions_rich`` for details).
         """
-        query = """
-            SELECT s.*,
+        _sel = self._SESSION_COMPACT_COLS if compact_rows else "s.*"
+        query = f"""
+            SELECT {_sel},
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m

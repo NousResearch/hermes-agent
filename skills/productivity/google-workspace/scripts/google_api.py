@@ -178,9 +178,55 @@ def _datetime_with_timezone(value: str) -> str:
     return value + "Z"
 
 
+def _repair_token_file():
+    """Ensure google_token.json has client_id/client_secret.
+
+    Other processes (e.g. gws, different OAuth libraries) may rewrite the token
+    file in raw OAuth-response format, dropping client_id/client_secret — which
+    causes Credentials.from_authorized_user_file() to crash. This re-injects
+    them from google_client_secret.json when missing.
+    """
+    try:
+        data = json.loads(TOKEN_PATH.read_text())
+    except Exception:
+        return  # let the normal error path handle it
+
+    needs_repair = False
+
+    # Remap raw OAuth field names to the Google library format
+    if "access_token" in data and "token" not in data:
+        data["token"] = data.pop("access_token")
+        needs_repair = True
+
+    # Inject client_id / client_secret if missing
+    if not data.get("client_id") or not data.get("client_secret"):
+        try:
+            cs = json.loads(CLIENT_SECRET_PATH.read_text())
+            installed = cs.get("installed", cs.get("web", {}))
+            data["client_id"] = installed.get("client_id", data.get("client_id"))
+            data["client_secret"] = installed.get("client_secret", data.get("client_secret"))
+            needs_repair = True
+        except Exception:
+            pass  # no client secret file — let the normal error surface
+
+    if not data.get("token_uri"):
+        data["token_uri"] = "https://oauth2.googleapis.com/token"
+        needs_repair = True
+
+    if not data.get("type"):
+        data["type"] = "authorized_user"
+        needs_repair = True
+
+    if needs_repair:
+        TOKEN_PATH.write_text(json.dumps(data, indent=2))
+
+
 def get_credentials():
     """Load and refresh credentials from token file."""
     _ensure_authenticated()
+
+    # Defensive: repair token file if another process wrote it in wrong format
+    _repair_token_file()
 
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request

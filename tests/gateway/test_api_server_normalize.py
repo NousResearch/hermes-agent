@@ -2,6 +2,7 @@
 
 from gateway.platforms import api_server
 from gateway.platforms.api_server import _normalize_chat_content
+from gateway.platforms.api_server import APIServerAdapter
 
 
 class TestNormalizeChatContent:
@@ -102,3 +103,34 @@ class TestNormalizeChatContent:
 
         assert result.count("x") == 1000
         assert sum_calls == 0
+
+
+class TestSessionResponse:
+    """_session_response exposes a stable, client-safe set of session fields."""
+
+    def test_session_key_returned(self):
+        """session_key is metadata the client API should surface."""
+        session = {"id": "sess_1", "user_id": "u1", "session_key": "key-abc"}
+        payload = APIServerAdapter._session_response(session)
+        assert payload["session_key"] == "key-abc"
+
+    def test_session_key_omitted_when_absent(self):
+        """Keys missing from the source row are not fabricated."""
+        session = {"id": "sess_1", "user_id": "u1"}
+        payload = APIServerAdapter._session_response(session)
+        assert "session_key" not in payload
+
+    def test_unsafe_keys_stripped(self):
+        """Sensitive snapshots are not echoed back, only existence flags."""
+        session = {
+            "id": "sess_1",
+            "session_key": "key-abc",
+            "system_prompt": "secret prompt",
+            "model_config": {"k": "v"},
+        }
+        payload = APIServerAdapter._session_response(session)
+        assert "system_prompt" not in payload
+        assert "model_config" not in payload
+        assert payload["has_system_prompt"] is True
+        assert payload["has_model_config"] is True
+        assert payload["session_key"] == "key-abc"

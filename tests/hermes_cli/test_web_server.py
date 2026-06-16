@@ -529,6 +529,33 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
+    def test_get_sessions_returns_session_key(self):
+        """/api/sessions exposes session_key so external consumers (e.g.
+        Otto-Voice) can map a live session to a specific Telegram chat/group
+        without guessing from user_id alone."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="keyed-session",
+                source="telegram",
+                session_key="agent:main:telegram:group:-1001234567890:1",
+            )
+            db.create_session(session_id="unkeyed-session", source="cli")
+        finally:
+            db.close()
+
+        rows = self.client.get("/api/sessions?limit=20&offset=0").json()["sessions"]
+
+        keyed = next(s for s in rows if s["id"] == "keyed-session")
+        assert keyed["session_key"] == "agent:main:telegram:group:-1001234567890:1"
+
+        # Always present, nullable for rows created without a key.
+        unkeyed = next(s for s in rows if s["id"] == "unkeyed-session")
+        assert "session_key" in unkeyed
+        assert unkeyed["session_key"] is None
+
     def test_get_sessions_forwards_min_messages(self, monkeypatch):
         """The ?min_messages= filter must reach SessionDB.
 

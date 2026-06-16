@@ -96,6 +96,20 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_create_session_persists_session_key(self, db):
+        db.create_session(
+            session_id="s1",
+            source="telegram",
+            session_key="agent:main:telegram:group:-1001234567890:1",
+        )
+        session = db.get_session("s1")
+        assert session["session_key"] == "agent:main:telegram:group:-1001234567890:1"
+
+    def test_create_session_session_key_defaults_none(self, db):
+        # Older callers that don't pass session_key get NULL (migration safety).
+        db.create_session(session_id="s1", source="cli")
+        assert db.get_session("s1")["session_key"] is None
+
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
         db.end_session("s1", end_reason="user_exit")
@@ -2330,7 +2344,13 @@ class TestSchemaInit:
         db = SessionDB(db_path=old_db)
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        # Topic mode stores its per-chat bindings in a separate
+        # telegram_dm_topic_bindings table — it must never eagerly add these
+        # columns to sessions on a plain upgrade. (session_key is now a
+        # standard, always-present sessions column and IS auto-migrated, so it
+        # is intentionally excluded from this guard.)
+        assert {"chat_id", "chat_type", "thread_id"}.isdisjoint(columns)
+        assert "session_key" in columns
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
@@ -2913,6 +2933,25 @@ class TestTitleSqlWildcards:
 
 class TestListSessionsRich:
     """Tests for enhanced session listing with preview and last_active."""
+
+    def test_session_key_present_when_set(self, db):
+        db.create_session(
+            "s1", "telegram",
+            session_key="agent:main:telegram:group:-1001234567890:1",
+        )
+        sessions = db.list_sessions_rich()
+        assert len(sessions) == 1
+        assert sessions[0]["session_key"] == (
+            "agent:main:telegram:group:-1001234567890:1"
+        )
+
+    def test_session_key_none_for_rows_without_key(self, db):
+        # Rows created without a session_key (e.g. pre-migration) surface None
+        # rather than raising — the column is always present in the dict.
+        db.create_session("s1", "cli")
+        sessions = db.list_sessions_rich()
+        assert "session_key" in sessions[0]
+        assert sessions[0]["session_key"] is None
 
     def test_preview_from_first_user_message(self, db):
         db.create_session("s1", "cli")

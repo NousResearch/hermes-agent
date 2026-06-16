@@ -3051,6 +3051,7 @@ class GatewaySlashCommandsMixin:
                     session_id=session_id,
                     source=source.platform.value if source.platform else "unknown",
                     user_id=source.user_id,
+                    session_key=session_entry.session_key,
                 )
             except Exception:
                 pass  # Session might already exist, ignore errors
@@ -3348,6 +3349,7 @@ class GatewaySlashCommandsMixin:
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
+                session_key=current_entry.session_key,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

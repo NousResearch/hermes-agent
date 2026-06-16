@@ -310,6 +310,28 @@ def build_handoff_consume_seed(parsed: dict[str, str], source_path: str) -> str:
     )
 
 
+def consume_handoff_markdown_text(text: str, source_label: str = "<pasted handoff>") -> HandoffCommandResult | None:
+    """Auto-consume a pasted handoff markdown block.
+
+    Returns ``None`` when *text* does not look like a handoff document.
+    Returns a ``HandoffCommandResult`` with ``agent_seed`` when the markdown is
+    valid and should be routed directly into the next agent turn.
+    """
+    body = (text or "").strip()
+    if not body.startswith("# Handoff:"):
+        return None
+    parsed = parse_handoff_markdown(body)
+    seed = build_handoff_consume_seed(parsed, source_label)
+    return HandoffCommandResult(
+        text=(
+            "Detected handoff markdown in the pasted message.\n"
+            "Queued it as the next agent turn."
+        ),
+        saved_path=None,
+        agent_seed=seed,
+    )
+
+
 def _format_inline_result(doc: HandoffDocument) -> str:
     return (
         f"{doc.markdown}\n"

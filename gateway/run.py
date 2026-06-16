@@ -9202,14 +9202,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
                 # it's a gateway-generated hint, not model output. (#7100)
-                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
-                if event.message_id:
-                    _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    _user_entry,
-                    skip_db=agent_persisted,
-                )
+                #
+                # Dedup guard: if the last entry in history is already this
+                # user message (same content + message_id), skip the write.
+                # Without this, retries of the same Telegram message after
+                # repeated transient failures stack duplicate user turns and
+                # the agent falls behind. (#47237)
+                _already_persisted = False
+                if history:
+                    _last = history[-1]
+                    if _last.get("role") == "user" and _last.get("content") == message_text:
+                        _last_mid = str(_last.get("message_id", ""))
+                        _curr_mid = str(event.message_id or "")
+                        if not _curr_mid or _last_mid == _curr_mid:
+                            _already_persisted = True
+                if not _already_persisted:
+                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    if event.message_id:
+                        _user_entry["message_id"] = str(event.message_id)
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id,
+                        _user_entry,
+                        skip_db=agent_persisted,
+                    )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []

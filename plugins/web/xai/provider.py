@@ -46,7 +46,7 @@ from tools.xai_http import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "grok-4.3"
+DEFAULT_MODEL = "grok-build-0.1"
 DEFAULT_TIMEOUT = 90
 _MAX_DOMAIN_FILTERS = 5  # xAI hard cap on allowed_domains / excluded_domains
 

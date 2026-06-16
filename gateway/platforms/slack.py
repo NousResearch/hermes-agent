@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import importlib
 import json
 import logging
 import os
@@ -302,6 +303,26 @@ def _resolve_slack_proxy_url() -> Optional[str]:
     return proxy_url
 
 
+def _build_socket_mode_handler(
+    app: Any,
+    app_token: str,
+    proxy_url: Optional[str],
+) -> Tuple[Any, str]:
+    """Build a Socket Mode handler with the safest backend for this config."""
+    if proxy_url:
+        return AsyncSocketModeHandler(app, app_token, proxy=proxy_url), "aiohttp"
+
+    try:
+        module = importlib.import_module(
+            "slack_bolt.adapter.socket_mode.websockets"
+        )
+        handler_cls = getattr(module, "AsyncSocketModeHandler")
+    except (ImportError, AttributeError):
+        return AsyncSocketModeHandler(app, app_token), "aiohttp"
+
+    return handler_cls(app, app_token), "websockets"
+
+
 class SlackAdapter(BasePlatformAdapter):
     """
     Slack bot adapter using Socket Mode.
@@ -374,6 +395,7 @@ class SlackAdapter(BasePlatformAdapter):
         # self-heal when Slack silently drops the websocket.
         self._app_token: Optional[str] = None
         self._proxy_url: Optional[str] = None
+        self._socket_mode_backend: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
@@ -383,8 +405,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app or not self._app_token:
             raise RuntimeError("Socket Mode requires an initialized app and app token")
 
-        self._handler = AsyncSocketModeHandler(
-            self._app, self._app_token, proxy=self._proxy_url
+        self._handler, self._socket_mode_backend = _build_socket_mode_handler(
+            self._app,
+            self._app_token,
+            self._proxy_url,
         )
         _apply_slack_proxy(self._handler.client, self._proxy_url)
 
@@ -1036,7 +1060,8 @@ class SlackAdapter(BasePlatformAdapter):
                 raise
 
             logger.info(
-                "[Slack] Socket Mode connected (%d workspace(s))",
+                "[Slack] Socket Mode connected via %s (%d workspace(s))",
+                self._socket_mode_backend or "aiohttp",
                 len(self._team_clients),
             )
             return True

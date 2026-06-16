@@ -50,7 +50,10 @@ def _install_exploding_memory_client(monkeypatch):
     # submodules) on monkeypatch revert when absent, polluting other tests that import mem0
     # (caused order-dependent hindsight failures under pytest-randomly). setattr on the real
     # module is reverted cleanly and leaves the module graph intact.
-    import mem0 as _real_mem0
+    # mem0 is an OPTIONAL runtime dependency (the provider imports it lazily;
+    # it's not in pyproject/requirements). Skip — don't fail — when it's absent,
+    # e.g. on CI runners without the optional package installed.
+    _real_mem0 = pytest.importorskip("mem0")
 
     class ExplodingMemoryClient:
         def __init__(self, *args, **kwargs):
@@ -170,7 +173,9 @@ def test_unset_or_blank_host_uses_existing_memoryclient_path(monkeypatch, tmp_pa
         monkeypatch.setenv("MEM0_HOST", host_value)
 
     constructed = []
-    import mem0 as _real_mem0
+    # mem0 is an OPTIONAL runtime dependency (imported lazily by the provider);
+    # skip rather than fail when it isn't installed (e.g. clean CI runners).
+    _real_mem0 = pytest.importorskip("mem0")
 
     class FakeMemoryClient:
         def __init__(self, **kwargs):

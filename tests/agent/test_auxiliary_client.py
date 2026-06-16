@@ -38,6 +38,52 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{header}.{payload}.sig"
 
 
+def _gemini_text_payload(text: str) -> dict:
+    return {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": text}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 1,
+            "candidatesTokenCount": 1,
+            "totalTokenCount": 2,
+        },
+    }
+
+
+class _RecordingGeminiHTTP:
+    def __init__(self, text: str = "ok"):
+        self.text = text
+        self.requests = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.requests.append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = _gemini_text_payload(self.text)
+        return response
+
+    def close(self):
+        return None
+
+
+def _clear_aux_client_cache():
+    import agent.auxiliary_client as aux_mod
+
+    with aux_mod._client_cache_lock:
+        aux_mod._client_cache.clear()
+
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Strip provider env vars so each test starts clean."""
@@ -144,6 +190,117 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kwargs["max_tokens"] == 1234
         assert "max_completion_tokens" not in kwargs
+
+    def test_keeps_max_tokens_on_native_gemini(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="gemini",
+            model="gemma-4-31b-it",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=1234,
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        assert kwargs["max_tokens"] == 1234
+        assert "max_completion_tokens" not in kwargs
+
+
+class TestGeminiNativeAuxiliaryTaskRoutes:
+    def test_all_auxiliary_task_configs_share_gemma_no_default_cap_behavior(self, monkeypatch):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        recorder = _RecordingGeminiHTTP()
+        monkeypatch.setattr(
+            "agent.gemini_native_adapter.httpx.Client",
+            lambda *args, **kwargs: recorder,
+        )
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-env-test")
+        _clear_aux_client_cache()
+
+        plugin_manager = PluginManager()
+        plugin_manager._discovered = True
+        plugin_ctx = PluginContext(PluginManifest(name="future_plugin"), plugin_manager)
+        plugin_ctx.register_auxiliary_task(
+            key="future_task",
+            display_name="Future task",
+            description="future auxiliary route",
+            defaults={
+                "provider": "gemini",
+                "model": "gemma-4-26b-a4b-it",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                "timeout": 61,
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_auxiliary_tasks",
+            lambda: sorted(plugin_manager._aux_tasks.values(), key=lambda entry: entry["key"]),
+        )
+
+        ordered_tasks = list(DEFAULT_CONFIG["auxiliary"].keys()) + ["goal_judge", "future_task"]
+        gemma_models = ("gemma-4-31b-it", "gemma-4-26b-a4b-it")
+        config = {"auxiliary": {}}
+        for idx, task in enumerate(ordered_tasks):
+            if task == "future_task":
+                config["auxiliary"][task] = {"timeout": 75}
+                continue
+            config["auxiliary"][task] = {
+                "provider": "gemini",
+                "model": gemma_models[idx % len(gemma_models)],
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                "timeout": 30 + idx,
+            }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+
+        for task in ordered_tasks:
+            client, model = get_text_auxiliary_client(task)
+            assert client is not None
+            assert model
+
+            client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": f"hello from {task}"}],
+            )
+
+            request = recorder.requests[-1]
+            assert request["url"].endswith(f"/models/{model}:generateContent")
+            assert "maxOutputTokens" not in request["json"].get("generationConfig", {})
+
+    def test_explicit_auxiliary_api_key_still_uses_native_gemini_adapter(self, monkeypatch):
+        recorder = _RecordingGeminiHTTP()
+        monkeypatch.setattr(
+            "agent.gemini_native_adapter.httpx.Client",
+            lambda *args, **kwargs: recorder,
+        )
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        _clear_aux_client_cache()
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "auxiliary": {
+                    "compression": {
+                        "provider": "gemini",
+                        "model": "gemma-4-31b-it",
+                        "api_key": "AIza-explicit-config",
+                    }
+                }
+            },
+        )
+
+        client, model = get_text_auxiliary_client("compression")
+        assert client is not None
+
+        client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "hello"}],
+            max_tokens=4096,
+        )
+
+        request = recorder.requests[-1]
+        assert request["headers"]["x-goog-api-key"] == "AIza-explicit-config"
+        assert request["json"]["generationConfig"]["maxOutputTokens"] == 4096
 
 
 class TestNousTagsScoping:
@@ -1764,9 +1921,14 @@ class TestAuxiliaryFallbackLayering:
                     messages=[{"role": "user", "content": "hello"}],
                 )
 
-        assert any(
-            "all fallbacks exhausted" in r.message for r in caplog.records
-        ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
+        messages = [r.message for r in caplog.records]
+        assert any("all fallbacks exhausted" in message for message in messages), (
+            f"Expected exhaustion warning, got: {messages}"
+        )
+        exhaustion = next(message for message in messages if "all fallbacks exhausted" in message)
+        assert "provider=zai" in exhaustion
+        assert "model=glm-4v-flash" in exhaustion
+        assert "Exception: Payment Required" in exhaustion
 
 
 class TestTryMainAgentModelFallback:

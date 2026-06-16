@@ -426,6 +426,71 @@ class TestVisionConfig:
         assert mock_llm.await_args.kwargs["temperature"] == 0.1
         assert mock_llm.await_args.kwargs["timeout"] == 120.0
 
+    @pytest.mark.asyncio
+    async def test_vision_gemma_config_preserves_explicit_max_output_tokens(
+        self, tmp_path, monkeypatch
+    ):
+        import agent.auxiliary_client as aux_mod
+
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+        recorded = {}
+
+        class DummyHTTP:
+            def post(self, url, json=None, headers=None, timeout=None):
+                recorded["url"] = url
+                recorded["json"] = json
+                recorded["headers"] = headers
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "Gemma vision analysis"}]},
+                            "finishReason": "STOP",
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                }
+                return response
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(
+            "agent.gemini_native_adapter.httpx.Client",
+            lambda *args, **kwargs: DummyHTTP(),
+        )
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-vision-test")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "auxiliary": {
+                    "vision": {
+                        "provider": "gemini",
+                        "model": "gemma-4-26b-a4b-it",
+                        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                    }
+                }
+            },
+        )
+        with aux_mod._client_cache_lock:
+            aux_mod._client_cache.clear()
+
+        with patch(
+            "tools.vision_tools._image_to_base64_data_url",
+            return_value="data:image/png;base64,abc",
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this"))
+
+        assert result["success"] is True
+        assert recorded["url"].endswith("/models/gemma-4-26b-a4b-it:generateContent")
+        assert recorded["json"]["generationConfig"]["maxOutputTokens"] == 2000
+
 
 class TestVisionSafetyGuards:
     @pytest.mark.asyncio

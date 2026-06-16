@@ -211,7 +211,48 @@ def test_bare_gemini_model_id_strips_only_self_prefix(model, expected):
     assert bare_gemini_model_id(model) == expected
 
 
-def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
+@pytest.mark.parametrize("model, expected", [
+    ("gemini-2.0-flash", "models/gemini-2.0-flash"),
+    ("models/gemini-x", "models/gemini-x"),
+    ("tunedModels/my-tune", "tunedModels/my-tune"),
+])
+def test_gemini_resource_path_preserves_native_resource_names(model, expected):
+    from agent.gemini_native_adapter import gemini_resource_path
+
+    assert gemini_resource_path(model) == expected
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gemma-4-31b-it",
+        "google/gemma-4-31b-it",
+        "gemini/gemma-4-26b-a4b-it",
+        "models/gemma-4-31b-it",
+    ],
+)
+def test_is_gemma_family_model_normalizes_native_adapter_prefixes(model):
+    from agent.gemini_native_adapter import is_gemma_family_model
+
+    assert is_gemma_family_model(model) is True
+
+
+def test_is_gemma_family_model_rejects_non_gemma_models():
+    from agent.gemini_native_adapter import is_gemma_family_model
+
+    assert is_gemma_family_model("gemini-2.5-flash") is False
+    assert is_gemma_family_model("tunedModels/my-tune") is False
+
+
+@pytest.mark.parametrize(
+    "model, expected_suffix",
+    [
+        ("google/gemini-2.0-flash", "/models/gemini-2.0-flash:generateContent"),
+        ("models/gemini-x", "/models/gemini-x:generateContent"),
+        ("tunedModels/my-tune", "/tunedModels/my-tune:generateContent"),
+    ],
+)
+def test_native_client_builds_resource_aware_model_url(monkeypatch, model, expected_suffix):
     from agent.gemini_native_adapter import GeminiNativeClient
 
     recorded = {}
@@ -230,11 +271,54 @@ def test_native_client_strips_self_prefix_from_model_url(monkeypatch):
     monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
     client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
     client.chat.completions.create(
-        model="google/gemini-2.0-flash",
+        model=model,
         messages=[{"role": "user", "content": "Hello"}],
     )
 
-    assert recorded["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    assert recorded["url"].endswith(expected_suffix)
+
+
+def test_native_stream_completion_preserves_tuned_model_resource_path(monkeypatch):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyStreamResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def iter_text(self):
+            yield "data: [DONE]\n"
+
+    class DummyHTTP:
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            recorded["method"] = method
+            recorded["url"] = url
+            recorded["json"] = json
+            recorded["headers"] = headers
+            return DummyStreamResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+
+    list(
+        client.chat.completions.create(
+            model="tunedModels/my-tune",
+            messages=[{"role": "user", "content": "Hello"}],
+            stream=True,
+        )
+    )
+
+    assert recorded["method"] == "POST"
+    assert recorded["url"].endswith("/tunedModels/my-tune:streamGenerateContent?alt=sse")
 
 
 def test_native_http_error_keeps_status_and_retry_after():
@@ -399,12 +483,44 @@ def test_max_tokens_none_defaults_to_gemini_output_ceiling():
         GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
     )
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
+    req = build_gemini_request(
+        model="gemini-2.5-flash",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=None,
+    )
     assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
 
 
-def test_explicit_max_tokens_is_respected():
+@pytest.mark.parametrize("model", ["gemma-4-31b-it", "gemini-2.5-flash"])
+def test_explicit_max_tokens_is_respected(model):
     from agent.gemini_native_adapter import build_gemini_request
 
-    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
+    req = build_gemini_request(
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=4096,
+    )
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+@pytest.mark.parametrize("model", ["gemma-4-31b-it", "gemma-4-26b-a4b-it"])
+def test_gemma_omits_synthetic_default_max_output_tokens(model):
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        model=model,
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=None,
+    )
+    assert "maxOutputTokens" not in req.get("generationConfig", {})
+
+
+def test_future_gemma_family_omits_synthetic_default_max_output_tokens():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(
+        model="gemma-5-preview",
+        messages=[{"role": "user", "content": "hi"}],
+        max_tokens=None,
+    )
+    assert "maxOutputTokens" not in req.get("generationConfig", {})

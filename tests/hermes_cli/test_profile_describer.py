@@ -112,6 +112,76 @@ def test_describer_writes_description_with_auto_true(profile_env, monkeypatch):
     assert meta["description_auto"] is True
 
 
+def test_describer_gemma_config_preserves_explicit_max_output_tokens(
+    profile_env, monkeypatch
+):
+    import agent.auxiliary_client as aux_mod
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            recorded["json"] = json
+            recorded["headers"] = headers
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": jsonlib.dumps(
+                                        {"description": "writes Python codebases"}
+                                    )
+                                }
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 1,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 2,
+                },
+            }
+            return response
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter.httpx.Client",
+        lambda *args, **kwargs: DummyHTTP(),
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-profile-test")
+    monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: n == "myprof")
+    monkeypatch.setattr(profiles_mod, "normalize_profile_name", lambda n: n)
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: profile_env)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "auxiliary": {
+                "profile_describer": {
+                    "provider": "gemini",
+                    "model": "gemma-4-31b-it",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                }
+            }
+        },
+    )
+    with aux_mod._client_cache_lock:
+        aux_mod._client_cache.clear()
+
+    outcome = describer.describe_profile("myprof")
+
+    assert outcome.ok is True
+    assert recorded["url"].endswith("/models/gemma-4-31b-it:generateContent")
+    assert recorded["json"]["generationConfig"]["maxOutputTokens"] == 400
+
+
 def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     profiles_mod.write_profile_meta(
         profile_env, description="curated", description_auto=False,

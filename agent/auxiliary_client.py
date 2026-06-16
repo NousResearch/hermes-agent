@@ -3377,8 +3377,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     header so the request is routed to Copilot's vision-capable
     infrastructure (otherwise vision payloads silently time out).
     """
-    from openai import AsyncOpenAI
-
     if isinstance(sync_client, CodexAuxiliaryClient):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
@@ -3396,6 +3394,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
             return sync_client, model
     except ImportError:
         pass
+
+    from openai import AsyncOpenAI
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -4848,6 +4848,12 @@ def _resolve_task_provider_model(
         cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
+        # Keep an explicit non-auto provider paired with its explicit base_url.
+        # This matches the config-path behavior below and lets provider-specific
+        # transports (for example native Gemini) still activate when the caller
+        # intentionally overrides the endpoint.
+        if provider and provider not in {"auto", "custom"}:
+            return provider, resolved_model, base_url, api_key, resolved_api_mode
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
         return provider, resolved_model, base_url, api_key, resolved_api_mode
@@ -5092,14 +5098,24 @@ def _build_call_kwargs(
         # models reject it entirely with error 1210). Omitting it sidesteps all of
         # those wire-format quirks at once.
         #
-        # The one exception is the Anthropic Messages wire (MiniMax and any
-        # ``/anthropic`` endpoint reached through the OpenAI SDK wrapper), where
-        # max_tokens is a MANDATORY field — omitting it is a hard 400. Keep it only
-        # there.
+        # Keep the caller's explicit cap only on transports that need Hermes to
+        # forward it as-is:
+        # - Anthropic Messages wire, where max_tokens is mandatory.
+        # - Native Gemini, where GeminiNativeClient translates max_tokens to
+        #   generationConfig.maxOutputTokens for the native REST API.
         _effective_base = base_url or (
             _current_custom_base_url() if provider == "custom" else ""
         )
-        if _is_anthropic_compat_endpoint(provider, _effective_base):
+        _normalized_provider = _normalize_aux_provider(provider)
+        _is_native_gemini = False
+        if _normalized_provider == "gemini":
+            try:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+
+                _is_native_gemini = is_native_gemini_base_url(_effective_base)
+            except Exception:
+                _is_native_gemini = False
+        if _is_anthropic_compat_endpoint(provider, _effective_base) or _is_native_gemini:
             kwargs["max_tokens"] = max_tokens
 
     if tools:
@@ -5620,9 +5636,15 @@ def call_llm(
             # warning so the operator knows aux task is about to fail.
             # (#26882) The error itself is re-raised below.
             logger.warning(
-                "Auxiliary %s: %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
-                task or "call", reason, resolved_provider,
+                "Auxiliary %s: %s on provider=%s model=%s failed with %s: %s "
+                "and all fallbacks exhausted (fallback_chain + main agent model). "
+                "Raising original error.",
+                task or "call",
+                reason,
+                resolved_provider,
+                final_model or resolved_model or "default",
+                type(first_err).__name__,
+                " ".join(str(first_err).split())[:240],
             )
         # Connection/timeout errors leave the cached client poisoned (closed
         # httpx transport, half-read stream, dead async loop).  Drop it from
@@ -6067,9 +6089,15 @@ async def async_call_llm(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(
-                "Auxiliary %s (async): %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
-                task or "call", reason, resolved_provider,
+                "Auxiliary %s (async): %s on provider=%s model=%s failed with %s: %s "
+                "and all fallbacks exhausted (fallback_chain + main agent model). "
+                "Raising original error.",
+                task or "call",
+                reason,
+                resolved_provider,
+                final_model or resolved_model or "default",
+                type(first_err).__name__,
+                " ".join(str(first_err).split())[:240],
             )
         # Mirror the sync path: drop poisoned clients on connection/timeout
         # so the next aux call rebuilds.  See issue #23432.

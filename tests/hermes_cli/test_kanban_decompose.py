@@ -148,6 +148,89 @@ def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     assert task.assignee == "fallback"
 
 
+def test_decompose_task_gemma_config_preserves_explicit_max_output_tokens(
+    kanban_home, monkeypatch
+):
+    import agent.auxiliary_client as aux_mod
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="just one thing", triage=True)
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            recorded["json"] = json
+            recorded["headers"] = headers
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": jsonlib.dumps(
+                                        {
+                                            "fanout": False,
+                                            "rationale": "single unit",
+                                            "title": "Tightened title",
+                                            "body": "**Goal**\nDo the thing.",
+                                        }
+                                    )
+                                }
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 1,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 2,
+                },
+            }
+            return response
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter.httpx.Client",
+        lambda *args, **kwargs: DummyHTTP(),
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-decompose-test")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "auxiliary": {
+                "kanban_decomposer": {
+                    "provider": "gemini",
+                    "model": "gemma-4-31b-it",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                }
+            },
+            "kanban": {"default_assignee": "fallback"},
+        },
+    )
+    with aux_mod._client_cache_lock:
+        aux_mod._client_cache.clear()
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok is True
+    assert recorded["url"].endswith("/models/gemma-4-31b-it:generateContent")
+    assert recorded["json"]["generationConfig"]["maxOutputTokens"] == 4000
+
+
 def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(

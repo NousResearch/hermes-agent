@@ -904,6 +904,25 @@ def test_review_runtime_strips_blank_aux_credentials(curator_env):
     assert binding.explicit_base_url is None
 
 
+def test_review_runtime_accepts_explicit_gemma_auxiliary_slot(curator_env):
+    curator = curator_env["curator"]
+    cfg = {
+        "model": {"provider": "openrouter", "default": "openai/gpt-5.5"},
+        "auxiliary": {
+            "curator": {
+                "provider": "gemini",
+                "model": "gemma-4-31b-it",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            },
+        },
+    }
+
+    binding = curator._resolve_review_runtime(cfg)
+    assert binding.provider == "gemini"
+    assert binding.model == "gemma-4-31b-it"
+    assert binding.explicit_base_url == "https://generativelanguage.googleapis.com/v1beta"
+
+
 def test_review_runtime_ignores_auxiliary_credentials_when_using_main(curator_env):
     """Falling through to main model must not pick up stray auxiliary.curator secrets."""
     curator = curator_env["curator"]

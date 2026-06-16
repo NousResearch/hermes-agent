@@ -112,6 +112,82 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def test_specify_task_gemma_config_preserves_explicit_max_output_tokens(
+    kanban_home, monkeypatch
+):
+    import agent.auxiliary_client as aux_mod
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            recorded["json"] = json
+            recorded["headers"] = headers
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": jsonlib.dumps(
+                                        {
+                                            "title": "Refined rough",
+                                            "body": "**Goal**\nA concrete goal.",
+                                        }
+                                    )
+                                }
+                            ]
+                        },
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 1,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 2,
+                },
+            }
+            return response
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "agent.gemini_native_adapter.httpx.Client",
+        lambda *args, **kwargs: DummyHTTP(),
+    )
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-specify-test")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "auxiliary": {
+                "triage_specifier": {
+                    "provider": "gemini",
+                    "model": "gemma-4-31b-it",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                }
+            }
+        },
+    )
+    with aux_mod._client_cache_lock:
+        aux_mod._client_cache.clear()
+
+    outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    assert recorded["url"].endswith("/models/gemma-4-31b-it:generateContent")
+    assert (
+        recorded["json"]["generationConfig"]["maxOutputTokens"]
+        == spec.HERMES_KANBAN_SPECIFY_MAX_TOKENS
+    )
+
+
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="keep title", triage=True)

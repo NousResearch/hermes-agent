@@ -367,6 +367,7 @@ class TestGenerateGeminiTts:
         mock_call_llm.assert_called_once()
         call_kwargs = mock_call_llm.call_args.kwargs
         assert call_kwargs["task"] == "tts_audio_tags"
+        assert "max_tokens" not in call_kwargs
         assert "Audio tags are inline square-bracket modifiers" in call_kwargs["messages"][0]["content"]
         assert "Style: Warm and amused." in call_kwargs["messages"][1]["content"]
         assert "Hi there." in call_kwargs["messages"][1]["content"]

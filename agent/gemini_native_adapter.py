@@ -51,6 +51,30 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+def gemini_resource_path(model: str) -> str:
+    """Return the native Gemini resource path for a model or resource id."""
+    normalized = bare_gemini_model_id(model).strip()
+    lowered = normalized.lower()
+    if lowered.startswith("models/") or lowered.startswith("tunedmodels/"):
+        return normalized
+    return f"models/{normalized}"
+
+
+def _gemini_resource_basename(model: str) -> str:
+    normalized = bare_gemini_model_id(model).strip()
+    lowered = normalized.lower()
+    for prefix in ("models/", "tunedmodels/"):
+        if lowered.startswith(prefix):
+            return normalized.split("/", 1)[1].strip() or normalized
+    return normalized
+
+
+def is_gemma_family_model(model: str) -> bool:
+    """Return True when the normalized Gemini model id is in the Gemma family."""
+    normalized = _gemini_resource_basename(model).strip().lower()
+    return normalized.startswith("gemma-")
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """Return True when the endpoint speaks Gemini's native REST API."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -86,7 +110,8 @@ def probe_gemini_tier(
     if normalized_base.lower().endswith("/openai"):
         normalized_base = normalized_base[: -len("/openai")]
 
-    url = f"{normalized_base}/models/{model}:generateContent"
+    resource_path = gemini_resource_path(model)
+    url = f"{normalized_base}/{resource_path}:generateContent"
     payload = {
         "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"maxOutputTokens": 1},
@@ -404,6 +429,7 @@ def _normalize_thinking_config(config: Any) -> Optional[Dict[str, Any]]:
 
 def build_gemini_request(
     *,
+    model: str = "",
     messages: List[Dict[str, Any]],
     tools: Any = None,
     tool_choice: Any = None,
@@ -431,7 +457,7 @@ def build_gemini_request(
         generation_config["temperature"] = temperature
     if max_tokens is not None:
         generation_config["maxOutputTokens"] = max_tokens
-    else:
+    elif not is_gemma_family_model(model):
         # Gemini's native generateContent does NOT treat an omitted
         # maxOutputTokens as "use the model's full output budget" — it applies
         # a low internal default and the model stops early with
@@ -439,9 +465,12 @@ def build_gemini_request(
         # then retries 3× and refuses the incomplete call). Every current
         # Gemini text model (2.5 + 3.x, flash / flash-lite / pro) caps at
         # 65,535 output tokens, so default to that ceiling when the caller
-        # passes None ("unlimited"). See the OpenAI-compat path where omitting
-        # the field genuinely means full budget — that assumption does not
-        # hold on the native API.
+        # passes None ("unlimited"). Gemma models on the same native endpoint
+        # are the exception: when Hermes routes an explicit Gemma model and the
+        # caller omitted max_tokens, leave maxOutputTokens unset so Gemini uses
+        # Gemma's own native default behavior. See the OpenAI-compat path where
+        # omitting the field genuinely means full budget — that assumption does
+        # not hold for Gemini-family models on the native API.
         generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     if top_p is not None:
         generation_config["topP"] = top_p
@@ -914,6 +943,7 @@ class GeminiNativeClient:
             thinking_config = extra_body.get("thinking_config") or extra_body.get("thinkingConfig")
 
         request = build_gemini_request(
+            model=model or "",
             messages=messages or [],
             tools=tools,
             tool_choice=tool_choice,
@@ -924,11 +954,11 @@ class GeminiNativeClient:
             thinking_config=thinking_config,
         )
 
-        model = bare_gemini_model_id(model)
+        resource_path = gemini_resource_path(model)
         if stream:
-            return self._stream_completion(model=model, request=request, timeout=timeout)
+            return self._stream_completion(model=resource_path, request=request, timeout=timeout)
 
-        url = f"{self.base_url}/models/{model}:generateContent"
+        url = f"{self.base_url}/{resource_path}:generateContent"
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
             raise gemini_http_error(response)
@@ -941,10 +971,10 @@ class GeminiNativeClient:
                 status_code=response.status_code,
                 response=response,
             ) from exc
-        return translate_gemini_response(payload, model=model)
+        return translate_gemini_response(payload, model=resource_path)
 
     def _stream_completion(self, *, model: str, request: Dict[str, Any], timeout: Any = None) -> Iterator[_GeminiStreamChunk]:
-        url = f"{self.base_url}/models/{model}:streamGenerateContent?alt=sse"
+        url = f"{self.base_url}/{model}:streamGenerateContent?alt=sse"
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
 

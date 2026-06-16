@@ -132,10 +132,14 @@ def _parse_scores(content: str, n_items: int) -> Dict[int, Dict[str, Any]]:
             return {}
     out: Dict[int, Dict[str, Any]] = {}
     if isinstance(arr, list):
-        for obj in arr:
+        for position, obj in enumerate(arr):
             if not isinstance(obj, dict):
                 continue
             idx = obj.get("index")
+            if idx is None:
+                if 0 <= position < n_items:
+                    out[position] = obj
+                continue
             if isinstance(idx, int) and 0 <= idx < n_items:
                 out[idx] = obj
     return out

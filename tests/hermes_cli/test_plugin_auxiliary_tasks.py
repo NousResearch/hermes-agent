@@ -308,6 +308,43 @@ def test_get_auxiliary_task_config_layers_plugin_defaults(
     assert resolved["provider"] == "auto"
 
 
+def test_get_auxiliary_task_config_preserves_plugin_gemma_defaults(
+    tmp_path, monkeypatch, patched_manager
+):
+    from pathlib import Path
+    from hermes_cli.config import load_config, save_config
+    from agent.auxiliary_client import _get_auxiliary_task_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".hermes").mkdir(exist_ok=True)
+
+    manifest = PluginManifest(name="plug")
+    ctx = PluginContext(manifest, patched_manager)
+    ctx.register_auxiliary_task(
+        key="future_task",
+        display_name="Future task",
+        description="x",
+        defaults={
+            "provider": "gemini",
+            "model": "gemma-4-26b-a4b-it",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "timeout": 61,
+        },
+    )
+
+    cfg = load_config()
+    aux = cfg.setdefault("auxiliary", {})
+    aux["future_task"] = {"timeout": 75}
+    save_config(cfg)
+
+    resolved = _get_auxiliary_task_config("future_task")
+    assert resolved["provider"] == "gemini"
+    assert resolved["model"] == "gemma-4-26b-a4b-it"
+    assert resolved["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
+    assert resolved["timeout"] == 75
+
+
 def test_get_auxiliary_task_config_user_config_wins_over_plugin_defaults(
     tmp_path, monkeypatch, patched_manager
 ):

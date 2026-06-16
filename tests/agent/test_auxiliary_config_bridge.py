@@ -5,6 +5,7 @@ Also tests the vision_tools and browser_tool model override env vars.
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -63,6 +64,20 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
                 os.environ[env_map["base_url"]] = base_url
             if api_key:
                 os.environ[env_map["api_key"]] = api_key
+
+
+def _repo_source(*parts: str) -> str:
+    path = Path(__file__).parent.parent.parent.joinpath(*parts)
+    return path.read_text(encoding="utf-8")
+
+
+def _extract_ts_aux_task_keys(*parts: str) -> tuple[str, ...]:
+    source = _repo_source(*parts)
+    if "const AUX_TASKS" in source:
+        source = source.split("const AUX_TASKS", 1)[1]
+    if "] as const" in source:
+        source = source.split("] as const", 1)[0]
+    return tuple(re.findall(r"key:\s*['\"]([^'\"]+)['\"]", source))
 
 
 # ── Config bridging tests ────────────────────────────────────────────────────
@@ -285,6 +300,64 @@ class TestDefaultConfigShape:
         assert "model" in web
         assert web["provider"] == "auto"
         assert web["model"] == ""
+
+
+class TestAuxiliaryInventoryParity:
+    """Characterize the current aux task inventories without forcing them equal."""
+
+    def test_auxiliary_inventories_match_their_current_contracts(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.main import _AUX_TASKS
+        from hermes_cli.web_server import _AUX_TASK_SLOTS
+
+        config_keys = tuple(DEFAULT_CONFIG["auxiliary"].keys())
+        cli_keys = tuple(key for key, _, _ in _AUX_TASKS)
+        web_api_keys = tuple(_AUX_TASK_SLOTS)
+        web_frontend_keys = _extract_ts_aux_task_keys("web", "src", "pages", "ModelsPage.tsx")
+        desktop_keys = _extract_ts_aux_task_keys(
+            "apps", "desktop", "src", "app", "settings", "model-settings.tsx"
+        )
+
+        assert set(cli_keys) == set(config_keys) - {"monitor"}
+        assert set(web_api_keys) == set(config_keys) - {"monitor", "tts_audio_tags"}
+        assert web_frontend_keys == web_api_keys
+
+        assert set(desktop_keys).issubset(set(web_api_keys))
+        assert set(desktop_keys) != set(web_api_keys)
+        assert "triage_specifier" not in desktop_keys
+        assert "kanban_decomposer" not in desktop_keys
+        assert "profile_describer" not in desktop_keys
+
+        assert "tts_audio_tags" in config_keys
+        assert "tts_audio_tags" in cli_keys
+        assert "tts_audio_tags" not in web_api_keys
+        assert "monitor" in config_keys
+        assert "monitor" not in cli_keys
+        assert "monitor" not in web_api_keys
+
+    def test_goal_judge_is_hidden_manual_route_not_picker_inventory(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_cli.main import _AUX_TASKS
+        from hermes_cli.web_server import _AUX_TASK_SLOTS
+
+        config_keys = tuple(DEFAULT_CONFIG["auxiliary"].keys())
+        cli_keys = tuple(key for key, _, _ in _AUX_TASKS)
+        web_api_keys = tuple(_AUX_TASK_SLOTS)
+        web_frontend_keys = _extract_ts_aux_task_keys("web", "src", "pages", "ModelsPage.tsx")
+        desktop_keys = _extract_ts_aux_task_keys(
+            "apps", "desktop", "src", "app", "settings", "model-settings.tsx"
+        )
+
+        assert "goal_judge" not in config_keys
+        assert "goal_judge" not in cli_keys
+        assert "goal_judge" not in web_api_keys
+        assert "goal_judge" not in web_frontend_keys
+        assert "goal_judge" not in desktop_keys
+
+        goals_doc = _repo_source("website", "docs", "user-guide", "features", "goals.md")
+        goals_source = _repo_source("hermes_cli", "goals.py")
+        assert "goal_judge" in goals_doc
+        assert 'get_text_auxiliary_client("goal_judge")' in goals_source
 
 
 # ── CLI defaults parity ─────────────────────────────────────────────────────

@@ -175,6 +175,71 @@ class TestJudgeGoal:
         assert verdict == "continue"
         assert reason == "not yet"
 
+    def test_goal_judge_gemma_config_preserves_explicit_max_output_tokens(self, monkeypatch):
+        from hermes_cli import goals
+        import agent.auxiliary_client as aux_mod
+
+        recorded = {}
+
+        class DummyHTTP:
+            def post(self, url, json=None, headers=None, timeout=None):
+                recorded["url"] = url
+                recorded["json"] = json
+                recorded["headers"] = headers
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"text": '{"done": false, "reason": "not yet"}'}
+                                ]
+                            },
+                            "finishReason": "STOP",
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                }
+                return response
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr(
+            "agent.gemini_native_adapter.httpx.Client",
+            lambda *args, **kwargs: DummyHTTP(),
+        )
+        monkeypatch.setenv("GEMINI_API_KEY", "AIza-goal-test")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "auxiliary": {
+                    "goal_judge": {
+                        "provider": "gemini",
+                        "model": "gemma-4-31b-it",
+                        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+                        "max_tokens": 2048,
+                    }
+                }
+            },
+        )
+        with aux_mod._client_cache_lock:
+            aux_mod._client_cache.clear()
+
+        verdict, reason, parse_failed = goals.judge_goal("goal", "agent response")
+
+        assert verdict == "continue"
+        assert reason == "not yet"
+        assert parse_failed is False
+        assert recorded["url"].endswith("/models/gemma-4-31b-it:generateContent")
+        assert recorded["json"]["generationConfig"]["maxOutputTokens"] == 2048
+        assert goals._goal_judge_max_tokens() == 2048
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

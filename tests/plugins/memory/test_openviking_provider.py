@@ -640,6 +640,93 @@ def test_start_local_openviking_server_uses_endpoint_host_and_port(monkeypatch):
     assert kwargs["start_new_session"] is True
 
 
+def test_start_local_openviking_server_writes_output_to_log(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    popen_calls = []
+
+    class FakeProcess:
+        pass
+
+    def fake_popen(args, **kwargs):
+        popen_calls.append((args, kwargs))
+        assert kwargs["stdout"] is kwargs["stderr"]
+        assert kwargs["stdout"].name == str(hermes_home / "logs" / "openviking-server.log")
+        assert not kwargs["stdout"].closed
+        return FakeProcess()
+
+    monkeypatch.setattr(openviking_module.shutil, "which", lambda name: "/usr/local/bin/openviking-server")
+    monkeypatch.setattr(openviking_module.subprocess, "Popen", fake_popen)
+
+    started, message = openviking_module._start_local_openviking_server("http://127.0.0.1:1934")
+
+    assert started is True
+    assert str(hermes_home / "logs" / "openviking-server.log") in message
+    assert popen_calls
+
+
+def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://localhost:1934")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "https://localhost:1934"
+
+        def health(self):
+            return False
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("https localhost endpoint should not auto-start")),
+    )
+
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+
+    assert provider._client is None
+    assert warnings == [
+        "Remote OpenViking server at https://localhost:1934 is not reachable; "
+        "OpenViking memory disabled for this Hermes run. "
+        "Check the configured endpoint and network connectivity."
+    ]
+
+
+def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypatch):
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://localhost:1934")
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://localhost:1934"
+
+        def health(self):
+            return False
+
+        def health_payload(self):
+            return {"healthy": False}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("responding unhealthy server should not auto-start another process")),
+    )
+
+    warnings = []
+    provider = OpenVikingMemoryProvider()
+    provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+
+    assert provider._client is None
+    assert warnings == [
+        "OpenViking server at http://localhost:1934 responded but reported unhealthy status. "
+        "OpenViking memory disabled for this Hermes run."
+    ]
+
+
 def test_handle_unreachable_endpoint_does_not_wait_when_autostart_command_missing(monkeypatch, capsys):
     monkeypatch.setattr(
         openviking_module,

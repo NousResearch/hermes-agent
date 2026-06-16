@@ -88,6 +88,7 @@ _MEMORY_WRITE_TARGET_SUBDIR_MAP = {
 }
 _LOCAL_OPENVIKING_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOCAL_OPENVIKING_AUTOSTART_TIMEOUT = 60.0
+_OPENVIKING_SERVER_LOG_RELATIVE_PATH = Path("logs") / "openviking-server.log"
 _SETUP_CANCELLED = object()
 
 
@@ -664,7 +665,8 @@ def _is_local_openviking_url(value: str) -> bool:
     if "://" not in candidate:
         candidate = f"//{candidate}"
     parsed = urlparse(candidate)
-    return (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
+    scheme = (parsed.scheme or "http").lower()
+    return scheme == "http" and (parsed.hostname or "").lower() in _LOCAL_OPENVIKING_HOSTS
 
 
 def _load_hermes_openviking_config() -> dict:
@@ -939,6 +941,15 @@ def _local_openviking_bind(endpoint: str) -> tuple[str, int]:
     return host, port
 
 
+def _openviking_server_log_path() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home()
+    except Exception:
+        home = Path(os.environ.get("HERMES_HOME", "")).expanduser() if os.environ.get("HERMES_HOME") else Path.home() / ".hermes"
+    return home / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
+
+
 def _start_local_openviking_server(endpoint: str) -> tuple[bool, str]:
     server_cmd = shutil.which("openviking-server")
     if not server_cmd:
@@ -947,17 +958,20 @@ def _start_local_openviking_server(endpoint: str) -> tuple[bool, str]:
         host, port = _local_openviking_bind(endpoint)
     except ValueError as e:
         return False, f"Could not parse local OpenViking URL: {e}"
+    log_path = _openviking_server_log_path()
     try:
-        subprocess.Popen(
-            [server_cmd, "--host", host, "--port", str(port)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("ab") as log_file:
+            subprocess.Popen(
+                [server_cmd, "--host", host, "--port", str(port)],
+                stdout=log_file,
+                stderr=log_file,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
     except Exception as e:
         return False, f"Could not start openviking-server: {e}"
-    return True, f"Started openviking-server on {host}:{port} in the background."
+    return True, f"Started openviking-server on {host}:{port} in the background. Logs: {log_path}"
 
 
 def _wait_for_openviking_health(endpoint: str, *, timeout_seconds: float = 15.0) -> bool:
@@ -1034,6 +1048,29 @@ def _runtime_openviking_timeout_message(endpoint: str) -> str:
         f"within {_LOCAL_OPENVIKING_AUTOSTART_TIMEOUT:.0f} seconds. "
         "OpenViking memory disabled for this Hermes run."
     )
+
+
+def _classify_runtime_openviking_health(client: _VikingClient, endpoint: str) -> tuple[str, str]:
+    """Classify runtime health without treating every false result as server absence."""
+    try:
+        if hasattr(client, "health_payload"):
+            payload = client.health_payload()
+            if payload.get("healthy") is False:
+                return (
+                    "responded",
+                    f"OpenViking server at {endpoint} responded but reported unhealthy status.",
+                )
+            return "healthy", ""
+        if client.health():
+            return "healthy", ""
+    except _OpenVikingHTTPError as e:
+        return (
+            "responded",
+            f"OpenViking server at {endpoint} responded with {_format_openviking_exception(e)}.",
+        )
+    except Exception:
+        return "unreachable", ""
+    return "unreachable", ""
 
 
 def _prompt_profile_name(prompt, select, cancelled) -> str | object:
@@ -1811,11 +1848,18 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 self._endpoint, self._api_key,
                 account=self._account, user=self._user, agent=self._agent,
             )
-            if not self._client.health():
+            health_state, health_message = _classify_runtime_openviking_health(self._client, self._endpoint)
+            if health_state == "unreachable":
                 self._handle_runtime_openviking_unreachable(
                     status_callback=status_callback,
                     warning_callback=warning_callback,
                 )
+            elif health_state != "healthy":
+                _emit_runtime_warning(
+                    f"{health_message} OpenViking memory disabled for this Hermes run.",
+                    warning_callback,
+                )
+                self._client = None
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None

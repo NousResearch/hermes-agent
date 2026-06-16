@@ -31,23 +31,21 @@ class TestWriteDenyExactPaths:
 
 
     def test_hermes_env(self):
-        # ``.env`` under the active HERMES_HOME (profile-aware, not just
-        # ``~/.hermes``) must be write-denied. The hermetic test conftest
-        # points HERMES_HOME at a tempdir — resolve via get_hermes_home()
-        # to match the denylist.
+        # The active profile's .env is now writable so the agent can manage
+        # its own environment variables (#47107).  The read guard still blocks
+        # reading .env via read_file — only the write guard is relaxed.
         from hermes_constants import get_hermes_home
         path = str(get_hermes_home() / ".env")
-        assert _is_write_denied(path) is True
+        assert _is_write_denied(path) is False
 
     def test_hermes_root_env_when_running_under_profile(self, tmp_path, monkeypatch):
         """Top-level ``<root>/.env`` stays write-denied even when running under
-        a profile (#15981).
+        a profile (#15981).  The active profile's .env is writable (#47107).
 
-        Before the fix, ``build_write_denied_paths`` only added
-        ``<active_profile>/.env`` to the deny list, so the global
-        ``~/.hermes/.env`` (whose credentials are inherited by every profile)
-        could be silently overwritten by ``write_file`` while a profile was
-        active.
+        Before #47107, ``build_write_denied_paths`` blocked both
+        ``<active_profile>/.env`` and ``<root>/.env``.  Now only the root
+        .env is blocked — the active profile's .env is writable so the
+        agent can manage its own env vars via write_file/patch.
         """
         root = tmp_path / "hermes_root"
         profile_home = root / "profiles" / "coder"
@@ -62,7 +60,10 @@ class TestWriteDenyExactPaths:
         assert get_hermes_home() == profile_home
         assert get_default_hermes_root() == root
 
+        # Root .env stays blocked (cross-profile credential leakage).
         assert _is_write_denied(str(global_env)) is True
+        # Active profile .env is now writable (#47107).
+        assert _is_write_denied(str(profile_home / ".env")) is False
 
     def test_shell_profiles_are_writable(self):
         home = str(Path.home())

@@ -29,15 +29,13 @@ def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
     hermes_root = _hermes_root_path()
-    return {
+    denied = {
         os.path.realpath(p)
         for p in [
             os.path.join(home, ".ssh", "authorized_keys"),
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
-            # Active profile .env (or top-level .env when not in profile mode).
-            str(hermes_home / ".env"),
             # Top-level .env, even when running under a profile — overwriting it
             # leaks credentials across every profile that inherits from root (#15981).
             str(hermes_root / ".env"),
@@ -56,6 +54,13 @@ def build_write_denied_paths(home: str) -> set[str]:
             "/etc/shadow",
         ]
     }
+    # The active profile's .env is writable so the agent can manage its own
+    # environment variables via write_file/patch (e.g. removing a value added
+    # by ``hermes config set``).  The root .env stays blocked to prevent
+    # cross-profile credential leakage (#15981, #47107).
+    hermes_home_env = os.path.realpath(str(hermes_home / ".env"))
+    denied.discard(hermes_home_env)
+    return denied
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:

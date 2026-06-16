@@ -10698,6 +10698,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter = self.adapters.get(source.platform)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
+        # Build user mention for platforms that support it (Discord).
+        _user_mention = None
+        if source.platform.value == "discord" and source.user_id:
+            _user_mention = f"<@{source.user_id}>"
+
         used_buttons = False
         if adapter is not None:
             try:
@@ -10708,6 +10713,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     confirm_id=confirm_id,
                     metadata=metadata,
+                    user_mention=_user_mention,
                 )
                 if button_result and getattr(button_result, "success", False):
                     used_buttons = True
@@ -13966,6 +13972,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+                # Build user mention for platforms that support it (Discord).
+                _user_mention = None
+                if source.platform.value == "discord" and source.user_id:
+                    _user_mention = f"<@{source.user_id}>"
+
                 send_ok = False
                 fut = safe_schedule_threadsafe(
                     _status_adapter.send_clarify(
@@ -13975,6 +13986,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         clarify_id=clarify_id,
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
+                        user_mention=_user_mention,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -14081,6 +14093,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 
+                # Build user mention for platforms that support it (Discord).
+                # This ensures the user gets a notification ping when an
+                # approval prompt is sent, rather than silently waiting in a thread.
+                _user_mention = None
+                if source.platform.value == "discord" and source.user_id:
+                    _user_mention = f"<@{source.user_id}>"
+
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
                 # false positives from MagicMock auto-attribute creation in tests.
@@ -14093,6 +14112,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 session_key=_approval_session_key,
                                 description=desc,
                                 metadata=_status_thread_metadata,
+                                user_mention=_user_mention,
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -14118,11 +14138,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Slack threads and reserved by Matrix clients.
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                mention_text = f"{_user_mention} " if _user_mention else ""
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
+                    f"{mention_text}Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
                     f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
                 )
                 try:

@@ -247,6 +247,54 @@ class TestPatchHandler:
         assert "error" in result
         assert "traversal" in result["error"].lower()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_move_header(self, mock_get):
+        """Move File headers have two paths; both must pass V4A guards."""
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: safe.py -> ../../../tmp/escaped.py\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_guards_parser_accepted_no_space_header(self, mock_get):
+        """Guard extraction must accept the same header spacing as parser."""
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "***Move File: safe.py -> ../../../tmp/escaped.py\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_v4a_rejects_traversal_in_move_source(self, mock_get):
+        """Move File source paths are also destructive and must be guarded."""
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: ../../../tmp/source.py -> safe.py\n"
+                "*** End Patch\n"
+            ),
+        ))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.return_value.patch_v4a.assert_not_called()
+
 
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")

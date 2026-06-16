@@ -158,6 +158,23 @@ class TestPatchCrossProfileGuard:
         assert "cross-profile" in result["error"].lower()
         assert target.read_text() == original
 
+    def test_v4a_move_file_extracts_destination_for_guard(self, fake_hermes):
+        """Move File has a destination path that must not bypass guards."""
+        from tools.file_tools import patch_tool
+        source = "local-note.md"
+        target = fake_hermes["root"] / "skills" / "shared-skill" / "MOVED.md"
+        v4a = (
+            "*** Begin Patch\n"
+            f"*** Move File: {source} -> {target}\n"
+            "*** End Patch"
+        )
+        result_json = patch_tool(mode="patch", patch=v4a)
+        result = json.loads(result_json)
+        assert result.get("error"), f"V4A Move File destination must block: {result}"
+        lowered = result["error"].lower()
+        assert "cross-profile" in lowered or "sensitive" in lowered
+        assert not target.exists()
+
 
 # ---------------------------------------------------------------------------
 # skill_manage — error message naming other profile (item D)

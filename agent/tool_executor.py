@@ -1095,9 +1095,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
-            # Read provider/model from the actual running agent — no config
-            _dt_provider = getattr(agent, "provider", None)
-            _dt_model = getattr(agent, "model", None)
+            # Read provider/model from delegation config (what the subagent
+            # will actually run on), NOT from the parent agent — the parent
+            # may be on a completely different model (e.g. deepseek-v4-flash).
+            _dt_provider = None
+            _dt_model = None
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _dt_cfg = _load_cfg().get("delegation", {}) or {}
+                _dt_provider = _dt_cfg.get("provider")
+                _dt_model = _dt_cfg.get("model")
+            except Exception:
+                pass
             _tag = _get_delegation_model_label(provider=_dt_provider, model=_dt_model)
             if tasks_arg and isinstance(tasks_arg, list):
                 spinner_label = f"🔀 {_tag}delegating {len(tasks_arg)} tasks · (/agents to monitor)"

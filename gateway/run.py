@@ -13703,14 +13703,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
             # Inject delegation model tag for delegate_task so users see
-            # which LLM model the sub-agent is running on.  Reads from the
-            # kwargs passed by tool_executor's progress callback — no config
-            # or agent_holder race conditions to worry about.
+            # which LLM model the sub-agent is running on.  Reads from
+            # delegation config explicitly — not from callback kwargs
+            # (which carry the *parent* agent's provider/model, not the
+            # subagent's).
             if tool_name == "delegate_task":
                 from agent.display import _get_delegation_model_label
+                _dt_provider = None
+                _dt_model = None
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+                    _dt_cfg = _load_cfg().get("delegation", {}) or {}
+                    _dt_provider = _dt_cfg.get("provider")
+                    _dt_model = _dt_cfg.get("model")
+                except Exception:
+                    pass
                 _dt_tag = _get_delegation_model_label(
-                    provider=kwargs.get("provider"),
-                    model=kwargs.get("model"),
+                    provider=_dt_provider,
+                    model=_dt_model,
                 )
             else:
                 _dt_tag = ""

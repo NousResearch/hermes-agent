@@ -78,7 +78,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
+    CommandDef("undo", "Back up N half-turns and re-prompt (default 1)", "Session",
+               args_hint="[N]"),
+    CommandDef("redo", "Redo N undo operations (default 1)", "Session",
                args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
@@ -1008,6 +1010,10 @@ def discord_skill_commands_by_category(
 # commands per app.
 _SLACK_MAX_SLASH_COMMANDS = 50
 _SLACK_NAME_LIMIT = 32
+# Documented first-class aliases that must survive the 50-command clamp ahead
+# of niche aliases (e.g. /fork, /tasks). Tested by test_includes_aliases_as_
+# first_class_slashes — keep in sync with the aliases promised there.
+_SLACK_PRIORITY_ALIASES = frozenset({"btw", "bg", "reset", "q"})
 _SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
 _SLACK_RESERVED_COMMANDS = frozenset({
     # Built-in Slack slash commands that cannot be registered by apps.
@@ -1077,7 +1083,18 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Second pass (priority aliases): documented first-class aliases
+    # (/btw, /bg, /reset, /q, ...) must win slots ahead of niche aliases so
+    # they survive the 50-command clamp even as canonical commands grow.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            if alias not in _SLACK_PRIORITY_ALIASES:
+                continue
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: remaining aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue

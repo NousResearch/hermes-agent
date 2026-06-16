@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
+from hermes_cli.auth import AuthError
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
@@ -1645,6 +1646,35 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected expanded fallback model in {expanded!r}. "
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
+
+    def test_auth_error_fallback_uses_selected_fallback_model(self, tmp_path):
+        """Cron uses the fallback entry's model when primary auth resolution fails."""
+        (tmp_path / "config.yaml").write_text(
+            "model: gpt-primary-cron-test\n"
+            "fallback_order:\n"
+            "  - provider: openrouter\n"
+            "    model: gpt-fallback-cron-test\n"
+        )
+
+        job = {"id": "fb-auth-job", "name": "fallback auth test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=[AuthError("primary auth failed"), self._RUNTIME]) as mock_resolve, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "gpt-fallback-cron-test"
+        assert mock_resolve.call_args_list[1].kwargs["target_model"] == "gpt-fallback-cron-test"
 
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""

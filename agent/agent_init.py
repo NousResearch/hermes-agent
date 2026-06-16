@@ -164,8 +164,8 @@ def init_agent(
     model: str = "",
     max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
     tool_delay: float = 1.0,
-    enabled_toolsets: List[str] = None,
-    disabled_toolsets: List[str] = None,
+    enabled_toolsets: List[str] | None = None,
+    disabled_toolsets: List[str] | None = None,
     save_trajectories: bool = False,
     verbose_logging: bool = False,
     quiet_mode: bool = False,
@@ -215,7 +215,7 @@ def init_agent(
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
-    fallback_model: Dict[str, Any] = None,
+    fallback_model: Dict[str, Any] | List[Dict[str, Any]] | None = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20,
@@ -835,8 +835,8 @@ def init_agent(
                                 _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
                         _fb_client, _fb_model = resolve_provider_client(
                             _fb["provider"], model=_fb["model"], raw_codex=True,
-                            explicit_base_url=_fb.get("base_url"),
-                            explicit_api_key=_fb_explicit_key,
+                            explicit_base_url=_fb.get("base_url") or "",
+                            explicit_api_key=_fb_explicit_key or "",
                         )
                         if _fb_client is not None:
                             agent.provider = _fb["provider"]

@@ -3939,6 +3939,28 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
 
+            # Model not in live /v1/models — check the curated catalog
+            # before rejecting.  Providers may omit models from their live
+            # listing that are still valid (stale cache, partial rollout,
+            # gated previews).  If the curated list has it, accept with a
+            # note.  (#46850)
+            try:
+                curated = provider_model_ids(normalized)
+            except Exception:
+                curated = []
+            if curated:
+                curated_lower = {m.lower(): m for m in curated}
+                if requested_for_lookup.lower() in curated_lower:
+                    return {
+                        "accepted": True,
+                        "persist": True,
+                        "recognized": True,
+                        "message": (
+                            f"Note: `{requested}` was not found in the live /v1/models listing "
+                            f"but exists in the curated catalog — accepted."
+                        ),
+                    }
+
         return {
             "accepted": False,
             "persist": False,

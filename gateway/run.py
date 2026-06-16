@@ -1411,6 +1411,8 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    should_preserve_codex_thread_id_after_reset,
+    should_preserve_codex_thread_id_after_expiry,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -2318,6 +2320,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+        # Per-session codex app-server thread ids, so the codex_app_server
+        # runtime resumes the same Codex thread across turns instead of
+        # starting a fresh one each message (the gateway rebuilds the AIAgent
+        # per inbound message, which would otherwise discard the codex thread's
+        # working context). Key: session_key (stable across compaction's
+        # session_id rotation), Value: codex thread id string.
+        self._session_codex_threads: Dict[str, str] = {}
         self._kanban_notifier_profile = self._active_profile_name()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
@@ -5622,6 +5631,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Evict any cached AIAgent for this session_key so the next dispatch
         # rebuilds it against the CLI session_id (mirrors /resume / /branch).
         self._evict_cached_agent(session_key)
+        if hasattr(self, "_session_codex_threads"):
+            self._session_codex_threads.pop(session_key, None)
 
         # Cancel any in-flight running-agent state for the destination key
         # so the synthetic turn isn't queued behind a stale running flag.
@@ -5767,6 +5778,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
                         if isinstance(_update_prompt_pending, dict):
                             _update_prompt_pending.pop(key, None)
+                        # The Hermes transcript session is finalized, but a
+                        # thread-like platform lane may continue later. Keep the
+                        # persisted Codex thread id for those durable lanes so a
+                        # same-thread follow-up after daily/idle reset can still
+                        # resume Codex working context. Non-thread sessions keep
+                        # the older reset semantics and start fresh.
+                        if not should_preserve_codex_thread_id_after_expiry(entry):
+                            entry.codex_thread_id = None
+                        self._session_codex_threads.pop(key, None)
+                        # Mark as finalized and persist to disk so the flag
+                        # survives gateway restarts.
                         with self.session_store._lock:
                             entry.expiry_finalized = True
                             self.session_store._save()
@@ -8326,6 +8348,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     switched = self.session_store.switch_session(session_key, bound_session_id)
                     if switched is not None:
                         session_entry = switched
+                        if hasattr(self, "_session_codex_threads"):
+                            self._session_codex_threads.pop(session_key, None)
                 # If the stored binding pointed at a parent, rewrite it to the
                 # canonical descendant now that we've followed the chain.
                 if (
@@ -8340,13 +8364,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self._record_telegram_topic_binding(source, session_entry)
                 except Exception:
                     logger.debug("Failed to record Telegram topic binding", exc_info=True)
+        _codex_thread_survived_reset = False
         if getattr(session_entry, "was_auto_reset", False):
-            # Treat auto-reset as a full conversation boundary — drop every
-            # session-scoped transient state so the fresh session does not
-            # inherit the previous conversation's model/reasoning overrides
-            # or a queued "/model switched" note.
+            _reset_reason = getattr(session_entry, "auto_reset_reason", None)
+            _codex_thread_survived_reset = bool(
+                getattr(session_entry, "codex_thread_id", None)
+                and should_preserve_codex_thread_id_after_reset(source, _reset_reason)
+            )
+            # Treat auto-reset as a Hermes transcript boundary for model and
+            # reasoning overrides, but not necessarily as a Codex thread
+            # boundary. SessionStore carries codex_thread_id across normal
+            # idle/daily resets for durable thread-like lanes; dropping this
+            # in-memory value simply forces the fresh agent to reload it from
+            # sessions.json.
             self._session_model_overrides.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
+            self._session_codex_threads.pop(session_key, None)
             if hasattr(self, "_pending_model_notes"):
                 self._pending_model_notes.pop(session_key, None)
         
@@ -8391,6 +8424,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
+            elif _codex_thread_survived_reset:
+                context_note = (
+                    "[System note: The Hermes transcript session was automatically "
+                    "reset, but this is the same platform thread/topic and the "
+                    "Codex app-server working thread will be resumed if available. "
+                    "Use that Codex working context when relevant; do not assume "
+                    "the old Hermes transcript is present unless it appears in the "
+                    "resumed Codex context.]"
+                )
             elif reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
@@ -8427,12 +8469,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             mins = policy.idle_minutes % 60
                             duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
                             reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
+                        if _codex_thread_survived_reset:
+                            notice = (
+                                f"◐ Hermes transcript session reset ({reason_text}). "
+                                f"Codex working context is preserved for this thread.\n"
+                                f"Use /new if you want a fully fresh Codex thread.\n"
+                                f"Adjust reset timing in config.yaml under session_reset."
+                            )
+                        else:
+                            notice = (
+                                f"◐ Session automatically reset ({reason_text}). "
+                                f"Conversation history cleared.\n"
+                                f"Use /resume to browse and restore a previous session.\n"
+                                f"Adjust reset timing in config.yaml under session_reset."
+                            )
                         try:
                             session_info = self._format_session_info()
                             if session_info:
@@ -9199,6 +9249,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
+                self._session_codex_threads.pop(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
                 if new_entry is not None:
@@ -14703,6 +14754,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
 
+            # Resume this session's codex thread on the next codex_app_server
+            # turn so its working context (file reads, tool output, long tasks)
+            # survives the per-message agent rebuild and should_retire respawns.
+            # Keyed by the stable session_key; only the codex runtime reads it,
+            # so it's a harmless no-op for every other runtime. getattr-guarded
+            # like _pending_model_notes for runners built without full __init__.
+            if session_key:
+                _codex_threads = getattr(self, "_session_codex_threads", None)
+                _codex_resume_thread_id = (
+                    _codex_threads.get(session_key)
+                    if isinstance(_codex_threads, dict)
+                    else None
+                )
+                if not _codex_resume_thread_id:
+                    try:
+                        _codex_resume_thread_id = self.session_store.get_codex_thread_id(
+                            session_key
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to load persisted codex thread id for %s",
+                            session_key,
+                            exc_info=True,
+                        )
+                    if _codex_resume_thread_id and isinstance(_codex_threads, dict):
+                        _codex_threads[session_key] = _codex_resume_thread_id
+                agent._codex_resume_thread_id = _codex_resume_thread_id
+
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
             # standalone push: render to a single plaintext line and deliver via
@@ -15168,6 +15247,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+
+            # Persist this turn's codex thread id so the next turn for the
+            # same session resumes it (see _session_codex_threads). Keyed by
+            # the stable session_key so it survives compaction's session_id
+            # rotation; cleared on session reset / expiry boundaries. Skip the
+            # write when this run is no longer current (a /new or /stop bumped
+            # the generation mid-turn) — otherwise a discarded turn's thread id
+            # would repopulate the map AFTER the reset cleared it, and the next
+            # turn would wrongly resume the pre-reset thread. Mirrors the
+            # stale-run guard used for agent promotion below.
+            _codex_run_current = (
+                run_generation is None
+                or self._is_session_run_current(session_key, run_generation)
+            )
+            if session_key and _codex_run_current and isinstance(result, dict):
+                _codex_tid = result.get("codex_thread_id")
+                if _codex_tid and hasattr(self, "_session_codex_threads"):
+                    self._session_codex_threads[session_key] = _codex_tid
+                    try:
+                        self.session_store.set_codex_thread_id(session_key, _codex_tid)
+                    except Exception:
+                        logger.debug(
+                            "Failed to persist codex thread id for %s",
+                            session_key,
+                            exc_info=True,
+                        )
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:

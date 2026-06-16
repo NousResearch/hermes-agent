@@ -117,6 +117,9 @@ class GatewaySlashCommandsMixin:
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
+        # /new is a fresh conversation — drop the codex thread mapping so the
+        # next turn starts a brand-new codex thread instead of resuming the old.
+        self._session_codex_threads.pop(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
 

@@ -375,6 +375,58 @@ Switch back at any time:
 
 Effective on the next session. The Codex managed block stays in `~/.codex/config.toml` so you can re-enable later without losing config — or remove it manually if you prefer.
 
+## Cross-turn thread persistence
+
+Codex keeps each thread's working context — the files it has read, command
+output, plan state, everything built up over a long task — **inside the Codex
+thread**, not in Hermes' message transcript. Hermes therefore pins **one Codex
+thread per session** and **resumes** it on every turn (`thread/resume`) so that
+context carries across messages.
+
+This matters most under the **gateway** (Discord / Telegram / etc.), which
+builds a fresh `AIAgent` per inbound message. Without resume, every message
+would call `thread/start` and hand the model an *empty* thread, so a multi-turn
+task ("do X" → "now continue" → "what did you find?") would silently lose all of
+its earlier work. The thread id is remembered per session — keyed so it survives
+context-compaction's session-id rotation — and replayed as the resume target.
+
+Resume degrades gracefully: if the rollout is no longer on disk, or the Codex
+build is too old to expose `thread/resume`, Hermes falls back to `thread/start`
+for that turn (a fresh thread) rather than failing. Normal idle/daily Hermes
+session resets keep the mapping for durable thread/topic lanes, so a Discord
+thread or Telegram topic can continue the same Codex working context after the
+transcript session rotates. Explicit conversation boundaries such as `/new`,
+`/reset`, or a suspended stuck session still start a brand-new Codex thread.
+
+### Operational runbook: gateway restart recovery
+
+Use this when a Discord, Telegram, or other gateway thread appears to forget
+Codex working context after the Hermes gateway restarts.
+
+1. Confirm the gateway lane. The log line for the inbound message includes the
+   stable `session_key`; Discord thread lanes look like
+   `agent:main:discord:thread:<chat-or-thread-id>:<thread-id>`.
+2. Inspect the persisted mapping on the gateway host:
+
+   ```bash
+   export HERMES_SESSION_KEY='agent:main:discord:thread:<chat-or-thread-id>:<thread-id>'
+   python -c 'import json, os; p=os.path.expanduser("~/.hermes/sessions/sessions.json"); print(json.load(open(p, encoding="utf-8")).get(os.environ["HERMES_SESSION_KEY"], {}).get("codex_thread_id"))'
+   ```
+
+   A live Codex runtime session should print the Codex thread id after a
+   successful turn. `None` means the session has not completed a Codex turn yet,
+   the runtime is not `codex_app_server`, or a true conversation boundary cleared
+   the mapping.
+3. Restart the gateway, then send one follow-up in the same platform thread. The
+   next turn should load this persisted id and call `thread/resume`. If resume
+   fails because the Codex rollout was deleted or the Codex build does not
+   support resume, Hermes logs the failure at debug level and falls back to a
+   fresh `thread/start` rather than dropping the user turn.
+4. Normal idle/daily session resets should not clear the mapping for the
+   same durable thread/topic lane. Explicit boundaries (`/new`, `/reset`,
+   suspended stuck-session recovery, and lane re-binding such as a handoff or
+   topic switch) should clear it. Idle agent-cache eviction must not clear it.
+
 ## Limitations
 
 This runtime is **opt-in beta**. Working as of Hermes Agent 2026.5 + Codex CLI 0.130.0:
@@ -416,7 +468,8 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
              ▼                                            │
         ┌──────────────────────────────────┐              │
         │  codex app-server (subprocess)    │──────────────┘
-        │   thread/start, turn/start        │
+        │   thread/start · thread/resume    │
+        │   turn/start                      │
         │   item/* notifications            │
         │   shell + apply_patch + update_plan│
         │   view_image + sandbox            │

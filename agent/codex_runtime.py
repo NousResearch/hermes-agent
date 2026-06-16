@@ -191,6 +191,27 @@ def run_codex_app_server_turn(
     """
     from agent.transports.codex_app_server_session import CodexAppServerSession
 
+    # Belt-and-suspenders for the cached-agent path: if a live session exists
+    # but the caller is asking us to resume a DIFFERENT thread than the one it
+    # is already on, retire it so the session below rebuilds on the requested
+    # thread. In normal operation these never differ — the gateway persists
+    # each turn's thread id and restores the same one, and the live session is
+    # already on it — so this does NOT rebuild on every cache-hit turn (which
+    # would respawn codex + reload the rollout needlessly); it only fires on an
+    # actual mismatch.
+    _want_resume = getattr(agent, "_codex_resume_thread_id", None)
+    _live_session = getattr(agent, "_codex_session", None)
+    if (
+        _live_session is not None
+        and _want_resume
+        and getattr(_live_session, "_thread_id", None) not in (None, _want_resume)
+    ):
+        try:
+            _live_session.close()
+        except Exception:
+            pass
+        agent._codex_session = None
+
     # Lazy session: one CodexAppServerSession per AIAgent instance.
     # Spawned on first turn, reused across turns, closed at AIAgent
     # shutdown (see _cleanup hook).
@@ -204,9 +225,16 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+        # Resume the codex thread from a prior turn of this Hermes session, so
+        # the codex working context survives a respawn. Two sources set this:
+        #   - the gateway, which rebuilds the AIAgent per inbound message and
+        #     restores the persisted thread id onto the fresh agent;
+        #   - this runtime itself (below), so a should_retire respawn within
+        #     the same long-lived agent (e.g. the CLI) also resumes.
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            resume_thread_id=getattr(agent, "_codex_resume_thread_id", None),
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
@@ -234,7 +262,21 @@ def run_codex_app_server_turn(
             "completed": False,
             "partial": True,
             "error": str(exc),
+            # Surface the last-known thread id so the gateway keeps it: the
+            # next turn will try to resume it (the rollout may have survived
+            # the crash) and fall back to a fresh thread/start if it didn't.
+            "codex_thread_id": getattr(agent, "_codex_resume_thread_id", None),
         }
+
+    # Remember the codex thread id so the NEXT turn for this Hermes session
+    # resumes it (preserving the codex working context — file reads, tool
+    # output, long-running task state) instead of starting a fresh thread.
+    # Set BEFORE the should_retire handling so a retired-then-respawned
+    # session in the same process still resumes; the gateway separately
+    # persists result["codex_thread_id"] across its per-message AIAgent
+    # rebuild (keyed by the stable session_key).
+    if turn.thread_id:
+        agent._codex_resume_thread_id = turn.thread_id
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess

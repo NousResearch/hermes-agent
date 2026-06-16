@@ -1223,6 +1223,176 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+
+class TestCodexThreadPersistence:
+    """Codex app-server thread ids must survive gateway process restarts."""
+
+    def test_session_entry_roundtrips_codex_thread_id(self):
+        from datetime import datetime
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry(
+            session_key="agent:main:discord:thread:chan:thread",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            codex_thread_id="019ea688-7067-7461-a6a6-4237815eebc2",
+        )
+
+        data = entry.to_dict()
+        assert data["codex_thread_id"] == "019ea688-7067-7461-a6a6-4237815eebc2"
+        restored = SessionEntry.from_dict(data)
+        assert restored.codex_thread_id == "019ea688-7067-7461-a6a6-4237815eebc2"
+
+    def test_old_session_data_defaults_codex_thread_id_to_none(self):
+        from gateway.session import SessionEntry
+
+        entry = SessionEntry.from_dict(
+            {
+                "session_key": "test",
+                "session_id": "s1",
+                "created_at": "2025-01-01T00:00:00",
+                "updated_at": "2025-01-01T00:00:00",
+            }
+        )
+
+        assert entry.codex_thread_id is None
+
+    def test_session_store_persists_codex_thread_id(self, tmp_path):
+        from gateway.config import GatewayConfig, Platform
+        from gateway.session import SessionSource, SessionStore, build_session_key
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread-1",
+            chat_type="thread",
+            thread_id="thread-1",
+            parent_chat_id="channel-1",
+        )
+        key = build_session_key(source)
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._db = None
+        store.get_or_create_session(source)
+        assert store.set_codex_thread_id(key, "thread-a") is True
+
+        reloaded = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        reloaded._db = None
+        assert reloaded.get_codex_thread_id(key) == "thread-a"
+        assert reloaded.clear_codex_thread_id(key) is True
+        assert reloaded.get_codex_thread_id(key) is None
+
+    def test_thread_idle_auto_reset_carries_codex_thread_id(self, tmp_path):
+        from datetime import datetime, timedelta
+        from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+        from gateway.session import SessionSource, SessionStore, build_session_key
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread-1",
+            chat_type="thread",
+            thread_id="thread-1",
+            parent_chat_id="channel-1",
+        )
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1)
+        )
+        key = build_session_key(source)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        first = store.get_or_create_session(source)
+        assert store.set_codex_thread_id(key, "thread-a") is True
+        first.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        reset = store.get_or_create_session(source)
+
+        assert reset.was_auto_reset is True
+        assert reset.auto_reset_reason == "idle"
+        assert reset.session_id != first.session_id
+        assert reset.codex_thread_id == "thread-a"
+
+    def test_thread_daily_auto_reset_carries_codex_thread_id(self, tmp_path):
+        from datetime import datetime, timedelta
+        from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+        from gateway.session import SessionSource, SessionStore, build_session_key
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread-1",
+            chat_type="thread",
+            thread_id="thread-1",
+            parent_chat_id="channel-1",
+        )
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="daily", at_hour=4)
+        )
+        key = build_session_key(source)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        first = store.get_or_create_session(source)
+        assert store.set_codex_thread_id(key, "thread-a") is True
+        first.updated_at = datetime.now() - timedelta(days=2)
+        store._save()
+
+        reset = store.get_or_create_session(source)
+
+        assert reset.was_auto_reset is True
+        assert reset.auto_reset_reason == "daily"
+        assert reset.session_id != first.session_id
+        assert reset.codex_thread_id == "thread-a"
+
+    def test_dm_idle_auto_reset_drops_codex_thread_id(self, tmp_path):
+        from datetime import datetime, timedelta
+        from gateway.config import GatewayConfig, Platform, SessionResetPolicy
+        from gateway.session import SessionSource, SessionStore, build_session_key
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="dm-1",
+            chat_type="dm",
+            user_id="user-1",
+        )
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=1)
+        )
+        key = build_session_key(source)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        first = store.get_or_create_session(source)
+        assert store.set_codex_thread_id(key, "thread-a") is True
+        first.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+
+        reset = store.get_or_create_session(source)
+
+        assert reset.was_auto_reset is True
+        assert reset.auto_reset_reason == "idle"
+        assert reset.codex_thread_id is None
+
+    def test_suspended_auto_reset_drops_codex_thread_id(self, tmp_path):
+        from gateway.config import GatewayConfig, Platform
+        from gateway.session import SessionSource, SessionStore, build_session_key
+
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="thread-1",
+            chat_type="thread",
+            thread_id="thread-1",
+            parent_chat_id="channel-1",
+        )
+        key = build_session_key(source)
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        store._db = None
+        store.get_or_create_session(source)
+        assert store.set_codex_thread_id(key, "thread-a") is True
+        assert store.suspend_session(key) is True
+
+        reset = store.get_or_create_session(source)
+
+        assert reset.was_auto_reset is True
+        assert reset.auto_reset_reason == "suspended"
+        assert reset.codex_thread_id is None
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

@@ -508,6 +508,12 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Codex app-server thread id for this gateway lane. The gateway process may
+    # restart between Discord messages; persisting this lets the next process
+    # call thread/resume instead of starting a fresh Codex thread and losing the
+    # native Codex working context.
+    codex_thread_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -538,6 +544,7 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "codex_thread_id": self.codex_thread_id,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -590,7 +597,47 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            codex_thread_id=data.get("codex_thread_id"),
         )
+
+
+_CODEX_THREAD_RESET_CARRY_REASONS = {"idle", "daily"}
+
+
+def is_thread_like_session_source(source: Optional[SessionSource]) -> bool:
+    """Return True for platform lanes that represent a durable thread/topic."""
+    if source is None:
+        return False
+    return source.chat_type == "thread" or bool(source.thread_id)
+
+
+def is_thread_like_session_entry(entry: "SessionEntry") -> bool:
+    """Return True when a persisted entry belongs to a durable thread/topic."""
+    if entry.origin is not None and is_thread_like_session_source(entry.origin):
+        return True
+    return entry.chat_type == "thread"
+
+
+def should_preserve_codex_thread_id_after_reset(
+    source: Optional[SessionSource],
+    reset_reason: Optional[str],
+) -> bool:
+    """Return whether a reset should keep the Codex app-server thread id.
+
+    Hermes idle/daily reset rotates the transcript session. For durable platform
+    lanes like Discord threads and Telegram topics, that should not necessarily
+    discard Codex's working thread. Hard reset reasons such as suspended sessions
+    still force a clean Codex slate.
+    """
+    return (
+        reset_reason in _CODEX_THREAD_RESET_CARRY_REASONS
+        and is_thread_like_session_source(source)
+    )
+
+
+def should_preserve_codex_thread_id_after_expiry(entry: "SessionEntry") -> bool:
+    """Return whether expiry finalization should keep the Codex thread id."""
+    return is_thread_like_session_entry(entry)
 
 
 def is_shared_multi_user_session(
@@ -904,6 +951,7 @@ class SessionStore:
         # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
+        codex_thread_id = None
 
         with self._lock:
             self._ensure_loaded_locked()
@@ -936,9 +984,18 @@ class SessionStore:
                     self._save()
                     return entry
                 else:
-                    # Session is being auto-reset.
+                    # Session is being auto-reset. The Hermes transcript session
+                    # rotates here, but a Discord/Telegram thread is still the
+                    # same platform lane. Keep the Codex app-server thread id for
+                    # normal idle/daily resets so same-thread follow-ups resume
+                    # Codex working context instead of starting from scratch.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
+                    if should_preserve_codex_thread_id_after_reset(
+                        source,
+                        reset_reason,
+                    ):
+                        codex_thread_id = entry.codex_thread_id
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
@@ -962,6 +1019,7 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                codex_thread_id=codex_thread_id,
             )
 
             self._entries[session_key] = entry
@@ -1002,6 +1060,46 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def get_codex_thread_id(self, session_key: str) -> Optional[str]:
+        """Return the persisted Codex app-server thread id for a session key."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            return entry.codex_thread_id
+
+    def set_codex_thread_id(self, session_key: str, thread_id: str) -> bool:
+        """Persist the Codex app-server thread id for restart-safe resume."""
+        thread_id = str(thread_id or "").strip()
+        if not session_key or not thread_id:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            if entry.codex_thread_id == thread_id:
+                return True
+            entry.codex_thread_id = thread_id
+            self._save()
+            return True
+
+    def clear_codex_thread_id(self, session_key: str) -> bool:
+        """Clear a persisted Codex thread id at a true conversation boundary."""
+        if not session_key:
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.codex_thread_id:
+                return False
+            entry.codex_thread_id = None
+            self._save()
+            return True
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

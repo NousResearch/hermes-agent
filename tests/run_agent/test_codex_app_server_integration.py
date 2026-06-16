@@ -283,6 +283,78 @@ class TestRunConversationCodexPath:
         assert not client_mock.chat.completions.create.called
 
 
+class TestCodexThreadResumePersistence:
+    """The codex thread id must round-trip across turns so the codex working
+    context survives a respawn: the runtime records it on the agent after each
+    turn, and passes a known prior id into a freshly-built session as
+    resume_thread_id (the gateway carries it across its per-message AIAgent
+    rebuild)."""
+
+    def test_turn_records_thread_id_on_agent_for_next_turn(self, fake_session):
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+        # run_codex_app_server_turn stashes the thread id so the next session
+        # (gateway rebuild or should_retire respawn) can resume it.
+        assert agent._codex_resume_thread_id == "thread-stub-1"
+
+    def test_prior_thread_id_is_passed_into_new_session(self, fake_session):
+        agent = _make_codex_agent()
+        # Simulate the gateway restoring a persisted thread id onto the fresh
+        # per-message agent before the turn runs.
+        agent._codex_resume_thread_id = "prior-thread-from-gateway"
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+        # The lazily-built CodexAppServerSession was constructed to resume it.
+        assert agent._codex_session is not None
+        assert agent._codex_session._resume_thread_id == "prior-thread-from-gateway"
+        # …and after the turn the agent tracks the latest thread id.
+        assert agent._codex_resume_thread_id == "thread-stub-1"
+
+    def test_no_prior_thread_id_builds_session_without_resume(self, fake_session):
+        agent = _make_codex_agent()
+        assert getattr(agent, "_codex_resume_thread_id", None) is None
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+        # First-ever turn: session built with no resume id (fresh thread/start).
+        assert agent._codex_session is not None
+        assert agent._codex_session._resume_thread_id is None
+
+    def test_cache_hit_same_thread_reuses_live_session(self, fake_session):
+        """Cache-hit path: when the live session is already on thread T and the
+        restored resume id is also T (the lockstep invariant the gateway keeps),
+        the live session is reused — NOT respawned every turn (which would
+        reload the rollout + spawn codex needlessly)."""
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first")
+        session_after_1 = agent._codex_session
+        assert session_after_1 is not None
+        # The live session is on thread T; the gateway restores that same T.
+        agent._codex_session._thread_id = "thread-stub-1"
+        agent._codex_resume_thread_id = "thread-stub-1"
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("second")
+        assert agent._codex_session is session_after_1  # same live session reused
+
+    def test_cache_hit_mismatched_thread_rebuilds_session(self, fake_session):
+        """Defensive guard: if a live session is on thread A but the caller asks
+        to resume a DIFFERENT thread B, the live session is retired and a fresh
+        one is built to resume B (this never happens in normal operation, but
+        the guard makes the cache-hit path provably correct)."""
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first")
+        session_after_1 = agent._codex_session
+        agent._codex_session._thread_id = "live-thread-A"
+        agent._codex_resume_thread_id = "different-thread-B"
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("second")
+        # Old session retired, fresh one built to resume the requested thread.
+        assert agent._codex_session is not session_after_1
+        assert agent._codex_session._resume_thread_id == "different-thread-B"
+
+
 class TestReviewForkApiModeDowngrade:
     """When the parent agent runs on codex_app_server, the background
     review fork must downgrade to codex_responses — otherwise the fork

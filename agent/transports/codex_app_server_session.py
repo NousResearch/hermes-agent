@@ -14,7 +14,19 @@ Lifecycle:
     # result.projected_messages  → list of {role, content, ...} for messages list
     # result.tool_iterations     → how many tool-shaped items completed (skill nudge counter)
     # result.interrupted         → True if Ctrl+C / interrupt_requested fired mid-turn
+    # result.thread_id           → the codex thread id (persist to resume next turn)
     session.close()                                       # tears down subprocess
+
+Cross-turn continuity:
+    The gateway builds a *fresh* AIAgent per inbound message, so this adapter
+    (held on ``agent._codex_session``) is re-created every turn and a naive
+    ``thread/start`` would discard the codex thread's working context (file
+    reads, tool output, long-running task state) on each turn. To preserve the
+    "one Codex thread per Hermes session" contract, the caller persists the
+    last ``thread_id`` for the session and passes it back as
+    ``resume_thread_id``; ``ensure_started()`` then issues ``thread/resume``
+    (which reloads the persisted rollout from disk) instead of starting a new
+    thread, falling back to ``thread/start`` if resume is unavailable.
 
 Threading model: the adapter is single-threaded from the caller's perspective.
 The underlying CodexAppServerClient owns its own reader threads but exposes
@@ -208,6 +220,7 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        resume_thread_id: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -225,6 +238,11 @@ class CodexAppServerSession:
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
+        # A prior codex thread id for this Hermes session. When set,
+        # ensure_started() resumes that thread (reloading its on-disk rollout)
+        # instead of starting a fresh one, so multi-turn context survives the
+        # fresh-AIAgent-per-message gateway lifecycle.
+        self._resume_thread_id = resume_thread_id
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
@@ -251,6 +269,29 @@ class CodexAppServerSession:
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
         )
+        # Resume the prior codex thread for this Hermes session when we have
+        # one, so the thread's working context (file reads, tool output,
+        # multi-turn task state) survives the fresh-AIAgent-per-message gateway
+        # lifecycle. thread/resume reloads the persisted rollout from disk by
+        # id; if it's unavailable (rollout GC'd, codex too old to expose the
+        # method, id no longer on disk) we fall back to a fresh thread/start so
+        # a turn is never lost.
+        if self._resume_thread_id:
+            resumed = self._resume_thread(self._resume_thread_id)
+            if resumed is not None:
+                self._thread_id = resumed
+                logger.info(
+                    "codex app-server thread resumed: id=%s profile=%s cwd=%s",
+                    resumed[:8],
+                    self._permission_profile,
+                    self._cwd,
+                )
+                return self._thread_id
+            logger.info(
+                "codex app-server thread resume unavailable (id=%s); "
+                "starting a fresh thread",
+                self._resume_thread_id[:8],
+            )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
         #   1. `thread/start.permissions` is gated behind the experimentalApi
@@ -268,17 +309,7 @@ class CodexAppServerSession:
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
         result = self._client.request("thread/start", params, timeout=15)
-        # Cross-fill thread.id/sessionId — different codex versions have
-        # serialized this under either key. Mirrors openclaw beta.8's
-        # tolerance fix so future codex drops/renames don't KeyError us
-        # at handshake time.
-        thread_obj = result.get("thread") or {}
-        thread_id = (
-            thread_obj.get("id")
-            or thread_obj.get("sessionId")
-            or result.get("sessionId")
-            or result.get("threadId")
-        )
+        thread_id = self._extract_thread_id(result)
         if not thread_id:
             raise CodexAppServerError(
                 code=-32603,
@@ -295,6 +326,47 @@ class CodexAppServerSession:
             self._cwd,
         )
         return self._thread_id
+
+    def _resume_thread(self, thread_id: str) -> Optional[str]:
+        """Resume a prior codex thread by id. Returns the resumed thread id on
+        success, or None when resume isn't possible so the caller can fall back
+        to thread/start. We send only `threadId`: codex loads the rollout from
+        disk and applies the thread's own config — the other ThreadResumeParams
+        fields are optional overrides we don't want.
+
+        Catches every failure mode the client can surface so a resume attempt
+        is never worse than not attempting it: CodexAppServerError (method
+        unsupported on this codex version, rollout no longer on disk, RPC
+        error), TimeoutError, and RuntimeError (the subprocess died / its stdin
+        pipe broke between handshake and resume). Any of these → fall back to a
+        fresh thread/start."""
+        assert self._client is not None
+        try:
+            result = self._client.request(
+                "thread/resume", {"threadId": thread_id}, timeout=15
+            )
+        except (CodexAppServerError, TimeoutError, RuntimeError) as exc:
+            logger.info(
+                "codex thread/resume rejected (id=%s): %s", thread_id[:8], exc
+            )
+            return None
+        return self._extract_thread_id(result)
+
+    @staticmethod
+    def _extract_thread_id(result: dict) -> Optional[str]:
+        """Pull the thread id out of a thread/start or thread/resume result.
+
+        Cross-fills thread.id / thread.sessionId / top-level sessionId /
+        threadId — different codex versions have serialized this under
+        different keys. Mirrors openclaw beta.8's tolerance fix so future
+        codex drops/renames don't KeyError us at handshake time."""
+        thread_obj = result.get("thread") or {}
+        return (
+            thread_obj.get("id")
+            or thread_obj.get("sessionId")
+            or result.get("sessionId")
+            or result.get("threadId")
+        )
 
     def close(self) -> None:
         if self._closed:

@@ -236,6 +236,97 @@ except ImportError:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
 
+# ---------------------------------------------------------------------------
+# Windows: stop MCP stdio servers from popping a console window.
+#
+# The bundled MCP SDK's create_windows_process() (mcp/os/win32/utilities.py)
+# requests CREATE_NO_WINDOW, but its ``except Exception:`` branch RE-SPAWNS
+# WITHOUT the flag.  On Windows, npx/.cmd MCP servers hit that path, so every
+# stdio MCP leaves a visible, never-closing console window on the desktop.
+#
+# We replace create_windows_process with a version that keeps CREATE_NO_WINDOW
+# on the retry path too, preserves the SDK's Job Object cleanup and its
+# NotImplementedError -> Popen fallback, and degrades to the SDK's original
+# (windowed-but-working) spawn only as a last resort -- so this patch can never
+# stop an MCP server from starting.
+#
+# IMPORTANT: mcp/client/stdio/__init__.py does
+#     from mcp.os.win32.utilities import create_windows_process
+# and calls the name bound in *its own* namespace, so we MUST patch
+# ``mcp.client.stdio.create_windows_process``.  Patching only the utilities
+# module (as upstream PR #41078 does) has no effect.  We patch both to be safe.
+# Self-guarded: any failure to install the patch is logged and ignored.
+# ---------------------------------------------------------------------------
+if sys.platform == "win32" and _MCP_AVAILABLE:
+    try:
+        import subprocess as _win_subprocess
+        import anyio as _win_anyio
+        import mcp.client.stdio as _mcp_client_stdio
+        from mcp.os.win32 import utilities as _win32_mcp_utils
+
+        _MCP_NO_WINDOW_FLAGS = getattr(_win_subprocess, "CREATE_NO_WINDOW", 0)
+
+        async def _hermes_create_windows_process_no_window(
+            command, args, env=None, errlog=None, cwd=None
+        ):
+            if errlog is None:
+                errlog = sys.stderr
+            job = _win32_mcp_utils._create_job_object()
+            process = None
+            try:
+                process = await _win_anyio.open_process(
+                    [command, *args],
+                    env=env,
+                    creationflags=_MCP_NO_WINDOW_FLAGS,
+                    stderr=errlog,
+                    cwd=cwd,
+                )
+            except NotImplementedError:
+                # Event loop can't do async subprocesses (e.g. SelectorEventLoop)
+                # -> the SDK's sync Popen fallback, which also requests
+                # CREATE_NO_WINDOW.
+                process = await _win32_mcp_utils._create_windows_fallback_process(
+                    command, args, env, errlog, cwd
+                )
+            except Exception:
+                # The SDK bug: it retried here WITHOUT creationflags, producing a
+                # visible window.  Keep the flag; only if the windowless retry
+                # ALSO fails do we degrade to the original spawn so MCP startup
+                # can never break because of this patch.
+                try:
+                    process = await _win_anyio.open_process(
+                        [command, *args],
+                        env=env,
+                        creationflags=_MCP_NO_WINDOW_FLAGS,
+                        stderr=errlog,
+                        cwd=cwd,
+                    )
+                except Exception:
+                    process = await _win_anyio.open_process(
+                        [command, *args],
+                        env=env,
+                        stderr=errlog,
+                        cwd=cwd,
+                    )
+            _win32_mcp_utils._maybe_assign_process_to_job(process, job)
+            return process
+
+        _mcp_client_stdio.create_windows_process = (
+            _hermes_create_windows_process_no_window
+        )
+        _win32_mcp_utils.create_windows_process = (
+            _hermes_create_windows_process_no_window
+        )
+        logger.info(
+            "Applied Windows MCP no-console-window patch "
+            "(CREATE_NO_WINDOW kept on all spawn paths; patched mcp.client.stdio)"
+        )
+    except Exception as _mcp_win_patch_err:  # pragma: no cover - defensive
+        logger.warning(
+            "Could not apply Windows MCP no-window patch: %s", _mcp_win_patch_err
+        )
+
+
 def _check_message_handler_support() -> bool:
     """Check if ClientSession accepts ``message_handler`` kwarg.
 

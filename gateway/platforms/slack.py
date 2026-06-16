@@ -319,6 +319,15 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    MARKDOWN_BLOCK_TEXT_LIMIT = 12000
+    MARKDOWN_BLOCKS_PER_MESSAGE_LIMIT = 50
+    MARKDOWN_BLOCK_MODE = "markdown_block"
+    MARKDOWN_BLOCK_FALLBACK_ERRORS = {
+        "invalid_blocks",
+        "markdown_text_too_long",
+        "msg_blocks_too_long",
+        "no_text",
+    }
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     # Slack blocks typed native slash commands inside threads ("/approve is
     # not supported in threads. Sorry!").  The adapter rewrites a leading
@@ -377,6 +386,106 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+        self.REQUIRES_EDIT_FINALIZE = (
+            self._slack_rich_output_mode() == self.MARKDOWN_BLOCK_MODE
+        )
+
+    def _slack_rich_output_mode(self) -> Optional[str]:
+        raw = self.config.extra.get("rich_output")
+        if raw is None:
+            return None
+        mode = str(raw).strip().lower().replace("-", "_")
+        return mode or None
+
+    def _sanitize_slack_rich_entities(self, text: str) -> str:
+        """Render Slack entity-like tokens literally in rich block payloads."""
+        if not text:
+            return text
+
+        def _escape(match: re.Match[str]) -> str:
+            value = match.group(0)
+            return f"&lt;{value[1:-1]}&gt;"
+
+        # Do not touch normal Markdown links or autolinks. Only neutralize
+        # Slack entity tokens that can resolve to user/channel/special mentions.
+        return re.sub(r"<([@#!][^>\s]*)>", _escape, text)
+
+    def _markdown_block_text(self, content: str) -> str:
+        return self._sanitize_slack_rich_entities(content)
+
+    def _markdown_block_fallback_text(self, content: str) -> str:
+        formatted = self.format_message(content)
+        if formatted is None:
+            return ""
+        return self._sanitize_slack_rich_entities(formatted)
+
+    def _should_attempt_markdown_block(
+        self,
+        content: str,
+        *,
+        finalize: bool = True,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if self._slack_rich_output_mode() != self.MARKDOWN_BLOCK_MODE:
+            return False
+        if not finalize:
+            return False
+        if (metadata or {}).get("expect_edits"):
+            return False
+        if not content or not str(content).strip():
+            return False
+        block_text = self._markdown_block_text(content)
+        if len(block_text) > self.MARKDOWN_BLOCK_TEXT_LIMIT:
+            return False
+        return 1 <= self.MARKDOWN_BLOCKS_PER_MESSAGE_LIMIT
+
+    def _build_markdown_block_payload(self, content: str) -> Dict[str, Any]:
+        block_text = self._markdown_block_text(content)
+        if len(block_text) > self.MARKDOWN_BLOCK_TEXT_LIMIT:
+            raise ValueError("markdown block text exceeds Slack limit")
+        return {
+            "text": self._markdown_block_fallback_text(content),
+            "blocks": [{"type": "markdown", "text": block_text}],
+        }
+
+    def _slack_response_error_code(self, response: Any) -> str:
+        if not response:
+            return ""
+        if isinstance(response, dict):
+            return str(response.get("error") or "").lower()
+        getter = getattr(response, "get", None)
+        if callable(getter):
+            try:
+                return str(getter("error") or "").lower()
+            except Exception:
+                return ""
+        return ""
+
+    def _is_markdown_block_fallback_error(self, exc: Exception) -> bool:
+        code = self._slack_response_error_code(getattr(exc, "response", None))
+        if code in self.MARKDOWN_BLOCK_FALLBACK_ERRORS:
+            return True
+        message = str(exc).lower()
+        return any(err in message for err in self.MARKDOWN_BLOCK_FALLBACK_ERRORS)
+
+    def _is_markdown_block_fallback_response(self, response: Any) -> bool:
+        if not isinstance(response, dict) or response.get("ok", True):
+            return False
+        return self._slack_response_error_code(response) in self.MARKDOWN_BLOCK_FALLBACK_ERRORS
+
+    def _record_sent_message_ts(
+        self, sent_ts: Optional[str], thread_ts: Optional[str] = None
+    ) -> None:
+        if not sent_ts:
+            return
+        self._bot_message_ts.add(sent_ts)
+        # Also register the thread root so replies-to-my-replies work.
+        if thread_ts:
+            self._bot_message_ts.add(thread_ts)
+        if len(self._bot_message_ts) > self._BOT_TS_MAX:
+            excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+            for old_ts in list(self._bot_message_ts)[:excess]:
+                self._bot_message_ts.discard(old_ts)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1151,32 +1260,64 @@ class SlackAdapter(BasePlatformAdapter):
                     content,
                 )
 
-            # Convert standard markdown → Slack mrkdwn
+            # Convert standard markdown → Slack mrkdwn for the legacy path and
+            # the required top-level `text` fallback on rich block payloads.
             formatted = self.format_message(content)
 
-            # Split long messages, preserving code block boundaries
+            # Split long legacy messages, preserving code block boundaries.
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
+            client = self._get_client(chat_id)
 
             # reply_broadcast: also post thread replies to the main channel.
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            for i, chunk in enumerate(chunks):
+            async def _post_legacy_chunks() -> Any:
+                legacy_last_result = None
+                for i, chunk in enumerate(chunks):
+                    kwargs = {
+                        "channel": chat_id,
+                        "text": chunk,
+                        "mrkdwn": True,
+                    }
+                    if thread_ts:
+                        kwargs["thread_ts"] = thread_ts
+                        # Only broadcast the first chunk of the first reply
+                        if broadcast and i == 0:
+                            kwargs["reply_broadcast"] = True
+
+                    legacy_last_result = await client.chat_postMessage(**kwargs)
+                return legacy_last_result
+
+            if self._should_attempt_markdown_block(content, metadata=metadata):
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
-                    "mrkdwn": True,
+                    **self._build_markdown_block_payload(content),
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
-                    # Only broadcast the first chunk of the first reply
-                    if broadcast and i == 0:
+                    if broadcast:
                         kwargs["reply_broadcast"] = True
-
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                try:
+                    last_result = await client.chat_postMessage(**kwargs)
+                    if self._is_markdown_block_fallback_response(last_result):
+                        logger.info(
+                            "[Slack] Rich markdown block send rejected (%s); retrying legacy path",
+                            self._slack_response_error_code(last_result),
+                        )
+                        last_result = await _post_legacy_chunks()
+                except Exception as exc:
+                    if not self._is_markdown_block_fallback_error(exc):
+                        raise
+                    logger.info(
+                        "[Slack] Rich markdown block send failed validation; retrying legacy path"
+                    )
+                    last_result = await _post_legacy_chunks()
+            else:
+                last_result = await _post_legacy_chunks()
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
@@ -1185,15 +1326,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Track the sent message ts so we can auto-respond to thread
             # replies without requiring @mention.
             sent_ts = last_result.get("ts") if last_result else None
-            if sent_ts:
-                self._bot_message_ts.add(sent_ts)
-                # Also register the thread root so replies-to-my-replies work
-                if thread_ts:
-                    self._bot_message_ts.add(thread_ts)
-                if len(self._bot_message_ts) > self._BOT_TS_MAX:
-                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-                    for old_ts in list(self._bot_message_ts)[:excess]:
-                        self._bot_message_ts.discard(old_ts)
+            self._record_sent_message_ts(sent_ts, thread_ts)
 
             return SendResult(
                 success=True,
@@ -1254,14 +1387,50 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            client = self._get_client(chat_id)
+
+            async def _update_legacy(*, clear_blocks: bool = False) -> Any:
+                kwargs: Dict[str, Any] = {
+                    "channel": chat_id,
+                    "ts": message_id,
+                    "text": formatted,
+                }
+                if clear_blocks:
+                    # Slack can retain old blocks when only text is updated.
+                    # Explicitly clear them when falling back from a rich update.
+                    kwargs["blocks"] = []
+                return await client.chat_update(**kwargs)
+
+            if self._should_attempt_markdown_block(content, finalize=finalize):
+                kwargs = {
+                    "channel": chat_id,
+                    "ts": message_id,
+                    **self._build_markdown_block_payload(content),
+                }
+                try:
+                    result = await client.chat_update(**kwargs)
+                    if self._is_markdown_block_fallback_response(result):
+                        logger.info(
+                            "[Slack] Rich markdown block update rejected (%s); retrying legacy path",
+                            self._slack_response_error_code(result),
+                        )
+                        result = await _update_legacy(clear_blocks=True)
+                except Exception as exc:
+                    if not self._is_markdown_block_fallback_error(exc):
+                        raise
+                    logger.info(
+                        "[Slack] Rich markdown block update failed validation; retrying legacy path"
+                    )
+                    result = await _update_legacy(clear_blocks=True)
+            else:
+                clear_stale_blocks = (
+                    finalize and self._slack_rich_output_mode() == self.MARKDOWN_BLOCK_MODE
+                )
+                result = await _update_legacy(clear_blocks=clear_stale_blocks)
+
             if finalize:
                 await self.stop_typing(chat_id)
-            return SendResult(success=True, message_id=message_id)
+            return SendResult(success=True, message_id=message_id, raw_response=result)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[Slack] Failed to edit message %s in channel %s: %s",

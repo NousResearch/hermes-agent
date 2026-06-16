@@ -348,6 +348,49 @@ platforms:
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 
+### Rich Markdown Output
+
+Slack uses legacy `mrkdwn` text by default. That path is stable, but Slack's newer markdown Block Kit block renders more GitHub-style Markdown in the client, including tables and checklists.
+
+Rich output is opt-in:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      rich_output: "markdown_block"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `platforms.slack.extra.rich_output` | unset | Set to `"markdown_block"` to send final assistant responses as Slack `markdown` blocks. Any other value keeps the legacy `mrkdwn` path. |
+
+Behavior when enabled:
+
+- Final assistant responses are sent with a Block Kit `markdown` block plus a top-level `text` fallback for notifications, accessibility, and older clients.
+- Legacy `mrkdwn` remains the fallback path for streaming previews, non-final edits, blank messages, and long content that exceeds Slack's markdown block limit.
+- If Slack rejects the block payload with a validation error such as `invalid_blocks`, Hermes retries the same response through the legacy text path.
+- Final edit fallbacks explicitly clear stale blocks so a previous rich response cannot stay visible after a fallback update.
+- Slack entity tokens such as `<@U123>`, `<!channel>`, and `<#C123>` are escaped inside rich blocks so assistant text cannot accidentally mention users, channels, or special groups. Normal Markdown links are left intact.
+- Thread metadata and `reply_broadcast` behavior are preserved.
+
+Limits and caveats:
+
+- Hermes only sends one Slack markdown block per response today.
+- Rich output falls back to legacy text when the block text is over 12,000 characters.
+- Very long responses still use the existing legacy message splitting behavior.
+- Native Slack table blocks are not used; this option relies on Slack's `markdown` block renderer.
+
+Local validation checklist before enabling broadly:
+
+1. Enable `platforms.slack.extra.rich_output: "markdown_block"` in a dev profile or dev channel only.
+2. Send a response containing a heading, table, checklist, fenced code block, bold text, and a Markdown link.
+3. Confirm the rendered Slack message shows the rich Markdown and still has usable notification text.
+4. Send text containing literal Slack entity tokens such as `<@U123>` and `<!channel>` and confirm they render as text, not mentions.
+5. Test a streaming response and confirm preview edits stay legacy while the final edit switches to rich output.
+6. Test a response over the rich block limit and confirm Hermes sends the legacy fallback instead of failing.
+7. Temporarily force a block validation error in local tests or a dev harness and confirm the fallback clears stale blocks on update.
+
 ### Session Isolation
 
 ```yaml
@@ -468,6 +511,7 @@ platforms:
     extra:
       reply_in_thread: true
       reply_broadcast: false
+      rich_output: "markdown_block"   # Optional rich Slack markdown blocks
 ```
 
 ---

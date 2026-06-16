@@ -607,7 +607,7 @@ function CronJobDetail({
             )}
           </header>
 
-          <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+          <CronJobRuns c={c} t={t} jobId={job.id} onOpenSession={onOpenSession} />
         </div>
       </div>
     </div>
@@ -631,27 +631,29 @@ const RUNS_POLL_INTERVAL_MS = 8000
 
 function CronJobRuns({
   c,
+  t,
   jobId,
   onOpenSession
 }: {
   c: Translations['cron']
+  t: Translations
   jobId: string
   onOpenSession?: (sessionId: string) => void
 }) {
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const result = await getCronJobRuns(jobId)
+      setRuns(result)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load runs')
+    }
+  }, [jobId])
 
   useEffect(() => {
-    let cancelled = false
-
-    const load = () =>
-      getCronJobRuns(jobId)
-        .then(result => {
-          if (!cancelled) {setRuns(result)}
-        })
-        .catch(() => {
-          if (!cancelled) {setRuns(prev => prev ?? [])}
-        })
-
     void load()
 
     const intervalId = window.setInterval(() => {
@@ -665,11 +667,10 @@ function CronJobRuns({
     document.addEventListener('visibilitychange', onVisible)
 
     return () => {
-      cancelled = true
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [jobId])
+  }, [load])
 
   return (
     <div>
@@ -677,10 +678,22 @@ function CronJobRuns({
         {c.runHistory}
         {runs && runs.length > 0 ? ` · ${runs.length}` : ''}
       </div>
-      {runs === null ? (
+      {runs === null && !error ? (
         <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
           <Codicon name="loading" size="0.75rem" spinning />
         </div>
+      ) : error && (!runs || runs.length === 0) ? (
+        <p className="inline-flex items-start gap-1 text-[0.7rem] text-destructive">
+          <AlertTriangle className="mt-px size-3 shrink-0" />
+          <span className="flex-1 truncate">{error}</span>
+          <button
+            className="shrink-0 text-[0.7rem] underline hover:text-destructive/80"
+            onClick={() => void load()}
+            type="button"
+          >
+            {t.common.retry}
+          </button>
+        </p>
       ) : runs.length === 0 ? (
         <div className="py-1 text-xs text-muted-foreground">{c.noRuns}</div>
       ) : (

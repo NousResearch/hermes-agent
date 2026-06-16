@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -293,23 +293,19 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
   const c = t.cron
   const selectedSessionId = useStore($selectedStoredSessionId)
   const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const result = await getCronJobRuns(jobId, PEEK_RUN_LIMIT)
+      setRuns(result)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load runs')
+    }
+  }, [jobId])
 
   useEffect(() => {
-    let cancelled = false
-
-    const load = () =>
-      getCronJobRuns(jobId, PEEK_RUN_LIMIT)
-        .then(result => {
-          if (!cancelled) {
-            setRuns(result)
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setRuns(prev => prev ?? [])
-          }
-        })
-
     void load()
 
     const intervalId = window.setInterval(() => {
@@ -319,16 +315,21 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
     }, PEEK_POLL_INTERVAL_MS)
 
     return () => {
-      cancelled = true
       window.clearInterval(intervalId)
     }
-  }, [jobId])
+  }, [load])
 
   return (
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
-      {runs === null ? (
+      {runs === null && !error ? (
         <div className="flex items-center gap-1.5 py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
           <Codicon name="loading" size="0.75rem" spinning />
+        </div>
+      ) : error && (!runs || runs.length === 0) ? (
+        <div className="py-1 pl-1 text-[0.6875rem] text-destructive">
+          <button className="underline hover:text-destructive/80" onClick={() => void load()} type="button">
+            {t.common.retry}
+          </button>
         </div>
       ) : runs.length === 0 ? (
         <div className="py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">{c.noRuns}</div>

@@ -5,7 +5,10 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import sqlite3
+import sys
 import time
+import types
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -46,6 +49,43 @@ def test_init_creates_expected_tables(kanban_home):
         ).fetchall()
     names = {r["name"] for r in rows}
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
+
+
+def test_connect_honors_kanban_busy_timeout_env(kanban_home, monkeypatch):
+    """All kanban connections should use the explicit busy-timeout knob.
+
+    A worker stampede should wait for SQLite's writer lock instead of failing
+    immediately with ``database is locked`` during first-connect/WAL/schema
+    setup.  The timeout must be queryable via PRAGMA so CLI, gateway, and tool
+    connections behave the same way.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_BUSY_TIMEOUT_MS", "123456")
+
+    with kb.connect() as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+
+    assert row[0] == 123456
+
+
+def test_cross_process_init_lock_uses_windows_byte_range_lock(tmp_path, monkeypatch):
+    """Windows must use a real process lock, not a no-op sidecar open."""
+    calls: list[tuple[int, int, int]] = []
+    fake_msvcrt = types.SimpleNamespace(
+        LK_LOCK=1,
+        LK_UNLCK=2,
+        locking=lambda fd, mode, nbytes: calls.append((fd, mode, nbytes)),
+    )
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+
+    db_path = tmp_path / "kanban.db"
+    with kb._cross_process_init_lock(db_path):
+        assert calls == [(calls[0][0], fake_msvcrt.LK_LOCK, 1)]
+
+    assert [call[1:] for call in calls] == [
+        (fake_msvcrt.LK_LOCK, 1),
+        (fake_msvcrt.LK_UNLCK, 1),
+    ]
 
 
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
@@ -267,7 +307,8 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
 
 
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
-    """blocked tasks with all parents done should be promoted to ready."""
+    """blocked tasks with all parents done should be promoted to ready,
+    unless the circuit-breaker failure limit has been reached."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(
@@ -276,16 +317,16 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         # Complete the parent
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        # Manually block the child (simulates a worker that failed
-        # after the parent finished)
+        # Manually block the child with zero failures (simulates a
+        # dependency block, not a circuit-breaker block).
         conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
-            "last_failure_error='persistent error' WHERE id=?",
+            "UPDATE tasks SET status='blocked', consecutive_failures=0, "
+            "last_failure_error=NULL WHERE id=?",
             (child,),
         )
         conn.commit()
         assert kb.get_task(conn, child).status == "blocked"
-        # recompute_ready should promote blocked → ready and reset failures
+        # recompute_ready should promote blocked → ready
         promoted = kb.recompute_ready(conn)
         assert promoted == 1
         task = kb.get_task(conn, child)
@@ -564,6 +605,281 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
 
 
+def test_detect_crashed_workers_skips_freshly_claimed_tasks(
+    kanban_home, monkeypatch,
+):
+    """Grace period prevents reclaim of freshly-started tasks."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.delenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", raising=False)
+
+    now = 1_000_000.0
+    monkeypatch.setattr(_kb.time, "time", lambda: now)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="grace test", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=?, started_at=? WHERE id=?",
+            (99999, f"{host}:w", int(now), tid),
+        )
+        conn.commit()
+
+        # With time = now (just claimed), grace period should suppress reclaim.
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid not in crashed, "should not reclaim freshly-started task"
+
+        # With time = now + 60 (past default 30s grace), should reclaim.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 60)
+        crashed = kb.detect_crashed_workers(conn)
+        assert tid in crashed, "should reclaim task past grace period"
+
+
+def test_detect_crashed_workers_grace_period_env_override(
+    kanban_home, monkeypatch,
+):
+    """HERMES_KANBAN_CRASH_GRACE_SECONDS env var adjusts the window."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "5")
+
+    now = 2_000_000.0
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="env override test", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='running', worker_pid=?, "
+            "claim_lock=?, started_at=? WHERE id=?",
+            (99999, f"{host}:w", int(now), tid),
+        )
+        conn.commit()
+
+        # 3s after claim: within 5s grace → no reclaim.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 3)
+        assert tid not in kb.detect_crashed_workers(conn)
+
+        # 6s after claim: past 5s grace → reclaim.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 6)
+        assert tid in kb.detect_crashed_workers(conn)
+
+
+def test_resolve_crash_grace_seconds_handles_bad_env(monkeypatch):
+    """Bad env values fall back to DEFAULT_CRASH_GRACE_SECONDS."""
+    import hermes_cli.kanban_db as _kb
+
+    for bad_val in ("notanumber", "-5", ""):
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", bad_val)
+        result = _kb._resolve_crash_grace_seconds()
+        assert result == _kb.DEFAULT_CRASH_GRACE_SECONDS, (
+            f"expected default for {bad_val!r}, got {result}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit requeue: a worker that bails on a provider quota wall must be
+# released back to ``ready`` WITHOUT counting a failure, so a long (e.g.
+# 5-hour) quota window can't trip the circuit breaker and permanently block
+# the card. The respawn guard then defers it on a cooldown until quota
+# returns. Regression coverage for the kanban-rate-limit-failure report.
+# ---------------------------------------------------------------------------
+
+
+def _exited_status(code: int) -> int:
+    """Raw wait-status for a WIFEXITED child with the given exit code."""
+    return code << 8
+
+
+def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
+    import hermes_cli.kanban_db as _kb
+
+    pid = 31337
+    _kb._record_worker_exit(pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE))
+    kind, code = _kb._classify_worker_exit(pid)
+    assert kind == "rate_limited"
+    assert code == _kb.KANBAN_RATE_LIMIT_EXIT_CODE
+
+    # Plain non-zero exit is still a normal crash, not rate-limited.
+    _kb._record_worker_exit(pid + 1, _exited_status(1))
+    assert _kb._classify_worker_exit(pid + 1) == ("nonzero_exit", 1)
+
+
+def test_rate_limit_exit_requeues_without_counting_failure(
+    kanban_home, monkeypatch,
+):
+    """A rate-limit sentinel exit releases the task to ``ready`` and leaves
+    ``consecutive_failures`` untouched — the breaker must never trip on a
+    transient throttle, even across many quota-wall hits."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="rl", assignee="a")
+
+        # Simulate FAR more quota-wall hits than DEFAULT_FAILURE_LIMIT (2).
+        # If any of these counted as a failure the task would be blocked.
+        for i in range(6):
+            pid = 70000 + i
+            # Claim to open a real run (so detect_crashed_workers can close
+            # it with a rate_limited outcome), then point the claim at this
+            # host + a dead pid so the crash path acts on it.
+            kb.claim_task(conn, tid, claimer=f"{host}:w{i}")
+            conn.execute(
+                "UPDATE tasks SET worker_pid=?, consecutive_failures=? "
+                "WHERE id=?",
+                (pid, 0, tid),
+            )
+            conn.commit()
+            _kb._record_worker_exit(
+                pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+            )
+
+            crashed = kb.detect_crashed_workers(conn)
+            # Rate-limited requeues are NOT crashes.
+            assert tid not in crashed
+            rl = getattr(_kb.detect_crashed_workers, "_last_rate_limited", [])
+            assert tid in rl
+
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"hit {i}: should requeue ready, got {task.status}"
+            )
+            assert task.consecutive_failures == 0, (
+                f"hit {i}: rate-limit must not count a failure, "
+                f"got {task.consecutive_failures}"
+            )
+
+        # Last failure error stamped so the respawn guard recognizes the
+        # quota wall.
+        assert task.last_failure_error and "rate-limited" in task.last_failure_error
+
+        # A ``rate_limited`` run outcome was recorded (not ``crashed``).
+        outcomes = [
+            r["outcome"] for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id=?", (tid,),
+            ).fetchall()
+        ]
+        assert "rate_limited" in outcomes
+        assert "crashed" not in outcomes
+
+
+def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
+    """Sanity: a genuine non-zero crash (not the sentinel) still increments
+    the failure counter and trips the breaker — the rate-limit carve-out is
+    surgical, not a blanket "never count crashes"."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="crash", assignee="a")
+
+        for i in range(2):  # DEFAULT_FAILURE_LIMIT == 2
+            pid = 60000 + i
+            conn.execute(
+                "UPDATE tasks SET status='running', worker_pid=?, "
+                "claim_lock=? WHERE id=?",
+                (pid, f"{host}:w{i}", tid),
+            )
+            conn.commit()
+            _kb._record_worker_exit(pid, _exited_status(1))  # generic failure
+            kb.detect_crashed_workers(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"genuine crashes should still trip the breaker, got {task.status}"
+        )
+
+
+def test_respawn_guard_defers_rate_limited_within_cooldown(
+    kanban_home, monkeypatch,
+):
+    """Within the cooldown after a rate-limit requeue, the guard defers the
+    respawn; after the cooldown it allows a probe — and crucially does NOT
+    fall into ``blocker_auth`` (which would defer forever)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rl-guard", assignee="a")
+        # Seed a rate_limited run that just ended + the stamped error.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued", tid),
+        )
+        conn.commit()
+
+        # Inside cooldown → defer with the rate-limit-specific reason.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kb.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        # Past cooldown → allowed (None), NOT trapped by blocker_auth even
+        # though last_failure_error contains "rate-limited".
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_rate_limit_cooldown_zero_allows_immediately(
+    kanban_home, monkeypatch,
+):
+    """Cooldown of 0 disables the wait — task is spawnable on the next tick,
+    and the stamped rate-limit text does not re-trap it via blocker_auth."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    now = 6_000_000
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rl-zero", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall)", tid),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kb.check_respawn_guard(conn, tid) is None
+
+
+def test_resolve_rate_limit_cooldown_handles_bad_env(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+
+    for bad_val in ("notanumber", "-5", ""):
+        monkeypatch.setenv(
+            "HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", bad_val
+        )
+        assert (
+            _kb._resolve_rate_limit_cooldown_seconds()
+            == _kb.DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
+        )
+
+
 def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch):
     """A retry should get a fresh max-runtime window.
 
@@ -699,6 +1015,149 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.status == "ready"
         assert task.consecutive_failures == 0
         assert task.last_failure_error is None
+
+
+def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
+    """recompute_ready must not auto-recover tasks whose consecutive_failures
+    has reached the circuit-breaker limit (#35072).
+
+    Without this guard, a task that repeatedly exhausts its iteration
+    budget would cycle forever: block → auto-recover (counter reset)
+    → respawn → budget exhausted → block → …
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="a",
+                               parents=[parent])
+        # Complete the parent so the child's dependencies are satisfied.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+
+        # Simulate the child having exhausted its budget twice,
+        # hitting the default failure limit (2).
+        kb.claim_task(conn, child)
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 2",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked"
+        assert task.consecutive_failures >= 2
+
+        # recompute_ready must NOT promote this task — the circuit
+        # breaker has tripped and it should stay blocked.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Explicit unblock should still work and reset the counter.
+        assert kb.unblock_task(conn, child)
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_recompute_ready_recovers_below_limit(kanban_home):
+    """recompute_ready auto-recovers blocked tasks that haven't hit the
+    failure limit yet — the counter is preserved across recovery."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        # One failure, below the default limit of 2.
+        kb._record_task_failure(
+            conn, t, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        # Simulate being blocked by something else (not circuit breaker).
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked' WHERE id = ?", (t,),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        # Counter must be preserved, not reset.
+        assert task.consecutive_failures == 1
+
+
+def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
+    """The guard's effective limit must follow the same resolution order
+    as the circuit breaker (#35072): per-task max_retries → dispatcher
+    failure_limit → DEFAULT_FAILURE_LIMIT.
+
+    Without threading the dispatcher's ``kanban.failure_limit`` through,
+    the guard falls back to DEFAULT_FAILURE_LIMIT and disagrees with the
+    breaker — sticking a task prematurely (config limit > default) or
+    letting a tripped task escape (config limit < default).
+    """
+    with kb.connect() as conn:
+        # Config allows MORE retries than the default. A task blocked
+        # with failures below the configured limit must still recover.
+        t = kb.create_task(conn, title="lenient", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=? "
+            "WHERE id=?",
+            (kb.DEFAULT_FAILURE_LIMIT, t),
+        )
+        conn.commit()
+        # Default-limit call would stick it (failures >= default).
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, t).status == "blocked"
+        # Dispatcher configured a higher limit → recover, preserve counter.
+        promoted = kb.recompute_ready(
+            conn, failure_limit=kb.DEFAULT_FAILURE_LIMIT + 2
+        )
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == kb.DEFAULT_FAILURE_LIMIT
+
+        # Config allows FEWER retries than the default. A task at the
+        # stricter limit must stay blocked even though it's below default.
+        t2 = kb.create_task(conn, title="strict", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 "
+            "WHERE id=?",
+            (t2,),
+        )
+        conn.commit()
+        # Default-limit (2) would recover it (1 < 2).
+        # Stricter config limit (1) must keep it blocked (1 >= 1).
+        assert kb.recompute_ready(conn, failure_limit=1) == 0
+        assert kb.get_task(conn, t2).status == "blocked"
+
+
+def test_recompute_ready_per_task_max_retries_overrides_dispatcher(kanban_home):
+    """A per-task ``max_retries`` wins over the dispatcher failure_limit,
+    matching ``_record_task_failure``'s resolution order."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="per-task", assignee="a")
+        # Per-task allows 4 retries; dispatcher config says 2.
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=2, "
+            "max_retries=4 WHERE id=?",
+            (t,),
+        )
+        conn.commit()
+        # failures(2) < per-task limit(4) → recover, despite dispatcher=2.
+        promoted = kb.recompute_ready(conn, failure_limit=2)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1471,6 +1930,223 @@ def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Scratch cleanup containment (#28818)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_workspace_removes_managed_scratch_dir(kanban_home):
+    """A scratch workspace under the kanban workspaces root is removed."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="scratchy")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        assert ws.is_dir()
+        kb.complete_task(conn, t, result="ok")
+    assert not ws.exists(), "Hermes-managed scratch dir should be cleaned up"
+
+
+def test_cleanup_workspace_refuses_path_outside_scratch_root(kanban_home, tmp_path):
+    """A scratch task with a user path outside the workspaces root must NOT be deleted (#28818).
+
+    Reproduces the data-loss vector where a board's ``default_workdir`` is set
+    to a real source directory; tasks created without an explicit
+    ``workspace_kind`` inherit ``scratch`` semantics, and the old cleanup path
+    would ``shutil.rmtree`` the user's source tree on task completion.
+    """
+    real_source = tmp_path / "real-source"
+    real_source.mkdir()
+    (real_source / ".git").mkdir()
+    (real_source / "README.md").write_text("important", encoding="utf-8")
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ship")
+        # Simulate the bad state directly: workspace_kind='scratch' (default)
+        # but workspace_path pointing at the user's real source tree, which is
+        # exactly what board.default_workdir produces when the task is created
+        # without an explicit workspace_kind.
+        conn.execute(
+            "UPDATE tasks SET workspace_kind=?, workspace_path=? WHERE id=?",
+            ("scratch", str(real_source), t),
+        )
+        conn.commit()
+        kb.complete_task(conn, t, result="ok")
+
+    assert real_source.exists(), "User source tree must not be deleted by scratch cleanup"
+    assert (real_source / ".git").exists()
+    assert (real_source / "README.md").read_text(encoding="utf-8") == "important"
+
+
+def test_cleanup_workspace_honors_workspaces_root_env_override(tmp_path, monkeypatch):
+    """``HERMES_KANBAN_WORKSPACES_ROOT`` extends the managed-scratch set.
+
+    Worker subprocesses run with this env var injected by the dispatcher. The
+    cleanup containment check must treat paths under it as managed even when
+    they sit outside the active kanban home.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    workspaces_override = tmp_path / "ext-workspaces"
+    workspaces_override.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(workspaces_override))
+    kb.init_db()
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="ext")
+        scratch_dir = workspaces_override / t
+        scratch_dir.mkdir()
+        conn.execute(
+            "UPDATE tasks SET workspace_kind=?, workspace_path=? WHERE id=?",
+            ("scratch", str(scratch_dir), t),
+        )
+        conn.commit()
+        kb.complete_task(conn, t, result="ok")
+
+    assert not scratch_dir.exists(), "Override-root scratch dir should be cleaned up"
+
+
+# ---------------------------------------------------------------------------
+# Deferred scratch cleanup for parent/child handoff (#33774)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_workspace_deferred_while_child_active(kanban_home):
+    """A scratch parent's workspace survives completion while a child is still active.
+
+    The dependency chain (parents=[A]) must guarantee child B can read A's
+    handoff artifacts. The old cleanup deleted A's scratch dir immediately on
+    A's completion, before B ever ran.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)  # child depends on parent
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        assert parent_ws.is_dir()
+        # Parent completes; child is still 'todo' -> cleanup must be deferred.
+        kb.complete_task(conn, parent, result="handoff written")
+
+    assert parent_ws.exists(), (
+        "Parent scratch workspace must survive while a linked child is active"
+    )
+
+
+def test_cleanup_workspace_swept_after_last_child_completes(kanban_home):
+    """Once all children are terminal, the deferred parent scratch dir is removed."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child")
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+        # Give the child its own scratch dir too.
+        c_task = kb.get_task(conn, child)
+        child_ws = kb.resolve_workspace(c_task)
+        kb.set_workspace_path(conn, child, child_ws)
+
+        kb.complete_task(conn, parent, result="ok")
+        assert parent_ws.exists(), "deferred while child active"
+
+        # Child completes -> recompute promotes nothing new; the child's
+        # cleanup sweep should now reap the parent's deferred workspace.
+        kb.complete_task(conn, child, result="done")
+
+    assert not parent_ws.exists(), (
+        "Parent scratch workspace should be swept once all children are terminal"
+    )
+    assert not child_ws.exists(), "Child scratch workspace should be cleaned up too"
+
+
+def test_dir_child_completion_unblocks_deferred_scratch_parent(kanban_home, tmp_path):
+    """A non-scratch ('dir') child completing must still sweep its scratch parent.
+
+    Regression for the gap where ``_cleanup_workspace`` returned early for a
+    non-scratch task and never ran the parent sweep — leaking the parent's
+    deferred scratch dir forever.
+    """
+    child_dir = tmp_path / "persistent-child"
+    child_dir.mkdir()
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="scratch parent")
+        child = kb.create_task(
+            conn, title="dir child", workspace_kind="dir",
+            workspace_path=str(child_dir),
+        )
+        kb.link_tasks(conn, parent, child)
+        p_task = kb.get_task(conn, parent)
+        parent_ws = kb.resolve_workspace(p_task)
+        kb.set_workspace_path(conn, parent, parent_ws)
+
+        kb.complete_task(conn, parent, result="handoff")
+        assert parent_ws.exists(), "deferred while dir child active"
+
+        kb.complete_task(conn, child, result="built")
+
+    assert not parent_ws.exists(), (
+        "A 'dir' child completing must trigger the parent scratch sweep"
+    )
+    assert child_dir.exists(), "Non-scratch 'dir' child workspace is never deleted"
+
+
+def test_is_managed_scratch_path_accepts_per_board_workspaces(kanban_home, tmp_path):
+    """Per-board scratch dirs under ``<kanban_home>/kanban/boards/<slug>/workspaces`` are managed."""
+    board_scratch = kanban_home / "kanban" / "boards" / "my-board" / "workspaces" / "task-1"
+    board_scratch.mkdir(parents=True)
+    assert kb._is_managed_scratch_path(board_scratch)
+
+
+def test_is_managed_scratch_path_rejects_real_source_tree(kanban_home, tmp_path):
+    """A path outside any managed root (e.g. a user's repo) is NOT managed."""
+    real = tmp_path / "code" / "my-project"
+    real.mkdir(parents=True)
+    assert not kb._is_managed_scratch_path(real)
+
+
+def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
+    """Hermes' own DB/metadata/log subtrees under ``<kanban_home>/kanban`` are NOT managed.
+
+    Regression guard for the Copilot finding on #28819: a scratch task whose
+    ``workspace_path`` was mis-set to the kanban home, the logs dir, or a
+    board's metadata dir (i.e. the board root itself, not its ``workspaces/``
+    child) must be refused. Without this, the containment check would happily
+    ``shutil.rmtree`` Hermes' DB/metadata/logs on task completion.
+    """
+    kanban_root = kanban_home / "kanban"
+    kanban_root.mkdir(parents=True, exist_ok=True)
+    assert not kb._is_managed_scratch_path(kanban_root)
+
+    logs_dir = kanban_root / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    assert not kb._is_managed_scratch_path(logs_dir)
+
+    board_root = kanban_root / "boards" / "my-board"
+    board_root.mkdir(parents=True, exist_ok=True)
+    # The board root itself is NOT a managed scratch dir — only the
+    # ``workspaces/`` child (and its descendants) are.
+    assert not kb._is_managed_scratch_path(board_root)
+
+    # Sibling subtrees of ``workspaces/`` under a board (e.g. its kanban.db
+    # or board.json living next to ``workspaces/``) are also not managed.
+    board_logs = board_root / "logs"
+    board_logs.mkdir(parents=True, exist_ok=True)
+    assert not kb._is_managed_scratch_path(board_logs)
+
+    # Now create the board's workspaces dir and a task scratch dir under it —
+    # the latter is the only thing the guard should allow.
+    board_workspaces = board_root / "workspaces"
+    board_workspaces.mkdir(parents=True, exist_ok=True)
+    # The workspaces root itself is also NOT managed — deleting it would
+    # wipe every task's scratch dir at once.
+    assert not kb._is_managed_scratch_path(board_workspaces)
+    task_dir = board_workspaces / "task-42"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    assert kb._is_managed_scratch_path(task_dir)
+
+
+# ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------
 
@@ -1965,16 +2641,30 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
 
-def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
+def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
     """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
 
     Without this fallback, the gateway's kanban dispatcher crashes every
     60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
     retried forever — which is what the real-world user report shows
     (see hermes-agent issue #22032).
+
+    NOTE: We do NOT use the ``kanban_home`` fixture here because that
+    fixture pre-initializes the DB via ``kb.init_db()`` — putting the
+    file in WAL on disk. The Bug D safety guard now refuses to downgrade
+    to DELETE when the on-disk header is already WAL, so testing the
+    NFS-fallback path requires a truly-fresh DB file (NFS scenario in
+    production: first connection of the first process ever to touch the
+    file, where downgrading is safe because nobody else has WAL state
+    yet).
     """
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()
@@ -2306,7 +2996,6 @@ def test_resolve_hermes_argv_module_actually_runs():
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    import sys
     import hermes_cli.kanban_db as kb
     import shutil
     import unittest.mock as mock
@@ -2464,13 +3153,32 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_create_task_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
-    """Board with default_workdir → create_task without workspace_path → inherits default."""
+def test_create_task_scratch_without_workspace_ignores_board_default_workdir(kanban_home, monkeypatch):
+    """Scratch tasks must NOT inherit board.default_workdir — would point auto-cleanup
+    at the user's source tree on completion (#28818)."""
     default_wd = "/home/user/project"
     kb.create_board("work-proj", default_workdir=default_wd)
 
     with kb.connect(board="work-proj") as conn:
-        tid = kb.create_task(conn, title="inherited", board="work-proj")
+        tid = kb.create_task(conn, title="scratch-task", board="work-proj")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_kind == "scratch"
+    assert t.workspace_path is None
+
+
+def test_create_task_dir_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
+    """Board default_workdir is for persistent dir/worktree workspaces, not scratch."""
+    default_wd = "/home/user/project"
+    kb.create_board("work-proj-dir", default_workdir=default_wd)
+
+    with kb.connect(board="work-proj-dir") as conn:
+        tid = kb.create_task(
+            conn,
+            title="inherited",
+            workspace_kind="dir",
+            board="work-proj-dir",
+        )
         t = kb.get_task(conn, tid)
     assert t is not None
     assert t.workspace_path == default_wd
@@ -2866,7 +3574,6 @@ def test_detect_stale_skips_recently_started_task(kanban_home, monkeypatch):
 
 def test_detect_stale_skips_when_timeout_zero(kanban_home, monkeypatch):
     """stale_timeout_seconds=0 disables stale detection entirely."""
-    import hermes_cli.kanban_db as _kb
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="disabled", assignee="worker")
@@ -3038,6 +3745,44 @@ def test_connect_refuses_corrupt_existing_file(tmp_path):
         kb.connect(db_path=db_path)
 
 
+def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
+    """Repeated quarantines of the same corrupt bytes must not amplify disk usage.
+
+    Regression for the gateway dispatcher's 5-min retry loop on shared kanban
+    DBs across multi-profile fleets: each retry on an unchanged corrupt file
+    used to create a fresh ``.corrupt.<timestamp>.bak`` until disk filled. The
+    content-addressed backup name is deterministic in the DB's sha256, so
+    N retries of the same bytes share one backup.
+    """
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+
+    backups: set[Path] = set()
+    for _ in range(10):
+        kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb.connect(db_path=db_path)
+        assert excinfo.value.backup_path is not None
+        backups.add(excinfo.value.backup_path)
+
+    assert len(backups) == 1, f"expected 1 deterministic backup, got {len(backups)}"
+    (backup,) = backups
+    assert backup.exists()
+    assert backup.read_bytes() == original
+
+    # Mutate the corrupt bytes — fingerprint changes, separate backup preserved.
+    with db_path.open("r+b") as f:
+        f.seek(4096)
+        f.write(b"\xAB" * 64)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo2:
+        kb.connect(db_path=db_path)
+    second_backup = excinfo2.value.backup_path
+    assert second_backup is not None
+    assert second_backup != backup
+    assert second_backup.exists()
+
+
 def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
     """A transient lock during the probe must not produce a .corrupt backup
     and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite
@@ -3188,3 +3933,442 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
 
+
+# ---------------------------------------------------------------------------
+# Connection pragmas (secure_delete, cell_size_check, synchronous=FULL)
+# ---------------------------------------------------------------------------
+
+
+def test_connect_sets_secure_delete_on(tmp_path):
+    """secure_delete=ON must be active on every new connection."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as conn:
+        row = conn.execute("PRAGMA secure_delete").fetchone()
+    assert row[0] == 1, f"expected secure_delete=1, got {row[0]}"
+
+
+def test_connect_sets_cell_size_check_on(tmp_path):
+    """cell_size_check=ON must be active on every new connection."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as conn:
+        row = conn.execute("PRAGMA cell_size_check").fetchone()
+    assert row[0] == 1, f"expected cell_size_check=1, got {row[0]}"
+
+
+def test_connect_sets_synchronous_full(tmp_path):
+    """synchronous must be FULL (=2), not NORMAL (=1)."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as conn:
+        row = conn.execute("PRAGMA synchronous").fetchone()
+    assert row[0] == 2, f"expected synchronous=2 (FULL), got {row[0]}"
+
+
+def test_connect_pragmas_applied_on_reconnect(tmp_path):
+    """All three pragmas must be re-applied on every connect(), not just the first."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    # First connection: write a task and close.
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="reconnect-check")
+    # Force re-init path by discarding path cache.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    # Second connection: pragmas must still be applied.
+    with kb.connect(db_path=db_path) as conn:
+        assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
+        assert conn.execute("PRAGMA cell_size_check").fetchone()[0] == 1
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+
+
+
+def test_pragmas_not_accidentally_disabled_by_migrate_path(tmp_path):
+    """Migration path must not reset connection pragmas."""
+    db_path = tmp_path / "legacy.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    # Initialise with a fresh connect so schema + init run.
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="pre-migration-task")
+    # Simulate a re-entry through the init/migration path by discarding path cache.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as conn:
+        assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
+        assert conn.execute("PRAGMA cell_size_check").fetchone()[0] == 1
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+
+# write_txn — rollback handler must not mask the original exception
+# ---------------------------------------------------------------------------
+
+
+def test_write_txn_preserves_original_exception_when_rollback_fails(kanban_home):
+    """When a write inside write_txn raises an OperationalError that SQLite
+    has already auto-rolled-back (e.g. ``disk I/O error``,
+    ``database is locked``, ``database disk image is malformed``), the
+    explicit ROLLBACK in ``write_txn.__exit__`` itself raises
+    ``cannot rollback - no transaction is active``. The original cause
+    must NOT be masked by the secondary rollback failure — operators rely
+    on the original cause to diagnose the underlying issue.
+    """
+
+    class FailingConnWrapper:
+        """Delegate to a real connection, simulating an EIO during an INSERT
+        that SQLite has already auto-rolled-back."""
+
+        def __init__(self, real):
+            self._real = real
+            self._fail_armed = True
+
+        def execute(self, sql, *args, **kwargs):
+            if (
+                self._fail_armed
+                and sql.lstrip().upper().startswith("INSERT")
+                and "task_events" in sql.lower()
+            ):
+                self._fail_armed = False  # one-shot
+                # Simulate SQLite auto-rolling back the transaction by
+                # issuing a real ROLLBACK now. After this, BEGIN IMMEDIATE
+                # is no longer active and an explicit ROLLBACK would error.
+                try:
+                    self._real.execute("ROLLBACK")
+                except sqlite3.OperationalError:
+                    pass
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    with kb.connect() as conn:
+        wrapper = FailingConnWrapper(conn)
+        with pytest.raises(sqlite3.OperationalError) as excinfo:
+            with kb.write_txn(wrapper):
+                kb._append_event(wrapper, "t_bogus", "promoted", None)
+
+    msg = str(excinfo.value)
+    assert "disk I/O error" in msg, (
+        f"write_txn masked the original exception with rollback failure; "
+        f"got {msg!r} (expected to contain 'disk I/O error')"
+    )
+    assert "cannot rollback" not in msg, (
+        f"write_txn surfaced the rollback failure instead of the original "
+        f"OperationalError; got {msg!r}"
+    )
+def test_write_txn_healthy_commit_no_exception(tmp_path):
+    """Normal commit does not trigger the torn-extend check."""
+    from hermes_cli.kanban_db import connect, write_txn
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    # Should not raise
+    with write_txn(conn) as c:
+        c.execute(
+            "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+            "VALUES ('t_test01', 'test task', 'tester', 'todo', 0, 1234567890)"
+        )
+    row = conn.execute("SELECT title FROM tasks WHERE id='t_test01'").fetchone()
+    assert row["title"] == "test task"
+    conn.close()
+
+
+def test_write_txn_raises_on_truncated_file(tmp_path):
+    """A mocked smaller file size triggers the torn-extend check."""
+    from hermes_cli.kanban_db import connect, write_txn
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    # Get actual page size so we can fake a smaller file
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    original_getsize = os.path.getsize
+
+    def fake_getsize(path):
+        # Return a size that implies at least 1 fewer page than header claims
+        real_size = original_getsize(path)
+        return max(0, real_size - page_size)
+
+    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
+        with unittest.mock.patch("hermes_cli.kanban_db.os.path.getsize", side_effect=fake_getsize):
+            with write_txn(conn) as c:
+                c.execute(
+                    "INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+                    "VALUES ('t_test02', 'test task 2', 'tester', 'todo', 0, 1234567890)"
+                )
+    conn.close()
+
+
+def test_write_txn_post_commit_check_fires_every_call(tmp_path):
+    """The invariant check runs on every write_txn call."""
+    from hermes_cli.kanban_db import connect, write_txn
+    import hermes_cli.kanban_db as kanban_db_module
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    call_count = 0
+    real_check = kanban_db_module._check_file_length_invariant
+
+    def counting_check(c):
+        nonlocal call_count
+        call_count += 1
+        real_check(c)
+
+    with unittest.mock.patch.object(kanban_db_module, "_check_file_length_invariant", counting_check):
+        for i in range(3):
+            with write_txn(conn) as c:
+                c.execute(
+                    f"INSERT INTO tasks (id, title, assignee, status, priority, created_at) "
+                    f"VALUES ('t_fire{i:02d}', 'task {i}', 'tester', 'todo', 0, 1234567890)"
+                )
+    assert call_count == 3
+    conn.close()
+
+
+def test_connect_sets_wal_autocheckpoint_100(tmp_path):
+    """connect() sets wal_autocheckpoint to 100."""
+    from hermes_cli.kanban_db import connect
+    db = tmp_path / "test.db"
+    conn = connect(db_path=db)
+    val = conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0]
+    assert val == 100
+    conn.close()
+
+
+def test_write_txn_check_reads_correct_header_fields(tmp_path):
+    """Synthetic DB file with mismatched header page_count triggers the check."""
+    import struct
+    from hermes_cli.kanban_db import connect, _check_file_length_invariant
+    db = tmp_path / "synthetic.db"
+    conn = connect(db_path=db)
+    page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+    conn.close()
+    # Now corrupt the file: claim N pages but truncate to N-1 pages
+    with open(db, "rb") as f:
+        data = bytearray(f.read())
+    # Read current page_count from header bytes 28-31
+    real_page_count = struct.unpack(">I", data[28:32])[0]
+    if real_page_count < 2:
+        # Need at least 2 pages to fake a truncation
+        pytest.skip("DB too small for synthetic truncation test")
+    # Truncate to N-1 pages
+    truncated = bytes(data[: (real_page_count - 1) * page_size])
+    with open(db, "wb") as f:
+        f.write(truncated)
+    # Now open and check — should raise
+    # We can't use connect() because _validate_sqlite_header may block; use a raw connection
+    raw_conn = sqlite3.connect(str(db), isolation_level=None)
+    with pytest.raises(sqlite3.DatabaseError, match="torn-extend|page count mismatch"):
+        _check_file_length_invariant(raw_conn)
+    raw_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# reap_worker_zombies() tests
+# ---------------------------------------------------------------------------
+
+
+def test_reap_worker_zombies_returns_count():
+    """reap_worker_zombies() returns the list of reaped PIDs."""
+    from unittest.mock import patch
+
+    fake_pids = [12345, 67890, 11111]
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        if call_count[0] < len(fake_pids):
+            p = fake_pids[call_count[0]]
+            call_count[0] += 1
+            return p, 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            pids = kb.reap_worker_zombies()
+    assert pids == [12345, 67890, 11111]
+
+
+def test_reap_worker_zombies_noop_on_windows(monkeypatch):
+    """reap_worker_zombies() returns 0 and never calls os.waitpid on Windows."""
+    from unittest.mock import patch
+
+    monkeypatch.setattr("hermes_cli.kanban_db.os.name", "nt")
+    with patch("hermes_cli.kanban_db.os.waitpid") as mock_waitpid:
+        result = kb.reap_worker_zombies()
+    mock_waitpid.assert_not_called()
+    assert result == []
+
+
+def test_reap_worker_zombies_noop_no_children():
+    """reap_worker_zombies() returns 0 without error when there are no children."""
+    from unittest.mock import patch
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=ChildProcessError):
+        result = kb.reap_worker_zombies()
+    assert result == []
+
+
+def test_reap_worker_zombies_records_exit_status():
+    """reap_worker_zombies() calls _record_worker_exit for each reaped pid."""
+    from unittest.mock import patch
+
+    calls = []
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return 12345, 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch(
+            "hermes_cli.kanban_db._record_worker_exit",
+            side_effect=lambda p, s: calls.append((p, s)),
+        ):
+            kb.reap_worker_zombies()
+
+    assert calls == [(12345, 0)]
+
+
+def test_reap_worker_zombies_handles_waitpid_os_error():
+    """reap_worker_zombies() does not propagate generic OSError from os.waitpid."""
+    from unittest.mock import patch
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=OSError("test error")):
+        result = kb.reap_worker_zombies()
+    assert result == []
+
+
+def test_zombie_reaper_runs_despite_board_connect_failure():
+    """reap_worker_zombies runs even when a board tick raises an error."""
+    from unittest.mock import patch
+
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        call_count[0] += 1
+        if call_count[0] <= 2:
+            return [12345, 67890][call_count[0] - 1], 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            # Simulate a board tick failure before reaping
+            try:
+                raise sqlite3.OperationalError("disk I/O error")
+            except sqlite3.OperationalError:
+                pass
+
+            # Reaper still runs independently
+            pids = kb.reap_worker_zombies()
+
+    assert pids == [12345, 67890]
+
+
+def test_zombie_reaper_survives_all_boards_failing():
+    """reap_worker_zombies runs each tick regardless of board tick failures."""
+    from unittest.mock import patch
+
+    total_reaped = 0
+
+    def make_fake_waitpid(zombie_pids):
+        call_count = [0]
+
+        def fake_waitpid(pid, flags):
+            if call_count[0] < len(zombie_pids):
+                p = zombie_pids[call_count[0]]
+                call_count[0] += 1
+                return p, 0
+            return 0, 0
+
+        return fake_waitpid
+
+    # 5 ticks, 2 zombies per tick = 10 total
+    for tick in range(5):
+        pids = [tick * 100 + 1, tick * 100 + 2]
+        with patch(
+            "hermes_cli.kanban_db.os.waitpid", side_effect=make_fake_waitpid(pids)
+        ):
+            with patch("hermes_cli.kanban_db._record_worker_exit"):
+                pids = kb.reap_worker_zombies()
+        total_reaped += len(pids)
+
+    assert total_reaped == 10
+
+
+def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
+    """The reaper inside dispatch_once still works after refactor to reap_worker_zombies()."""
+    from unittest.mock import patch
+
+    call_count = [0]
+
+    def fake_waitpid(pid, flags):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return 99999, 0
+        return 0, 0
+
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
+        with patch("hermes_cli.kanban_db._record_worker_exit"):
+            with patch("hermes_cli.kanban_db.os.name", "posix"):
+                pids = kb.reap_worker_zombies()
+
+    assert pids == [99999]
+
+
+
+# ---------------------------------------------------------------------------
+# connect_closing(): context manager that actually closes the FD
+# Regression coverage for #33159 (kanban.db FD leak — gateway crashes after
+# ~4 days). sqlite3.Connection's built-in __exit__ commits/rollbacks but
+# does NOT close, so `with kb.connect() as conn:` leaks the FD in
+# long-lived processes (gateway run_slash, dashboard decompose handler).
+# `connect_closing()` is the leak-safe replacement.
+# ---------------------------------------------------------------------------
+
+
+def test_connect_closing_closes_connection_on_exit(tmp_path):
+    """The new context manager MUST actually close the underlying FD."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect_closing(db_path=db_path) as conn:
+        conn.execute("SELECT 1").fetchone()
+    # After exit, the connection MUST be closed — subsequent execute
+    # should raise ProgrammingError.
+    with pytest.raises(sqlite3.ProgrammingError):
+        conn.execute("SELECT 1")
+
+
+def test_connect_closing_closes_on_exception(tmp_path):
+    """Connection closed even when the body raises."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    captured = []
+    with pytest.raises(RuntimeError, match="boom"):
+        with kb.connect_closing(db_path=db_path) as conn:
+            captured.append(conn)
+            raise RuntimeError("boom")
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured[0].execute("SELECT 1")
+
+
+def test_connect_closing_yields_usable_connection(tmp_path):
+    """Smoke test: schema is initialized and basic ops work."""
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect_closing(db_path=db_path) as conn:
+        tid = kb.create_task(conn, title="closing-cm test")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.title == "closing-cm test"
+
+
+def test_bare_connect_does_not_close_on_context_exit(tmp_path):
+    """Document the leak that connect_closing exists to prevent.
+
+    sqlite3.Connection's __exit__ commits/rollbacks but doesn't close.
+    This is the upstream behaviour we cannot change; the regression
+    guard is to make sure connect_closing() does the right thing.
+    """
+    db_path = tmp_path / "kanban.db"
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect(db_path=db_path) as conn:
+        pass
+    # Still usable after with-block exit (the leak).
+    conn.execute("SELECT 1").fetchone()
+    conn.close()  # explicit close to avoid leaking THIS test

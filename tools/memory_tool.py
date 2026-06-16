@@ -26,7 +26,6 @@ Design:
 import json
 import logging
 import os
-import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -63,46 +62,22 @@ ENTRY_DELIMITER = "\n§\n"
 # ---------------------------------------------------------------------------
 # Memory content scanning — lightweight check for injection/exfiltration
 # in content that gets injected into the system prompt.
+#
+# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
+# shared with the context-file scanner and the tool-result delimiter system.
+# Memory uses the "strict" scope (broadest pattern set) because:
+#  - memory entries are user-curated; the user can rewrite a flagged entry
+#  - memory enters the system prompt as a FROZEN snapshot, so a poisoned
+#    entry persists for the entire session and across sessions until
+#    explicitly removed.
 # ---------------------------------------------------------------------------
 
-_MEMORY_THREAT_PATTERNS = [
-    # Prompt injection
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'you\s+are\s+now\s+', "role_hijack"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    # Exfiltration via curl/wget with secrets
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    # Persistence via shell rc
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
-]
-
-# Subset of invisible chars for injection detection
-_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+from tools.threat_patterns import first_threat_message as _first_threat_message
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
-
-    # Check threat patterns
-    for pattern, pid in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
-
-    return None
+    return _first_threat_message(content, scope="strict")
 
 
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
@@ -155,7 +130,23 @@ class MemoryStore:
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
-        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
+        """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
+
+        The frozen snapshot is what enters the system prompt. We scan each
+        entry for injection/promptware patterns at snapshot-build time —
+        ANY hit replaces the entry text in the snapshot with a placeholder
+        like ``[BLOCKED: …]``, so a poisoned-on-disk memory file (supply
+        chain, compromised tool, sister-session write) cannot inject into
+        the system prompt.
+
+        The live ``memory_entries`` / ``user_entries`` lists keep the
+        original text so the user can still SEE poisoned entries via
+        ``memory(action=read)`` and remove them — silently dropping them
+        would hide the attack from the user.
+
+        Scanning is deterministic from disk bytes, so the snapshot remains
+        stable for the entire session (prefix-cache invariant holds).
+        """
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
@@ -166,11 +157,53 @@ class MemoryStore:
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
+        # Sanitize entries for the system-prompt snapshot only.  Live state
+        # (memory_entries / user_entries) keeps the raw text so the user
+        # can see + remove poisoned entries via the memory tool.
+        sanitized_memory = self._sanitize_entries_for_snapshot(self.memory_entries, "MEMORY.md")
+        sanitized_user = self._sanitize_entries_for_snapshot(self.user_entries, "USER.md")
+
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
-            "memory": self._render_block("memory", self.memory_entries),
-            "user": self._render_block("user", self.user_entries),
+            "memory": self._render_block("memory", sanitized_memory),
+            "user": self._render_block("user", sanitized_user),
         }
+
+    @staticmethod
+    def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
+        """Return ``entries`` with any threat-matching entry replaced by a placeholder.
+
+        Each entry is scanned with the shared threat-pattern library at the
+        ``"strict"`` scope (same as memory writes).  On match, the entry is
+        replaced in the returned list with ``"[BLOCKED: <filename> entry
+        contained threat pattern: <ids>. Removed from system prompt.]"`` —
+        the placeholder enters the snapshot, the original entry stays in
+        live state for the user to inspect and delete.
+
+        Empty or already-block-marker entries pass through unchanged.
+        """
+        from tools.threat_patterns import scan_for_threats
+
+        sanitized: List[str] = []
+        for entry in entries:
+            if not entry or entry.startswith("[BLOCKED:"):
+                sanitized.append(entry)
+                continue
+            findings = scan_for_threats(entry, scope="strict")
+            if findings:
+                logger.warning(
+                    "Memory entry from %s blocked at load time: %s",
+                    filename, ", ".join(findings),
+                )
+                sanitized.append(
+                    f"[BLOCKED: {filename} entry contained threat pattern(s): "
+                    f"{', '.join(findings)}. Removed from system prompt; "
+                    f"use memory(action=read) to inspect and memory(action=remove) "
+                    f"to delete the original.]"
+                )
+            else:
+                sanitized.append(entry)
+        return sanitized
 
     @staticmethod
     @contextmanager
@@ -299,7 +332,9 @@ class MemoryStore:
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                        f"Consolidate now: use 'replace' to merge overlapping entries into "
+                        f"shorter ones or 'remove' stale or less important entries (see "
+                        f"current_entries below), then retry this add — all in this turn."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -357,12 +392,17 @@ class MemoryStore:
             new_total = len(ENTRY_DELIMITER.join(test_entries))
 
             if new_total > limit:
+                current = self._char_count(target)
                 return {
                     "success": False,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
+                        f"Shorten the new content, or 'remove' other stale or less important "
+                        f"entries to make room (see current_entries below), then retry — all "
+                        f"in this turn."
                     ),
+                    "current_entries": entries,
+                    "usage": f"{current:,}/{limit:,}",
                 }
 
             entries[idx] = new_content
@@ -566,6 +606,63 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def _apply_write_gate(action: str, target: str, content: Optional[str],
+                      old_text: Optional[str]) -> Optional[str]:
+    """Evaluate the memory write gate. Returns a JSON tool-result string when
+    the write should NOT proceed normally (blocked or staged), or None when the
+    caller should perform the real write.
+
+    Only the mutating actions (add/replace/remove) are gated.
+    """
+    if action not in {"add", "replace", "remove"}:
+        return None
+
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        # If the gate module can't load, fail open (current behaviour) rather
+        # than blocking all memory writes.
+        return None
+
+    # Build a small inline summary/detail for the foreground approval prompt.
+    label = "user profile" if target == "user" else "memory"
+    if action == "add":
+        summary = f"add to {label}"
+        detail = content or ""
+    elif action == "replace":
+        summary = f"replace in {label}"
+        detail = f"old: {old_text}\nnew: {content}"
+    else:  # remove
+        summary = f"remove from {label}"
+        detail = old_text or ""
+
+    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+
+    if decision.allow:
+        return None
+
+    if decision.blocked:
+        return tool_error(decision.message, success=False)
+
+    # stage
+    payload = {
+        "action": action,
+        "target": target,
+        "content": content,
+        "old_text": old_text,
+    }
+    record = wa.stage_write(
+        wa.MEMORY, payload,
+        summary=f"{summary}: {detail[:120]}",
+        origin=wa.current_origin(),
+    )
+    return json.dumps(
+        {"success": True, "staged": True, "pending_id": record["id"],
+         "message": decision.message},
+        ensure_ascii=False,
+    )
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
@@ -584,21 +681,29 @@ def memory_tool(
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
+    # Validate required params BEFORE the gate so an invalid write is rejected
+    # immediately instead of being staged and only failing at approve time.
+    if action == "add" and not content:
+        return tool_error("Content is required for 'add' action.", success=False)
+    if action == "replace" and (not old_text or not content):
+        missing = "old_text" if not old_text else "content"
+        return tool_error(f"{missing} is required for 'replace' action.", success=False)
+    if action == "remove" and not old_text:
+        return tool_error("old_text is required for 'remove' action.", success=False)
+
+    # Approval gate: when on, stages the write (background/gateway) or prompts
+    # inline (interactive CLI); when off (default) passes straight through.
+    gate_result = _apply_write_gate(action, target, content, old_text)
+    if gate_result is not None:
+        return gate_result
+
     if action == "add":
-        if not content:
-            return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
 
     elif action == "replace":
-        if not old_text:
-            return tool_error("old_text is required for 'replace' action.", success=False)
-        if not content:
-            return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
-        if not old_text:
-            return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
     else:
@@ -612,7 +717,23 @@ def check_memory_requirements() -> bool:
     return True
 
 
-# =============================================================================
+def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+    """Replay a staged memory write directly against the store, bypassing the
+    write gate. Called by the /memory approve handler.
+
+    Returns the store's result dict.
+    """
+    action = payload.get("action")
+    target = payload.get("target", "memory")
+    content = payload.get("content") or ""
+    old_text = payload.get("old_text") or ""
+    if action == "add":
+        return store.add(target, content)
+    if action == "replace":
+        return store.replace(target, old_text, content)
+    if action == "remove":
+        return store.remove(target, old_text)
+    return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
 

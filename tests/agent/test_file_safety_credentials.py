@@ -66,6 +66,16 @@ def test_anthropic_oauth_json_blocked(fake_home):
     assert "credential store" in err
 
 
+def test_google_oauth_json_blocked(fake_home):
+    """Gemini OAuth tokens live under auth/google_oauth.json — blocked."""
+    from agent.file_safety import get_read_block_error
+
+    oauth = _create(fake_home, Path("auth") / "google_oauth.json")
+    err = get_read_block_error(str(oauth))
+    assert err is not None
+    assert "credential store" in err
+
+
 def test_arbitrary_hermes_home_file_not_blocked(fake_home):
     """Non-credential files inside HERMES_HOME stay readable."""
     from agent.file_safety import get_read_block_error
@@ -149,6 +159,37 @@ def test_read_file_tool_blocks_relative_path_under_terminal_cwd(
     assert "credential store" in out["error"]
 
 
+def test_read_file_tool_blocks_nested_google_oauth_path(
+    fake_home, tmp_path, monkeypatch
+):
+    """The real read_file tool must not return Gemini OAuth token material."""
+    import json
+
+    import tools.file_tools as ft
+
+    oauth = _create(fake_home, Path("auth") / "google_oauth.json")
+    oauth.write_text(
+        json.dumps(
+            {
+                "refresh": "REFRESH_TOKEN_MARKER",
+                "access": "ACCESS_TOKEN_MARKER",
+                "email": "user@example.com",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    )
+
+    out = json.loads(ft.read_file_tool(str(oauth), task_id="google-oauth-test"))
+    assert "error" in out
+    assert "credential store" in out["error"]
+    assert "REFRESH_TOKEN_MARKER" not in json.dumps(out)
+    assert "ACCESS_TOKEN_MARKER" not in json.dumps(out)
+
+
 # ---------------------------------------------------------------------------
 # Widening: .env, webhook_subscriptions.json, mcp-tokens/
 # ---------------------------------------------------------------------------
@@ -205,28 +246,43 @@ def test_mcp_tokens_dir_itself_blocked(fake_home):
     assert "MCP token" in err
 
 
-def test_identically_named_files_outside_hermes_home_not_blocked(
+def test_identically_named_hermes_files_outside_home_not_blocked(
     fake_home, tmp_path
 ):
-    """A project's ``.env``, ``auth.json``, or ``mcp-tokens/`` outside
-    HERMES_HOME must remain readable — the gate is per-location, not
-    per-filename."""
+    """Hermes-specific filenames (``auth.json``, ``mcp-tokens/``, ``google_oauth.json``)
+    outside HERMES_HOME must remain readable — the gate is per-location for
+    those, not per-filename. ``.env`` is the exception: it's blocked anywhere
+    on disk (see test_project_local_env_blocked) because the basename always
+    means \"secret-bearing environment file\" regardless of directory."""
     from agent.file_safety import get_read_block_error
 
     project = tmp_path / "myproject"
     project.mkdir()
-    for rel in (".env", "auth.json"):
-        p = project / rel
-        p.write_text("not secret here", encoding="utf-8")
-        assert get_read_block_error(str(p)) is None, (
-            f"{rel} outside HERMES_HOME should NOT be blocked"
-        )
+    # auth.json outside HERMES_HOME — readable (per-location gate).
+    p = project / "auth.json"
+    p.write_text("not secret here", encoding="utf-8")
+    assert get_read_block_error(str(p)) is None, (
+        "auth.json outside HERMES_HOME should NOT be blocked"
+    )
+
+    google_oauth = project / "auth" / "google_oauth.json"
+    google_oauth.parent.mkdir()
+    google_oauth.write_text("not really a token", encoding="utf-8")
+    assert get_read_block_error(str(google_oauth)) is None
 
     tokens = project / "mcp-tokens"
     tokens.mkdir()
     tok_file = tokens / "token.json"
     tok_file.write_text("not really a token", encoding="utf-8")
     assert get_read_block_error(str(tok_file)) is None
+
+
+def test_non_secret_auth_subtree_file_not_blocked(fake_home):
+    """Only the known Google OAuth token path is blocked, not all auth/*."""
+    from agent.file_safety import get_read_block_error
+
+    note = _create(fake_home, Path("auth") / "notes.json")
+    assert get_read_block_error(str(note)) is None
 
 
 def test_config_yaml_not_blocked(fake_home):
@@ -267,6 +323,14 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     root_env = root / ".env"
     root_env.write_text("x")
     assert "credential store" in (get_read_block_error(str(root_env)) or "")
+
+    # Root-level Google OAuth token store: blocked too
+    root_google_oauth = root / "auth" / "google_oauth.json"
+    root_google_oauth.parent.mkdir(parents=True, exist_ok=True)
+    root_google_oauth.write_text("x")
+    assert "credential store" in (
+        get_read_block_error(str(root_google_oauth)) or ""
+    )
 
     # Root-level mcp-tokens: blocked
     root_tok = root / "mcp-tokens" / "gh.json"

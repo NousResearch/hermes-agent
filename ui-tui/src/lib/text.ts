@@ -1,7 +1,9 @@
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
-  THINKING_COT_MAX
+  THINKING_COT_MAX,
+  VERBOSE_TRAIL_MAX_CHARS,
+  VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
@@ -215,7 +217,16 @@ export const buildToolTrailLine = (
 const verboseToolBlock = (label: string, text?: string) => {
   const body = (text ?? '').trim()
 
-  return body ? `${label}:\n${boundedLiveRenderText(body)}` : ''
+  // Persisted trail blocks are kept all session and rendered expanded by
+  // default — cap to a small readable preview (NOT the 16KB live-render
+  // budget) so a large tool output can't balloon the Ink render tree and
+  // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
+  return body
+    ? `${label}:\n${boundedLiveRenderText(body, {
+        maxChars: VERBOSE_TRAIL_MAX_CHARS,
+        maxLines: VERBOSE_TRAIL_MAX_LINES
+      })}`
+    : ''
 }
 
 export const buildVerboseToolTrailLine = (
@@ -325,6 +336,22 @@ export const estimateRows = (text: string, w: number, compact = false) => {
   }
 
   return Math.max(1, rows)
+}
+
+/**
+ * Render an unanswered clarify prompt (timed out, or cancelled with Esc/Ctrl+C)
+ * as a persistent transcript block.  The live `ClarifyPrompt` overlay is torn
+ * down the moment the turn settles, so without this the question + options
+ * vanish from the screen while the agent's follow-up still refers to "the
+ * options above".  Mirrors the option formatting in ClarifyPrompt (the same
+ * 1-based numbered list) so the persisted record reads identically to what was
+ * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
+ */
+export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
+  const head = `ask ${question.trim()}`
+  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
+
+  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()

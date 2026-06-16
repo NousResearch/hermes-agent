@@ -9,7 +9,7 @@ description: "How to build a model provider (inference backend) plugin for Herme
 Model provider plugins declare an inference backend — an OpenAI-compatible endpoint, an Anthropic Messages server, a Codex-style Responses API, or a Bedrock-native surface — that Hermes can route `AIAgent` calls through. Every built-in provider (OpenRouter, Anthropic, GMI, DeepSeek, Nvidia, …) ships as one of these plugins. Third parties can add their own by dropping a directory under `$HERMES_HOME/plugins/model-providers/` with zero changes to the repo.
 
 :::tip
-Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) (cross-session knowledge) and [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
+Model provider plugins are the third kind of **provider plugin**. The others are [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (cross-session knowledge) and [Context Engine Plugins](/developer-guide/context-engine-plugin) (context compression strategies). All three follow the same "drop a directory, declare a profile, no repo edits" pattern.
 :::
 
 ## How discovery works
@@ -131,8 +131,9 @@ class AcmeProfile(ProviderProfile):
 
     def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
         """Returns (extra_body_additions, top_level_kwargs). Needed when some
-        fields go top-level (Kimi's reasoning_effort) and some go in extra_body
-        (OpenRouter's reasoning dict). Default: ({}, {})."""
+        fields go top-level (Kimi's reasoning_effort, OpenRouter's verbosity for
+        adaptive Anthropic models) and some go in extra_body (OpenRouter's
+        reasoning dict). Default: ({}, {})."""
         return {}, {}
 
     def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:
@@ -250,18 +251,18 @@ The general `PluginManager` (the thing `hermes plugins` operates on) **sees** mo
 Like any Hermes plugin, model providers can ship as a pip package. Add an entry point to your `pyproject.toml`:
 
 ```toml
-[project.entry-points."hermes.plugins"]
+[project.entry-points."hermes_agent.plugins"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 
 …where `acme_hermes_plugin:register` is a function that calls `register_provider(profile)`. The general PluginManager picks up entry-point plugins during `discover_and_load()`. For `kind: model-provider` pip plugins, you still need to declare the kind in your manifest (or rely on the source-text heuristic).
 
-See [Building a Hermes Plugin](/docs/guides/build-a-hermes-plugin#distribute-via-pip) for the full entry-points setup.
+See [Building a Hermes Plugin](/guides/build-a-hermes-plugin#distribute-via-pip) for the full entry-points setup.
 
 ## Related pages
 
-- [Provider Runtime](/docs/developer-guide/provider-runtime) — resolution precedence + where each layer reads the profile
-- [Adding Providers](/docs/developer-guide/adding-providers) — end-to-end checklist for new inference backends (covers both the fast plugin path and the full CLI/auth integration)
-- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin)
-- [Context Engine Plugins](/docs/developer-guide/context-engine-plugin)
-- [Building a Hermes Plugin](/docs/guides/build-a-hermes-plugin) — general plugin authoring
+- [Provider Runtime](/developer-guide/provider-runtime) — resolution precedence + where each layer reads the profile
+- [Adding Providers](/developer-guide/adding-providers) — end-to-end checklist for new inference backends (covers both the fast plugin path and the full CLI/auth integration)
+- [Memory Provider Plugins](/developer-guide/memory-provider-plugin)
+- [Context Engine Plugins](/developer-guide/context-engine-plugin)
+- [Building a Hermes Plugin](/guides/build-a-hermes-plugin) — general plugin authoring

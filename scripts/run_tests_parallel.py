@@ -52,16 +52,27 @@ from typing import Dict, List, Tuple
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
 
-# Directories to skip during discovery — the e2e + integration suites
-# require real services and are run separately. Match exactly the
-# ``--ignore=`` flags the previous CI command used.
-_SKIP_PARTS = {"integration", "e2e"}
+# Directories to skip during discovery — these suites require real
+# external services (a model gateway, a docker daemon with a prebuilt
+# image, etc.) and are run in their own dedicated CI jobs:
+#
+#   tests/e2e/         — .github/workflows/tests.yml :: e2e job
+#   tests/integration/ — historical; legacy --ignore flags
+#   tests/docker/      — .github/workflows/docker-publish.yml ::
+#                        build-amd64 job (runs against the freshly-loaded
+#                        nousresearch/hermes-agent:test image, via
+#                        ``HERMES_TEST_IMAGE`` so the fixture skips
+#                        rebuild). The full pytest-shard runner can't
+#                        host these because the session-scoped
+#                        ``built_image`` fixture would do a 3-7min
+#                        ``docker build``,
+#                        so the build is guaranteed to die in fixture
+#                        setup. The dedicated job sidesteps both costs.
+_SKIP_PARTS = {"integration", "e2e", "docker"}
 
-# Per-file wall-clock cap. Generous default — pytest-timeout still
-# enforces per-test caps inside each subprocess; this is just an outer
-# safety net so a single hung file can't stall the whole suite. Override
+# Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -136,7 +147,10 @@ def _discover_files(roots: List[Path]) -> List[Path]:
 
     Exclude any file whose path contains a component in ``_SKIP_PARTS``,
     UNLESS the user explicitly named it as a root (in which case the
-    user's intent overrides the skip filter).
+    user's intent overrides the skip filter). This makes
+    ``scripts/run_tests.sh tests/docker/`` work locally the same way
+    ``pytest tests/docker/`` does — the CI-level skip exists to keep
+    the sharded matrix from blowing up, not to block targeted runs.
     """
     seen: set[Path] = set()
     out: List[Path] = []
@@ -151,8 +165,17 @@ def _discover_files(roots: List[Path]) -> List[Path]:
                 seen.add(real)
                 out.append(root)
             continue
+        # If the explicit root itself sits inside a skipped dir (e.g.
+        # the user said ``tests/docker``), the user has overridden the
+        # skip for that subtree. Compute the set of skip-parts the user
+        # opted into, and only filter files whose path crosses a
+        # skip-part *outside* that opt-in.
+        root_skip_overrides = {
+            part for part in root.parts if part in _SKIP_PARTS
+        }
+        effective_skips = _SKIP_PARTS - root_skip_overrides
         for path in root.rglob("test_*.py"):
-            if any(part in _SKIP_PARTS for part in path.parts):
+            if any(part in effective_skips for part in path.parts):
                 continue
             real = path.resolve()
             if real in seen:
@@ -248,18 +271,21 @@ def _run_one_file(
     On per-file timeout (``file_timeout`` seconds) or any other exception
     during ``communicate()``, we kill the whole process group / process
     tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
-    orphan onto PID 1. The pytest-timeout plugin enforces per-test
-    timeouts inside the subprocess; this outer timeout exists only to
+    orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    
     subproc_start = time.monotonic()
+    # launch the pytest process
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
+        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -267,18 +293,15 @@ def _run_one_file(
         start_new_session=True,
     )
 
-    # Capture the pgid NOW, before the leader can exit and be reaped.
-    # Once the leader is reaped, os.getpgid(proc.pid) raises
-    # ProcessLookupError even though grandchildren in that group are
-    # still alive — defeating the whole cleanup. None on Windows where
-    # the pgid concept doesn't apply (taskkill walks ppid chain instead).
+    # Capture the pgid NOW, before the leader can exit and be reaped. Once
+    # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
+    # even though grandchildren in that group are still alive — defeating
+    # the whole cleanup. None on Windows where the pgid concept doesn't apply.
     pgid: int | None = None
     if sys.platform != "win32":
         try:
             pgid = os.getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
-            # Astonishingly fast child? Already dead. _kill_tree's
-            # fallback will handle this case as a no-op.
             pgid = None
 
     try:
@@ -286,15 +309,13 @@ def _run_one_file(
         rc = proc.returncode
     except subprocess.TimeoutExpired:
         _kill_tree(proc, pgid=pgid)
-        # Drain whatever the child wrote before we killed it so we have
-        # something to surface in the failure dump.
         try:
             output, _ = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"(per-file timeout: {file_timeout:.0f}s exceeded; "
+            f"({file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:
@@ -303,11 +324,11 @@ def _run_one_file(
         _kill_tree(proc, pgid=pgid)
         raise
     else:
-        # Happy path: pytest exited on its own. The child process already
-        # cleaned up its grandchildren if it's well-behaved, but
-        # well-behaved is not universal — kill the group anyway. Already-
-        # dead processes are a no-op.
+        # Happy path: pytest exited on its own. Kill the group anyway in
+        # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
+
+        output +=  "\n"
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
@@ -603,7 +624,7 @@ def main() -> int:
         help=(
             "Per-file wall-clock cap in seconds. On timeout, the pytest "
             "subprocess and its full process tree are SIGKILL'd. "
-            "Default: 600 (10 min), env: HERMES_TEST_FILE_TIMEOUT."
+            f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s ({round(_DEFAULT_FILE_TIMEOUT_SECONDS/60)} min), env: HERMES_TEST_FILE_TIMEOUT."
         ),
     )
     parser.add_argument(

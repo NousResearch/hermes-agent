@@ -293,6 +293,58 @@ async def test_plugin_command_name_conflict_skipped(adapter):
 
 
 # ------------------------------------------------------------------
+# 100-command cap (Discord error 30032 guard)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_slash_command_registration_stays_under_discord_limit(adapter):
+    """Registering far more commands than Discord allows must NOT push the
+    tree over the 100-command hard cap.
+
+    Discord rejects the ENTIRE command sync with error 30032 once the
+    desired set exceeds 100 global application commands, silently breaking
+    every slash command. The adapter must bound the desired set instead.
+    Regression guard for samuraiheart's recurring
+    "Maximum number of application commands reached (100)" sync failures.
+    """
+    from plugins.platforms.discord.adapter import _DISCORD_MAX_APP_COMMANDS
+
+    adapter._run_simple_slash = AsyncMock()
+
+    # 200 plugin commands — way past Discord's limit on their own.
+    many_plugins = {
+        f"plug{i:03d}": {
+            "handler": lambda _a: "ok",
+            "description": f"Plugin command {i}",
+            "args_hint": "",
+            "plugin": "stress-plugin",
+        }
+        for i in range(200)
+    }
+
+    with patch("hermes_cli.plugins.get_plugin_commands", return_value=many_plugins):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+
+    # Contract: never exceed Discord's hard cap.
+    assert len(tree_names) <= _DISCORD_MAX_APP_COMMANDS, (
+        f"registered {len(tree_names)} commands — exceeds Discord's "
+        f"{_DISCORD_MAX_APP_COMMANDS} limit and would fail sync with 30032"
+    )
+
+    # Native, high-priority commands are registered first and must survive
+    # the cap — they are the core UX, not droppable overflow.
+    for native in ("status", "stop", "new", "model", "help"):
+        assert native in tree_names, f"/{native} (native) was dropped by the cap"
+
+    # The cap must actually have dropped overflow — not every plugin fit.
+    registered_plugins = [n for n in tree_names if n.startswith("plug")]
+    assert len(registered_plugins) < 200, "cap did not drop any overflow commands"
+
+
+# ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------
 
@@ -624,6 +676,13 @@ class _FakeTextChannel:
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
 
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
+
 
 class _FakeThreadChannel(_discord_mod.Thread):
     """isinstance(ch, discord.Thread) → True."""
@@ -635,6 +694,13 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.guild = SimpleNamespace(name=guild_name, id=1)
         self.topic = None
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
+
+    def history(self, *args, **kwargs):
+        async def _empty():
+            return
+            yield  # pragma: no cover — make this an async generator
+
+        return _empty()
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):

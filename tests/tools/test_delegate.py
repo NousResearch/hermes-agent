@@ -1469,6 +1469,113 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
 
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_model_override_can_disable_parent_fallback(self, mock_creds, mock_cfg):
+        """Cost-capped model overrides can opt out of the parent's fallback chain."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "anthropic", "model": "claude-opus-4.6"}
+        ]
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                goal="cheap bounded task",
+                model={"model": "openai/gpt-4o-mini", "fallback": False},
+                parent_agent=parent,
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs.get("model"), "openai/gpt-4o-mini")
+            self.assertEqual(kwargs.get("override_fallback_model"), [])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_fallback_overrides_top_level_fallback(self, mock_creds, mock_cfg):
+        """Batch tasks can use distinct fallback policies for cost/risk control."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "anthropic", "model": "claude-opus-4.6"}
+        ]
+        cheap_fallback = [{"provider": "openrouter", "model": "google/gemini-flash-2.0"}]
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "Done",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+            delegate_task(
+                tasks=[
+                    {"goal": "bounded cheap", "model": {"model": "openai/gpt-4o-mini", "fallback": False}},
+                    {"goal": "bounded with cheap fallback", "model": {"model": "openai/gpt-4o-mini", "fallback": cheap_fallback}},
+                ],
+                model={"model": "openai/gpt-4o-mini", "fallback": False},
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_build.call_args_list[0].kwargs.get("override_fallback_model"), [])
+            self.assertEqual(
+                mock_build.call_args_list[1].kwargs.get("override_fallback_model"),
+                cheap_fallback,
+            )
+
+    def test_build_child_agent_uses_explicit_fallback_override(self):
+        """_build_child_agent must not re-inherit parent fallback after an explicit override."""
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = [
+            {"provider": "anthropic", "model": "claude-opus-4.6"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            _build_child_agent(
+                task_index=0,
+                goal="fallback isolation",
+                context=None,
+                toolsets=["file"],
+                model="openai/gpt-4o-mini",
+                max_iterations=10,
+                task_count=1,
+                parent_agent=parent,
+                override_fallback_model=[],
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["fallback_model"], [])
+
 
 class TestChildCredentialPoolResolution(unittest.TestCase):
     def test_same_provider_shares_parent_pool(self):

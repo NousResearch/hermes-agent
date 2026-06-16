@@ -131,7 +131,7 @@ Single-task delegation runs directly without thread pool overhead.
 
 ## Model Override
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+You can configure a different default model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
 
 ```yaml
 # In ~/.hermes/config.yaml
@@ -141,6 +141,60 @@ delegation:
 ```
 
 If omitted, subagents use the same model as the parent.
+
+You can also override the model per `delegate_task` call, or per item in a batch:
+
+```python
+delegate_task(
+    goal="Format these docs and report changed files",
+    model={"provider": "openrouter", "model": "openai/gpt-4o-mini"},
+)
+
+delegate_task(tasks=[
+    {
+        "goal": "Reason about a risky migration",
+        "model": {"provider": "anthropic", "model": "claude-sonnet-4"},
+    },
+    {
+        "goal": "Run formatting and summarize diffs",
+        "model": {"provider": "openrouter", "model": "openai/gpt-4o-mini"},
+    },
+])
+```
+
+### Fallback isolation for cost caps
+
+By default, model-overridden subagents still inherit the parent's fallback chain. This preserves reliability: if a child hits rate limits or provider errors, it can fail over just like the parent.
+
+For cost-capped tasks, set `fallback: false` inside the model override to prevent the child from falling back into an expensive parent chain:
+
+```python
+delegate_task(
+    goal="Cheap bounded lint summary",
+    model={
+        "provider": "openrouter",
+        "model": "openai/gpt-4o-mini",
+        "fallback": False,   # no inherited fallback chain
+    },
+)
+```
+
+You can also provide a child-specific fallback chain:
+
+```python
+delegate_task(
+    goal="Cheap task with cheap backup only",
+    model={
+        "provider": "openrouter",
+        "model": "openai/gpt-4o-mini",
+        "fallback": [
+            {"provider": "openrouter", "model": "google/gemini-flash-2.0"},
+        ],
+    },
+)
+```
+
+Fallback precedence is: per-task `model.fallback` → top-level `model.fallback` → parent fallback chain.
 
 ## Toolset Selection Tips
 

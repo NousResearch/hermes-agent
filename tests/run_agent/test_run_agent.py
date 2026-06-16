@@ -1152,8 +1152,17 @@ class TestBuildSystemPrompt:
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""
 
-    def _make_agent(self, model="openai/gpt-4.1", tool_use_enforcement="auto"):
+    def _make_agent(
+        self,
+        model="openai/gpt-4.1",
+        tool_use_enforcement="auto",
+        xai_operational_guidance=False,
+    ):
         """Create an agent with tools and a specific enforcement config."""
+        agent_config = {
+            "tool_use_enforcement": tool_use_enforcement,
+            "xai_operational_guidance": xai_operational_guidance,
+        }
         with (
             patch(
                 "run_agent.get_tool_definitions",
@@ -1163,7 +1172,7 @@ class TestToolUseEnforcementConfig:
             patch("run_agent.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
-                return_value={"agent": {"tool_use_enforcement": tool_use_enforcement}},
+                return_value={"agent": agent_config},
             ),
         ):
             a = AIAgent(
@@ -1201,6 +1210,45 @@ class TestToolUseEnforcementConfig:
         agent = self._make_agent(model="x-ai/grok-4.3", tool_use_enforcement="auto")
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_xai_guidance_skipped_for_grok_by_default(self):
+        """The opt-in xAI layer is OFF by default, even for grok models."""
+        from agent.prompt_builder import (
+            TOOL_USE_ENFORCEMENT_GUIDANCE,
+            XAI_MODEL_OPERATIONAL_GUIDANCE,
+        )
+        agent = self._make_agent(model="x-ai/grok-4.3", tool_use_enforcement="auto")
+        assert agent._xai_operational_guidance is False
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+        assert XAI_MODEL_OPERATIONAL_GUIDANCE not in prompt
+
+    def test_xai_guidance_injected_for_grok_when_opted_in(self):
+        """With the flag on, the xAI layer is injected for grok models."""
+        from agent.prompt_builder import (
+            TOOL_USE_ENFORCEMENT_GUIDANCE,
+            XAI_MODEL_OPERATIONAL_GUIDANCE,
+        )
+        agent = self._make_agent(
+            model="x-ai/grok-4.3",
+            tool_use_enforcement="auto",
+            xai_operational_guidance=True,
+        )
+        assert agent._xai_operational_guidance is True
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+        assert XAI_MODEL_OPERATIONAL_GUIDANCE in prompt
+
+    def test_xai_guidance_skipped_for_non_grok_even_when_opted_in(self):
+        """The xAI layer is grok-only; a GPT model never gets it."""
+        from agent.prompt_builder import XAI_MODEL_OPERATIONAL_GUIDANCE
+        agent = self._make_agent(
+            model="openai/gpt-4.1",
+            tool_use_enforcement="auto",
+            xai_operational_guidance=True,
+        )
+        prompt = agent._build_system_prompt()
+        assert XAI_MODEL_OPERATIONAL_GUIDANCE not in prompt
 
     def test_auto_injects_for_qwen(self):
         """Qwen models default to chatty/hallucinatory tool use without enforcement."""

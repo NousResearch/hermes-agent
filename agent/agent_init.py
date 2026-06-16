@@ -1221,6 +1221,11 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Opt-in xAI/Grok Claim-Action-Evidence operational guidance.  Default
+    # False (opt-in) because this model-specific prompt layer can regress
+    # task routing; only injected for grok models when explicitly enabled.
+    agent._xai_operational_guidance = bool(_agent_section.get("xai_operational_guidance", False))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics

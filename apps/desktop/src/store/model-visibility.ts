@@ -116,9 +116,12 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   return keys
 }
 
-/** Resolve which keys are currently visible: the user's explicit set when
- *  configured, otherwise the curated default for the given providers. */
-export function effectiveVisibleKeys(
+/** Resolve the canonical working set: the user's stored keys plus the curated
+ *  default expansion for any provider they haven't customized. Hide-all
+ *  sentinels are PRESERVED here — this is the set the toggle handler mutates and
+ *  persists, so dropping a sentinel would silently re-enable a provider the user
+ *  emptied. Use `effectiveVisibleKeys` for display (sentinels stripped). */
+export function resolveVisibleKeys(
   stored: Set<string> | null,
   providers: readonly ModelOptionProvider[]
 ): Set<string> {
@@ -134,9 +137,11 @@ export function effectiveVisibleKeys(
 
   for (const provider of providers) {
     const providerPrefix = `${provider.slug}::`
+
     const hasStoredProvider = [...stored].some(
       key => key.startsWith(providerPrefix) && !isProviderSentinel(key)
     )
+
     const hasSentinel = stored.has(emptyProviderSentinelKey(provider.slug))
 
     if (hasStoredProvider || hasSentinel) {
@@ -150,11 +155,56 @@ export function effectiveVisibleKeys(
     }
   }
 
+  return next
+}
+
+/** Resolve which keys are currently visible for DISPLAY: the resolved working
+ *  set with bookkeeping sentinels stripped (they are not real models). */
+export function effectiveVisibleKeys(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[]
+): Set<string> {
+  const next = resolveVisibleKeys(stored, providers)
+
   // Strip sentinel keys — they are bookkeeping, not real visibility entries.
   for (const key of [...next]) {
     if (isProviderSentinel(key)) {
       next.delete(key)
     }
+  }
+
+  return next
+}
+
+/** Compute the next persisted visibility set when one model row is toggled.
+ *  Seeds from `resolveVisibleKeys` (NOT `effectiveVisibleKeys`) so other
+ *  providers' hide-all sentinels survive the persist. When the last visible
+ *  model of a provider is toggled off, a sentinel records the explicit
+ *  hide-all; re-enabling any model clears that provider's sentinel. */
+export function toggleModelVisibility(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[],
+  providerSlug: string,
+  model: string
+): Set<string> {
+  const next = new Set(resolveVisibleKeys(stored, providers))
+  const key = modelVisibilityKey(providerSlug, model)
+  const sentinel = emptyProviderSentinelKey(providerSlug)
+
+  if (next.has(key)) {
+    next.delete(key)
+
+    // Check if this was the last real model for this provider.
+    const remainingForProvider = [...next].some(
+      k => k.startsWith(`${providerSlug}::`) && !isProviderSentinel(k)
+    )
+
+    if (!remainingForProvider) {
+      next.add(sentinel)
+    }
+  } else {
+    next.delete(sentinel)
+    next.add(key)
   }
 
   return next

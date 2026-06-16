@@ -7,7 +7,9 @@ import {
   effectiveVisibleKeys,
   emptyProviderSentinelKey,
   isProviderSentinel,
-  modelVisibilityKey
+  modelVisibilityKey,
+  resolveVisibleKeys,
+  toggleModelVisibility
 } from './model-visibility'
 
 const provider = (slug: string, models: string[]): ModelOptionProvider => ({
@@ -95,5 +97,66 @@ describe('model visibility', () => {
     expect(emptyProviderSentinelKey('openai')).toBe('openai::')
     expect(isProviderSentinel('openai::')).toBe(true)
     expect(isProviderSentinel('openai::gpt-4o')).toBe(false)
+  })
+
+  it('resolveVisibleKeys preserves sentinels that effectiveVisibleKeys strips', () => {
+    const stored = new Set([emptyProviderSentinelKey('nous')])
+    const providers = [provider('nous', ['hermes-x', 'hermes-y']), provider('ollama', ['qwen3:latest'])]
+
+    const resolved = resolveVisibleKeys(stored, providers)
+    expect(resolved.has(emptyProviderSentinelKey('nous'))).toBe(true)
+    expect(resolved.has(modelVisibilityKey('nous', 'hermes-x'))).toBe(false)
+    // Un-customized providers still expand to their defaults.
+    expect(resolved.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
+
+    // Display variant drops the sentinel.
+    expect(effectiveVisibleKeys(stored, providers).has(emptyProviderSentinelKey('nous'))).toBe(false)
+  })
+})
+
+describe('toggleModelVisibility', () => {
+  const providers = [provider('openai', ['gpt-a', 'gpt-b']), provider('nous', ['hermes-x', 'hermes-y'])]
+
+  // Drive the handler the way the dialog does: feed each result back in as the
+  // next `stored`, so the persisted set is what the next toggle starts from.
+  const apply = (stored: Set<string> | null, slug: string, model: string) =>
+    toggleModelVisibility(stored, providers, slug, model)
+
+  it('records a hide-all sentinel when the last model of a provider is toggled off', () => {
+    let stored: Set<string> | null = null
+    stored = apply(stored, 'openai', 'gpt-a')
+    stored = apply(stored, 'openai', 'gpt-b')
+
+    expect(stored.has(emptyProviderSentinelKey('openai'))).toBe(true)
+    expect(effectiveVisibleKeys(stored, providers).has(modelVisibilityKey('openai', 'gpt-a'))).toBe(false)
+    expect(effectiveVisibleKeys(stored, providers).has(modelVisibilityKey('openai', 'gpt-b'))).toBe(false)
+  })
+
+  it('keeps a hidden provider hidden when a different provider is toggled (regression for #43485)', () => {
+    // Hide ALL of nous — its sentinel is now stored.
+    let stored: Set<string> | null = null
+    stored = apply(stored, 'nous', 'hermes-x')
+    stored = apply(stored, 'nous', 'hermes-y')
+    expect(stored.has(emptyProviderSentinelKey('nous'))).toBe(true)
+
+    // Toggle a model in another provider. nous must NOT snap back on.
+    stored = apply(stored, 'openai', 'gpt-a')
+
+    expect(stored.has(emptyProviderSentinelKey('nous'))).toBe(true)
+    const visible = effectiveVisibleKeys(stored, providers)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-x'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-y'))).toBe(false)
+  })
+
+  it('clears only the toggled provider sentinel when a model is re-enabled', () => {
+    let stored: Set<string> | null = new Set([emptyProviderSentinelKey('openai'), emptyProviderSentinelKey('nous')])
+
+    stored = apply(stored, 'openai', 'gpt-a')
+
+    expect(stored.has(emptyProviderSentinelKey('openai'))).toBe(false)
+    expect(stored.has(emptyProviderSentinelKey('nous'))).toBe(true)
+    const visible = effectiveVisibleKeys(stored, providers)
+    expect(visible.has(modelVisibilityKey('openai', 'gpt-a'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-x'))).toBe(false)
   })
 })

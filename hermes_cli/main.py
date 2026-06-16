@@ -6144,10 +6144,12 @@ def cmd_slack(args):
             "usage: hermes slack <subcommand>\n"
             "\n"
             "subcommands:\n"
-            "  manifest   Generate a Slack app manifest with every gateway\n"
-            "             command registered as a native slash\n"
+            "  manifest   Generate a Slack app manifest (JSON or YAML) with\n"
+            "             every gateway command registered as a native slash\n"
+            "  channels   List channels and show which the bot is/isn't in\n"
+            "  invite     Add the bot to channels (--all joins all public)\n"
             "\n"
-            "Run `hermes slack manifest -h` for details.",
+            "Run `hermes slack <subcommand> -h` for details.",
             file=sys.stderr,
         )
         return 1
@@ -6156,6 +6158,16 @@ def cmd_slack(args):
         from hermes_cli.slack_cli import slack_manifest_command
 
         return slack_manifest_command(args)
+
+    if sub == "channels":
+        from hermes_cli.slack_cli import slack_channels_command
+
+        return slack_channels_command(args)
+
+    if sub == "invite":
+        from hermes_cli.slack_cli import slack_invite_command
+
+        return slack_invite_command(args)
 
     print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
     return 1
@@ -11493,6 +11505,73 @@ def main():
         help="Emit only the features.slash_commands array (for merging "
         "into an existing manifest manually).",
     )
+    slack_manifest.add_argument(
+        "--yaml",
+        action="store_true",
+        help="Emit the manifest as YAML instead of JSON (Slack accepts both).",
+    )
+
+    slack_channels = slack_sub.add_parser(
+        "channels",
+        help="List channels and report which ones the bot is/isn't a member of",
+        description=(
+            "Enumerate every channel the bot token can see (public + private "
+            "the bot is in) and report membership gaps. A Slack bot only sees "
+            "and posts in channels it has joined, so this is how you audit "
+            "'all channels' coverage. Requires SLACK_BOT_TOKEN."
+        ),
+    )
+    slack_channels.add_argument(
+        "--no-private",
+        action="store_true",
+        help="Only list public channels (skip private groups).",
+    )
+    slack_channels.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of a human summary.",
+    )
+
+    slack_invite = slack_sub.add_parser(
+        "invite",
+        help="Add the bot to channels so it can read & post (--all joins all public)",
+        description=(
+            "Add the bot to channels. Public channels are joined directly with "
+            "the bot token (conversations.join, needs channels:join scope). "
+            "Private channels need a manual /invite @<bot> or a user token "
+            "(--user-token / SLACK_USER_TOKEN) so we can call "
+            "conversations.invite. Requires SLACK_BOT_TOKEN."
+        ),
+    )
+    slack_invite.add_argument(
+        "--all",
+        action="store_true",
+        help="Target every channel the bot isn't already a member of.",
+    )
+    slack_invite.add_argument(
+        "--channel",
+        action="append",
+        metavar="NAME/ID",
+        help="Target a specific channel by name or ID (repeatable).",
+    )
+    slack_invite.add_argument(
+        "--no-private",
+        action="store_true",
+        help="Only consider public channels.",
+    )
+    slack_invite.add_argument(
+        "--user-token",
+        default=None,
+        metavar="xoxp-...",
+        help="User token used to invite the bot to PRIVATE channels "
+        "(falls back to SLACK_USER_TOKEN).",
+    )
+    slack_invite.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without calling Slack.",
+    )
+
     slack_parser.set_defaults(func=cmd_slack)
 
     # =========================================================================

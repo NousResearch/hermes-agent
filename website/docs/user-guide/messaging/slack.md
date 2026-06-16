@@ -72,6 +72,7 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 | `app_mentions:read` | Detect when @mentioned in channels |
 | `channels:history` | Read messages in public channels the bot is in |
 | `channels:read` | List and get info about public channels |
+| `channels:join` | Let the bot join public channels itself (`hermes slack invite --all`) |
 | `groups:history` | Read messages in private channels the bot is invited to |
 | `im:history` | Read direct message history |
 | `im:read` | View basic DM info |
@@ -217,13 +218,49 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 ## Step 9: Invite the Bot to Channels
 
-After starting the gateway, you need to **invite the bot** to any channel where you want it to respond:
+A Slack **bot only sees and posts in channels it is a member of** — there's no
+API to bulk-add a bot to every channel at once. You have three options:
+
+**Manual (per channel):** from inside any channel, run
 
 ```
 /invite @Hermes Agent
 ```
 
-The bot will **not** automatically join channels. You must invite it to each channel individually.
+**Scripted — all public channels at once (recommended):** Hermes can add the
+bot to every public channel for you using the `channels:join` scope (included
+in the generated manifest):
+
+```bash
+# See which channels the bot is / isn't a member of:
+hermes slack channels
+
+# Join every public channel the bot is missing:
+hermes slack invite --all
+
+# Preview without making changes:
+hermes slack invite --all --dry-run
+
+# Target specific channels by name or ID:
+hermes slack invite --channel general --channel C0123456789
+```
+
+**Private channels** can't be self-joined by a bot. Either run `/invite
+@Hermes Agent` from inside each one, or pass a **user token** (`xoxp-`, from
+someone already in the channel) so Hermes can call `conversations.invite`:
+
+```bash
+hermes slack invite --all --user-token xoxp-...   # or set SLACK_USER_TOKEN
+```
+
+> **Trade-off — read *all* channels without per-channel invites.** Truly
+> reading every channel without inviting the bot requires a **user token**
+> with broad scopes acting as you. That's more powerful (and more sensitive)
+> than a bot token. Invite-per-channel with the bot token is the safer
+> default; only reach for a user token if you specifically need it.
+
+`hermes slack channels` reports the gaps so "all channels" coverage is
+auditable and reproducible rather than a manual checklist.
 
 ---
 

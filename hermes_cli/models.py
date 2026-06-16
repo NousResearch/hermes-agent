@@ -434,12 +434,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
-        "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
+        "qwen3-max-2026-01-23",
         # Third-party models available on coding-intl
         "glm-5",
         "glm-4.7",
@@ -448,11 +448,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
+        "qwen3-max-2026-01-23",
         "kimi-k2.5",
         "glm-5",
         "glm-4.7",

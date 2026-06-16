@@ -250,9 +250,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
-    "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
-    "qwen3-coder-plus": 1000000,  # 1M context
-    "qwen3-coder": 262144,        # 256K context
+    "qwen3.7-max": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
+    "qwen3.7-plus": 1048576,     # 1M context (multimodal + vision)
+    "qwen3.6-plus": 1048576,     # 1M context (DashScope/Alibaba & OpenRouter)
+    "qwen3.5-plus": 1048576,     # 1M context (native multimodal)
+    "qwen3-coder-plus": 1000000, # 1M context
+    "qwen3-coder-next": 262144,  # 256K context (open-weight, local-first)
+    "qwen3-coder": 262144,       # 256K context
+    "qwen3-max-2026-01-23": 262144,  # 256K context (Jan 2026 snapshot)
     "qwen": 131072,
     # MiniMax — M3 is 1M context (max output 512K); M2.x series is 204,800.
     # Keys use substring matching (longest-first), so "minimax-m3" wins over

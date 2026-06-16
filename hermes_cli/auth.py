@@ -951,6 +951,7 @@ def _auth_lock_path() -> Path:
 
 
 _auth_lock_holder = threading.local()
+_global_root_lock_holder = threading.local()
 
 
 @contextmanager
@@ -4037,14 +4038,20 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
             except Exception:
                 return
     try:
-        if global_path.exists():
-            global_store = _load_auth_store(global_path)
-        else:
-            global_store = {}
-        if not isinstance(global_store, dict):
-            return
-        _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
-        _save_auth_store(global_store, global_path)
+        with _file_lock(
+            global_path.with_suffix(".lock"),
+            _global_root_lock_holder,
+            AUTH_LOCK_TIMEOUT_SECONDS,
+            "Timed out waiting for global root auth store lock",
+        ):
+            if global_path.exists():
+                global_store = _load_auth_store(global_path)
+            else:
+                global_store = {}
+            if not isinstance(global_store, dict):
+                return
+            _store_provider_state(global_store, "xai-oauth", dict(state), set_active=False)
+            _save_auth_store(global_store, global_path)
     except Exception as exc:  # pragma: no cover - best effort
         logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
 

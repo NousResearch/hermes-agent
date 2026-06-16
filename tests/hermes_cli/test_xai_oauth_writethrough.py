@@ -14,6 +14,7 @@ boundary, so they exercise the actual atomic write path.
 """
 
 import json
+import threading
 
 import pytest
 
@@ -167,3 +168,64 @@ def test_write_through_failure_does_not_break_profile_save(profile_and_root, mon
 
     profile = _read_store(profile_path)
     assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r"
+
+
+def test_concurrent_write_through_does_not_lose_second_token(profile_and_root):
+    """Concurrent write-throughs must serialize; final root holds one complete token set."""
+    profile_path, root_path = profile_and_root
+    _write_store(profile_path, {"version": 1, "providers": {}})
+    _write_store(
+        root_path,
+        {
+            "version": 1,
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {"access_token": "old-access", "refresh_token": "old-refresh"}
+                }
+            },
+        },
+    )
+
+    state_a = {
+        "tokens": {"access_token": "token-A-access", "refresh_token": "token-A-refresh"},
+        "auth_mode": "oauth_pkce",
+    }
+    state_b = {
+        "tokens": {"access_token": "token-B-access", "refresh_token": "token-B-refresh"},
+        "auth_mode": "oauth_pkce",
+    }
+
+    errors = []
+    barrier = threading.Barrier(2)
+
+    def write_a():
+        try:
+            barrier.wait()
+            auth._write_through_xai_oauth_to_global_root(state_a)
+        except Exception as exc:
+            errors.append(exc)
+
+    def write_b():
+        try:
+            barrier.wait()
+            auth._write_through_xai_oauth_to_global_root(state_b)
+        except Exception as exc:
+            errors.append(exc)
+
+    t1 = threading.Thread(target=write_a)
+    t2 = threading.Thread(target=write_b)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert not errors, f"Threads raised exceptions: {errors}"
+
+    root = _read_store(root_path)
+    final_tokens = root["providers"]["xai-oauth"]["tokens"]
+
+    token_a = {"access_token": "token-A-access", "refresh_token": "token-A-refresh"}
+    token_b = {"access_token": "token-B-access", "refresh_token": "token-B-refresh"}
+    assert final_tokens == token_a or final_tokens == token_b, (
+        f"Expected one complete token set (A or B), got corrupted mix: {final_tokens}"
+    )

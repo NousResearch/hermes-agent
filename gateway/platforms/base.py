@@ -3880,11 +3880,7 @@ class BasePlatformAdapter(ABC):
             # response.  Do NOT use _process_message_background — it manages
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
-            # Queued follow-up events are synthetic SimpleNamespace objects
-            # without get_command(); treat them as non-commands so they fall
-            # through to normal queueing instead of raising AttributeError
-            # (see tests/gateway/test_queue_followups.py).
-            cmd = event.get_command() if hasattr(event, "get_command") else None
+            cmd = event.get_command()
             from hermes_cli.commands import should_bypass_active_session
 
             if should_bypass_active_session(cmd):

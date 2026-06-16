@@ -436,8 +436,8 @@ class TestSubcommandCompletion:
         )
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
 
-    def test_handoff_completes_connected_platforms(self, monkeypatch):
-        """`/handoff ` offers connected platforms, with or without a home channel."""
+    def test_handoff_completes_connected_platforms_and_document_modes(self, monkeypatch):
+        """`/handoff ` offers document modes plus connected platforms."""
         self._fake_gateway(
             monkeypatch,
             {
@@ -447,10 +447,46 @@ class TestSubcommandCompletion:
         )
 
         texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
-        assert texts == {"telegram", "discord"}
+        assert texts == {"telegram", "discord", "inline", "save", "consume"}
 
+    def test_handoff_filters_by_prefix(self, monkeypatch):
+        self._fake_gateway(
+            monkeypatch,
+            {
+                "telegram": ("1", "H"),
+                "signal": ("2", "H"),
+            },
+        )
 
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff te")}
+        assert texts == {"telegram"}
 
+    def test_handoff_no_completion_after_platform_chosen(self, monkeypatch):
+        self._fake_gateway(monkeypatch, {"telegram": ("1", "H")})
+        assert _completions(SlashCommandCompleter(), "/handoff telegram ") == []
+
+    def test_handoff_save_completes_path_like_tokens(self, monkeypatch):
+        self._fake_gateway(monkeypatch, {"telegram": ("1", "H")})
+        assert _completions(SlashCommandCompleter(), "/handoff save ") == []
+
+    def test_handoff_completion_swallows_config_errors(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no gateway config")
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", _boom)
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
+        assert texts == {"inline", "save", "consume"}
+
+    def test_personality_completes_configured_personalities(self):
+        """`/personality ` lists real personalities, not just `none`.
+
+        Regression: the completer read load_config().agent.personalities, a path
+        that never exists, so it always came back empty. It must resolve from the
+        CLI config the runtime actually applies (which ships built-ins).
+        """
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/personality ")}
+        assert "none" in texts
+        assert len(texts) > 1
 
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────

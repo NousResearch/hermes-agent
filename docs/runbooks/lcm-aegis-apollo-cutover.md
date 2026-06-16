@@ -105,8 +105,27 @@ Rollback keeps the LCM store on disk by default for forensic inspection and poss
 - Purge after rollback only with Apollo approval and only after exporting any incident evidence.
 - Preserve after a FAIL-LOUD report until Apollo triages degraded/fail-closed evidence.
 
+## Upstream security-drift check
+
+Apollo owns the LCM upstream security-drift check quarterly and before any LCM update. The check is read-only: it validates `plugins/context_engine/lcm/VENDORED_FROM.txt`, compares the vendored commit/version against `github.com/stephenschoettler/hermes-lcm` when network is available, and reports PASS/WARN/FAIL for owner action without auto-updating vendored code.
+
+Offline validation command:
+
+```bash
+python scripts/check_lcm_upstream_drift.py --metadata plugins/context_engine/lcm/VENDORED_FROM.txt --offline
+```
+
+Network-enabled owner check:
+
+```bash
+python scripts/check_lcm_upstream_drift.py --metadata plugins/context_engine/lcm/VENDORED_FROM.txt
+```
+
+A WARN means upstream drift or security-relevant upstream commit messages require Apollo review before any vendored-code change. A FAIL means required provenance metadata is missing or malformed and blocks cutover/update until fixed.
+
 ## Safety contract
 
 - Aegis stress and config preflight tooling is read-only with respect to live Hermes profiles.
 - Apollo owns the privileged process lifecycle and cutover gate.
+- Apollo owns the quarterly/pre-update upstream security-drift check for the vendored LCM plugin.
 - Any operational wrapper that is later allowed to perform a live lifecycle action must require an explicit dangerous flag and must print both the intended diff and the rollback diff before taking action.

@@ -14,6 +14,11 @@ Prior smoke verdict: GO — 7/7 isolated in-process adoption smoke passed in doc
 PRD-6 I-10 upstream security-drift metadata:
   owner: Apollo
   cadence: quarterly, and before any LCM update
+  source_repository: github.com/stephenschoettler/hermes-lcm
+  source_commit: 03b74f84440be99164ce3e2cd929917bc9550bfe
+  vendored_commit: 03b74f84440be99164ce3e2cd929917bc9550bfe
+  vendored_version: v0.16.2
+  ingest_audit_verdict: PASS
   last_upstream_security_check: 2026-06-16
   source_commit_checked: 03b74f84440be99164ce3e2cd929917bc9550bfe
   checked_upstream_head: a744da693febf689f78fcb24ade70f04e1eb3e3e

@@ -4758,9 +4758,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     category = _get_file_category(entry.name)
                     if category_filter and category_filter != "all" and entry.is_file() and category.lower() != category_filter:
                         continue
+                    _name = entry.name.encode("utf-8", "replace").decode("utf-8")
+                    _path = str(rel.as_posix()).encode("utf-8", "replace").decode("utf-8")
                     info = {
-                        "name": entry.name,
-                        "path": str(rel.as_posix()),
+                        "name": _name,
+                        "path": _path,
                         "type": "directory" if entry.is_dir() else "file",
                         "size": entry.stat().st_size if entry.is_file() else 0,
                         "modified_at": entry.stat().st_mtime,

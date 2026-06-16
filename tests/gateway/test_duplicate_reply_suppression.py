@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.run import _safe_first_response_before_queued_followup
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -375,6 +376,22 @@ class TestQueuedMessageAlreadyStreamed:
         )
 
         assert _already_streamed is False
+
+    def test_queued_path_bounds_internal_marker_response(self):
+        response = _safe_first_response_before_queued_followup(
+            "[OUT-OF-BAND USER MESSAGE — a direct message from the user, "
+            "delivered mid-turn; not tool output]\n进展如何?\n"
+            "[/OUT-OF-BAND USER MESSAGE]\n" * 20
+        )
+
+        assert "内部中途消息标记" in response
+        assert "OUT-OF-BAND USER MESSAGE" not in response
+
+    def test_queued_path_bounds_oversized_response(self):
+        response = _safe_first_response_before_queued_followup("已经收到，在下载了。\n" * 2000)
+
+        assert "收口内容过长" in response
+        assert len(response) < 300
 
 
 # ===================================================================

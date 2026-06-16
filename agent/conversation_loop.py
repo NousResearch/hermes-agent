@@ -4146,11 +4146,31 @@ def run_conversation(
 
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
+                    _pre_compress_len = len(messages)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,
                         approx_tokens=agent.context_compressor.last_prompt_tokens,
                         task_id=effective_task_id,
                     )
+                    _low_yield = getattr(agent, "_last_compression_low_yield", None)
+                    if _low_yield and len(messages) >= _pre_compress_len:
+                        final_response = _low_yield.get("message") if isinstance(_low_yield, dict) else None
+                        if not final_response:
+                            final_response = (
+                                "本轮诊断已停止：上下文压缩收益不足，继续执行会放大 token 消耗。"
+                            )
+                        messages.append({"role": "assistant", "content": final_response})
+                        agent._session_messages = messages
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "final_response": final_response,
+                            "partial": True,
+                            "failed": False,
+                            "compression_low_yield": True,
+                        }
                     # Compression created a new session — clear history so
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).

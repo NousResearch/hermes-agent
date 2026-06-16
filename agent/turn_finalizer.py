@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.chat_completion_helpers import _iteration_limit_closure_message
 
 
 def finalize_turn(
@@ -58,10 +59,7 @@ def finalize_turn(
         # API call with tools stripped.  _handle_max_iterations injects a
         # user message and makes a single toolless request.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        agent._emit_status(
-            f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
-        )
+        agent._emit_status(_iteration_limit_closure_message(agent, api_call_count))
         if not agent.quiet_mode:
             agent._safe_print(
                 f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "

@@ -149,6 +149,36 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
 
 
+def test_env_require_mention_overrides_platform_extra(monkeypatch):
+    adapter = _make_adapter(require_mention=False)
+    monkeypatch.setenv("TELEGRAM_REQUIRE_MENTION", "true")
+
+    assert adapter._telegram_require_mention() is True
+    assert adapter._should_process_message(_group_message("hello everyone")) is False
+
+
+def test_bot_command_mentions_use_telegram_utf16_offsets():
+    adapter = _make_adapter(require_mention=True)
+    leading = "😀" * 20
+    command = "/status@other_bot"
+    text = f"{leading}{command}xxx@hermes_bot     "
+
+    assert adapter._message_mentions_bot(
+        _group_message(text, entities=[_bot_command_entity(text, command)])
+    ) is False
+    assert adapter._should_process_message(
+        _group_message(text, entities=[_bot_command_entity(text, command)]),
+        is_command=True,
+    ) is False
+
+
+def test_mention_entities_use_telegram_utf16_offsets():
+    adapter = _make_adapter(require_mention=True)
+    text = "😀😀 hi @hermes_bot"
+
+    assert adapter._message_mentions_bot(
+        _group_message(text, entities=[_mention_entity(text)])
+    ) is True
 def test_free_response_chats_bypass_mention_requirement():
     adapter = _make_adapter(require_mention=True, free_response_chats=["-200"])
 

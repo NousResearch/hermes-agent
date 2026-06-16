@@ -3508,12 +3508,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _telegram_require_mention(self) -> bool:
         """Return whether group chats should require an explicit bot trigger."""
+        env_value = os.getenv("TELEGRAM_REQUIRE_MENTION")
+        if env_value is not None:
+            return env_value.lower() in {"true", "1", "yes", "on"}
+
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
                 return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("TELEGRAM_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
+        return False
 
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""

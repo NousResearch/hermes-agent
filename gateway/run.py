@@ -17030,6 +17030,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else:
                 return getattr(_blueprint_result, "text", "") or None
 
+        if canonical == "handoff":
+            _handoff_result = await self._handle_handoff_command(event)
+            _handoff_seed = getattr(_handoff_result, "agent_seed", None)
+            if _handoff_seed:
+                _ack = getattr(_handoff_result, "text", "") or ""
+                if _ack:
+                    try:
+                        adapter = self._adapter_for_source(source)
+                        if adapter:
+                            _ack_meta = self._thread_metadata_for_source(source)
+                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                    except Exception:
+                        logger.debug("handoff ack send failed", exc_info=True)
+                try:
+                    event.text = _handoff_seed
+                except Exception:
+                    return getattr(_handoff_result, "text", "") or None
+            else:
+                return getattr(_handoff_result, "text", "") or _handoff_result or None
+
         if canonical == "save":
             return await self._handle_save_command(event)
 

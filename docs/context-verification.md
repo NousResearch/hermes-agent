@@ -35,6 +35,8 @@ context_verification:
 |----------|:---------------------:|:------:|
 | Feishu | `message.get` + `messages.list` | ✅ Full |
 | Telegram | `copy_message` probe + `get_updates` scan | ✅ Full |
+| Weixin (WeChat) | iLink `getupdates` message scan | ✅ Full |
+| DingTalk | Open API `GET /v1.0/im/messages/{id}` | ✅ Single message |
 | Slack | Not implemented (low priority) | ❌ Default (empty) |
 | Discord | Not implemented (low priority) | ❌ Default (empty) |
 

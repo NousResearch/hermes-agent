@@ -2356,3 +2356,77 @@ async def send_weixin_direct(
             "message_id": last_result.message_id if last_result else None,
             "context_token_used": bool(context_token),
         }
+
+    # ------------------------------------------------------------------
+    # Context verification — external history lookup via getupdates
+    # ------------------------------------------------------------------
+    # Weixin's iLink API does not expose a single-message lookup endpoint.
+    # We use the ``getupdates`` long-poll endpoint (which returns recent
+    # messages in the ``msgs`` array) to verify that the triggering message
+    # exists.
+
+    async def fetch_recent_messages(
+        self,
+        chat_id: str,
+        *,
+        thread_id: Optional[str] = None,
+        limit: int = 3,
+        before_message_id: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent messages from a Weixin chat for context verification.
+
+        Uses the iLink ``getupdates`` endpoint to retrieve the most recent
+        messages. When *before_message_id* is provided, filters for that ID.
+
+        Returns a list of message dicts with ``id``, ``text``,
+        ``sender_id``, ``timestamp``, and ``chat_id``.
+        """
+        if not self._poll_session or not self._token:
+            return []
+
+        try:
+            response = await _get_updates(
+                self._poll_session,
+                base_url=self._base_url,
+                token=self._token,
+                sync_buf="0",
+                timeout_ms=min(limit * 2000, 5000),
+            )
+
+            msgs = response.get("msgs") or []
+            seen_ids: set[str] = set()
+            results: List[Dict[str, Any]] = []
+
+            for msg in msgs:
+                msg_id = str(msg.get("message_id") or "").strip()
+                if not msg_id or msg_id in seen_ids:
+                    continue
+                seen_ids.add(msg_id)
+                if before_message_id and msg_id != before_message_id:
+                    continue
+
+                sender = str(msg.get("from_user_id") or "").strip()
+                ts = str(msg.get("timestamp") or msg.get("create_time", ""))
+                text = ""
+                for item in msg.get("item_list") or []:
+                    c = item.get("content") or item.get("text", "")
+                    if c:
+                        text += c + "\n"
+                text = text.strip()
+
+                results.append({
+                    "id": msg_id, "text": text, "sender_id": sender,
+                    "timestamp": ts, "chat_id": chat_id,
+                })
+                if before_message_id and msg_id == before_message_id:
+                    break
+                if len(results) >= limit:
+                    break
+
+            return results
+        except Exception:
+            logger.debug("[%s] fetch_recent_messages failed for chat %s",
+                         self.name, chat_id, exc_info=True)
+            return []

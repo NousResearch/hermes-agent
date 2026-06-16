@@ -1501,3 +1501,78 @@ class _IncomingHandler(
             logger.exception(
                 "[%s] Error processing incoming message", self._adapter.name
             )
+
+    # ------------------------------------------------------------------
+    # Context verification — external history lookup via DingTalk Open API
+    # ------------------------------------------------------------------
+    # DingTalk's Stream mode delivers messages via WebSocket callbacks and
+    # does not keep a server-side history accessible through the stream SDK.
+    # We use the DingTalk Open API ``GET /v1.0/im/messages/{messageId}``
+    # endpoint to verify that a specific message still exists.
+    #
+    # Requires the robot_sdk to be initialized (which provides the HTTP
+    # client and access token management).
+
+    async def fetch_recent_messages(
+        self,
+        chat_id: str,
+        *,
+        thread_id: Optional[str] = None,
+        limit: int = 3,
+        before_message_id: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch recent messages from a DingTalk chat for context verification.
+
+        Uses the DingTalk Open API ``GET /v1.0/im/messages/{messageId}``
+        when *before_message_id* is provided (single message lookup).
+        Falls back to returning an empty list (DingTalk does not expose a
+        public "list recent messages" endpoint in the robot SDK scope).
+
+        Returns a list of message dicts with ``id``, ``text``,
+        ``sender_id``, ``timestamp``, and ``chat_id``.
+        """
+        if not self._http_client or not self._robot_sdk:
+            return []
+
+        # Single message lookup via DingTalk Open API
+        if before_message_id:
+            try:
+                token = await self._get_access_token()
+                if not token:
+                    return []
+
+                url = f"https://api.dingtalk.com/v1.0/im/messages/{before_message_id}"
+                headers = {
+                    "x-acs-dingtalk-access-token": token,
+                    "Content-Type": "application/json",
+                }
+                resp = await self._http_client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return [{
+                        "id": before_message_id,
+                        "text": (
+                            data.get("text", {}).get("content", "")
+                            if isinstance(data.get("text"), dict)
+                            else data.get("content", "")
+                        ),
+                        "sender_id": str(data.get("senderId") or
+                                        data.get("sender_id") or ""),
+                        "timestamp": str(data.get("createAt") or
+                                        data.get("create_at") or ""),
+                        "chat_id": chat_id,
+                    }]
+                # 404 or other error — message doesn't exist
+                return []
+            except Exception:
+                logger.debug(
+                    "[%s] fetch_recent_messages failed for chat %s",
+                    self.name, chat_id, exc_info=True,
+                )
+                return []
+
+        # Without a specific message_id, DingTalk doesn't expose
+        # a list-messages endpoint in the robot SDK scope.
+        return []

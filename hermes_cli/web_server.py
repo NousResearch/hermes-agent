@@ -1330,6 +1330,19 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     try:
         st = resolved.stat()
     except OSError as exc:
+        # Dangling symlink: resolve() succeeded but the target does not exist.
+        # Return a placeholder entry instead of a 500 so the rest of the
+        # directory listing is still usable.
+        if target.is_symlink() and not resolved.exists():
+            return {
+                "name": target.name or resolved.name or str(resolved),
+                "path": str(resolved),
+                "is_directory": False,
+                "broken_link": True,
+                "size": None,
+                "mtime": None,
+                "mime_type": None,
+            }
         raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
     is_dir = resolved.is_dir()

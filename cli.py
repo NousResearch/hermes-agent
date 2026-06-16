@@ -3396,7 +3396,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # live registry aliases (registered during discover_mcp_tools),
             # but discovery hasn't run yet at this point, so exclude them.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
-            invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
+            plugin_toolsets = set()
+            for _v in (CLI_CONFIG.get("known_plugin_toolsets") or {}).values():
+                if isinstance(_v, list):
+                    plugin_toolsets.update(_v)
+            invalid = [t for t in toolsets
+                       if not validate_toolset(t) and t not in mcp_names and t not in plugin_toolsets]
             if invalid:
                 self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         

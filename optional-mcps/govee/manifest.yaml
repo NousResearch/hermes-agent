@@ -1,0 +1,53 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: govee
+description: Control Govee smart lights and devices (LAN-first, cloud fallback) over stdio.
+source: https://github.com/evefromwayback/govee-mcp
+
+transport:
+  type: stdio
+  command: "${INSTALL_DIR}/.venv/bin/python"
+  args:
+    - "-m"
+    - "govee_mcp"
+
+install:
+  type: git
+  url: https://github.com/evefromwayback/govee-mcp.git
+  ref: v0.2.0            # pinned release tag
+  bootstrap:
+    - "python3 -m venv .venv"
+    - ".venv/bin/pip install ."
+
+auth:
+  type: api_key
+  env:
+    - name: GOVEE_API_KEY
+      prompt: "Govee Developer API key (Govee Home app: Profile > About Us > Apply for API Key). Leave blank for LAN-only control."
+      required: false
+      secret: true
+
+tools:
+  default_enabled:
+    - list_devices
+    - list_groups
+    - get_device_state
+    - refresh
+    - list_scenes
+    - set_power
+    - set_brightness
+    - set_color
+    - set_color_temp
+    - set_scene
+    - create_group
+    - delete_group
+
+post_install: |
+  govee-mcp controls your own Govee devices. Provide a Govee Developer API key for
+  cloud control and for any device without LAN control; LAN-capable lights also work
+  locally with no key. The free Govee API is for non-commercial use only.
+  Start a new Hermes session to load the tools.

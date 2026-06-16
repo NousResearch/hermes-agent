@@ -699,3 +699,72 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Self-heal: degraded session WITHOUT _fallback_activated set
+# =============================================================================
+
+class TestDegradedStateSelfHeal:
+    """A session can be left degraded (provider/api_mode/oauth diverged from the
+    primary snapshot) while _fallback_activated is still False — e.g. a fallback
+    attempt that failed to activate (dead/credential-less fallback), or a
+    mid-turn credential rebuild. The old restore gate bailed on
+    `not _fallback_activated`, stranding the agent in the degraded state for
+    every later turn (the gateway caches agents across messages). Restoration
+    must self-heal based on divergence, not only the flag.
+    """
+
+    def test_diverges_detects_provider_change(self):
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent()
+        assert _live_state_diverges_from_primary(agent) is False
+        agent.provider = "openai-codex"
+        assert _live_state_diverges_from_primary(agent) is True
+
+    def test_diverges_detects_anthropic_oauth_flip(self):
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent(provider="anthropic", base_url="https://api.anthropic.com")
+        agent.api_mode = "anthropic_messages"
+        agent._is_anthropic_oauth = True
+        agent._anthropic_api_key = "sk-ant-oat-xyz"
+        # Re-snapshot primary to reflect this anthropic_messages baseline.
+        agent._primary_runtime.update({
+            "api_mode": "anthropic_messages",
+            "is_anthropic_oauth": True,
+            "anthropic_api_key": "sk-ant-oat-xyz",
+            "anthropic_base_url": "https://api.anthropic.com",
+        })
+        agent._primary_runtime["provider"] = "anthropic"
+        agent._primary_runtime["base_url"] = "https://api.anthropic.com"
+        assert _live_state_diverges_from_primary(agent) is False
+        # Degrade: oauth flipped off (the "Bearer None / chat_completions" trap)
+        agent._is_anthropic_oauth = False
+        assert _live_state_diverges_from_primary(agent) is True
+
+    def test_no_primary_snapshot_is_not_divergent(self):
+        from agent.agent_runtime_helpers import _live_state_diverges_from_primary
+        agent = _make_agent()
+        agent._primary_runtime = None
+        assert _live_state_diverges_from_primary(agent) is False
+
+    def test_restore_self_heals_degraded_without_flag(self):
+        from agent.agent_runtime_helpers import restore_primary_runtime
+        agent = _make_agent()
+        # Capture a clean primary snapshot, then degrade the LIVE agent the way a
+        # failed fallback would, leaving _fallback_activated False.
+        agent._fallback_activated = False
+        agent._rate_limited_until = 0
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_responses"
+        restored = restore_primary_runtime(agent)
+        assert restored is True
+        assert agent.provider == agent._primary_runtime["provider"]
+        assert agent.api_mode == agent._primary_runtime["api_mode"]
+
+    def test_clean_session_no_op(self):
+        from agent.agent_runtime_helpers import restore_primary_runtime
+        agent = _make_agent()
+        agent._fallback_activated = False
+        # Live state already matches primary → nothing to restore.
+        assert restore_primary_runtime(agent) is False

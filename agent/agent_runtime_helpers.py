@@ -1128,6 +1128,37 @@ def drop_thinking_only_and_merge_users(
 
 
 
+def _live_state_diverges_from_primary(agent) -> bool:
+    """True when the agent's LIVE provider/auth state differs from its primary
+    snapshot — i.e. the session is degraded and should be restored.
+
+    Compares the fields that a fallback activation or a mid-turn credential
+    rebuild mutates: provider, api_mode, base_url, and (for native Anthropic)
+    the OAuth flag and resolved key.  Used by restore_primary_runtime to
+    self-heal a session that was left degraded WITHOUT _fallback_activated set
+    (failed-activation / dead-fallback path).  Conservative: returns False when
+    there is no primary snapshot to compare against.
+    """
+    rt = getattr(agent, "_primary_runtime", None)
+    if not rt:
+        return False
+    if (getattr(agent, "provider", None) or "") != (rt.get("provider") or ""):
+        return True
+    if (getattr(agent, "api_mode", None) or "") != (rt.get("api_mode") or ""):
+        return True
+    if str(getattr(agent, "base_url", "") or "").rstrip("/") != str(rt.get("base_url") or "").rstrip("/"):
+        return True
+    # Native Anthropic: a degraded turn flips _is_anthropic_oauth False and/or
+    # leaves an empty key, which produces unsanitised "Bearer None" requests.
+    if rt.get("api_mode") == "anthropic_messages":
+        if bool(getattr(agent, "_is_anthropic_oauth", False)) != bool(rt.get("is_anthropic_oauth", False)):
+            return True
+        live_key = getattr(agent, "_anthropic_api_key", None)
+        if rt.get("anthropic_api_key") and not live_key:
+            return True
+    return False
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -1148,9 +1179,30 @@ def restore_primary_runtime(agent) -> bool:
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
         agent._fallback_index = 0
-        return False
+        # Self-heal a session that was left DEGRADED without the fallback flag
+        # set.  A fallback attempt that FAILS to activate (chain exhausted or
+        # provider not configured — e.g. a configured fallback with no
+        # credentials), or a mid-turn credential rebuild, can mutate the live
+        # agent (provider / api_mode / api_key / _is_anthropic_oauth) away from
+        # the primary snapshot while _fallback_activated stays False.  The old
+        # code bailed here, stranding the agent in the degraded state for every
+        # later turn (the gateway caches agents across messages) — observed as
+        # requests going to api.anthropic.com/chat/completions with
+        # ``Bearer None`` and an unsanitised system prompt, which Anthropic 400s
+        # as "third-party / extra usage".  If the live state diverges from the
+        # primary snapshot, restore it; otherwise nothing to do.
+        if not _live_state_diverges_from_primary(agent):
+            return False
+        logger.warning(
+            "Session left in a degraded provider state without the fallback "
+            "flag (live=%s/%s vs primary=%s/%s) — restoring primary runtime.",
+            getattr(agent, "provider", "?"), getattr(agent, "api_mode", "?"),
+            (agent._primary_runtime or {}).get("provider", "?"),
+            (agent._primary_runtime or {}).get("api_mode", "?"),
+        )
+        # fall through to the restore body below
 
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+    elif getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
     rt = agent._primary_runtime

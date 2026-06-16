@@ -509,10 +509,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_env["HERMES_IMAGE_CACHE_DIR"] = str(_get_img_dir())
             bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
             bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
-            bridge_env["WHATSAPP_GROUP_POLICY"] = getattr(self, "_group_policy", "open")
-            bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] = ",".join(
-                sorted(getattr(self, "_group_allow_from", set()))
+            group_policy = getattr(self, "_group_policy", os.getenv("WHATSAPP_GROUP_POLICY", "open"))
+            group_allow_from = getattr(
+                self,
+                "_group_allow_from",
+                self._coerce_allow_list(os.getenv("WHATSAPP_GROUP_ALLOWED_USERS", "")),
             )
+            bridge_env["WHATSAPP_GROUP_POLICY"] = group_policy
+            bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] = ",".join(sorted(group_allow_from))
 
             self._bridge_process = subprocess.Popen(
                 [

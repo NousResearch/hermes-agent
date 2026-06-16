@@ -244,6 +244,38 @@ class TestDataInitialized:
         assert result is True
         assert adapter._running is True
 
+    @pytest.mark.asyncio
+    async def test_bridge_group_env_falls_back_when_adapter_attrs_missing(self, monkeypatch):
+        """Bare adapters still forward env-only group allowlists to the bridge.
+
+        Some tests and recovery paths construct ``WhatsAppAdapter`` via
+        ``__new__`` and bypass ``__init__``. In that shape, connect() must not
+        silently downgrade group policy to open/empty when the operator supplied
+        ``WHATSAPP_GROUP_POLICY`` / ``WHATSAPP_GROUP_ALLOWED_USERS`` in env.
+        """
+        monkeypatch.setenv("WHATSAPP_GROUP_POLICY", "allowlist")
+        monkeypatch.setenv("WHATSAPP_GROUP_ALLOWED_USERS", "group-123@g.us")
+
+        adapter = _make_adapter()
+        assert not hasattr(adapter, "_group_policy")
+        assert not hasattr(adapter, "_group_allow_from")
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        # Return non-connected health so connect() starts a fresh subprocess
+        # instead of reusing an already-running bridge before building env.
+        mock_client_cls = _mock_aiohttp(status=200, json_data={"status": "starting"})
+        mock_fh = MagicMock()
+        patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as mock_popen,              patches[5], patches[6], patches[7], patches[8],              patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+            result = await adapter.connect()
+
+        assert result is True
+        bridge_env = mock_popen.call_args.kwargs["env"]
+        assert bridge_env["WHATSAPP_GROUP_POLICY"] == "allowlist"
+        assert bridge_env["WHATSAPP_GROUP_ALLOWED_USERS"] == "group-123@g.us"
+
 
 # ---------------------------------------------------------------------------
 # File handle cleanup on error paths

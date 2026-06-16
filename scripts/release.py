@@ -212,6 +212,7 @@ AUTHOR_MAP = {
     "saeed919@pm.me": "falasi",
     "chrisdlc119@outlook.com": "chdlc",
     "omar@techdeveloper.site": "nycomar",
+    "omarbaradei21@users.noreply.github.com": "OmarB97",
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",
     "adityargadgil@gmail.com": "AdityaRajeshGadgil",

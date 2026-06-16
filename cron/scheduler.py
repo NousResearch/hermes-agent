@@ -771,12 +771,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     if future is None:
                         adapter_ok = False
                     else:
+                        send_result = None
                         try:
                             send_result = future.result(timeout=60)
                         except TimeoutError:
                             future.cancel()
-                            raise
-                        if send_result and not getattr(send_result, "success", True):
+                            logger.warning(
+                                "Job '%s': live adapter send to %s:%s timed out, falling back to standalone",
+                                job["id"], platform_name, chat_id,
+                            )
+                            adapter_ok = False
+                        except Exception as send_exc:
+                            logger.warning(
+                                "Job '%s': live adapter send to %s:%s raised %s, falling back to standalone",
+                                job["id"], platform_name, chat_id, send_exc,
+                            )
+                            adapter_ok = False
+
+                        if adapter_ok and send_result is None:
+                            logger.warning(
+                                "Job '%s': live adapter send to %s:%s returned None, falling back to standalone",
+                                job["id"], platform_name, chat_id,
+                            )
+                            adapter_ok = False
+                        elif adapter_ok and not getattr(send_result, "success", True):
                             err = getattr(send_result, "error", "unknown")
                             logger.warning(
                                 "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",

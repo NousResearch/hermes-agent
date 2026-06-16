@@ -3037,7 +3037,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
 
-        thread_id = getattr(message, "thread_id", None) or None
+        thread_id = self._message_thread_context_id(message)
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)
@@ -4001,13 +4001,28 @@ class FeishuAdapter(BasePlatformAdapter):
     # Inbound admission
     # =========================================================================
 
+    @staticmethod
+    def _message_thread_context_id(message: Any) -> Optional[str]:
+        """Return the stable Feishu topic/thread context for an inbound message."""
+        thread_id = getattr(message, "thread_id", None)
+        if thread_id:
+            return str(thread_id)
+        if getattr(message, "chat_type", "p2p") == "p2p":
+            return None
+        for attr in ("root_id", "parent_id", "upper_message_id"):
+            value = getattr(message, attr, None)
+            if value:
+                return str(value)
+        return None
+
     def _admit(self, sender: Any, message: Any) -> Optional[RejectReason]:
         sender_ids = _sender_identity(sender)
         self_ids = frozenset(v for v in (self._bot_open_id, self._bot_user_id) if v)
         is_bot = _is_bot_sender(sender)
         is_group = getattr(message, "chat_type", "p2p") != "p2p"
+        is_thread = bool(self._message_thread_context_id(message))
         chat_id = getattr(message, "chat_id", "") or ""
-        require_mention = is_group and self._require_mention_for(chat_id)
+        require_mention = is_group and not is_thread and self._require_mention_for(chat_id)
 
         # Defensive only — Feishu doesn't echo our outbound back as inbound,
         # and open_id is always populated on both sides.
@@ -4369,9 +4384,14 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
+        if metadata and metadata.get("feishu_quote_threading"):
+            effective_reply_to = metadata.get("reply_to_message_id") or effective_reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = bool(
+            (metadata or {}).get("thread_id")
+            or (metadata or {}).get("feishu_quote_threading")
+        )
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,

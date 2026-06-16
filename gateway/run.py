@@ -1034,6 +1034,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _normalize_quote_threading,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -8794,6 +8795,7 @@ class GatewayRunner:
                 session_key=session_key,
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
+                event_reply_to_message_id=getattr(event, "reply_to_message_id", None),
                 channel_prompt=event.channel_prompt,
             )
 
@@ -13828,6 +13830,44 @@ class GatewayRunner:
                 metadata["telegram_reply_to_message_id"] = str(anchor)
         return metadata
 
+    def _feishu_status_thread_metadata_for_source(
+        self,
+        source,
+        event_message_id: Optional[str] = None,
+        event_reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build metadata for Feishu status/interim sends to mirror final replies."""
+        metadata = self._thread_metadata_for_source(source, event_message_id)
+        platform_cfg = self.config.platforms.get(source.platform) if self.config else None
+        quote_threading = _normalize_quote_threading(
+            (getattr(platform_cfg, "extra", None) or {}).get("quote_threading")
+            if platform_cfg
+            else None
+        )
+        chat_type = str(getattr(source, "chat_type", "") or "").lower()
+        if (
+            quote_threading != "never"
+            and not getattr(source, "thread_id", None)
+            and event_reply_to_message_id
+            and (quote_threading == "always" or chat_type in {"group", "channel", "thread"})
+        ):
+            metadata = {
+                **(metadata or {}),
+                "feishu_quote_threading": quote_threading,
+                "reply_to_message_id": str(event_reply_to_message_id),
+            }
+        if getattr(source, "thread_id", None) and event_message_id:
+            # Feishu topics only keep messages inside the topic when they are
+            # sent via the reply API with reply_in_thread=true. Status/interim,
+            # approval, and stream-consumer paths usually only receive metadata,
+            # so carry the triggering message id as a Feishu-specific fallback.
+            metadata = {
+                **(metadata or {}),
+                "thread_id": getattr(source, "thread_id", None),
+                "reply_to_message_id": event_message_id,
+            }
+        return metadata
+
     @staticmethod
     def _reply_anchor_for_event(event: MessageEvent) -> Optional[str]:
         """Return the platform-specific reply anchor for GatewayRunner sends."""
@@ -15892,6 +15932,7 @@ class GatewayRunner:
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        event_reply_to_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
@@ -16525,15 +16566,12 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            # Feishu topics only keep messages inside the topic when they are
-            # sent via the reply API with reply_in_thread=true. Status/interim,
-            # approval, and stream-consumer paths usually only receive metadata,
-            # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
-                "reply_to_message_id": event_message_id,
-            }
+        if source.platform == Platform.FEISHU:
+            _status_thread_metadata = self._feishu_status_thread_metadata_for_source(
+                source,
+                event_message_id=event_message_id,
+                event_reply_to_message_id=event_reply_to_message_id,
+            )
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 

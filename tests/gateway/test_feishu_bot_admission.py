@@ -333,6 +333,62 @@ _ADMIT_CASES = [
         _admit_case(
             adapter={
                 "bot_open_id": "ou_self",
+                "require_mention": True,
+                "group_policy": "open",
+            },
+            sender={"sender_type": "user", "open_id": "ou_human"},
+            message={"chat_type": "group"},
+            mentions_self=False,
+            expected="group_policy_rejected",
+        ),
+        id="require_mention_true:group_human_no_mention_rejected",
+    ),
+    pytest.param(
+        _admit_case(
+            adapter={
+                "bot_open_id": "ou_self",
+                "require_mention": True,
+                "group_policy": "open",
+            },
+            sender={"sender_type": "user", "open_id": "ou_human"},
+            message={"chat_type": "group", "thread_id": "omt_thread"},
+            mentions_self=False,
+            expected=None,
+        ),
+        id="require_mention_true:thread_human_no_mention_admitted",
+    ),
+    pytest.param(
+        _admit_case(
+            adapter={
+                "bot_open_id": "ou_self",
+                "require_mention": True,
+                "group_policy": "open",
+            },
+            sender={"sender_type": "user", "open_id": "ou_human"},
+            message={"chat_type": "group", "root_id": "om_topic_root"},
+            mentions_self=False,
+            expected=None,
+        ),
+        id="require_mention_true:root_thread_human_no_mention_admitted",
+    ),
+    pytest.param(
+        _admit_case(
+            adapter={
+                "bot_open_id": "ou_self",
+                "require_mention": True,
+                "group_policy": "open",
+            },
+            sender={"sender_type": "user", "open_id": "ou_human"},
+            message={"chat_type": "group", "upper_message_id": "om_topic_root"},
+            mentions_self=False,
+            expected=None,
+        ),
+        id="require_mention_true:upper_message_thread_human_no_mention_admitted",
+    ),
+    pytest.param(
+        _admit_case(
+            adapter={
+                "bot_open_id": "ou_self",
                 "require_mention": False,
                 "group_policy": "open",
             },

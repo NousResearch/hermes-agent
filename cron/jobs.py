@@ -1092,15 +1092,29 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     return due
 
 
+def _reserve_job_output_file(job_output_dir: Path, timestamp: str) -> Path:
+    """Return a non-existing output path without removing prior runs."""
+    output_file = job_output_dir / f"{timestamp}.md"
+    if not output_file.exists():
+        return output_file
+
+    counter = 2
+    while True:
+        candidate = job_output_dir / f"{timestamp}-{counter}.md"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
 def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+    """Save job output to a new file without overwriting existing output."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
     
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_file = job_output_dir / f"{timestamp}.md"
+    output_file = _reserve_job_output_file(job_output_dir, timestamp)
     
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
@@ -1108,7 +1122,7 @@ def save_job_output(job_id: str, output: str):
             f.write(output)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, output_file)
+        os.link(tmp_path, output_file)
         _secure_file(output_file)
     except BaseException:
         try:
@@ -1116,6 +1130,8 @@ def save_job_output(job_id: str, output: str):
         except OSError:
             pass
         raise
+    else:
+        os.unlink(tmp_path)
     
     return output_file
 

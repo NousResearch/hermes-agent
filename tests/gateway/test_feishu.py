@@ -77,6 +77,25 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_feishu_quote_threading_bridged_from_yaml(self):
+        from gateway.config import Platform, load_gateway_config
+
+        with tempfile.TemporaryDirectory() as temp_home:
+            config_path = Path(temp_home) / "config.yaml"
+            config_path.write_text(
+                "feishu:\n"
+                "  quote_threading: group_only\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+                config = load_gateway_config()
+
+        self.assertEqual(
+            config.platforms[Platform.FEISHU].extra.get("quote_threading"),
+            "group_only",
+        )
+
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
@@ -1463,6 +1482,49 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.text, "/help test")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_uses_root_id_as_thread_context(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            chat_type="group",
+            thread_id=None,
+            root_id="om_topic_root",
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"继续"}',
+            message_id="om_followup",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_followup",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_awaited_once()
+        call_args = adapter._dispatch_inbound_event.await_args
+        assert call_args is not None
+        event = call_args.args[0]
+        self.assertEqual(event.source.thread_id, "om_topic_root")
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1991,6 +2053,140 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_message_id, "om_quoted_root")
         self.assertEqual(event.reply_to_text, "引用消息内容")
 
+    def test_send_metadata_defaults_to_quote_context_only_for_feishu_quote(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _send_metadata_for_event
+
+        event = SimpleNamespace(
+            source=SimpleNamespace(
+                platform=Platform.FEISHU,
+                chat_type="group",
+                thread_id=None,
+                message_id="om_current",
+            ),
+            message_id="om_current",
+            reply_to_message_id="om_quoted_root",
+        )
+
+        self.assertIsNone(_send_metadata_for_event(event, {}))
+
+    def test_send_metadata_enables_group_quote_threading_when_configured(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _send_metadata_for_event
+
+        event = SimpleNamespace(
+            source=SimpleNamespace(
+                platform=Platform.FEISHU,
+                chat_type="group",
+                thread_id=None,
+                message_id="om_current",
+            ),
+            message_id="om_current",
+            reply_to_message_id="om_quoted_root",
+        )
+
+        metadata = _send_metadata_for_event(event, {"quote_threading": "group_only"})
+
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["feishu_quote_threading"], "group_only")
+        self.assertEqual(metadata["reply_to_message_id"], "om_quoted_root")
+        self.assertNotIn("thread_id", metadata)
+
+    def test_status_metadata_enables_group_quote_threading_when_configured(self):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(
+                    enabled=True,
+                    extra={"quote_threading": "group_only"},
+                )
+            }
+        )
+        source = SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="group",
+            thread_id=None,
+            message_id="om_current",
+        )
+
+        metadata = runner._feishu_status_thread_metadata_for_source(
+            source,
+            event_message_id="om_current",
+            event_reply_to_message_id="om_quoted_root",
+        )
+
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata["feishu_quote_threading"], "group_only")
+        self.assertEqual(metadata["reply_to_message_id"], "om_quoted_root")
+        self.assertNotIn("thread_id", metadata)
+
+    def test_status_metadata_group_only_does_not_thread_dm_quotes(self):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(
+                    enabled=True,
+                    extra={"quote_threading": "group_only"},
+                )
+            }
+        )
+        source = SimpleNamespace(
+            platform=Platform.FEISHU,
+            chat_type="dm",
+            thread_id=None,
+            message_id="om_current",
+        )
+
+        self.assertIsNone(
+            runner._feishu_status_thread_metadata_for_source(
+                source,
+                event_message_id="om_current",
+                event_reply_to_message_id="om_quoted_root",
+            )
+        )
+
+    def test_send_metadata_group_only_does_not_thread_dm_quotes(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _send_metadata_for_event
+
+        event = SimpleNamespace(
+            source=SimpleNamespace(
+                platform=Platform.FEISHU,
+                chat_type="dm",
+                thread_id=None,
+                message_id="om_current",
+            ),
+            message_id="om_current",
+            reply_to_message_id="om_quoted_root",
+        )
+
+        self.assertIsNone(_send_metadata_for_event(event, {"quote_threading": "group_only"}))
+
+    def test_send_metadata_preserves_existing_feishu_thread_metadata(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import _send_metadata_for_event
+
+        event = SimpleNamespace(
+            source=SimpleNamespace(
+                platform=Platform.FEISHU,
+                chat_type="group",
+                thread_id="omt_existing",
+                message_id="om_current",
+            ),
+            message_id="om_current",
+            reply_to_message_id="om_quoted_root",
+        )
+
+        metadata = _send_metadata_for_event(event, {"quote_threading": "group_only"})
+
+        self.assertEqual(metadata, {"thread_id": "omt_existing"})
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
@@ -2069,6 +2265,46 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(captured["request"].message_id, "om_trigger")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_metadata_reply_target_for_quote_threading(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="status update",
+                    reply_to="om_current",
+                    metadata={
+                        "feishu_quote_threading": "group_only",
+                        "reply_to_message_id": "om_quoted_root",
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_quoted_root")
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)

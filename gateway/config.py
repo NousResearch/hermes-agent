@@ -828,6 +828,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
+                if plat == Platform.FEISHU and "quote_threading" in platform_cfg:
+                    bridged["quote_threading"] = platform_cfg["quote_threading"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:

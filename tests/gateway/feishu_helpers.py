@@ -16,11 +16,19 @@ def make_sender(sender_type: str = "user", open_id: str = "ou_human",
 
 
 def make_message(message_id: str = "om_xxx", chat_type: str = "p2p",
-                 chat_id: str = "oc_1", mentions: Optional[list] = None) -> Any:
+                 chat_id: str = "oc_1", mentions: Optional[list] = None,
+                 thread_id: Optional[str] = None,
+                 root_id: Optional[str] = None,
+                 parent_id: Optional[str] = None,
+                 upper_message_id: Optional[str] = None) -> Any:
     return SimpleNamespace(
         message_id=message_id,
         chat_type=chat_type,
         chat_id=chat_id,
+        thread_id=thread_id,
+        root_id=root_id,
+        parent_id=parent_id,
+        upper_message_id=upper_message_id,
         mentions=mentions,
         content="",
         message_type="text",

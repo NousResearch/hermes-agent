@@ -76,6 +76,45 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     return metadata
 
 
+def _normalize_quote_threading(value) -> str:
+    mode = str(value or "never").strip().lower()
+    if mode in {"never", "group_only", "always"}:
+        return mode
+    logger.warning(
+        "Unknown quote_threading=%r; falling back to 'never'. Valid: never, group_only, always.",
+        value,
+    )
+    return "never"
+
+
+def _send_metadata_for_event(event, config_extra: dict | None = None) -> dict | None:
+    """Build platform metadata for a response to an inbound event."""
+    reply_anchor = _reply_anchor_for_event(event)
+    metadata = _thread_metadata_for_source(event.source, reply_anchor)
+    source = getattr(event, "source", None)
+    if _platform_name(getattr(source, "platform", None)) != "feishu":
+        return metadata
+
+    quote_threading = _normalize_quote_threading((config_extra or {}).get("quote_threading"))
+    if quote_threading == "never":
+        return metadata
+    if getattr(source, "thread_id", None):
+        return metadata
+
+    reply_to_message_id = getattr(event, "reply_to_message_id", None)
+    if not reply_to_message_id:
+        return metadata
+
+    chat_type = str(getattr(source, "chat_type", "") or "").lower()
+    if quote_threading == "group_only" and chat_type not in {"group", "channel", "thread"}:
+        return metadata
+
+    metadata = dict(metadata or {})
+    metadata["feishu_quote_threading"] = quote_threading
+    metadata["reply_to_message_id"] = str(reply_to_message_id)
+    return metadata
+
+
 def _reply_anchor_for_event(event) -> str | None:
     """Return reply_to id for platforms that need reply semantics.
 
@@ -3224,7 +3263,7 @@ class BasePlatformAdapter(ABC):
         current_guard = self._active_sessions.get(session_key)
         command_guard = asyncio.Event()
         self._active_sessions[session_key] = command_guard
-        thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        thread_meta = _send_metadata_for_event(event, self.config.extra)
 
         try:
             response = await self._message_handler(event)
@@ -3339,7 +3378,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                    _thread_meta = _send_metadata_for_event(event, self.config.extra)
                     response = await self._message_handler(event)
                     _text, _eph_ttl = self._unwrap_ephemeral(response)
                     if _text:
@@ -3387,9 +3426,7 @@ class BasePlatformAdapter(ABC):
                         self.name, session_key,
                     )
                     try:
-                        _thread_meta = _thread_metadata_for_source(
-                            event.source, _reply_anchor_for_event(event)
-                        )
+                        _thread_meta = _send_metadata_for_event(event, self.config.extra)
                         response = await self._message_handler(event)
                         _text, _eph_ttl = self._unwrap_ephemeral(response)
                         if _text:
@@ -3508,7 +3545,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        _thread_metadata = _send_metadata_for_event(event, self.config.extra)
         _keep_typing_kwargs = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
@@ -3860,7 +3897,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                _thread_metadata = _send_metadata_for_event(event, self.config.extra)
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(

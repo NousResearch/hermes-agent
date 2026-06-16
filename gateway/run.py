@@ -11736,6 +11736,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        if not command and isinstance(event.text, str):
+            try:
+                from hermes_cli.handoff_doc_cmd import consume_handoff_markdown_text
+                _pasted_handoff = consume_handoff_markdown_text(
+                    event.text,
+                    source_label="<pasted handoff from gateway>",
+                )
+            except Exception:
+                _pasted_handoff = None
+            if _pasted_handoff and getattr(_pasted_handoff, "agent_seed", None):
+                _ack = getattr(_pasted_handoff, "text", "") or ""
+                if _ack:
+                    try:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            _ack_meta = self._thread_metadata_for_source(source)
+                            await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
+                    except Exception:
+                        logger.debug("pasted handoff ack send failed", exc_info=True)
+                event.text = _pasted_handoff.agent_seed
+
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             # Debounce the lobby reminder so a user who forgets about
             # topic mode and fires ten prompts doesn't get ten copies.

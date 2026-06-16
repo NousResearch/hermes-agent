@@ -15380,8 +15380,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
+
+                    _auto_consumed_handoff = False
+                    if isinstance(user_input, str):
+                        try:
+                            from hermes_cli.handoff_doc_cmd import consume_handoff_markdown_text
+                            _handoff_result = consume_handoff_markdown_text(user_input)
+                        except Exception:
+                            _handoff_result = None
+                        if _handoff_result and getattr(_handoff_result, "agent_seed", None):
+                            _cprint(f"\n📦 {_handoff_result.text}")
+                            user_input = _handoff_result.agent_seed
+                            _auto_consumed_handoff = True
                     print()
-                    self._print_user_message_preview(user_input)
+                    if not _auto_consumed_handoff:
+                        self._print_user_message_preview(user_input)
                     
                     # Show image attachment count
                     if submit_images:

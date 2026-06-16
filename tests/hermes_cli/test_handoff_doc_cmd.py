@@ -4,6 +4,7 @@ from pathlib import Path
 
 from hermes_cli.handoff_doc_cmd import (
     build_handoff_document,
+    consume_handoff_markdown_text,
     handle_handoff_document_command,
     parse_handoff_args,
     parse_handoff_markdown,
@@ -72,6 +73,27 @@ class TestBuildHandoffDocument:
         parsed = parse_handoff_markdown(doc.markdown)
         assert "review this repo" in parsed["Purpose of next session"]
         assert "fresh session" not in parsed["Purpose of next session"].lower() or parsed["Purpose of next session"]
+
+
+class TestConsumePastedHandoffMarkdown:
+    def test_detects_and_queues_pasted_handoff(self):
+        text = (
+            "# Handoff: auth drift\n\n"
+            "## Purpose of next session\nFix auth drift.\n\n"
+            "## Current status\n- drift confirmed\n\n"
+            "## Relevant artifacts\n- workdir: /root/project\n\n"
+            "## Constraints and non-goals\n- stay narrow\n\n"
+            "## Exact first prompt\nValidate the config and fix the drift.\n\n"
+            "## Success criteria\n- [ ] config fixed\n"
+        )
+        result = consume_handoff_markdown_text(text, source_label="<paste>")
+        assert result is not None
+        assert result.agent_seed is not None
+        assert "<paste>" in result.agent_seed
+        assert "Detected handoff markdown" in result.text
+
+    def test_ignores_non_handoff_text(self):
+        assert consume_handoff_markdown_text("hello there") is None
 
 
 class TestHandleHandoffDocumentCommand:

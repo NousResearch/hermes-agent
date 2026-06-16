@@ -1,0 +1,27 @@
+name: surfsense
+version: 0.1.0
+description: "Connect Hermes to a self-hosted SurfSense NotebookLM-style knowledge base, including source-grounded video planning for Manim, HeyGen, HyperFrames, AITuber OnAir, irodoriTTS, MP4 audio muxing, LLM-wiki, codegraph, sleep digests, and memory."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+requires_env:
+  - name: SURFSENSE_BASE_URL
+    description: "SurfSense backend URL, for example http://localhost:8929."
+    secret: false
+  - name: SURFSENSE_ACCESS_TOKEN
+    description: "Optional SurfSense bearer token. Use hermes surfsense login to save one."
+    secret: true
+provides_tools:
+  - surfsense_status
+  - surfsense_login
+  - surfsense_searchspaces
+  - surfsense_upload
+  - surfsense_search
+  - surfsense_ask
+  - surfsense_video_plan
+  - surfsense_video_mux
+provides_cli:
+  - surfsense

@@ -100,4 +100,23 @@ describe('SkillsView toolset management', () => {
 
     await waitFor(() => expect(getToolsetConfig).toHaveBeenCalledWith('web'))
   })
+
+  it('renders plugin-provided SurfSense video planning in the desktop toolset list', async () => {
+    getToolsets.mockResolvedValue([
+      toolset({
+        name: 'surfsense',
+        label: 'SurfSense',
+        description:
+          'Connect Hermes to a self-hosted SurfSense NotebookLM-style knowledge base, including source-grounded video planning for Manim, HeyGen, HyperFrames, AITuber OnAir, irodoriTTS, MP4 audio muxing, LLM-wiki, codegraph, sleep digests, and memory.',
+        tools: ['surfsense_search', 'surfsense_ask', 'surfsense_video_plan', 'surfsense_video_mux']
+      })
+    ])
+
+    await renderSkills()
+
+    expect(await screen.findByText('SurfSense')).toBeTruthy()
+    expect(screen.getByText(/Manim, HeyGen, HyperFrames, AITuber OnAir, irodoriTTS, MP4 audio muxing/)).toBeTruthy()
+    expect(screen.getByText('surfsense_video_plan')).toBeTruthy()
+    expect(screen.getByText('surfsense_video_mux')).toBeTruthy()
+  })
 })

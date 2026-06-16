@@ -3459,8 +3459,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pass
         
         # Fallback provider chain — tried in order when primary fails after retries.
-        # Merge new ``fallback_providers`` entries with any legacy
-        # ``fallback_model`` entries so old configs still participate.
+        # Merge explicit ``fallback_order`` entries with older
+        # ``fallback_providers`` / ``fallback_model`` entries so old configs
+        # still participate.
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
         # Signature of the currently-initialised agent's runtime.  Used to

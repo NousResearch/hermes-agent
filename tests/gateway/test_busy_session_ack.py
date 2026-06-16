@@ -212,6 +212,39 @@ class TestBusySessionAck:
         agent.interrupt.assert_called_once_with("Are you working?")
 
     @pytest.mark.asyncio
+    async def test_feishu_busy_ack_respects_suppressed_reply_anchor(self):
+        """Feishu merge_forward follow-ups must not get status acks inside the card."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter("feishu")
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="dm",
+            user_id="ou_user",
+        )
+        event = MessageEvent(
+            text="能识别吗",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="om_text",
+            suppress_reply_anchor=True,
+        )
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"seconds_since_activity": 1.0}
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        adapter._send_with_retry.assert_called_once()
+        assert adapter._send_with_retry.call_args.kwargs["reply_to"] is None
+        agent.interrupt.assert_called_once_with("能识别吗")
+
+    @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
         """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
         runner, sentinel = _make_runner()

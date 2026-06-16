@@ -1395,6 +1395,163 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(media_types, [])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_extract_merge_forward_placeholder_expands_with_bot_fetch(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        request = object()
+        adapter._build_get_message_request = Mock(return_value=request)
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    message_id="om_merge_forward",
+                    msg_type="merge_forward",
+                    body=SimpleNamespace(content="{}"),
+                    create_time="1700000000000",
+                    sender=SimpleNamespace(id="ou_sender", name="Sender"),
+                ),
+                SimpleNamespace(
+                    message_id="om_child_1",
+                    upper_message_id="om_merge_forward",
+                    msg_type="text",
+                    body=SimpleNamespace(content=json.dumps({"text": "第一条内容"})),
+                    create_time="1700000001000",
+                    sender=SimpleNamespace(id="ou_alice", name="Alice"),
+                ),
+                SimpleNamespace(
+                    message_id="om_child_2",
+                    upper_message_id="om_merge_forward",
+                    msg_type="post",
+                    body=SimpleNamespace(
+                        content=json.dumps({"zh_cn": {"content": [[{"tag": "text", "text": "第二条富文本"}]]}})
+                    ),
+                    create_time="1700000002000",
+                    sender=SimpleNamespace(id="ou_bob", name="Bob"),
+                ),
+            ]
+        )
+        message_get = Mock()
+        adapter._client.im.v1.message.get = message_get
+        adapter._run_blocking = AsyncMock(return_value=response)
+        message = SimpleNamespace(
+            message_type="merge_forward",
+            content="{}",
+            message_id="om_merge_forward",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertIn("[Merged forward message]", text)
+        self.assertIn("1. Alice", text)
+        self.assertIn("第一条内容", text)
+        self.assertIn("2. Bob", text)
+        self.assertIn("第二条富文本", text)
+        self.assertEqual(msg_type.value, "text")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+        adapter._run_blocking.assert_awaited_once_with(message_get, request)
+        message_get.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_merge_forward_expands_interactive_child_card(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    message_id="om_merge_forward",
+                    msg_type="merge_forward",
+                    body=SimpleNamespace(content="{}"),
+                    create_time="1700000000000",
+                    sender=SimpleNamespace(id="ou_sender"),
+                ),
+                SimpleNamespace(
+                    message_id="om_card",
+                    upper_message_id="om_merge_forward",
+                    msg_type="interactive",
+                    body=SimpleNamespace(
+                        content=json.dumps(
+                            {
+                                "card": {
+                                    "header": {"title": {"tag": "plain_text", "content": "Approval"}},
+                                    "elements": [
+                                        {
+                                            "tag": "div",
+                                            "text": {"tag": "plain_text", "content": "Requester: Alice"},
+                                        },
+                                        {
+                                            "tag": "action",
+                                            "actions": [
+                                                {
+                                                    "tag": "button",
+                                                    "text": {"tag": "plain_text", "content": "Approve"},
+                                                }
+                                            ],
+                                        },
+                                    ],
+                                }
+                            }
+                        )
+                    ),
+                    create_time="1700000001000",
+                    sender=SimpleNamespace(id="ou_argos", name="Argos"),
+                ),
+            ]
+        )
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+        message = SimpleNamespace(
+            message_type="merge_forward",
+            content="{}",
+            message_id="om_merge_forward",
+        )
+
+        text, msg_type, _media_urls, _media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertIn("Argos", text)
+        self.assertIn("Approval", text)
+        self.assertIn("Requester: Alice", text)
+        self.assertIn("Actions: Approve", text)
+        self.assertEqual(msg_type.value, "text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_merge_forward_fetch_failure_keeps_readable_fallback(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        response = Mock()
+        response.success = Mock(return_value=False)
+        response.code = 99991663
+        response.msg = "missing scope"
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+        message = SimpleNamespace(
+            message_type="merge_forward",
+            content="{}",
+            message_id="om_merge_forward",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertIn("[Merged forward message]", text)
+        self.assertIn("failed to expand", text)
+        self.assertIn("missing scope", text)
+        self.assertEqual(msg_type.value, "text")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_share_chat_message_as_text_summary(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -1806,6 +1963,70 @@ class TestAdapterBehavior(unittest.TestCase):
         event = adapter.handle_message.await_args.args[0]
         self.assertEqual(event.text, "A\nB")
         self.assertEqual(event.message_type, MessageType.TEXT)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_text_batch_merges_merge_forward_with_followup_reply(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+
+        async def _sleep(_delay):
+            return None
+
+        async def _run() -> None:
+            with patch("plugins.platforms.feishu.adapter.asyncio.sleep", side_effect=_sleep):
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="[Merged forward message]\n\n1. Alice\n   成本 ok 了",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        raw_message=SimpleNamespace(
+                            event=SimpleNamespace(
+                                message=SimpleNamespace(message_type="merge_forward")
+                            )
+                        ),
+                        message_id="om_merge",
+                        suppress_reply_anchor=True,
+                    )
+                )
+                await adapter._dispatch_inbound_event(
+                    MessageEvent(
+                        text="能识别吗",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                        message_id="om_text",
+                        reply_to_message_id="om_merge",
+                        reply_to_text="[Merged forward message]\n\n1. Alice\n   成本 ok 了",
+                        suppress_reply_anchor=True,
+                    )
+                )
+                pending = list(adapter._pending_text_batch_tasks.values())
+                self.assertEqual(len(pending), 1)
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(_run())
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        self.assertEqual(
+            event.text,
+            "[Merged forward message]\n\n1. Alice\n   成本 ok 了\n能识别吗",
+        )
+        self.assertEqual(event.message_id, "om_text")
+        self.assertIsNone(event.reply_to_message_id)
+        self.assertTrue(event.suppress_reply_anchor)
 
     @patch.dict(
         os.environ,
@@ -4599,6 +4820,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._bot_name = "Hermes"
         adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
         adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter._message_type_cache = OrderedDict()
         adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
         adapter._resolve_sender_profile = AsyncMock(
             return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
@@ -5061,6 +5283,105 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+    def test_merge_forward_does_not_inherit_thread_or_reply_anchor(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content="{}",
+            message_type="merge_forward",
+            message_id="om_merge",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_parent_inside_merge",
+            upper_message_id="om_upper_inside_merge",
+            root_id="om_root_inside_merge",
+            thread_id="omt_inside_merge",
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                chat_type="group",
+                message_id="om_merge",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertIsNone(adapter.build_source.call_args.kwargs["thread_id"])
+        adapter._fetch_message_text.assert_not_awaited()
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_id, "om_merge")
+        self.assertIsNone(event.source.thread_id)
+        self.assertIsNone(event.reply_to_message_id)
+        self.assertIsNone(event.reply_to_text)
+        self.assertTrue(event.suppress_reply_anchor)
+
+    def test_text_reply_to_merge_forward_parent_suppresses_reply_anchor(self):
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        adapter = self._build_adapter()
+
+        async def fetch_parent_text(message_id):
+            adapter._remember_message_type(message_id, "merge_forward")
+            return "[Merged forward message]\n\n1. Alice\n   hello"
+
+        adapter._fetch_message_text = AsyncMock(side_effect=fetch_parent_text)
+        message = SimpleNamespace(
+            content=json.dumps({"text": "你能理解这个消息吗"}),
+            message_type="text",
+            message_id="om_text",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id="om_merge",
+            upper_message_id=None,
+            root_id="om_merge",
+            thread_id="omt_inside_merge",
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                chat_type="group",
+                message_id="om_text",
+            )
+        )
+
+        adapter.build_source.assert_called_once()
+        self.assertIsNone(adapter.build_source.call_args.kwargs["thread_id"])
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_id, "om_text")
+        self.assertEqual(event.reply_to_message_id, "om_merge")
+        self.assertIn("[Merged forward message]", event.reply_to_text)
+        self.assertTrue(event.suppress_reply_anchor)
+        self.assertIsNone(_reply_anchor_for_event(event))
+
+    def test_reply_anchor_omits_feishu_merge_forward_message_id(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, _reply_anchor_for_event
+
+        source = SimpleNamespace(platform=Platform.FEISHU, thread_id=None, chat_type="group")
+        raw_message = SimpleNamespace(message_type="merge_forward")
+        event = MessageEvent(
+            text="[Merged forward message]",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=SimpleNamespace(event=SimpleNamespace(message=raw_message)),
+            message_id="om_merge",
+        )
+
+        self.assertIsNone(_reply_anchor_for_event(event))
+
+        raw_text = SimpleNamespace(message_type="text")
+        normal_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=SimpleNamespace(event=SimpleNamespace(message=raw_text)),
+            message_id="om_text",
+        )
+        self.assertEqual(_reply_anchor_for_event(normal_event), "om_text")
 
 
 class TestChatLockEviction(unittest.TestCase):

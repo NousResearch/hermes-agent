@@ -104,6 +104,10 @@ def _reply_anchor_for_event(event) -> str | None:
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
+    if getattr(event, "suppress_reply_anchor", False):
+        return None
+    if platform == "feishu" and _is_feishu_merge_forward_event(event):
+        return None
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
@@ -113,6 +117,29 @@ def _reply_anchor_for_event(event) -> str | None:
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
+
+
+def _is_feishu_merge_forward_event(event) -> bool:
+    raw = getattr(event, "raw_message", None)
+    raw_event = raw.get("event") if isinstance(raw, dict) else None
+    raw_message = raw.get("message") if isinstance(raw, dict) else None
+    candidates = [
+        getattr(getattr(raw, "event", None), "message", None),
+        raw_event.get("message") if isinstance(raw_event, dict) else None,
+        getattr(raw, "message", None),
+        raw_message,
+        raw,
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, dict):
+            message_type = candidate.get("message_type") or candidate.get("msg_type")
+        else:
+            message_type = getattr(candidate, "message_type", None) or getattr(candidate, "msg_type", None)
+        if str(message_type or "").strip().lower() == "merge_forward":
+            return True
+    return False
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -1781,6 +1808,7 @@ class MessageEvent:
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
+    suppress_reply_anchor: bool = False  # Send without platform-native reply anchoring.
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
@@ -2149,6 +2177,8 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            if getattr(event, "suppress_reply_anchor", False):
+                existing.suppress_reply_anchor = True
             return
 
     pending_messages[session_key] = event
@@ -4331,6 +4361,8 @@ class BasePlatformAdapter(ABC):
                 state.event.message_id = str(latest_message_id)
             if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
                 state.event.reply_to_message_id = str(latest_anchor)
+            if getattr(event, "suppress_reply_anchor", False):
+                state.event.suppress_reply_anchor = True
             state.last_ts = now
 
         if state.task is not None and not state.task.done():

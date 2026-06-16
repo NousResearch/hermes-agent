@@ -402,13 +402,6 @@ model.delete_adapter("default")
 # Convert adapter precision
 model = PeftModel.from_pretrained(base_model, "./adapter")
 model = model.to(torch.bfloat16)
-
-# Or load with specific dtype
-model = PeftModel.from_pretrained(
-    base_model,
-    "./adapter",
-    dtype=torch.bfloat16,
-)
 ```
 
 ## Performance Optimization

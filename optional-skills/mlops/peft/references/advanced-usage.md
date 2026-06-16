@@ -48,7 +48,7 @@ adalora_config = AdaLoraConfig(
     target_r=16,            # Target average rank
     tinit=200,              # Warmup steps
     tfinal=1000,            # Final pruning step
-    total_step=2000,        # Indicate the total number of trainig steps
+    total_step=2000,        # Indicate the total number of training steps
     deltaT=10,              # Rank update frequency
     beta1=0.85,
     beta2=0.85,
@@ -311,7 +311,7 @@ class MultiAdapterModel:
 
 ### Gradient checkpointing with LoRA
 
-Gradient checkpointing reduces memory usage during training but incrases compute time. For non-quantized models, use:
+Gradient checkpointing reduces memory usage during training but increases compute time. For non-quantized models, use:
 
 ```python
 model = AutoModelForCausalLM.from_pretrained(...)

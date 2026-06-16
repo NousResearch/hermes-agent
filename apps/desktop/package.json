@@ -199,7 +199,8 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "identity": null
     },
     "dmg": {
       "title": "Install Hermes",

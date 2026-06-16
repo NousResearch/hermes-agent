@@ -420,7 +420,7 @@ export default function SystemPage() {
     setUpdateConfirmOpen(false);
     if (status?.can_update_hermes === false) {
       showToast(
-        "Hermes updates are managed by the hosted agent service.",
+        "Hermes updates are managed outside this dashboard.",
         "success",
       );
       return;

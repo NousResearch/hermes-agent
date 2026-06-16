@@ -442,8 +442,8 @@ async def test_send_restart_notification_noop_when_no_file(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, monkeypatch):
-    """If the requester's platform isn't connected, clean up without crashing."""
+async def test_send_restart_notification_defers_when_adapter_missing(tmp_path, monkeypatch):
+    """If the requester's platform isn't connected, defer — leave marker for retry on reconnect."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
@@ -456,15 +456,15 @@ async def test_send_restart_notification_skips_when_adapter_missing(tmp_path, mo
 
     await runner._send_restart_notification()
 
-    # File cleaned up even though we couldn't send
-    assert not notify_path.exists()
+    # File preserved — await retry when discord reconnects
+    assert notify_path.exists()
 
 
 @pytest.mark.asyncio
-async def test_send_restart_notification_cleans_up_on_send_failure(
+async def test_send_restart_notification_defers_on_send_exception(
     tmp_path, monkeypatch
 ):
-    """If the adapter.send() raises, the file is still cleaned up."""
+    """If adapter.send() raises (transient error), preserve marker for retry on reconnect."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     notify_path = tmp_path / ".restart_notify.json"
@@ -478,9 +478,9 @@ async def test_send_restart_notification_cleans_up_on_send_failure(
 
     delivered_target = await runner._send_restart_notification()
 
-    # File cleaned up even though send raised.
+    # File preserved — transient error, will retry on reconnect
     assert delivered_target is None
-    assert not notify_path.exists()
+    assert notify_path.exists()
 
 
 @pytest.mark.asyncio

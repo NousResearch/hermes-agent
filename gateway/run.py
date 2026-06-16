@@ -5945,6 +5945,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         logger.info("✓ %s reconnected successfully", platform.value)
 
+                        # A platform that came back after startup may have a
+                        # pending restart notification that was deferred because
+                        # the adapter wasn't connected yet.  Retry it now.
+                        await self._send_restart_notification()
+
                         # Rebuild channel directory with the new adapter
                         try:
                             from gateway.channel_directory import build_channel_directory
@@ -11859,9 +11864,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             platform = Platform(platform_str)
             adapter = self.adapters.get(platform)
+            # adapter not connected yet is a TRANSIENT condition — the
+            # reconnect watcher may bring it back.  Leave the marker file
+            # in place so a later retry can deliver the notification.
             if not adapter:
                 logger.debug(
-                    "Restart notification skipped: %s adapter not connected",
+                    "Restart notification deferred: %s adapter not connected",
                     platform_str,
                 )
                 return None
@@ -11872,6 +11880,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Restart notification suppressed: %s has gateway_restart_notification=false",
                     platform_str,
                 )
+                notify_path.unlink(missing_ok=True)
                 return None
 
             metadata = self._thread_metadata_for_target(
@@ -11898,6 +11907,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_id,
                     getattr(result, "error", "send returned success=False"),
                 )
+                # Delivery failed but not necessarily transient (e.g. chat
+                # deleted).  Consume the marker so we don't retry forever.
+                notify_path.unlink(missing_ok=True)
                 return None
 
             logger.info(
@@ -11905,12 +11917,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 platform_str,
                 chat_id,
             )
+            notify_path.unlink(missing_ok=True)
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
+            # Transient error — leave marker for retry on reconnect
             return None
-        finally:
-            notify_path.unlink(missing_ok=True)
 
     async def _send_home_channel_startup_notifications(
         self,

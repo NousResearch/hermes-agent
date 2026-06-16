@@ -23,7 +23,7 @@ class TestGenericProviderLiveCuratedMerge:
         return p
 
     def test_live_models_merged_with_curated(self):
-        """Live models come first; curated-only models are appended."""
+        """Curated models come first; live-only models are appended."""
         live = ["glm-5.2", "glm-5.1", "glm-5"]
         curated = _PROVIDER_MODELS["zai"]  # includes glm-5.1, glm-5, glm-4.5, etc.
         profile = self._make_profile(live)
@@ -34,11 +34,14 @@ class TestGenericProviderLiveCuratedMerge:
         ):
             result = provider_model_ids("zai")
 
-        # Live entries first (in live order)
+        # Curated entries first, in catalog order (keeps newest curated models
+        # like glm-5.2 at the top of the picker — see #46309).
+        assert result[: len(curated)] == list(curated)
         assert result[0] == "glm-5.2"
-        assert result[1] == "glm-5.1"
-        assert result[2] == "glm-5"
-        # Curated-only entries appended (e.g. glm-4.5)
+        # Models present in both live and curated are not duplicated.
+        assert result.count("glm-5.2") == 1
+        assert result.count("glm-5.1") == 1
+        # Curated-only entries are part of the result (e.g. glm-4.5).
         result_lower = [m.lower() for m in result]
         assert "glm-4.5" in result_lower
         assert "glm-4.5-flash" in result_lower
@@ -73,11 +76,8 @@ class TestGenericProviderLiveCuratedMerge:
         ):
             result = provider_model_ids("zai")
 
-        # Live casing preserved for duplicates
-        assert result[0] == "GLM-5.1"
-        assert result[1] == "glm-5"
-        # Curated-only appended
-        assert "glm-4.5" in result
+        # Curated-first: curated casing wins for models present in both.
+        assert result == ["glm-5.1", "GLM-5", "glm-4.5"]
 
     def test_empty_curated_returns_live_only(self):
         """When no curated list exists, live is returned as-is."""
@@ -118,7 +118,11 @@ class TestValidateRequestedModelCuratedFallback:
 
     def test_model_in_curated_but_not_live_is_accepted(self):
         """When live /v1/models omits a model that exists in the curated
-        catalog, validate_requested_model should accept it with a note."""
+        catalog, validate_requested_model should accept it with a note.
+
+        Patches the real ``_PROVIDER_MODELS`` source (not the function under
+        test) so the curated-catalog fallback is genuinely exercised.
+        """
         from hermes_cli.models import validate_requested_model
 
         # Live API returns only glm-5.1, but curated has glm-5.2
@@ -127,7 +131,7 @@ class TestValidateRequestedModelCuratedFallback:
 
         with (
             patch("hermes_cli.models.fetch_api_models", return_value=live_models),
-            patch("hermes_cli.models.provider_model_ids", return_value=curated),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
         ):
             result = validate_requested_model("glm-5.2", "zai", api_key="dummy")
 
@@ -145,7 +149,7 @@ class TestValidateRequestedModelCuratedFallback:
 
         with (
             patch("hermes_cli.models.fetch_api_models", return_value=live_models),
-            patch("hermes_cli.models.provider_model_ids", return_value=curated),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
         ):
             result = validate_requested_model("nonexistent-model", "zai", api_key="dummy")
 
@@ -163,3 +167,33 @@ class TestValidateRequestedModelCuratedFallback:
         assert result["accepted"] is True
         assert result["recognized"] is True
         assert result["message"] is None
+
+    def test_curated_fallback_is_scoped_to_the_current_provider(self):
+        """The curated fallback must not leak models across providers.
+
+        A model that lives in some OTHER provider's catalog (or only on an
+        aggregator like OpenRouter) must still be rejected when the current
+        provider neither lists it live nor ships it in its OWN curated
+        catalog.  The fallback keys on ``_provider_keys(normalized)``, so
+        catalog membership is checked per-provider, never globally.
+        """
+        from hermes_cli.models import validate_requested_model
+
+        # `some-other-model` is known to a DIFFERENT provider, not to zai.
+        # zai's live listing also omits it.  It must be rejected.
+        live_models = ["glm-5.1"]
+
+        with (
+            patch("hermes_cli.models.fetch_api_models", return_value=live_models),
+            patch.dict(
+                "hermes_cli.models._PROVIDER_MODELS",
+                {"zai": ["glm-5.2", "glm-5.1"], "openrouter": ["some-other-model"]},
+            ),
+        ):
+            result = validate_requested_model("some-other-model", "zai", api_key="dummy")
+
+        assert result["accepted"] is False, (
+            "A model only present in another provider's catalog must not be "
+            "accepted on this provider via the curated fallback."
+        )
+

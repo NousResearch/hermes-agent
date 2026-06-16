@@ -1683,8 +1683,6 @@ export const zh: Translations = {
     unknown: '(未知)',
     search: '筛选提供方和模型...',
     noModels: '未找到模型。',
-    persistGlobalSession: '全局保存 (否则仅当前会话)',
-    persistGlobal: '全局保存',
     addProvider: '添加提供方',
     loadFailed: '无法加载模型',
     noAuthenticatedProviders: '没有已认证的提供方。',

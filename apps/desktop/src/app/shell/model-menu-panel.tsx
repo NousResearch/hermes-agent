@@ -43,7 +43,7 @@ import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
 interface ModelMenuPanelProps {
   gateway?: HermesGateway
-  onSelectModel: (selection: { model: string; persistGlobal: boolean; provider: string }) => Promise<boolean> | void
+  onSelectModel: (selection: { model: string; provider: string }) => Promise<boolean> | void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -95,8 +95,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     [visibleModels, providers]
   )
 
-  const switchTo = (model: string, provider: string) =>
-    onSelectModel({ model, persistGlobal: !activeSessionId, provider })
+  // The composer picker never persists the profile default. With a session it
+  // scopes the switch to that session; with none it's UI state shipped on the
+  // next session.create (see selectModel). The default lives in Settings → Model.
+  const switchTo = (model: string, provider: string) => onSelectModel({ model, provider })
 
   // Selecting a model row restores that model's remembered preset onto the
   // session (effort/fast), gated by capability. Unset → Hermes defaults.

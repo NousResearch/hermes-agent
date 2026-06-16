@@ -1145,8 +1145,6 @@ export interface Translations {
     unknown: string
     search: string
     noModels: string
-    persistGlobalSession: string
-    persistGlobal: string
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string

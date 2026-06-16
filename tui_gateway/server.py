@@ -946,6 +946,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 kw = {"session_db": session_db}
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
+                # Model/effort/fast the desktop picked for a brand-new chat ride
+                # in as per-session overrides so the first build uses them
+                # directly (no global config, no build-then-switch).
+                if override := current.get("model_override"):
+                    kw["model_override"] = override
+                if (reasoning := current.get("create_reasoning_override")) is not None:
+                    kw["reasoning_config_override"] = reasoning
+                if (tier := current.get("create_service_tier_override")) is not None:
+                    kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
@@ -1174,11 +1183,38 @@ def _ensure_session_db_row(session: dict) -> None:
         close_db = False
     if db is None:
         return
+    # The session's own model/effort/fast pick — the composer override shipped on
+    # session.create, or a restored /model switch — must own the row's model +
+    # model_config. The agent isn't built yet at first prompt.submit, so derive
+    # the row from the live override dict; fall back to the global resolved model
+    # only when this chat made no explicit pick. Writing the global default here
+    # used to win the INSERT-OR-IGNORE race against the agent's own correct
+    # lazy-create, so a reconnect/resume rebuilt from the global model and
+    # silently reverted the chat (e.g. picked gpt-5.5, reconnect snapped back to
+    # the profile default). model_config carries provider/reasoning/service_tier
+    # so resume restores effort + fast too, not just the model name.
+    override = session.get("model_override")
+    override = override if isinstance(override, dict) else {}
+    row_model = str(override.get("model") or "").strip() or _resolve_model()
+    model_config: dict = {}
+    for src_key, cfg_key in (
+        ("model", "model"),
+        ("provider", "provider"),
+        ("base_url", "base_url"),
+        ("api_mode", "api_mode"),
+    ):
+        if val := override.get(src_key):
+            model_config[cfg_key] = str(val)
+    if (reasoning := session.get("create_reasoning_override")) is not None:
+        model_config["reasoning_config"] = reasoning
+    if tier := session.get("create_service_tier_override"):
+        model_config["service_tier"] = tier
     try:
         db.create_session(
             key,
             source="tui",
-            model=_resolve_model(),
+            model=row_model,
+            model_config=model_config or None,
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
     except Exception:
@@ -3887,6 +3923,29 @@ def _(rid, params: dict) -> dict:
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
 
+    # The desktop composer owns its model/effort/fast as plain UI state and ships
+    # it on every session.create. Honor each as a PER-SESSION override (built into
+    # the agent below) — never a global config write, so picking a model/effort
+    # for a new chat can't mutate the profile default. provider is optional
+    # (resolved at build).
+    create_model = str(params.get("model") or "").strip()
+    session_model_override = (
+        {"model": create_model, "provider": str(params.get("provider") or "").strip() or None}
+        if create_model
+        else None
+    )
+    create_reasoning_override = None
+    if effort := str(params.get("reasoning_effort") or "").strip():
+        try:
+            from hermes_constants import parse_reasoning_effort
+
+            create_reasoning_override = parse_reasoning_effort(effort)
+        except Exception:
+            create_reasoning_override = None
+    # Only pin "fast" when explicitly requested; leaving it None lets the build
+    # fall back to the profile default service tier rather than forcing normal.
+    create_service_tier_override = "priority" if params.get("fast") else None
+
     ready = threading.Event()
     now = time.time()
     lease, limit_message = _claim_active_session_slot(key, live_session_id=sid)
@@ -3912,6 +3971,9 @@ def _(rid, params: dict) -> dict:
             "cwd": resolved_cwd,
             "inflight_turn": None,
             "last_active": now,
+            "model_override": session_model_override,
+            "create_reasoning_override": create_reasoning_override,
+            "create_service_tier_override": create_service_tier_override,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
@@ -3951,7 +4013,20 @@ def _(rid, params: dict) -> dict:
             "message_count": len(history),
             "messages": _history_to_messages(history),
             "info": {
-                "model": _resolve_model(),
+                # Reflect the per-session model override (desktop composer pick)
+                # in the immediate response so the client doesn't briefly clobber
+                # its sticky pick with the global default before the deferred
+                # build's session.info lands.
+                "model": (
+                    session_model_override.get("model")
+                    if session_model_override
+                    else _resolve_model()
+                ),
+                **(
+                    {"provider": session_model_override["provider"]}
+                    if session_model_override and session_model_override.get("provider")
+                    else {}
+                ),
                 "tools": {},
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],

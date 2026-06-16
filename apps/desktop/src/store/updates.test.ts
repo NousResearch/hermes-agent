@@ -5,12 +5,20 @@ import type { DesktopUpdateStatus } from '@/global'
 const storage = new Map<string, string>()
 
 vi.mock('@/lib/storage', () => ({
+  persistBoolean: (key: string, value: boolean) => {
+    storage.set(key, String(value))
+  },
   persistString: (key: string, value: null | string) => {
     if (value === null) {
       storage.delete(key)
     } else {
       storage.set(key, value)
     }
+  },
+  storedBoolean: (key: string, fallback: boolean) => {
+    const value = storage.get(key)
+
+    return value === undefined ? fallback : value === 'true'
   },
   storedString: (key: string) => storage.get(key) ?? null
 }))

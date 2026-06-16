@@ -1637,8 +1637,6 @@ export const ja = defineLocale({
     unknown: '(不明)',
     search: 'プロバイダーとモデルをフィルター...',
     noModels: 'モデルが見つかりません。',
-    persistGlobalSession: 'グローバルに保持（それ以外はこのセッションのみ）',
-    persistGlobal: 'グローバルに保持',
     addProvider: 'プロバイダーを追加',
     loadFailed: 'モデルを読み込めませんでした',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',

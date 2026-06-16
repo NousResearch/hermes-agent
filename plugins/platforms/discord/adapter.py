@@ -1375,21 +1375,24 @@ class DiscordAdapter(BasePlatformAdapter):
         self._liveness_task = None
 
     async def cancel_background_tasks(self) -> None:
-        """Cancel background tasks, but first flush any pending text-batch sends.
+        """Cancel Discord-specific loops, then flush pending text-batch sends.
 
         The base-class implementation only cancels tasks in self._background_tasks.
-        Discord keeps its own _pending_text_batch_tasks dict for the message-merge
-        logic, and those tasks are NOT in _background_tasks. On shutdown/restart
-        this caused a race where in-flight response deliveries were cancelled before
-        Discord had a chance to actually send them, resulting in silent dropped
-        messages visible to the user as tool-log-only replies with no text.
+        Discord keeps its own _typing_tasks and _pending_text_batch_tasks dicts,
+        and those tasks are NOT in _background_tasks. On shutdown/restart this
+        caused typing loops to survive teardown and a race where in-flight
+        response deliveries were cancelled before Discord had a chance to
+        actually send them, resulting in silent dropped messages visible to the
+        user as tool-log-only replies with no text.
 
-        Fix: await all pending text-batch tasks before delegating to the base
-        cancel. The flush deadline is clamped below the gateway's per-adapter
-        disconnect budget (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``, default
-        5s) so the gateway's outer ``wait_for`` can't hard-cancel us mid-flush —
-        we cancel our own stragglers cleanly inside the budget instead.
+        Fix: drain typing loops, then await all pending text-batch tasks before
+        delegating to the base cancel. The flush deadline is clamped below the
+        gateway's per-adapter disconnect budget
+        (``HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT``, default 5s) so the
+        gateway's outer ``wait_for`` can't hard-cancel us mid-flush — we cancel
+        our own stragglers cleanly inside the budget instead.
         """
+        await self._cancel_typing_tasks(reason="shutdown")
         pending = list(self._pending_text_batch_tasks.values())
         if pending:
             logger.info(
@@ -1445,6 +1448,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
+        await self._cancel_typing_tasks(reason="disconnect")
         # Cancel the bot task before closing the client.  If connect() timed out
         # and returned False, the background client.start() task may still be
         # running; calling client.close() alone is not enough to stop it because
@@ -1481,6 +1485,41 @@ class DiscordAdapter(BasePlatformAdapter):
         self._release_platform_lock()
 
         logger.info("[%s] Disconnected", self.name)
+
+    async def _cancel_typing_tasks(self, reason: str = "cleanup") -> None:
+        """Cancel all persistent typing loops owned by this adapter.
+
+        Discord keeps typing indicators alive with per-channel background tasks.
+        Those tasks are not part of BasePlatformAdapter's message-processing
+        task registry, so shutdown/restart must drain them explicitly.
+        """
+        tasks = [(chat_id, task) for chat_id, task in self._typing_tasks.items()]
+        if not tasks:
+            return
+
+        self._typing_tasks.clear()
+        live_tasks = [task for _, task in tasks if not task.done()]
+        for task in live_tasks:
+            task.cancel()
+
+        if live_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*live_tasks, return_exceptions=True),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] %d Discord typing task(s) did not exit within 2s during %s",
+                    self.name,
+                    len([task for task in live_tasks if not task.done()]),
+                    reason,
+                )
+
+        logger.debug(
+            "[%s] Cleared %d Discord typing task(s) during %s",
+            self.name, len(tasks), reason,
+        )
 
     def _command_sync_state_path(self) -> _Path:
         from hermes_constants import get_hermes_home

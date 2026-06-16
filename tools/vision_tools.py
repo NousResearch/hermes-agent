@@ -39,7 +39,7 @@ from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 import sys
@@ -703,9 +703,17 @@ async def vision_analyze_tool(
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
         local_path = Path(os.path.expanduser(resolved_url))
+        if not local_path.is_file() and not local_path.is_absolute():
+            # Relative path that doesn't resolve from CWD — try HERMES_HOME
+            alt_path = get_hermes_home() / local_path
+            if alt_path.is_file():
+                logger.info("从 HERMES_HOME 找到图片: %s", alt_path)
+                local_path = alt_path
+            else:
+                logger.debug("HERMES_HOME 也未找到图片: %s", alt_path)
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
-            logger.info("Using local image file: %s", image_url)
+            logger.info("Using local image file: %s", local_path)
             temp_image_path = local_path
             should_cleanup = False  # Don't delete cached/local files
         elif str(image_url or "").startswith("data:"):

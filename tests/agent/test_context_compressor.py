@@ -943,7 +943,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
 
     def test_summary_failure_fallback_is_bounded(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=4)
 
         long_text = "important detail " * 2000
         msgs = [
@@ -961,7 +961,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
             result = c.compress(msgs)
 
         fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
-        assert len(fallback) <= 8300
+        assert len(fallback) <= 45000
         assert "deterministic fallback" in fallback
         assert "important detail" in fallback
 
@@ -1226,7 +1226,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4)
 
         # head_last=assistant, tail_first=assistant (same shape as the
         # existing consecutive-user test) → role resolves to "user".
@@ -1265,7 +1265,7 @@ class TestCompressWithClient:
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=4)
 
         # head_last=user → summary_role="assistant" (same setup as
         # test_summary_role_avoids_consecutive_user_when_head_ends_with_user).
@@ -1483,7 +1483,7 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=4)
 
         # Head: [system, user]        → last head = user
         # Tail: [assistant, user, assistant] → first tail = assistant

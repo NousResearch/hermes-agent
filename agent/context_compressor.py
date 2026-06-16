@@ -2192,7 +2192,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
     def _max_tail_messages_for_mode(self, *, deep: bool = False) -> int | None:
         if not deep:
-            return None
+            return self.protect_last_n
         return self._protect_last_n_for_mode(deep=True)
 
     # ------------------------------------------------------------------

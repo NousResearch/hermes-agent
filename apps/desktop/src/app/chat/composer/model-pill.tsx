@@ -1,7 +1,10 @@
 import { useStore } from '@nanostores/react'
+import { useState } from 'react'
 
+import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
@@ -32,13 +35,22 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
   const currentProvider = useStore($currentProvider)
   const fastMode = useStore($currentFastMode)
   const reasoningEffort = useStore($currentReasoningEffort)
+  const [open, setOpen] = useState(false)
 
+  // The model resolves a beat after the gateway/session comes up. Rather than
+  // flash a literal "No model", show a quiet loader (inherits the pill text
+  // color at half opacity) until a model lands.
   const label = (
     <>
-      <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+      {currentModel.trim() ? (
+        <span className="truncate">{formatModelStatusLabel(currentModel, { fastMode, reasoningEffort })}</span>
+      ) : (
+        <GlyphSpinner className="opacity-50" spinner="braille" />
+      )}
       <ChevronDown className="size-2.5 shrink-0 opacity-50" />
     </>
   )
+
   const title = currentProvider ? copy.modelTitle(currentProvider, currentModel || copy.modelNone) : copy.switchModel
 
   if (!model.modelMenuContent) {
@@ -58,14 +70,16 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={setOpen} open={open}>
       <DropdownMenuTrigger asChild>
         <Button aria-label={title} className={PILL} disabled={disabled} title={title} type="button" variant="ghost">
           {label}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
-        {model.modelMenuContent}
+        <ModelMenuCloseContext.Provider value={() => setOpen(false)}>
+          {model.modelMenuContent}
+        </ModelMenuCloseContext.Provider>
       </DropdownMenuContent>
     </DropdownMenu>
   )

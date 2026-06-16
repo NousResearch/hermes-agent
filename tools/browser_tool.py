@@ -3229,20 +3229,43 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 ),
             }, ensure_ascii=False)
 
-        # Convert screenshot to base64 at full resolution.
+        # Convert screenshot to base64, applying the same proactive embed cap
+        # that vision_tools uses.  Full-page screenshots (--full) can easily
+        # exceed provider limits (Anthropic: 5 MB / 8000px per side; Copilot:
+        # similar) — once baked into immutable history the session is bricked
+        # with non-retryable 400s.  Resize BEFORE embedding.
+        from tools.vision_tools import (
+            _build_native_vision_tool_result,
+            _should_use_native_vision_fast_path,
+            _resize_image_for_vision,
+            _image_exceeds_dimension,
+            _EMBED_TARGET_BYTES,
+            _EMBED_MAX_DIMENSION,
+        )
+
         _screenshot_bytes = screenshot_path.read_bytes()
         _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
         data_url = f"data:image/png;base64,{_screenshot_b64}"
+
+        # Proactive embed cap: resize if over byte OR dimension limit
+        _over_bytes = len(data_url) > _EMBED_TARGET_BYTES
+        _over_dims = _image_exceeds_dimension(screenshot_path, _EMBED_MAX_DIMENSION)
+        if _over_bytes or _over_dims:
+            logger.info(
+                "browser_vision: screenshot exceeds embed cap "
+                "(bytes_over=%s, dims_over=%s), auto-resizing...",
+                _over_bytes, _over_dims,
+            )
+            data_url = _resize_image_for_vision(
+                screenshot_path, mime_type="image/png",
+                max_base64_bytes=_EMBED_TARGET_BYTES,
+                max_dimension=_EMBED_MAX_DIMENSION,
+            )
 
         # Fast path: when native image routing is in effect for the active main
         # model, attach the screenshot directly instead of describing it through
         # an auxiliary vision LLM. The model inspects the pixels on its next
         # turn — no aux call, no information loss. Consistent with vision_analyze.
-        from tools.vision_tools import (
-            _build_native_vision_tool_result,
-            _should_use_native_vision_fast_path,
-        )
-
         if _should_use_native_vision_fast_path():
             native_result = _build_native_vision_tool_result(
                 image_url=str(screenshot_path),

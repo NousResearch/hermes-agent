@@ -393,6 +393,44 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_steer_mode_queues_media_events_to_preserve_attachments(self):
+        """Media-bearing events must queue because agent.steer() is text-only.
+
+        The queue path routes through _queue_or_replace_pending_event (the FIFO
+        infrastructure), so assert on the observable outcome: the full event —
+        with its media_urls/media_types intact — lands in the pending slot and
+        agent.steer() is never called.
+        """
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="please read this pdf")
+        event.message_type = MessageType.DOCUMENT
+        event.media_urls = ["/tmp/cached.pdf"]
+        event.media_types = ["application/pdf"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        agent.steer.assert_not_called()
+        agent.interrupt.assert_not_called()
+        # Full event queued with attachment metadata intact.
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].media_urls == ["/tmp/cached.pdf"]
+        assert adapter._pending_messages[sk].media_types == ["application/pdf"]
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content
+        assert "Steered" not in content
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
         runner, sentinel = _make_runner()

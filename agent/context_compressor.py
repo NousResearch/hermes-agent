@@ -176,6 +176,8 @@ _AUTO_FOCUS_MAX_CHARS = 700
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+_REGULAR_COMPRESS_TAIL_USER_TURNS = 2
+_DEEP_COMPRESS_TAIL_USER_TURNS = 3
 _DEEP_COMPRESS_TAIL_TOKEN_BUDGET = 12_000
 _DEEP_COMPRESS_TAIL_MESSAGES = 8
 
@@ -2034,11 +2036,50 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Safety: never go back into the head region.
         return max(last_user_idx, head_end + 1)
 
+    def _message_token_estimate_for_tail(self, msg: Dict[str, Any]) -> int:
+        """Cheap per-message token estimate used only for tail budgeting."""
+        raw_content = msg.get("content") or ""
+        msg_tokens = _content_length_for_budget(raw_content) // _CHARS_PER_TOKEN + 10
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                args = tc.get("function", {}).get("arguments", "")
+                msg_tokens += len(args) // _CHARS_PER_TOKEN
+        return msg_tokens
+
+    def _find_tail_cut_by_recent_user_turns(
+        self,
+        messages: List[Dict[str, Any]],
+        head_end: int,
+        *,
+        turn_count: int,
+    ) -> int | None:
+        """Return the start index for the last N user turns.
+
+        A turn starts at a real user message and includes assistant/tool
+        aftermath until the next user message. This mirrors the stronger
+        harness pattern used by OpenCode-style compaction: preserve recent
+        conversational turns, not an arbitrary count of individual messages.
+        """
+        if turn_count <= 0:
+            return None
+        found = 0
+        for i in range(len(messages) - 1, head_end - 1, -1):
+            msg = messages[i]
+            if msg.get("role") != "user":
+                continue
+            if self._is_context_summary_content(msg.get("content")):
+                continue
+            found += 1
+            if found >= turn_count:
+                return max(i, head_end + 1)
+        return None
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
         protect_last_n: int | None = None,
         max_tail_messages: int | None = None,
+        tail_user_turns: int | None = None,
     ) -> int:
         """Walk backward from the end of messages, accumulating tokens until
         the budget is reached. Returns the index where the tail starts.
@@ -2047,12 +2088,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         derived from ``summary_target_ratio * context_length``, so it
         scales automatically with the model's context window.
 
-        Token budget is the primary criterion.  A bounded message-count floor
-        keeps a short run of recent turns verbatim even when the budget is
-        exhausted, but the budget is allowed to exceed by up to 1.5x to avoid
-        cutting inside an oversized message (tool output, file read, etc.). If
-        even that floor exceeds 1.5x the budget, the cut is placed right after
-        the head so compression still runs.
+        Token budget is the primary criterion.  A bounded recent-user-turn
+        floor keeps the active tail semantically useful even when individual
+        message counts are misleading, and a small legacy message-count floor
+        preserves compatibility for unusual transcripts.  The budget is
+        allowed to exceed by up to 1.5x to avoid cutting inside an oversized
+        message (tool output, file read, etc.). If even that floor exceeds
+        1.5x the budget, the cut is placed right after the head so compression
+        still runs.
 
         Never cuts inside a tool_call/result group.  Always ensures the most
         recent user message is in the tail (see ``_ensure_last_user_message_in_tail``).
@@ -2061,6 +2104,8 @@ This compaction should PRIORITISE preserving all information related to the focu
             token_budget = self.tail_token_budget
         if protect_last_n is None:
             protect_last_n = self.protect_last_n
+        if tail_user_turns is None:
+            tail_user_turns = _REGULAR_COMPRESS_TAIL_USER_TURNS
         n = len(messages)
         # Hard minimum: always keep a bounded recent-message floor in the tail.
         # ``protect_last_n`` remains a minimum up to the cap; the cap avoids
@@ -2081,14 +2126,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = self._message_token_estimate_for_tail(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -2114,13 +2152,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_content = raw_msg.get("content") or ""
-                raw_len = _content_length_for_budget(raw_content)
-                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
-                for tc in raw_msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        raw_tok += len(args) // _CHARS_PER_TOKEN
+                raw_tok = self._message_token_estimate_for_tail(raw_msg)
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break
@@ -2133,6 +2165,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Ensure we protect at least min_tail messages
         fallback_cut = n - min_tail
         cut_idx = min(cut_idx, fallback_cut)
+
+        turn_cut = self._find_tail_cut_by_recent_user_turns(
+            messages,
+            head_end,
+            turn_count=tail_user_turns,
+        )
+        if turn_cut is not None:
+            cut_idx = min(cut_idx, turn_cut)
 
         # If the token budget would protect everything (small conversations),
         # force a cut after the head so compression can still remove middle turns.
@@ -2171,13 +2211,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         the protected head/tail.
         """
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
-        compress_end = self._find_tail_cut_by_tokens(
-            messages,
-            compress_start,
-            token_budget=self._tail_token_budget_for_mode(deep=deep),
-            protect_last_n=self._protect_last_n_for_mode(deep=deep),
-            max_tail_messages=self._max_tail_messages_for_mode(deep=deep),
-        )
+        compress_end = self._find_tail_cut_for_mode(messages, compress_start, deep=deep)
         return compress_start < compress_end
 
     def _tail_token_budget_for_mode(self, *, deep: bool = False) -> int:
@@ -2194,6 +2228,41 @@ This compaction should PRIORITISE preserving all information related to the focu
         if not deep:
             return self.protect_last_n
         return self._protect_last_n_for_mode(deep=True)
+
+    def _tail_user_turns_for_mode(self, *, deep: bool = False) -> int:
+        if not deep:
+            return _REGULAR_COMPRESS_TAIL_USER_TURNS
+        return _DEEP_COMPRESS_TAIL_USER_TURNS
+
+    def _find_tail_cut_for_mode(
+        self,
+        messages: List[Dict[str, Any]],
+        compress_start: int,
+        *,
+        deep: bool = False,
+        token_budget: int | None = None,
+        protect_last_n: int | None = None,
+    ) -> int:
+        """Find the mode-specific tail cut while preserving old test seams."""
+        try:
+            return self._find_tail_cut_by_tokens(
+                messages,
+                compress_start,
+                token_budget=(
+                    self._tail_token_budget_for_mode(deep=deep)
+                    if token_budget is None else token_budget
+                ),
+                protect_last_n=(
+                    self._protect_last_n_for_mode(deep=deep)
+                    if protect_last_n is None else protect_last_n
+                ),
+                max_tail_messages=self._max_tail_messages_for_mode(deep=deep),
+                tail_user_turns=self._tail_user_turns_for_mode(deep=deep),
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return self._find_tail_cut_by_tokens(messages, compress_start)
 
     # ------------------------------------------------------------------
     # Main compression entry point
@@ -2268,12 +2337,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(
+        compress_end = self._find_tail_cut_for_mode(
             messages,
             compress_start,
+            deep=deep,
             token_budget=tail_token_budget,
             protect_last_n=protect_last_n,
-            max_tail_messages=self._max_tail_messages_for_mode(deep=deep),
         )
 
         if compress_start >= compress_end:

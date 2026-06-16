@@ -192,6 +192,118 @@ class TestCompress:
         assert msgs[-2]["content"] in result[-2]["content"]
 
 
+class TestTurnAwareTail:
+    def _compressor(self, **kwargs):
+        defaults = {
+            "model": "test/model",
+            "threshold_percent": 0.85,
+            "protect_first_n": 0,
+            "protect_last_n": 8,
+            "quiet_mode": True,
+        }
+        defaults.update(kwargs)
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(**defaults)
+
+    def test_regular_tail_preserves_last_two_user_turns(self):
+        c = self._compressor(protect_last_n=8)
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "old user 1"},
+            {"role": "assistant", "content": "old assistant 1"},
+            {"role": "user", "content": "old user 2"},
+            {"role": "assistant", "content": "old assistant 2"},
+            {"role": "user", "content": "recent user A"},
+            {"role": "assistant", "content": "recent assistant A"},
+            {"role": "user", "content": "recent user B"},
+            {"role": "assistant", "content": "recent assistant B"},
+        ]
+
+        head_end = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=20,
+            protect_last_n=8,
+            max_tail_messages=8,
+            tail_user_turns=2,
+        )
+
+        assert cut <= 5
+        tail_contents = [m.get("content") for m in messages[cut:]]
+        assert "recent user A" in tail_contents
+        assert "recent assistant A" in tail_contents
+        assert "recent user B" in tail_contents
+        assert "recent assistant B" in tail_contents
+
+    def test_hard_message_cap_still_limits_turn_tail(self):
+        c = self._compressor(protect_last_n=5)
+        messages = [{"role": "system", "content": "System prompt"}]
+        for i in range(1, 7):
+            messages.extend([
+                {"role": "user", "content": f"user {i}"},
+                {"role": "assistant", "content": f"assistant {i}"},
+            ])
+
+        head_end = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=100000,
+            protect_last_n=5,
+            max_tail_messages=5,
+            tail_user_turns=2,
+        )
+
+        assert cut >= len(messages) - 5
+        assert len(messages) - cut <= 5
+
+    def test_turn_tail_does_not_split_tool_call_result_pair(self):
+        c = self._compressor(protect_last_n=8)
+        messages = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "old user"},
+            {"role": "assistant", "content": "old assistant"},
+            {"role": "user", "content": "recent user A"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_recent",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"cmd":"npm test"}'},
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_recent",
+                "content": "test output",
+            },
+            {"role": "assistant", "content": "recent assistant A"},
+            {"role": "user", "content": "recent user B"},
+            {"role": "assistant", "content": "recent assistant B"},
+        ]
+
+        head_end = c._align_boundary_forward(messages, c._protect_head_size(messages))
+        cut = c._find_tail_cut_by_tokens(
+            messages,
+            head_end,
+            token_budget=20,
+            protect_last_n=8,
+            max_tail_messages=8,
+            tail_user_turns=2,
+        )
+
+        assert cut == 3
+        tail = messages[cut:]
+        assert any(m.get("tool_call_id") == "call_recent" for m in tail)
+        assert any(
+            m.get("role") == "assistant"
+            and any(tc.get("id") == "call_recent" for tc in m.get("tool_calls") or [])
+            for m in tail
+        )
+
+
 class TestGenerateSummaryNoneContent:
     """Regression: content=None (from tool-call-only assistant messages) must not crash."""
 

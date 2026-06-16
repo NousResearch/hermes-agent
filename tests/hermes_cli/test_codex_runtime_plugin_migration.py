@@ -319,17 +319,14 @@ class TestMigrate:
         assert "no MCP servers" in text or "no MCP servers, plugins, or permissions" in text
 
     def test_no_servers_still_writes_permissions_default(self, tmp_path):
-        """Even with zero MCP servers, enabling the runtime should write the
-        default permissions profile so users don't get prompted on every
-        write attempt. This is the fix for quirk #2."""
+        """Even with zero MCP servers, enabling the runtime should write a
+        sandbox mode so users don't get prompted on every write attempt."""
         report = migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
         assert report.written
         text = (tmp_path / "config.toml").read_text()
-        # Codex's schema: top-level `default_permissions` keying a built-in
-        # profile name (prefixed with ":"). NOT a [permissions] section
-        # (which is for *user-defined* profiles with structured fields).
-        assert 'default_permissions = ":workspace"' in text
-        assert report.wrote_permissions_default == ":workspace"
+        assert 'sandbox_mode = "workspace-write"' in text
+        assert "default_permissions" not in text
+        assert report.wrote_permissions_default == "workspace-write"
 
     def test_explicit_none_permissions_skips_block(self, tmp_path):
         report = migrate({"mcp_servers": {"x": {"command": "y"}}},
@@ -575,8 +572,8 @@ class TestMigrate:
 
     def test_managed_root_keys_stay_top_level_when_config_ends_in_table(self, tmp_path):
         """TOML has no explicit 'leave current table' syntax. If Hermes appends
-        root keys like default_permissions after a user table such as [features],
-        Codex parses them as features.default_permissions and rejects the config.
+        root keys like sandbox_mode after a user table such as [features],
+        Codex parses them as features.sandbox_mode and rejects the config.
         The managed block must therefore be inserted before the first table."""
         import tomllib
 
@@ -590,8 +587,8 @@ class TestMigrate:
         migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
         new_text = target.read_text()
         parsed = tomllib.loads(new_text)
-        assert parsed["default_permissions"] == ":workspace"
-        assert "default_permissions" not in parsed["features"]
+        assert parsed["sandbox_mode"] == "workspace-write"
+        assert "sandbox_mode" not in parsed["features"]
         assert new_text.index(MIGRATION_MARKER) < new_text.index("[features]")
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):

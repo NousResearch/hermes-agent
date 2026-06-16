@@ -245,6 +245,28 @@ def build_turn_context(
             exc_info=True,
         )
 
+    # ── Ingest messages to durable store every turn ──
+    # Short conversations (especially WebUI) never hit compression threshold
+    # and never expire like Telegram sessions, so ingest unconditionally.
+    _ce = getattr(agent, "context_compressor", None)
+    if _ce is not None and hasattr(_ce, "ingest"):
+        try:
+            _ce.ingest(messages)
+            logger.debug(
+                "Per-turn ingest completed for session=%s msgs=%d",
+                getattr(_ce, "_session_id", "") or "(none)",
+                len(messages),
+            )
+        except Exception as _ingest_err:
+            logger.warning("Per-turn ingest failed for session=%s: %s",
+                           getattr(_ce, "_session_id", "") or "(none)", _ingest_err)
+    else:
+        logger.debug(
+            "Per-turn ingest skipped: context_compressor=%s has_ingest=%s",
+            type(_ce).__name__ if _ce else None,
+            hasattr(_ce, "ingest") if _ce else False,
+        )
+
     # ── Preflight context compression ──
     if (
         agent.compression_enabled

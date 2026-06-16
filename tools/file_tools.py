@@ -599,6 +599,27 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "the earlier read_file result in this conversation is "
     "still current — refer to that instead of re-reading."
 )
+_FEISHU_FILE_TOOL_BUDGET = 4
+
+
+def _is_feishu_low_token_platform(platform: str | None) -> bool:
+    return (platform or "").strip().lower() == "feishu"
+
+
+def _record_feishu_file_tool_call(task_data: dict, *, tool: str) -> str | None:
+    count = int(task_data.get("feishu_file_tool_count", 0) or 0) + 1
+    task_data["feishu_file_tool_count"] = count
+    if count > _FEISHU_FILE_TOOL_BUDGET:
+        return json.dumps({
+            "error": (
+                "BLOCKED: Feishu low-token file budget reached "
+                f"({_FEISHU_FILE_TOOL_BUDGET}/{_FEISHU_FILE_TOOL_BUDGET}) "
+                f"while calling {tool}. Summarize current findings or ask "
+                "the user to use `深诊断：<问题>` for one expanded turn."
+            ),
+            "recommendation": "Switch to execute_code for batched local diagnosis.",
+        }, ensure_ascii=False)
+    return None
 
 
 def _cap_read_tracker_data(task_data: dict) -> None:
@@ -868,10 +889,18 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 500,
+    task_id: str = "default",
+    platform: str | None = None,
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+        if _is_feishu_low_token_platform(platform):
+            limit = 120 if limit == 500 else min(limit, 200)
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
@@ -967,6 +996,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "read_history": set(), "dedup": {},
                 "dedup_hits": {}, "read_timestamps": {},
             })
+            if _is_feishu_low_token_platform(platform):
+                _budget_block = _record_feishu_file_tool_call(task_data, tool="read_file")
+                if _budget_block:
+                    return _budget_block
             # Backward-compat for pre-existing tracker entries that predate
             # dedup_hits/read_timestamps (long-lived task or crossed an
             # upgrade boundary).
@@ -1179,6 +1212,7 @@ def notify_other_tool_call(task_id: str = "default"):
             # progress, so clear per-key dedup hit counters too.
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
+            task_data["feishu_file_tool_count"] = 0
 
 
 def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
@@ -1519,9 +1553,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+                task_id: str = "default", platform: str | None = None) -> str:
     """Search for content or files."""
     try:
+        if _is_feishu_low_token_platform(platform):
+            if limit == 50:
+                limit = 20
+            else:
+                limit = min(limit, 20)
+            if output_mode == "content":
+                output_mode = "files_only"
         offset, limit = normalize_search_pagination(offset, limit)
 
         # Track searches to detect *consecutive* repeated search loops.
@@ -1540,6 +1581,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0, "read_history": set(),
             })
+            if _is_feishu_low_token_platform(platform):
+                _budget_block = _record_feishu_file_tool_call(task_data, tool="search_files")
+                if _budget_block:
+                    return _budget_block
             if task_data["last_key"] == search_key:
                 task_data["consecutive"] += 1
             else:
@@ -1704,7 +1749,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        platform=kw.get("platform"),
+    )
 
 
 def _handle_write_file(args, **kw):
@@ -1751,7 +1802,8 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
+        task_id=tid, platform=kw.get("platform"))
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)

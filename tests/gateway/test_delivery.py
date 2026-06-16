@@ -268,6 +268,28 @@ async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path
     assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
 
 
+@pytest.mark.asyncio
+async def test_explicit_ntfy_target_sets_publish_topic_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    ntfy = Platform("ntfy")
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={ntfy: adapter})
+    target = DeliveryTarget.parse("ntfy:alerts-channel")
+
+    await router._deliver_to_platform(target, "hello", metadata={"job_id": "nightly"})
+
+    assert adapter.calls == [
+        {
+            "chat_id": "alerts-channel",
+            "content": "hello",
+            "metadata": {
+                "job_id": "nightly",
+                "publish_topic": "alerts-channel",
+            },
+        }
+    ]
+
+
 class FailingAdapter:
     async def send(self, chat_id, content, metadata=None):
         return SendResult(success=False, error="route failed", retryable=False)

@@ -348,6 +348,14 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
+        if (
+            target.platform.value == "ntfy"
+            and target.chat_id
+        ):
+            # The ntfy live adapter prefers its configured publish topic over
+            # chat_id; make resolved delivery targets win, like send_message
+            # and the standalone ntfy sender do.
+            send_metadata["publish_topic"] = target.chat_id
         is_named_telegram_private_topic = False
         named_telegram_private_topic_name: Optional[str] = None
         if target.thread_id:

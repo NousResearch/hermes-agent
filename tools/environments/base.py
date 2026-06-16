@@ -866,13 +866,25 @@ class BaseEnvironment(ABC):
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
 
-        proc = self._run_bash(
-            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-        )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
-        self._update_cwd(result)
-
-        return result
+        proc = None
+        try:
+            proc = self._run_bash(
+                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+            )
+            result = self._wait_for_process(proc, timeout=effective_timeout)
+            self._update_cwd(result)
+            return result
+        except (KeyboardInterrupt, SystemExit):
+            # _wait_for_process has its own interrupt cleanup, but an async
+            # exception can land in the narrow window after _run_bash() returns
+            # a live subprocess and before _wait_for_process() installs its
+            # guard. Kill here as well so no process group survives that gap.
+            if proc is not None:
+                try:
+                    self._kill_process(proc)
+                except Exception:
+                    pass
+            raise
 
     # ------------------------------------------------------------------
     # Shared helpers

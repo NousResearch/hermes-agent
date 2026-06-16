@@ -740,12 +740,19 @@ class SessionStore:
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    for key, entry_data in data.items():
-                        try:
-                            self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
-                            # Skip entries with unknown/removed platform values
-                            continue
+                    if not isinstance(data, dict):
+                        print(
+                            f"[gateway] Warning: sessions.json has unexpected "
+                            f"type {type(data).__name__} (expected dict), "
+                            f"skipping load"
+                        )
+                    else:
+                        for key, entry_data in data.items():
+                            try:
+                                self._entries[key] = SessionEntry.from_dict(entry_data)
+                            except (ValueError, KeyError):
+                                # Skip entries with unknown/removed platform values
+                                continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 

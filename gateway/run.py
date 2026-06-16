@@ -7843,16 +7843,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from agent.skill_commands import (
                     get_skill_commands,
                     build_skill_invocation_message,
-                    resolve_skill_command_key,
+                    resolve_skill_command_key_with_debug,
                 )
-                skill_cmds = get_skill_commands()
-                cmd_key = resolve_skill_command_key(command)
+                cmd_key, command_debug = resolve_skill_command_key_with_debug(command)
                 if cmd_key is not None:
+                    skill_cmds = get_skill_commands()
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled
                     # list at scan time; per-platform overrides need checking
                     # here because the cache is process-global across platforms.
-                    _skill_name = skill_cmds[cmd_key].get("name", "")
+                    _skill_name = (skill_cmds.get(cmd_key) or {}).get("name", "")
                     _plat = source.platform.value if source.platform else None
                     if _plat and _skill_name:
                         from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
@@ -7883,11 +7883,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # built-ins (command may be an alias target set by the
                     # quick-command block above, so _cmd_def can be stale).
                     if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                        _platform = source.platform.value if source.platform else "?"
+                        _profile = (
+                            os.getenv("HERMES_PROFILE")
+                            or os.getenv("HERMES_PROFILE_NAME")
+                            or "unknown"
+                        )
                         logger.warning(
                             "Unrecognized slash command /%s from %s — "
-                            "replying with unknown-command notice",
+                            "replying with unknown-command notice "
+                            "command=%s platform=%s profile=%s cache_size=%s "
+                            "cache_generation=%s rescan_attempted=%s "
+                            "rescan_hit=%s drop_reason=%s",
                             command,
-                            source.platform.value if source.platform else "?",
+                            _platform,
+                            command_debug.get("command") or command,
+                            _platform,
+                            _profile,
+                            command_debug.get("cache_size"),
+                            command_debug.get("cache_generation"),
+                            command_debug.get("rescan_attempted"),
+                            command_debug.get("rescan_hit"),
+                            command_debug.get("drop_reason"),
                         )
                         return (
                             f"Unknown command `/{command}`. "

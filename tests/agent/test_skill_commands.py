@@ -335,6 +335,32 @@ class TestScanSkillCommands:
                 get_skill_commands()
             assert scan_spy.call_count == 0
 
+    def test_get_skill_commands_rescans_when_skill_tree_generation_changes(self, tmp_path):
+        """A non-empty cache must invalidate when the underlying skill tree changes."""
+        import agent.skill_commands as sc_mod
+        from agent.skill_commands import get_skill_commands
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_platform", None),
+            patch.object(sc_mod, "_skill_commands_generation", None),
+        ):
+            _make_skill(tmp_path, "old-skill")
+            initial = dict(get_skill_commands())
+            initial_generation = sc_mod._skill_commands_generation
+
+            assert "/old-skill" in initial
+            assert "/jnew" not in initial
+            assert initial_generation
+
+            _make_skill(tmp_path, "jnew")
+            refreshed = dict(get_skill_commands())
+
+            assert "/old-skill" in refreshed
+            assert "/jnew" in refreshed
+            assert sc_mod._skill_commands_generation != initial_generation
+
 
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
         """Skill names with +, /, or other special chars produce clean cmd keys."""

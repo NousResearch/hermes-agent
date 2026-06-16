@@ -4,6 +4,7 @@ Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
 can invoke skills via /skill-name commands.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
+_skill_commands_generation: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
@@ -139,6 +141,74 @@ def _resolve_skill_commands_platform() -> Optional[str]:
     except Exception:
         resolved_platform = os.getenv("HERMES_PLATFORM")
     return resolved_platform or None
+
+
+def _resolve_skill_commands_generation() -> str:
+    """Return a fingerprint for roots that feed the slash-command cache.
+
+    The cache is process-global and long-running gateways may outlive skill
+    installs or project ``skills.external_dirs`` changes.  Use a cheap
+    filesystem fingerprint so a non-empty cache can still invalidate when the
+    visible skill tree changes, without disabling the cache entirely.
+    """
+    digest = hashlib.sha256()
+    try:
+        from tools.skills_tool import SKILLS_DIR
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+
+        roots = []
+        roots.append(Path(SKILLS_DIR))
+        roots.extend(Path(root) for root in get_external_skills_dirs())
+
+        for root in roots:
+            try:
+                root_stat = root.stat()
+            except OSError:
+                digest.update(f"root:{root}:missing\n".encode("utf-8"))
+                continue
+
+            digest.update(
+                f"root:{root}:{root_stat.st_mtime_ns}:{root_stat.st_size}\n".encode(
+                    "utf-8"
+                )
+            )
+            try:
+                skill_files = iter_skill_index_files(root, "SKILL.md")
+                for skill_md in skill_files:
+                    if any(
+                        part in {".git", ".github", ".hub", ".archive"}
+                        for part in skill_md.parts
+                    ):
+                        continue
+                    try:
+                        skill_stat = skill_md.stat()
+                    except OSError:
+                        digest.update(f"skill:{skill_md}:missing\n".encode("utf-8"))
+                        continue
+                    digest.update(
+                        f"skill:{skill_md}:{skill_stat.st_mtime_ns}:{skill_stat.st_size}\n".encode(
+                            "utf-8"
+                        )
+                    )
+            except Exception as exc:
+                digest.update(f"root-scan-error:{root}:{type(exc).__name__}\n".encode("utf-8"))
+    except Exception as exc:
+        digest.update(f"generation-error:{type(exc).__name__}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _resolve_from_skill_commands(
+    command_name: str, commands: Dict[str, Dict[str, Any]]
+) -> Optional[str]:
+    cmd_key = f"/{command_name}"
+    if cmd_key in commands:
+        return cmd_key
+    alias_target = _PROJECT_WORKFLOW_ALIASES.get(command_name)
+    if alias_target:
+        alias_key = f"/{alias_target}"
+        return alias_key if alias_key in commands else None
+    return None
+
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -356,8 +426,9 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
+    global _skill_commands, _skill_commands_platform, _skill_commands_generation
     _skill_commands_platform = _resolve_skill_commands_platform()
+    _skill_commands_generation = _resolve_skill_commands_generation()
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
@@ -425,11 +496,15 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     Rescans when the active platform scope changes (e.g. a gateway
     process serving Telegram and Discord concurrently) so each platform
-    sees its own ``skills.platform_disabled`` view (#14536).
+    sees its own ``skills.platform_disabled`` view (#14536).  Also
+    invalidates a non-empty cache when the skill tree generation changes,
+    so long-running gateways see newly installed project skills.
     """
+    current_generation = _resolve_skill_commands_generation()
     if (
         not _skill_commands
         or _skill_commands_platform != _resolve_skill_commands_platform()
+        or _skill_commands_generation != current_generation
     ):
         scan_skill_commands()
     return _skill_commands
@@ -500,6 +575,58 @@ def reload_skills() -> Dict[str, Any]:
     }
 
 
+def resolve_skill_command_key_with_debug(
+    command: str,
+) -> tuple[Optional[str], Dict[str, Any]]:
+    """Resolve a slash skill command and return backend cache diagnostics."""
+    raw_command = command or ""
+    cmd_name = raw_command.strip().lstrip("/").lower().replace("_", "-")
+    debug: Dict[str, Any] = {
+        "command": cmd_name,
+        "cache_size": len(_skill_commands),
+        "cache_generation": _skill_commands_generation,
+        "rescan_attempted": False,
+        "rescan_hit": False,
+        "drop_reason": "empty_command" if not cmd_name else None,
+    }
+    if not cmd_name:
+        return None, debug
+
+    before_generation = _skill_commands_generation
+    current_generation = _resolve_skill_commands_generation()
+    commands = get_skill_commands()
+    resolved = _resolve_from_skill_commands(cmd_name, commands)
+    debug.update(
+        {
+            "cache_size": len(commands),
+            "cache_generation": _skill_commands_generation,
+            "generation_refresh": (
+                before_generation is not None
+                and before_generation != current_generation
+            ),
+        }
+    )
+    if resolved is not None:
+        debug["drop_reason"] = None
+        return resolved, debug
+
+    # Running gateways can retain a stale or failed skill-command cache. Rescan
+    # once before falling through to the generic unknown-command reply so newly
+    # added project workflow commands such as /jnew remain reachable.
+    commands = scan_skill_commands()
+    resolved = _resolve_from_skill_commands(cmd_name, commands)
+    debug.update(
+        {
+            "cache_size": len(commands),
+            "cache_generation": _skill_commands_generation,
+            "rescan_attempted": True,
+            "rescan_hit": resolved is not None,
+            "drop_reason": None if resolved is not None else "unknown_skill_command",
+        }
+    )
+    return resolved, debug
+
+
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical skill_cmds key.
 
@@ -510,32 +637,8 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     Returns the matching '/slug' key from get_skill_commands() or
     ``None`` if no match.
     """
-    if not command:
-        return None
-    cmd_name = command.strip().lstrip("/").lower().replace("_", "-")
-    if not cmd_name:
-        return None
-
-    def _resolve_from(commands):
-        cmd_key = f"/{cmd_name}"
-        if cmd_key in commands:
-            return cmd_key
-        alias_target = _PROJECT_WORKFLOW_ALIASES.get(cmd_name)
-        if alias_target:
-            alias_key = f"/{alias_target}"
-            return alias_key if alias_key in commands else None
-        return None
-
-    commands = get_skill_commands()
-    resolved = _resolve_from(commands)
-    if resolved is not None:
-        return resolved
-
-    # Running gateways can retain a stale or failed skill-command cache. Rescan
-    # once before falling through to the generic unknown-command reply so newly
-    # added project workflow commands such as /jnew remain reachable.
-    commands = scan_skill_commands()
-    return _resolve_from(commands)
+    resolved, _debug = resolve_skill_command_key_with_debug(command)
+    return resolved
 
 
 def build_skill_invocation_message(

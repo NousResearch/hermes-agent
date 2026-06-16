@@ -5,6 +5,7 @@ text, which often leads to silent failure (e.g. the model inventing a bogus
 delegate_task call instead of telling the user the command doesn't exist).
 """
 
+import logging
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -104,6 +105,40 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     assert "Unknown command" in result
     assert "/definitely-not-a-command" in result
     assert "/commands" in result
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_command_logs_cache_resolution_context(monkeypatch, caplog):
+    """Backend evidence should explain whether unknown-command came from stale cache."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "unknown slash command leaked through to the agent"
+        )
+    )
+
+    monkeypatch.setenv("HERMES_PROFILE", "main")
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    caplog.set_level(logging.WARNING, logger="gateway.run")
+
+    result = await runner._handle_message(_make_event("/definitely-not-a-command"))
+
+    assert result is not None
+    assert "Unknown command" in result
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "command=definitely-not-a-command" in logs
+    assert "platform=telegram" in logs
+    assert "profile=main" in logs
+    assert "cache_size=" in logs
+    assert "cache_generation=" in logs
+    assert "rescan_attempted=True" in logs
+    assert "rescan_hit=False" in logs
+    assert "drop_reason=unknown_skill_command" in logs
     runner._run_agent.assert_not_called()
 
 

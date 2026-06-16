@@ -193,6 +193,33 @@ def test_local_mode_defaults_to_home_and_can_jump_to_absolute_path(local_files_c
     assert other_listing.json()["entries"][0]["path"] == str(other / "other.txt")
 
 
+def test_gated_local_mode_still_defaults_to_home(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
+
+    prev_auth_required = getattr(web_server.app.state, "auth_required", None)
+    prev_bound_host = getattr(web_server.app.state, "bound_host", None)
+    web_server.app.state.auth_required = True
+    web_server.app.state.bound_host = "0.0.0.0"
+    try:
+        request = SimpleNamespace(
+            app=web_server.app,
+            client=SimpleNamespace(host="10.0.0.2"),
+            url=SimpleNamespace(hostname="example.com"),
+        )
+        policy = web_server._managed_files_policy(request, create_root=False)
+    finally:
+        _restore_app_state(prev_auth_required, prev_bound_host)
+
+    assert policy.default_path == home.resolve()
+    assert policy.locked_root is None
+    assert policy.can_change_path is True
+
+
 def test_local_mode_upload_read_mkdir_delete_roundtrip(local_files_client):
     client, home = local_files_client
     folder = home / "workspace"
@@ -225,6 +252,66 @@ def test_local_mode_upload_read_mkdir_delete_roundtrip(local_files_client):
     )
     assert deleted.status_code == 200
     assert not folder.exists()
+
+
+def _seed_file(client, root, name="out/hello.txt"):
+    file_path = root / name
+    created = client.post(
+        "/api/files/upload",
+        json={"path": str(file_path), "data_url": "data:text/plain;base64,aGVsbG8="},
+    )
+    assert created.status_code == 200
+    return file_path
+
+
+def test_download_returns_file_as_attachment(forced_files_client):
+    client, root = forced_files_client
+    file_path = _seed_file(client, root)
+
+    resp = client.get("/api/files/download", params={"path": str(file_path)})
+    assert resp.status_code == 200
+    assert resp.content == b"hello"
+    disposition = resp.headers["content-disposition"]
+    assert "attachment" in disposition
+    assert "hello.txt" in disposition
+
+
+def test_download_authenticates_via_query_token(forced_files_client):
+    client, root = forced_files_client
+    file_path = _seed_file(client, root)
+
+    # Drop the session header so only the ?token= query param authenticates —
+    # mirrors a browser/shell-opened download that can't set the session header.
+    del client.headers[web_server._SESSION_HEADER_NAME]
+
+    ok = client.get(
+        "/api/files/download",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+    )
+    assert ok.status_code == 200
+    assert ok.content == b"hello"
+
+    assert client.get(
+        "/api/files/download", params={"path": str(file_path), "token": "nope"}
+    ).status_code == 401
+    assert client.get(
+        "/api/files/download", params={"path": str(file_path)}
+    ).status_code == 401
+
+
+def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
+    client, root = forced_files_client
+    file_path = _seed_file(client, root)
+
+    del client.headers[web_server._SESSION_HEADER_NAME]
+
+    # The query-token escape hatch is scoped to /api/files/download only; it must
+    # not unlock the rest of the API surface.
+    leaked = client.get(
+        "/api/files/read",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+    )
+    assert leaked.status_code == 401
 
 
 def test_hosted_policy_locks_to_opt_data(monkeypatch):

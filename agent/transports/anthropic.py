@@ -186,10 +186,21 @@ class AnthropicTransport(ProviderTransport):
     def validate_response(self, response: Any) -> bool:
         """Check Anthropic response structure is valid.
 
-        An empty content list is legitimate when ``stop_reason == "end_turn"``
-        — the model's canonical way of signalling "nothing more to add" after
-        a tool turn that already delivered the user-facing text. Treating it
-        as invalid falsely retries a completed response.
+        An empty content list is legitimate for terminal stop reasons that
+        carry no text payload:
+
+        - ``end_turn`` — the model's canonical "nothing more to add" after a
+          tool turn that already delivered the user-facing text.
+        - ``refusal`` — the model declined to respond (Claude 4.5+). The
+          Messages API returns an empty ``content`` list with this stop
+          reason. Treating it as invalid sends a deterministic refusal into
+          the invalid-response retry loop, which reproduces the refusal on
+          every attempt and surfaces a misleading "rate limited / invalid
+          response" error instead of the refusal. ``normalize_response`` maps
+          ``refusal`` → ``content_filter`` so the agent loop's refusal handler
+          can surface it.
+
+        Treating either as invalid falsely retries a completed response.
         """
         if response is None:
             return False
@@ -197,7 +208,7 @@ class AnthropicTransport(ProviderTransport):
         if not isinstance(content_blocks, list):
             return False
         if not content_blocks:
-            return getattr(response, "stop_reason", None) == "end_turn"
+            return getattr(response, "stop_reason", None) in {"end_turn", "refusal"}
         return True
 
     def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:

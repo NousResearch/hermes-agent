@@ -354,6 +354,37 @@ def _apply_profile_override() -> None:
             return False
         return True
 
+    def _resolve_sudo_user_profile_env(name: str) -> str | None:
+        """Resolve `sudo hermes -p <name>` against the invoking user's home.
+
+        `_apply_profile_override()` runs before argparse, so `--run-as-user`
+        is not available yet. For sudo invocations, the best available signal
+        is SUDO_USER: root is only doing the privileged install/start action,
+        while the profile store normally belongs to the user who invoked sudo.
+        """
+        if name == "default":
+            return None
+        if not hasattr(os, "geteuid") or os.geteuid() != 0:
+            return None
+        sudo_user = os.environ.get("SUDO_USER", "").strip()
+        if not sudo_user or sudo_user == "root":
+            return None
+
+        try:
+            import pwd
+
+            home = Path(pwd.getpwnam(sudo_user).pw_dir)
+        except Exception:
+            return None
+
+        candidate = home / ".hermes" / "profiles" / name
+        try:
+            if candidate.is_dir():
+                return str(candidate)
+        except OSError:
+            return None
+        return None
+
     # 1. Check for explicit -p / --profile flag. Historically this worked even
     # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
     # The exception is command-argv passthrough regions such as `mcp add --args`.
@@ -421,8 +452,19 @@ def _apply_profile_override() -> None:
         if Path(hermes_home_env).parent.name == "profiles":
             return
 
-    # 2. If no flag, check active_profile in the hermes root
-    if profile_name is None:
+    # 2. If no flag, check active_profile in the hermes root.
+    #
+    # EXCEPTION: a supervised s6 gateway child (exported by the container
+    # run-script as HERMES_S6_SUPERVISED_CHILD=1) must NOT follow the sticky
+    # active_profile. Each supervised slot has a fixed profile identity: named
+    # slots pass ``-p <name>`` explicitly (handled in step 1 above), and the
+    # reserved ``gateway-default`` slot runs bare ``hermes gateway run`` to mean
+    # "the root HERMES_HOME profile". If the reserved default child read
+    # active_profile here, switching the active profile (e.g. via the dashboard)
+    # would silently redirect the default gateway into that profile — yielding a
+    # duplicate gateway for the active profile and no real default gateway. See
+    # the "Docker & Profiles & Dashboard" report.
+    if profile_name is None and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -441,7 +483,12 @@ def _apply_profile_override() -> None:
             from hermes_cli.profiles import resolve_profile_env
 
             hermes_home = resolve_profile_env(profile_name)
-        except (ValueError, FileNotFoundError) as exc:
+        except FileNotFoundError as exc:
+            hermes_home = _resolve_sudo_user_profile_env(profile_name)
+            if not hermes_home:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
+        except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         except Exception as exc:
@@ -8030,6 +8077,182 @@ def _run_pre_update_backup(args) -> None:
     print()
 
 
+def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
+    """Write a planned-stop marker into a specific profile home."""
+    try:
+        from datetime import timezone
+
+        from gateway.status import _get_process_start_time
+        from utils import atomic_json_write
+
+        record = {
+            "target_pid": pid,
+            "target_start_time": _get_process_start_time(pid),
+            "stopper_pid": os.getpid(),
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_json_write(
+            Path(profile_path) / ".gateway-planned-stop.json",
+            record,
+            indent=None,
+            separators=(",", ":"),
+        )
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
+def _wait_for_windows_update_gateway_exit(
+    pids: list[int], *, timeout: float
+) -> set[int]:
+    """Wait for the given gateway PIDs to exit, returning survivors."""
+    if not pids:
+        return set()
+
+    from gateway.status import _pid_exists
+
+    remaining = set(pids)
+    deadline = _time.monotonic() + max(timeout, 0.0)
+    while remaining and _time.monotonic() < deadline:
+        for pid in list(remaining):
+            try:
+                if not _pid_exists(pid):
+                    remaining.discard(pid)
+            except Exception:
+                remaining.discard(pid)
+        if remaining:
+            _time.sleep(0.25)
+
+    survivors: set[int] = set()
+    for pid in remaining:
+        try:
+            if _pid_exists(pid):
+                survivors.add(pid)
+        except Exception:
+            pass
+    return survivors
+
+
+def _pause_windows_gateways_for_update() -> dict | None:
+    """Stop running Windows gateways before mutating the checkout or venv.
+
+    Windows scheduled/startup gateways run through pythonw.exe, so the generic
+    hermes.exe concurrent-instance guard does not see them. They still import
+    from the checkout and can keep files locked while ``git`` or ``uv`` updates
+    the install. Stop only PIDs that the gateway discovery code identifies.
+    """
+    if not _is_windows():
+        return None
+
+    try:
+        from gateway.status import terminate_pid
+        from hermes_cli.gateway import (
+            _get_restart_drain_timeout,
+            find_gateway_pids,
+            find_profile_gateway_processes,
+        )
+    except Exception as exc:
+        logger.debug("Could not prepare Windows gateway pause for update: %s", exc)
+        return None
+
+    try:
+        running_pids = list(dict.fromkeys(find_gateway_pids(all_profiles=True)))
+    except Exception as exc:
+        logger.debug("Could not discover Windows gateway PIDs before update: %s", exc)
+        return None
+    if not running_pids:
+        return None
+
+    profile_processes = {}
+    try:
+        profile_processes = {
+            proc.pid: proc for proc in find_profile_gateway_processes()
+        }
+    except Exception as exc:
+        logger.debug("Could not map Windows gateway PIDs to profiles: %s", exc)
+
+    profiles: dict[str, int] = {}
+    mapped_pids = []
+    for pid in running_pids:
+        proc = profile_processes.get(pid)
+        if proc is None:
+            continue
+        profiles[str(proc.profile)] = int(pid)
+        mapped_pids.append(int(pid))
+        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+
+    print("→ Stopping Windows gateway process(es) before updating Hermes...")
+    try:
+        drain_timeout = max(float(_get_restart_drain_timeout()), 1.0)
+    except Exception:
+        drain_timeout = 10.0
+    survivors = _wait_for_windows_update_gateway_exit(
+        mapped_pids,
+        timeout=drain_timeout,
+    )
+    unmapped_pids = [pid for pid in running_pids if pid not in profile_processes]
+
+    force_killed = []
+    for pid in sorted(set(survivors).union(unmapped_pids)):
+        try:
+            terminate_pid(int(pid), force=True)
+            force_killed.append(int(pid))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    if profiles:
+        print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
+    if force_killed:
+        print(f"  → Force-stopped {len(force_killed)} gateway process(es)")
+
+    if unmapped_pids:
+        print(
+            f"  → Stopped {len(unmapped_pids)} gateway process(es) without profile mapping"
+        )
+        print("    Restart manually after update: hermes gateway run")
+
+    return {
+        "resume_needed": True,
+        "profiles": profiles,
+        "unmapped_pids": unmapped_pids,
+    }
+
+
+def _resume_windows_gateways_after_update(token: dict | None) -> None:
+    """Restart Windows profile gateways previously paused for update."""
+    if not token or not token.get("resume_needed"):
+        return
+    token["resume_needed"] = False
+    if not _is_windows():
+        return
+
+    profiles = token.get("profiles") or {}
+    if not profiles:
+        return
+
+    try:
+        from hermes_cli.gateway import launch_detached_profile_gateway_restart
+    except Exception as exc:
+        logger.debug("Could not load Windows gateway restart helper: %s", exc)
+        return
+
+    relaunched = []
+    for profile, old_pid in sorted(profiles.items()):
+        try:
+            if launch_detached_profile_gateway_restart(str(profile), int(old_pid)):
+                relaunched.append(str(profile))
+        except Exception as exc:
+            logger.debug(
+                "Could not restart Windows gateway profile %s after update: %s",
+                profile,
+                exc,
+            )
+
+    if relaunched:
+        print()
+        print(f"  ✓ Restarting Windows gateway profile(s): {', '.join(relaunched)}")
+
+
 def _discard_lockfile_churn(git_cmd, repo_root):
     """Restore tracked ``package-lock.json`` files that npm dirtied locally.
 
@@ -8047,10 +8270,16 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         )
         if diff.returncode != 0:
             return
+        dirty_package_dirs = {
+            Path(line.strip()).parent
+            for line in diff.stdout.splitlines()
+            if line.strip().endswith("package.json")
+        }
         dirty = [
             line.strip()
             for line in diff.stdout.splitlines()
             if line.strip().endswith("package-lock.json")
+            and Path(line.strip()).parent not in dirty_package_dirs
         ]
         if not dirty:
             return
@@ -8232,6 +8461,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
 
+    _windows_gateway_resume = _pause_windows_gateways_for_update()
+    if _windows_gateway_resume:
+        import atexit as _atexit
+
+        _atexit.register(
+            _resume_windows_gateways_after_update,
+            _windows_gateway_resume,
+        )
+
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
     use_zip_update = False
@@ -8294,7 +8532,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     if use_zip_update:
         # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
+        try:
+            _update_via_zip(args)
+        finally:
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
         return
 
     # Fetch and pull
@@ -8431,6 +8672,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     check=False,
                 )
             print("✓ Already up to date!")
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
             return
 
         print(f"→ Found {commit_count} new commit(s)")
@@ -9627,6 +9869,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
 
+        _resume_windows_gateways_after_update(_windows_gateway_resume)
+
         # Warn if legacy Hermes gateway unit files are still installed.
         # When both hermes.service (from a pre-rename install) and the
         # current hermes-gateway.service are enabled, they SIGTERM-fight
@@ -9860,19 +10104,20 @@ def cmd_profile(args):
 
         try:
             clone_from = getattr(args, "clone_from", None)
+            clone_config = clone or clone_from is not None
 
             profile_dir = create_profile(
                 name=name,
                 clone_from=clone_from,
                 clone_all=clone_all,
-                clone_config=clone,
+                clone_config=clone_config,
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
-            if clone or clone_all:
+            if clone_config or clone_all:
                 source_label = (
                     getattr(args, "clone_from", None) or get_active_profile_name()
                 )
@@ -9886,8 +10131,8 @@ def cmd_profile(args):
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."
                     )
 
-            # Auto-clone Honcho config for the new profile (only with --clone/--clone-all)
-            if clone or clone_all:
+            # Auto-clone Honcho config for the new profile (only with clone operations)
+            if clone_config or clone_all:
                 try:
                     from plugins.memory.honcho.cli import clone_honcho_for_profile
 
@@ -9896,10 +10141,10 @@ def cmd_profile(args):
                 except Exception:
                     pass  # Honcho plugin not installed or not configured
 
-            # Seed bundled skills (skip if --clone-all already copied them, or
-            # if --no-skills was passed — in which case seed_profile_skills()
-            # honors the marker file and returns skipped_opt_out=True).
-            if not clone_all:
+            # Seed bundled skills for fresh profiles only. Clone operations
+            # already copied the source profile's skills, including any
+            # user-installed or intentionally removed skills.
+            if not (clone_config or clone_all):
                 result = seed_profile_skills(profile_dir)
                 if result and result.get("skipped_opt_out"):
                     print(
@@ -10525,8 +10770,24 @@ def cmd_dashboard(args):
         if getattr(args, "skip_build", False):
             reexec_argv.append("--skip-build")
         env = os.environ.copy()
-        # Drop the profile HERMES_HOME so the child binds the machine root.
-        env.pop("HERMES_HOME", None)
+        # Pin the child to the machine ROOT, not the launching profile's
+        # HERMES_HOME.  We must resolve the root explicitly instead of just
+        # dropping HERMES_HOME: in the Docker layout the machine root is
+        # /opt/data (set via `ENV HERMES_HOME=/opt/data`), so an unset
+        # HERMES_HOME falls back to $HOME/.hermes = /opt/data/.hermes — an
+        # empty, auto-seeded home where the dashboard sees only the default
+        # profile and the install-method stamp is missing (so the Docker
+        # update-button guard also misfires).  get_default_hermes_root()
+        # returns the root for both layouts: ~/.hermes for a standard install
+        # and /opt/data for Docker (it strips a trailing profiles/<name>).
+        # See the support report for the double-mount workaround this avoids.
+        try:
+            from hermes_constants import get_default_hermes_root
+            env["HERMES_HOME"] = str(get_default_hermes_root())
+        except Exception:
+            # Best-effort: if root resolution fails, fall back to the prior
+            # behaviour (drop HERMES_HOME) rather than block the reroute.
+            env.pop("HERMES_HOME", None)
         # On Windows, os.execvpe() does not truly replace the process — it
         # spawns via CreateProcess then the parent exits.  Under Python 3.14+
         # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when

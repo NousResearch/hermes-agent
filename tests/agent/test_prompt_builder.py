@@ -20,6 +20,7 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -113,6 +114,18 @@ class TestScanContextContent:
 
 
 class TestTruncateContent:
+    @pytest.fixture(autouse=True)
+    def _reset_truncation_state(self, monkeypatch):
+        drain_truncation_warnings()
+
+        def default_load_config():
+            return {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", default_load_config)
+
+    def test_context_file_max_chars_default_matches_upstream_limit(self):
+        assert CONTEXT_FILE_MAX_CHARS == 20_000
+
     def test_short_content_unchanged(self):
         content = "Short content"
         result = _truncate_content(content, "test.md")
@@ -137,6 +150,73 @@ class TestTruncateContent:
         content = "x" * CONTEXT_FILE_MAX_CHARS
         result = _truncate_content(content, "exact.md")
         assert result == content
+
+    def test_configured_context_file_max_chars_controls_truncation(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "HEAD" + "x" * 160 + "TAIL"
+
+        result = _truncate_content(content, "config.md")
+
+        assert result != content
+        assert "truncated config.md" in result
+        assert "kept 84+24" in result
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+    def test_explicit_max_chars_overrides_config(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        result = _truncate_content(content, "explicit.md", max_chars=200)
+
+        assert result == content
+
+    def test_truncation_warning_points_to_config_key(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        _truncate_content("x" * 180, "warning.md")
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "context_file_max_chars" in warnings[0]
+        assert "CONTEXT_FILE_MAX_CHARS" not in warnings[0]
+
+    def test_warnings_isolated_across_contexts(self, monkeypatch):
+        """Truncation warnings accumulate per-context — a concurrent build in
+        a separate context must not see or drain this context's warnings."""
+        import contextvars
+
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        # Generate a warning in a fresh child context, then assert it did NOT
+        # leak into the parent context's accumulator.
+        def _child():
+            _truncate_content("x" * 180, "child.md")
+            # Inside the child context, the warning is visible & drainable.
+            assert any("child.md" in w for w in drain_truncation_warnings())
+
+        contextvars.copy_context().run(_child)
+
+        # Parent context never saw the child's warning.
+        assert drain_truncation_warnings() == []
+
+        # And a warning raised in the parent stays in the parent.
+        _truncate_content("y" * 180, "parent.md")
+        parent_warnings = drain_truncation_warnings()
+        assert len(parent_warnings) == 1
+        assert "parent.md" in parent_warnings[0]
 
 
 # =========================================================================
@@ -876,6 +956,23 @@ class TestPromptBuilderConstants:
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+
+    def test_telegram_hint_encourages_rich_markdown(self):
+        # Telegram Bot API 10.1 rich messages are default-on, so the hint must
+        # encourage native structured markdown instead of forbidding tables.
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+        assert "Telegram has NO table syntax" not in hint
+        assert "rich markdown" in lowered
+        assert "table" in lowered
+        assert "task list" in lowered
+        assert "math" in lowered
+        # Hint should proactively steer toward structured formatting, not just
+        # permit it: bullet + numbered lists for scannable, structured output.
+        assert "bullet" in lowered
+        assert "numbered" in lowered
+        # Local media delivery guidance must remain intact.
+        assert "include MEDIA:" in hint
 
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]

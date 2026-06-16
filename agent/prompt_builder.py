@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import contextvars
 from collections import OrderedDict
 from pathlib import Path
 
@@ -508,13 +509,22 @@ PLATFORM_HINTS = {
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Standard markdown is automatically converted to Telegram format. "
+        "Standard Markdown is automatically converted to Telegram formatting. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "
-        "Telegram has NO table syntax — prefer bullet lists or labeled "
-        "key: value pairs over pipe tables (any tables you do emit are "
-        "auto-rewritten into row-group bullets, which you can produce "
-        "directly for cleaner output). "
+        "Telegram now supports rich Markdown, so lean into it: whenever it "
+        "makes the answer clearer or easier to scan, actively reach for real "
+        "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "
+        "lists, task lists (`- [ ]` / `- [x]`), headings, nested blockquotes, "
+        "collapsible details, footnotes/references, math/formulas (`$...$`, "
+        "`$$...$$`), underline, subscript/superscript, marked (highlighted) "
+        "text, and anchors. Default to structured formatting over dense "
+        "paragraphs for any comparison, set of steps, key/value summary, or "
+        "tabular data. Prefer real Markdown tables and task lists over "
+        "hand-built bullet substitutes when presenting structured data; these "
+        "degrade gracefully (tables become readable bullet groups) when rich "
+        "rendering is unavailable, but advanced constructs like math and "
+        "collapsible details may render as plain source text in that case. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -949,6 +959,52 @@ CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
 
+def _get_context_file_max_chars() -> int:
+    """Return the configured context-file truncation limit.
+
+    ``CONTEXT_FILE_MAX_CHARS`` remains the upstream-compatible default and
+    fallback. Users with larger context windows can raise
+    ``context_file_max_chars`` in config.yaml without patching Hermes.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        val = load_config().get("context_file_max_chars")
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+    except Exception as e:
+        logger.debug("Could not read context_file_max_chars from config: %s", e)
+    return CONTEXT_FILE_MAX_CHARS
+
+# Collect truncation warnings so the caller (run_agent) can surface them.
+# A ContextVar (not a module-global list) isolates accumulation per thread /
+# per async task, so concurrent gateway-session prompt builds can't drain or
+# clear each other's pending warnings (cross-session leak). Each build runs in
+# its own context, collects its own warnings, and drains them synchronously.
+_truncation_warnings: "contextvars.ContextVar[Optional[list]]" = contextvars.ContextVar(
+    "context_file_truncation_warnings", default=None
+)
+
+
+def _record_truncation_warning(msg: str) -> None:
+    """Append a truncation warning to the current context's accumulator."""
+    warnings = _truncation_warnings.get()
+    if warnings is None:
+        warnings = []
+        _truncation_warnings.set(warnings)
+    warnings.append(msg)
+
+
+def drain_truncation_warnings() -> list:
+    """Return and clear any truncation warnings accumulated in this context."""
+    warnings = _truncation_warnings.get()
+    if not warnings:
+        return []
+    drained = list(warnings)
+    warnings.clear()
+    return drained
+
+
 # =========================================================================
 # Skills prompt cache
 # =========================================================================
@@ -1155,7 +1211,7 @@ def build_skills_system_prompt(
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
-    disabled = get_disabled_skill_names()
+    disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1454,10 +1510,19 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Context files (SOUL.md, AGENTS.md, .cursorrules)
 # =========================================================================
 
-def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
+def _truncate_content(content: str, filename: str, max_chars: Optional[int] = None) -> str:
     """Head/tail truncation with a marker in the middle."""
+    if max_chars is None:
+        max_chars = _get_context_file_max_chars()
     if len(content) <= max_chars:
         return content
+    msg = (
+        f"⚠️  Context file {filename} TRUNCATED: "
+        f"{len(content)} chars exceeds limit of {max_chars} — "
+        f"increase context_file_max_chars or trim the file!"
+    )
+    logger.warning(msg)
+    _record_truncation_warning(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     head = content[:head_chars]

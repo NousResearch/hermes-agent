@@ -847,6 +847,41 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_keeps_reasoning_only_assistant_turn():
+    # A thinking-only assistant turn (reasoning present, no visible text) is
+    # persisted and recallable, but was dropped from the resumed session view
+    # as "empty" -- so it vanished while the agent could still recall it from
+    # the transcript. Keep it (with reasoning) so the desktop "Thinking…"
+    # disclosure renders. (#44022)
+    history = [
+        {"role": "user", "content": "think about this"},
+        {"role": "assistant", "content": "", "reasoning": "step-by-step thoughts"},
+        {"role": "assistant", "content": "here is the answer"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "think about this"},
+        {"role": "assistant", "text": "", "reasoning": "step-by-step thoughts"},
+        {"role": "assistant", "text": "here is the answer"},
+    ]
+
+
+def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
+    # A genuinely empty assistant turn (no text, no reasoning, no tool calls)
+    # remains filtered out -- the fix only spares reasoning-bearing turns.
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "reasoning": ""},
+        {"role": "assistant", "content": "   "},
+        {"role": "assistant", "content": "real reply"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "real reply"},
+    ]
+
+
 def test_history_to_messages_renders_multimodal_content():
     # bb/gui preserves image URLs in the resume payload so the desktop
     # renderer's extractEmbeddedImages can pull them back out and display
@@ -905,7 +940,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         lambda agent, *a: {"model": "test", "tools": {}, "skills": {}},
     )
     monkeypatch.setattr(
-        server, "_init_session", lambda sid, key, agent, history, cols=80: None
+        server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None
     )
 
     resp = server.handle_request(
@@ -948,7 +983,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     monkeypatch.setattr(server, "_make_agent", fake_make_agent)
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
 
-    def fake_init_session(sid, key, agent, history, cols=80):
+    def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
         server._sessions[sid] = {"agent": agent, "session_key": key}
 
     monkeypatch.setattr(server, "_init_session", fake_init_session)
@@ -969,6 +1004,160 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert captured["service_tier_override"] == "priority"
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
+
+
+def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
+    target = "stored-profile-session"
+    launch_cwd = tmp_path / "launch"
+    profile_cwd = tmp_path / "worker"
+    profile_home = tmp_path / "profiles" / "worker"
+    launch_cwd.mkdir()
+    profile_cwd.mkdir()
+    profile_home.mkdir(parents=True)
+    captured = {}
+
+    class ProfileDB:
+        def get_session(self, _target):
+            return {"id": target, "cwd": str(profile_cwd)}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def reopen_session(self, _target):
+            captured["reopened"] = _target
+
+        def get_messages_as_conversation(self, _target, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+        def update_session_cwd(self, *_args):
+            raise AssertionError("profile row already has cwd")
+
+    class LaunchDB:
+        def get_session(self, _target):
+            return {"id": target, "cwd": str(launch_cwd)}
+
+        def update_session_cwd(self, *_args):
+            captured["launch_update"] = True
+
+    profile_db = ProfileDB()
+    launch_db = LaunchDB()
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured["agent_db"] = session_db
+        return types.SimpleNamespace(model="test/model")
+
+    monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
+    monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr(server, "_get_db", lambda: launch_db)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, session=None: {"cwd": session.get("cwd") if session else ""},
+    )
+
+    import tools.approval as approval
+
+    monkeypatch.setattr(approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.resume",
+                "params": {"session_id": target, "profile": "worker"},
+            }
+        )
+
+        assert "error" not in resp
+        sid = resp["result"]["session_id"]
+        assert captured["agent_db"] is profile_db
+        assert server._sessions[sid]["cwd"] == str(profile_cwd)
+        assert resp["result"]["info"]["cwd"] == str(profile_cwd)
+        assert "launch_update" not in captured
+    finally:
+        server._sessions.clear()
+
+
+def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_path):
+    target = "stored-profile-session"
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    new_cwd = tmp_path / "new-workspace"
+    new_cwd.mkdir()
+    captured = {}
+
+    class ProfileDB:
+        def update_session_cwd(self, session_id, cwd):
+            captured["profile_update"] = (session_id, cwd)
+
+        def close(self):
+            captured["profile_closed"] = True
+
+    class LaunchDB:
+        def update_session_cwd(self, *_args):
+            captured["launch_update"] = True
+
+    profile_db = ProfileDB()
+
+    import tools.terminal_tool as terminal_tool
+
+    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
+    monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+
+    session = {"session_key": target, "profile_home": str(profile_home)}
+    assert server._set_session_cwd(session, str(new_cwd)) == str(new_cwd)
+    assert session["cwd"] == str(new_cwd)
+    assert session["explicit_cwd"] is True
+    assert captured["profile_update"] == (target, str(new_cwd))
+    assert captured["profile_closed"] is True
+    assert "launch_update" not in captured
+
+
+def test_stored_session_runtime_overrides_skips_bare_billing_provider():
+    """A bare billing bucket ("custom"/"auto"/"openrouter") must not be restored as the
+    provider identity on resume. A custom endpoint that never used `/model` persists only
+    `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
+    configured" (agent_init treats it as non-routable). A real provider, or an explicit
+    `model_config.provider`, is still restored.
+    """
+    # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
+    ov = server._stored_session_runtime_overrides({"model": "my-model", "billing_provider": "custom"})
+    assert "provider_override" not in ov
+    assert ov["model_override"]["provider"] is None
+
+    for bare in ("auto", "openrouter", "custom"):
+        ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": bare})
+        assert "provider_override" not in ov
+
+    # A real provider in billing_provider is still restored.
+    ov = server._stored_session_runtime_overrides({"model": "m", "billing_provider": "anthropic"})
+    assert ov["provider_override"] == "anthropic"
+    assert ov["model_override"]["provider"] == "anthropic"
+
+    # An explicit routable provider in model_config wins over the bare billing bucket.
+    ov = server._stored_session_runtime_overrides(
+        {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
+    )
+    assert ov["provider_override"] == "custom:myendpoint"
+    assert ov["model_override"]["provider"] == "custom:myendpoint"
 
 
 def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
@@ -1662,8 +1851,10 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, cwd=None):
-            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
@@ -1671,7 +1862,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
 
     assert created == [
-        {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
+        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": str(tmp_path)}
     ]
 
 
@@ -1681,15 +1872,74 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, cwd=None):
-            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
-    assert created == [{"key": "k1", "source": "tui", "model": "test-model", "cwd": None}]
+    assert created == [
+        {"key": "k1", "source": "tui", "model": "test-model", "model_config": None, "cwd": None}
+    ]
+
+
+def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
+    """The session's composer pick (model + effort + fast) must own the DB row.
+
+    Regression for the "switched to gpt-5.5, reconnect snapped back to opus"
+    bug: the row was created with the global default and won the INSERT-OR-IGNORE
+    race, so resume rebuilt from the global model and silently reverted the
+    chat. The override model + a model_config carrying provider/reasoning/
+    service_tier must be persisted so session.resume restores all three.
+    """
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
+
+    server._ensure_session_db_row(
+        {
+            "session_key": "k1",
+            "model_override": {"model": "openai/gpt-5.5", "provider": "openrouter"},
+            "create_reasoning_override": {"effort": "high"},
+            "create_service_tier_override": "priority",
+        }
+    )
+
+    assert len(created) == 1
+    row = created[0]
+    assert row["model"] == "openai/gpt-5.5"
+    assert row["model_config"]["model"] == "openai/gpt-5.5"
+    assert row["model_config"]["provider"] == "openrouter"
+    assert row["model_config"]["reasoning_config"] == {"effort": "high"}
+    assert row["model_config"]["service_tier"] == "priority"
+
+
+def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
+    """A chat that made no explicit pick falls back to the global model and
+    writes no model_config (so it tracks the profile default)."""
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append({"model": model, "model_config": model_config})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "global/default")
+
+    server._ensure_session_db_row({"session_key": "k1", "model_override": None})
+
+    assert created == [{"model": "global/default", "model_config": None}]
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):
@@ -2847,6 +3097,94 @@ def test_config_set_model_global_persists(monkeypatch):
     assert saved["model"]["base_url"] == "https://api.anthropic.com"
 
 
+def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):
+    seen = {"build": 0, "wait": 0, "requested": []}
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+
+    def fake_runtime_provider(*, requested=None, target_model=None, **_kwargs):
+        seen["requested"].append((requested, target_model))
+        if requested is None:
+            raise RuntimeError("broken default provider should not be initialized")
+        if requested == "anthropic":
+            return {
+                "api_key": "sk-anthropic",
+                "api_mode": "anthropic_messages",
+                "base_url": "https://api.anthropic.com",
+            }
+        raise RuntimeError(f"unexpected provider {requested}")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
+
+        assert resp["result"]["value"] == "claude-sonnet-4-6"
+        assert seen["build"] == 0
+        assert seen["wait"] == 0
+        assert seen["requested"] == [("anthropic", "claude-sonnet-4.6")]
+        assert session["model_override"]["provider"] == "anthropic"
+        assert session["model_override"]["model"] == "claude-sonnet-4-6"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_model_explicit_provider_surfaces_selected_provider_errors(monkeypatch):
+    seen = {"build": 0, "wait": 0}
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"default": "broken/model", "provider": "openrouter"}})
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_args: seen.__setitem__("build", seen["build"] + 1))
+    monkeypatch.setattr(server, "_wait_agent", lambda *_args: seen.__setitem__("wait", seen["wait"] + 1))
+
+    def fake_runtime_provider(*, requested=None, **_kwargs):
+        if requested is None:
+            raise RuntimeError("broken default provider should not be initialized")
+        if requested == "anthropic":
+            raise RuntimeError("missing anthropic API key")
+        raise RuntimeError(f"unexpected provider {requested}")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_runtime_provider)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 5001
+        assert "anthropic" in resp["error"]["message"].lower()
+        assert "missing anthropic api key" in resp["error"]["message"].lower()
+        assert seen["build"] == 0
+        assert seen["wait"] == 0
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_model_does_not_leak_inference_provider_env(monkeypatch):
     """A /model switch must NOT mutate process-global env vars. The desktop /
     dashboard tui_gateway backend hosts every same-profile session in one
@@ -2988,12 +3326,39 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         provider = "openai-codex"
         base_url = ""
         api_key = ""
+        session_id = "sid"
+        _cached_system_prompt = "Model: gpt-5.3-codex\nProvider: openai-codex"
 
         def switch_model(self, **kwargs):
             self.model = kwargs["new_model"]
             self.provider = kwargs["new_provider"]
 
+        def _build_system_prompt(self, _system_message=None):
+            return f"Model: {self.model}\nProvider: {self.provider}"
+
+    class SessionDB:
+        def __init__(self):
+            self.model_config = None
+            self.system_prompt = None
+            self.messages = []
+
+        def get_session(self, _session_id):
+            return {"model_config": self.model_config}
+
+        def update_session_meta(self, _session_id, model_config_json, _model=None):
+            self.model_config = model_config_json
+
+        def update_system_prompt(self, _session_id, system_prompt):
+            self.system_prompt = system_prompt
+
+        def append_message(self, session_id, role, content=None, **_kwargs):
+            self.messages.append(
+                {"session_id": session_id, "role": role, "content": content}
+            )
+
     agent = Agent()
+    db = SessionDB()
+    agent._session_db = db
     session = _session(agent=agent)
     server._sessions["sid"] = session
     monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
@@ -3035,6 +3400,21 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         # ...override recorded on the session...
         assert session["model_override"]["model"] == "anthropic/claude-sonnet-4.6"
         assert session["model_override"]["provider"] == "anthropic"
+        # ...the persisted prompt snapshot tracks the new runtime identity too.
+        # Without this, the next turn restored the old system prompt from the DB:
+        # API calls went to the new model, but "what model are you?" still read
+        # "Model: old/model" from the stored prompt.
+        assert db.system_prompt == (
+            "Model: anthropic/claude-sonnet-4.6\nProvider: anthropic"
+        )
+        assert agent._cached_system_prompt == db.system_prompt
+        assert session["history"][-1]["role"] == "system"
+        assert "changed to anthropic/claude-sonnet-4.6" in session["history"][-1]["content"]
+        assert db.messages[-1] == {
+            "session_id": "session-key",
+            "role": "system",
+            "content": session["history"][-1]["content"],
+        }
         # ...and the shared process env was NOT touched.
         assert os.environ["HERMES_TUI_PROVIDER"] == "openai-codex"
         assert "HERMES_MODEL" not in os.environ
@@ -4624,33 +5004,45 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     )
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
-    resp = server.handle_request(
-        {
-            "id": "1",
-            "method": "session.create",
-            "params": {"cols": 80},
-        }
-    )
-    sid = resp["result"]["session_id"]
+    # Isolate from sibling-test leakage: daemon build threads from prior
+    # session.create tests in the same shard process mutate the shared
+    # ``server._sessions`` dict under ``_sessions_lock`` and can replace/pop
+    # entries mid-run, which would flip this build thread's ``replaced`` check
+    # to True and trigger a spurious unregister. Snapshot, clear, and restore
+    # so this test sees only its own session regardless of shard composition.
+    _saved_sessions = dict(server._sessions)
+    server._sessions.clear()
 
-    # Wait for the build to finish (ready event inside session dict).
-    session = server._sessions[sid]
-    session["agent_ready"].wait(timeout=2.0)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.create",
+                "params": {"cols": 80},
+            }
+        )
+        sid = resp["result"]["session_id"]
 
-    # Build finished without a close race — nothing should have been
-    # cleaned up by the orphan check.
-    assert (
-        closed_workers == []
-    ), f"build thread closed its own worker despite no race: {closed_workers}"
-    assert (
-        unregistered_keys == []
-    ), f"build thread unregistered its own notify despite no race: {unregistered_keys}"
+        # Wait for the build to finish (ready event inside session dict).
+        session = server._sessions[sid]
+        built = session["agent_ready"].wait(timeout=10.0)
+        assert built, "agent build did not complete within timeout"
 
-    # Session should have the live worker installed.
-    assert session.get("slash_worker") is not None
+        # Build finished without a close race — nothing should have been
+        # cleaned up by the orphan check.
+        assert (
+            closed_workers == []
+        ), f"build thread closed its own worker despite no race: {closed_workers}"
+        assert (
+            unregistered_keys == []
+        ), f"build thread unregistered its own notify despite no race: {unregistered_keys}"
 
-    # Cleanup
-    server._sessions.pop(sid, None)
+        # Session should have the live worker installed.
+        assert session.get("slash_worker") is not None
+    finally:
+        # Cleanup + restore sibling sessions we snapshotted.
+        server._sessions.clear()
+        server._sessions.update(_saved_sessions)
 
 
 def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
@@ -6463,7 +6855,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
         # Should have triggered an agent turn
         assert len(turns) == 1
-        assert "[IMPORTANT: Background process proc_poller_test completed" in turns[0]
+        assert "[IMPORTANT: Background process proc_poller_test completed normally" in turns[0]
     finally:
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():
@@ -6651,6 +7043,8 @@ def test_notification_event_dedup_key_preserves_distinct_watch_matches():
 
 def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     """Distinct watch matches from one process emit; exact replay is deduped."""
+    import queue as _queue_mod
+
     from tools.process_registry import process_registry
 
     turns = []
@@ -6666,8 +7060,8 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
     monkeypatch.setattr(server, "_run_prompt_submit", _fake_run_prompt_submit)
 
-    while not process_registry.completion_queue.empty():
-        process_registry.completion_queue.get_nowait()
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
 
     base = {
         "type": "watch_match",
@@ -6677,9 +7071,9 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
         "output": "READY on port 8000",
         "suppressed": 0,
     }
-    process_registry.completion_queue.put(base)
-    process_registry.completion_queue.put({**base, "output": "READY on port 9000"})
-    process_registry.completion_queue.put(dict(base))
+    isolated_queue.put(base)
+    isolated_queue.put({**base, "output": "READY on port 9000"})
+    isolated_queue.put(dict(base))
 
     stop = threading.Event()
     stop.set()
@@ -7204,5 +7598,99 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
     try:
         server._reap_idle_sessions()
         assert closed == [("stale", "idle_timeout")]
+    finally:
+        server._sessions.clear()
+
+
+def test_session_create_records_ui_model_as_session_override(monkeypatch):
+    """The desktop composer owns its model as plain UI state and ships it on
+    session.create. The gateway must record it as a PER-SESSION override (built
+    into the agent), never a global config write — picking a model for a new chat
+    must not mutate the profile default.
+    """
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    # Don't run the real deferred build in this storage-focused test.
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    try:
+        resp = server._methods["session.create"](
+            "r1",
+            {
+                "cols": 80,
+                "model": "claude-sonnet-4.6",
+                "provider": "anthropic",
+                "reasoning_effort": "high",
+                "fast": True,
+            },
+        )
+        sid = resp["result"]["session_id"]
+        sess = server._sessions[sid]
+        assert sess["model_override"] == {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+        assert sess["create_reasoning_override"] is not None
+        assert sess["create_service_tier_override"] == "priority"
+        # The immediate response reflects the override (not the global default) so
+        # the client never clobbers its sticky pick before the build lands.
+        assert resp["result"]["info"]["model"] == "claude-sonnet-4.6"
+        assert resp["result"]["info"]["provider"] == "anthropic"
+
+        # No knobs → no overrides; the session builds from the profile default.
+        plain = server._methods["session.create"]("r2", {"cols": 80})
+        plain_sess = server._sessions[plain["result"]["session_id"]]
+        assert plain_sess["model_override"] is None
+        assert plain_sess["create_reasoning_override"] is None
+        assert plain_sess["create_service_tier_override"] is None
+    finally:
+        server._sessions.clear()
+
+
+def test_start_agent_build_passes_session_model_override(monkeypatch):
+    """A model staged on the session (e.g. by session.create from the desktop
+    composer) must reach _make_agent so the first build runs on it directly —
+    no global config, no build-then-switch.
+    """
+    captured = {}
+
+    class FakeWorker:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def close(self):
+            pass
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model="claude-sonnet-4.6")
+
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", FakeWorker)
+    monkeypatch.setattr(server, "_attach_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_probe_config_health", lambda *_a: None)
+
+    sid = "build-sid"
+    override = {"model": "claude-sonnet-4.6", "provider": "anthropic"}
+    reasoning = {"enabled": True, "effort": "high"}
+    session = {
+        "agent": None,
+        "agent_ready": threading.Event(),
+        "session_key": "k1",
+        "profile_home": None,
+        "model_override": override,
+        "create_reasoning_override": reasoning,
+        "create_service_tier_override": "priority",
+    }
+    server._sessions[sid] = session
+    try:
+        server._start_agent_build(sid, session)
+        assert session["agent_ready"].wait(timeout=3), "agent build did not finish"
+        assert captured.get("model_override") == override
+        assert captured.get("reasoning_config_override") == reasoning
+        assert captured.get("service_tier_override") == "priority"
+        assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()

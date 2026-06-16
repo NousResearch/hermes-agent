@@ -15,12 +15,13 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // flag MUST sit in the query string BEFORE the '#': anything after the '#' is
 // treated as the route by HashRouter and would break routeSessionId(). The
 // renderer reads the flag from window.location.search to suppress the install /
-// onboarding overlays and the global session sidebar. `watch=1` marks a
-// spectator window (e.g. a running subagent's session): the renderer resumes
-// it lazily so the gateway never builds an agent just to stream into it.
-function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch } = {}) {
-  const query = `?win=secondary${watch ? '&watch=1' : ''}`
-  const route = `#/${encodeURIComponent(sessionId)}`
+// onboarding overlays and the global session sidebar. `new=1` marks the compact
+// scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
+// session): the renderer resumes it lazily so the gateway never builds an agent
+// just to stream into it.
+function buildSessionWindowUrl(sessionId, { devServer, rendererIndexPath, watch, newSession } = {}) {
+  const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
+  const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer

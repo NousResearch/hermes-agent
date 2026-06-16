@@ -20,6 +20,7 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "SILENT",
     "NO_REPLY",
     "NO REPLY",
+    "(silence)",
 })
 
 

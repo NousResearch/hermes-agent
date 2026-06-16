@@ -1,5 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
 
+from unittest.mock import patch
+
 import pytest
 from fastapi import HTTPException
 
@@ -48,6 +50,37 @@ def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_prof
     assert cron_jobs.CRON_DIR == old_cron_dir
     assert cron_jobs.JOBS_FILE == old_jobs_file
     assert cron_jobs.OUTPUT_DIR == old_output_dir
+
+
+def test_call_cron_scheduler_for_profile_routes_home_and_restores_globals(isolated_profiles):
+    from cron import jobs as cron_jobs
+    from cron import scheduler as cron_scheduler
+    from hermes_cli import web_server
+
+    observed = {}
+    old_cron_dir = cron_jobs.CRON_DIR
+    old_jobs_file = cron_jobs.JOBS_FILE
+    old_output_dir = cron_jobs.OUTPUT_DIR
+    old_scheduler_home = cron_scheduler._hermes_home
+
+    def fake_tick():
+        observed["cron_dir"] = cron_jobs.CRON_DIR
+        observed["jobs_file"] = cron_jobs.JOBS_FILE
+        observed["output_dir"] = cron_jobs.OUTPUT_DIR
+        observed["scheduler_home"] = cron_scheduler._hermes_home
+
+    with patch("cron.scheduler.tick", side_effect=fake_tick):
+        web_server._call_cron_scheduler_for_profile("worker_alpha", "tick")
+
+    assert observed["cron_dir"] == isolated_profiles["worker_alpha"] / "cron"
+    assert observed["jobs_file"] == isolated_profiles["worker_alpha"] / "cron" / "jobs.json"
+    assert observed["output_dir"] == isolated_profiles["worker_alpha"] / "cron" / "output"
+    assert observed["scheduler_home"] == isolated_profiles["worker_alpha"]
+
+    assert cron_jobs.CRON_DIR == old_cron_dir
+    assert cron_jobs.JOBS_FILE == old_jobs_file
+    assert cron_jobs.OUTPUT_DIR == old_output_dir
+    assert cron_scheduler._hermes_home == old_scheduler_home
 
 
 @pytest.mark.asyncio
@@ -129,6 +162,38 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
     assert len(worker_jobs) == 1
     assert worker_jobs[0]["id"] == worker_job["id"]
     assert worker_jobs[0]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_cron_job_ticks_selected_profile_and_returns_refreshed_job(isolated_profiles):
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    worker_job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="run immediately",
+        schedule="every 1h",
+        name="run-now-worker",
+    )
+
+    def fake_tick():
+        cron_jobs.mark_job_run(worker_job["id"], success=True)
+
+    with patch("cron.scheduler.tick", side_effect=fake_tick) as tick_mock:
+        triggered = await web_server.trigger_cron_job(
+            worker_job["id"], profile="worker_alpha"
+        )
+
+    tick_mock.assert_called_once_with()
+    assert triggered["profile"] == "worker_alpha"
+    assert triggered["last_status"] == "ok"
+    assert triggered["last_run_at"] is not None
+
+    default_jobs = await web_server.list_cron_jobs(profile="default")
+    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    assert default_jobs == []
+    assert [job["id"] for job in worker_jobs] == [worker_job["id"]]
 
 
 @pytest.mark.asyncio

@@ -242,8 +242,8 @@ class CoderEnvironment(BaseEnvironment):
     _stdin_mode = "passthrough"
     _STDIN_CHUNK_SIZE = 32 * 1024
     _PTY_RECV_POLL_TIMEOUT = 1.0
-    _PTY_EMPTY_EOF_RECONNECTS = 2
-    _PTY_EMPTY_EOF_RECONNECT_WINDOW = 1.0
+    _PTY_EMPTY_EOF_RECONNECTS = 5
+    _PTY_EMPTY_EOF_RECONNECT_WINDOW = 3.0
     _PTY_EMPTY_EOF_RECONNECT_DELAY = 0.2
 
     def __init__(
@@ -632,6 +632,7 @@ class CoderEnvironment(BaseEnvironment):
                 time.sleep(self._PTY_EMPTY_EOF_RECONNECT_DELAY * empty_reconnects)
                 continue
 
+            logger.info("[coder] Reconnection break: attempt_output_chars=%s attempt_elapsed=%.1f empty_reconnects=%s", attempt_output_chars, attempt_elapsed, empty_reconnects)
             break
 
         combined_output = "".join(output_parts)

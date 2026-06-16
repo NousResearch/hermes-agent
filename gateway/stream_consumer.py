@@ -1388,11 +1388,29 @@ class GatewayStreamConsumer:
                     # finalizing through edit would visibly downgrade a rich
                     # preview, so re-deliver as a fresh message + delete the
                     # preview instead.
+                    #
+                    # When the adapter exposes prefers_fresh_final_streaming
+                    # and explicitly returns False, the time-based threshold
+                    # must NOT override that decision.  On Telegram the
+                    # fresh-final path sends a Rich Message (sendRichMessage)
+                    # that overlaps with the legacy MarkdownV2 preview already
+                    # visible from streaming — both remain on screen because
+                    # the old message is only best-effort deleted.  Adapters
+                    # without the hook still get the time-based fresh-final.
+                    # (#47048)
+                    _prefers_fresh = self._adapter_prefers_fresh_final(text)
+                    _has_prefers_hook = (
+                        getattr(self.adapter, "prefers_fresh_final_streaming", None)
+                        is not None
+                    )
                     if (
                         finalize
                         and (
-                            self._should_send_fresh_final()
-                            or self._adapter_prefers_fresh_final(text)
+                            _prefers_fresh
+                            or (
+                                not _has_prefers_hook
+                                and self._should_send_fresh_final()
+                            )
                         )
                         and await self._try_fresh_final(
                             text, is_turn_final=is_turn_final,

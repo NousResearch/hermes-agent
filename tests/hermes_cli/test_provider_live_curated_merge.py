@@ -111,3 +111,55 @@ class TestGenericProviderLiveCuratedMerge:
             result = provider_model_ids("zai")
 
         assert result == curated
+
+
+class TestValidateRequestedModelCuratedFallback:
+    """validate_requested_model falls back to curated catalog when live API omits model."""
+
+    def test_model_in_curated_but_not_live_is_accepted(self):
+        """When live /v1/models omits a model that exists in the curated
+        catalog, validate_requested_model should accept it with a note."""
+        from hermes_cli.models import validate_requested_model
+
+        # Live API returns only glm-5.1, but curated has glm-5.2
+        live_models = ["glm-5.1"]
+        curated = ["glm-5.2", "glm-5.1", "glm-5", "glm-4.5"]
+
+        with (
+            patch("hermes_cli.models.fetch_api_models", return_value=live_models),
+            patch("hermes_cli.models.provider_model_ids", return_value=curated),
+        ):
+            result = validate_requested_model("glm-5.2", "zai", api_key="dummy")
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["message"] is not None
+        assert "curated catalog" in result["message"]
+
+    def test_model_not_in_curated_nor_live_is_rejected(self):
+        """When a model is in neither live nor curated, it should be rejected."""
+        from hermes_cli.models import validate_requested_model
+
+        live_models = ["glm-5.1"]
+        curated = ["glm-5.1", "glm-5", "glm-4.5"]
+
+        with (
+            patch("hermes_cli.models.fetch_api_models", return_value=live_models),
+            patch("hermes_cli.models.provider_model_ids", return_value=curated),
+        ):
+            result = validate_requested_model("nonexistent-model", "zai", api_key="dummy")
+
+        assert result["accepted"] is False
+
+    def test_model_in_live_is_accepted_without_curated_check(self):
+        """When the model is in the live API, it should be accepted directly."""
+        from hermes_cli.models import validate_requested_model
+
+        live_models = ["glm-5.1", "glm-5"]
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=live_models):
+            result = validate_requested_model("glm-5.1", "zai", api_key="dummy")
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None

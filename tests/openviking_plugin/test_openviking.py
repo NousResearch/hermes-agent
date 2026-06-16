@@ -107,10 +107,10 @@ class TestOpenVikingSkillQuerySafety:
             runtime_note="runtime detail",
         )
         assert single is not None
-        assert openviking_plugin._SKILL_INVOCATION_PREFIX in single
-        assert openviking_plugin._SINGLE_SKILL_MARKER in single
-        assert openviking_plugin._SINGLE_SKILL_INSTRUCTION in single
-        assert openviking_plugin._RUNTIME_NOTE in single
+        assert skill_commands._SKILL_INVOCATION_PREFIX in single
+        assert skill_commands._SINGLE_SKILL_MARKER in single
+        assert skill_commands._SINGLE_SKILL_INSTRUCTION in single
+        assert skill_commands._RUNTIME_NOTE in single
 
         skill_bundles.scan_bundles()
         bundle_result = skill_bundles.build_bundle_invocation_message(
@@ -119,9 +119,9 @@ class TestOpenVikingSkillQuerySafety:
         )
         assert bundle_result is not None
         bundle, _, _ = bundle_result
-        assert openviking_plugin._BUNDLE_MARKER in bundle
-        assert openviking_plugin._BUNDLE_USER_INSTRUCTION in bundle
-        assert openviking_plugin._BUNDLE_FIRST_SKILL_BLOCK in bundle
+        assert skill_commands._BUNDLE_MARKER in bundle
+        assert skill_commands._BUNDLE_USER_INSTRUCTION in bundle
+        assert skill_commands._BUNDLE_FIRST_SKILL_BLOCK in bundle
 
     def test_queue_prefetch_searches_only_slash_skill_user_instruction(self, monkeypatch):
         RecordingVikingClient.calls = []

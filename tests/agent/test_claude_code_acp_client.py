@@ -477,6 +477,166 @@ class TestCloseCleanup(unittest.TestCase):
         self.assertIsNone(client._session_id)
         self.assertIsNone(client._active_process)
 
+    # ------------------------------------------------------------------
+    # C1 (2e62a19ba) — reader thread join on close()
+    # ------------------------------------------------------------------
+    def test_close_joins_reader_threads(self):
+        """C1 (2e62a19ba): close() must join the stdout/stderr reader threads
+        before returning, so daemon threads can't race with closed pipes and
+        trigger I/O-on-closed-file errors after close() returns."""
+        import time
+        client = _make_client()
+        completed = []
+
+        def reader(label):
+            # Brief work, then exit — simulating a reader that drains
+            # naturally after the subprocess pipes are closed.
+            time.sleep(0.01)
+            completed.append(label)
+
+        t1 = threading.Thread(target=reader, args=("stdout",), daemon=True)
+        t2 = threading.Thread(target=reader, args=("stderr",), daemon=True)
+        t1.start()
+        t2.start()
+        # Need an active process so close() reaches the reader-join block
+        # (otherwise it short-circuits with is_closed=True and returns).
+        client._active_process = _FakeProcess()
+        client._reader_threads = [t1, t2]
+        client.close()
+        self.assertFalse(t1.is_alive(), "stdout reader thread should be joined")
+        self.assertFalse(t2.is_alive(), "stderr reader thread should be joined")
+        self.assertEqual(client._reader_threads, [], "thread list should be reset")
+        self.assertIn("stdout", completed)
+        self.assertIn("stderr", completed)
+
+    def test_close_idempotent_on_empty_threads(self):
+        """C1: close() with no threads and no process must not raise and
+        must still set is_closed=True."""
+        client = _make_client()
+        self.assertEqual(client._reader_threads, [])
+        self.assertIsNone(client._active_process)
+        client.close()  # should not raise
+        self.assertTrue(client.is_closed)
+
+    def test_close_does_not_hang_on_wedged_thread(self):
+        """C1: a reader thread stuck on readline must not block close() past
+        the 1.0s join timeout specified in the fix. The wedged thread is
+        left alive (daemon=True) rather than forcibly killed."""
+        import time
+        client = _make_client()
+        # Thread that blocks forever; close() must time out joining it.
+        t = threading.Thread(
+            target=lambda: threading.Event().wait(60), daemon=True
+        )
+        t.start()
+        # Need an active process so close() reaches the reader-join block.
+        client._active_process = _FakeProcess()
+        client._reader_threads = [t]
+        t0 = time.monotonic()
+        client.close()
+        elapsed = time.monotonic() - t0
+        self.assertLess(
+            elapsed, 1.5,
+            f"close() took {elapsed:.2f}s; expected <1.5s (1.0s join + slack)",
+        )
+        self.assertTrue(
+            t.is_alive(),
+            "wedged thread should be left alive after timeout, not joined",
+        )
+
+    # ------------------------------------------------------------------
+    # C2 (3082fad77) — close() race: lock + is_closed ordering
+    # ------------------------------------------------------------------
+    def test_close_resets_active_process_under_lock(self):
+        """C2 (3082fad77): _active_process=None must happen INSIDE the
+        _active_process_lock to avoid a race with concurrent close() callers
+        who might otherwise see a stale non-None reference."""
+        client = _make_client()
+        held_during_reset: list[str] = []
+        original_lock = client._active_process_lock
+
+        class TrackingLock:
+            """Proxy that records entry/exit while delegating to the
+            real threading.Lock()."""
+
+            def __enter__(self):
+                held_during_reset.append("enter")
+                return original_lock.__enter__()
+
+            def __exit__(self, *a):
+                held_during_reset.append("exit")
+                return original_lock.__exit__(*a)
+
+        client._active_process_lock = TrackingLock()  # type: ignore[assignment]
+        fake = _FakeProcess()
+        client._active_process = fake
+        client._session_id = "sess-1"
+        client.close()
+        # Lock must have been held around the reset.
+        self.assertIn("enter", held_during_reset)
+        self.assertIn("exit", held_during_reset)
+        # enter must come before exit (sanity check on the proxy).
+        self.assertLess(
+            held_during_reset.index("enter"),
+            held_during_reset.index("exit"),
+        )
+        self.assertIsNone(client._active_process)
+        self.assertIsNone(client._session_id)
+
+    def test_close_is_closed_set_after_terminate(self):
+        """C2: is_closed=True must come AFTER proc.terminate(), so concurrent
+        callers observing is_closed=False don't skip the terminate path."""
+        client = _make_client()
+        fake = _FakeProcess()
+        client._active_process = fake
+        states_during_terminate: list[bool] = []
+        original_terminate = fake.terminate
+
+        def tracking_terminate():
+            states_during_terminate.append(client.is_closed)
+            original_terminate()
+
+        fake.terminate = tracking_terminate  # type: ignore[assignment]
+        client.close()
+        self.assertIn(
+            False, states_during_terminate,
+            "is_closed must be False when proc.terminate() is called",
+        )
+        self.assertTrue(
+            client.is_closed,
+            "is_closed must be True after close() returns",
+        )
+
+    def test_concurrent_close_safe(self):
+        """C2: two threads calling close() concurrently must not raise.
+        Before the fix, _active_process=None was outside the lock and two
+        concurrent callers could race past the proc-guard and double-terminate."""
+        client = _make_client()
+        client._active_process = _FakeProcess()
+        client._session_id = "sess-1"
+        errors: list[Exception] = []
+
+        def do_close():
+            try:
+                client.close()
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        t1 = threading.Thread(target=do_close)
+        t2 = threading.Thread(target=do_close)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        self.assertEqual(
+            errors, [],
+            f"concurrent close() raised: {errors!r}",
+        )
+        self.assertTrue(client.is_closed)
+        # Final state must be clean for both session/proc state.
+        self.assertIsNone(client._active_process)
+        self.assertIsNone(client._session_id)
+
 
 # ===========================================================================
 # 13. _is_valid_effort_level
@@ -562,6 +722,71 @@ class TestApplyAcpArgDirectives(unittest.TestCase):
         client._apply_acp_arg_directives()
         self.assertNotIn("model", client._pending_session_configs)
         self.assertEqual(client._pending_session_configs, {})
+
+    # ------------------------------------------------------------------
+    # C3 (e40bffccc) — model/config changes on alive session must re-flush
+    # ------------------------------------------------------------------
+    def test_model_change_flushes_to_alive_session(self):
+        """C3 (e40bffccc): when _ensure_session() reuses a live session and
+        _pending_session_configs has a new value (e.g. --model re-scanned),
+        it MUST call _flush_pending_configs to re-flush via
+        session/set_config_option — not just leave them stashed in
+        _pending_session_configs.
+
+        Regression: before C3 fix, the flush logic was inline in
+        _ensure_session and only ran after session/new. Model/config changes
+        on an already-alive session were silently dropped, so e.g. switching
+        from opus → sonnet mid-session never actually switched the model.
+
+        This test sets up a fully-alive session, stashes a NEW model into
+        _pending_session_configs, and verifies that _ensure_session() (on
+        its early-return / "session already alive" branch) triggers the
+        flush.
+        """
+        from collections import deque
+        from queue import Queue
+        client = _make_client(acp_args=["--model", "opus", "--stdio"])
+        client._apply_acp_arg_directives()
+        # Sanity: initial scan populated the pending dict.
+        self.assertEqual(
+            client._pending_session_configs.get("model"), "opus",
+        )
+        # Simulate an alive session — all four invariants of
+        # _ensure_session's early-return branch must hold.
+        fake_proc = _FakeProcess()  # _poll_result defaults to None → alive
+        client._session_proc = fake_proc
+        client._session_inbox = Queue()
+        client._session_stderr = deque()
+        client._session_id = "sess-alive"
+        # Simulate a NEW model directive scanned in (e.g. user re-applied
+        # --model with a different value mid-session).
+        client._pending_session_configs["model"] = "sonnet"
+        # Track flush calls. Real signature is
+        # (proc, inbox, stderr_tail, session_id) — NOT (force=False).
+        flush_calls: list[dict] = []
+
+        def tracking_flush(proc, inbox, stderr_tail, session_id):
+            flush_calls.append(
+                {
+                    "proc": proc,
+                    "session_id": session_id,
+                    "pending_model": client._pending_session_configs.get(
+                        "model"
+                    ),
+                }
+            )
+
+        client._flush_pending_configs = tracking_flush  # type: ignore[assignment]
+        # Trigger _ensure_session — the alive-session branch must flush.
+        client._ensure_session()
+        self.assertEqual(
+            len(flush_calls), 1,
+            "C3 regression: alive session path did not call "
+            "_flush_pending_configs to re-flush pending --model changes",
+        )
+        self.assertEqual(flush_calls[0]["session_id"], "sess-alive")
+        self.assertIs(flush_calls[0]["proc"], fake_proc)
+        self.assertEqual(flush_calls[0]["pending_model"], "sonnet")
 
 
 if __name__ == "__main__":

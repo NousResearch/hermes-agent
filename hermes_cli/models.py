@@ -2368,7 +2368,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key)
+                live = _p.fetch_models(api_key=api_key, base_url=base_url)
                 if live:
                     if normalized in {"kimi-coding", "kimi-coding-cn"}:
                         curated = list(_PROVIDER_MODELS.get(normalized, []))

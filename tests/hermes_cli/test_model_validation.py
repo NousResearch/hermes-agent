@@ -267,6 +267,33 @@ class TestProviderModelIds:
             api_mode="anthropic_messages",
         )
 
+    def test_generic_api_key_provider_uses_resolved_base_url_for_live_catalog(self):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "deepseek-v4-pro"}]}'
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "api_key": "proxy-key",
+                "base_url": "https://litellm.internal/v1",
+            },
+        ), patch(
+            "urllib.request.urlopen",
+            return_value=_Resp(),
+        ) as mock_urlopen:
+            assert provider_model_ids("deepseek", force_refresh=True) == ["deepseek-v4-pro"]
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://litellm.internal/v1/models"
+        assert req.get_header("Authorization") == "Bearer proxy-key"
+
 
 # -- fetch_api_models --------------------------------------------------------
 

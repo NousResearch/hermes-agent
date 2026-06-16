@@ -65,6 +65,8 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -1578,3 +1580,75 @@ class TestShellSafety:
         monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
         use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
         assert use_shell is False
+
+
+class TestGeminiProvider:
+    def test_explicit_gemini_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "gemini"}) == "gemini"
+
+    def test_explicit_gemini_accepts_google_api_key(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "google-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "gemini"}) == "gemini"
+
+    def test_explicit_gemini_no_key_returns_none(self, monkeypatch):
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "gemini"}) == "none"
+
+    def test_gemini_request_payload_uses_inline_audio(self, sample_wav, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "gemini-test")
+        from tools import transcription_tools as tt
+
+        captured = {}
+
+        class FakeResponse:
+            status_code = 200
+
+            def json(self):
+                return {
+                    "candidates": [
+                        {"content": {"parts": [{"text": "مرحبا من Hermes"}]}}
+                    ]
+                }
+
+            text = ""
+
+        def fake_post(url, **kwargs):
+            captured["url"] = url
+            captured.update(kwargs)
+            return FakeResponse()
+
+        monkeypatch.setattr(tt, "_load_stt_config", lambda: {"gemini": {"model": "gemini-test-model"}})
+        monkeypatch.setattr("requests.post", fake_post)
+
+        result = tt._transcribe_gemini(sample_wav, "gemini-test-model")
+        assert result == {
+            "success": True,
+            "transcript": "مرحبا من Hermes",
+            "provider": "gemini",
+        }
+        assert captured["url"].endswith("/models/gemini-test-model:generateContent")
+        assert captured["params"] == {"key": "gemini-test"}
+        parts = captured["json"]["contents"][0]["parts"]
+        inline = parts[1]["inline_data"]
+        assert inline["mime_type"] == "audio/x-wav"
+        assert inline["data"]
+
+    def test_transcribe_audio_dispatches_gemini(self, sample_wav, monkeypatch):
+        from tools import transcription_tools as tt
+
+        monkeypatch.setattr(tt, "_load_stt_config", lambda: {"enabled": True, "provider": "gemini", "gemini": {"model": "gemini-test-model"}})
+        monkeypatch.setattr(tt, "_get_provider", lambda cfg: "gemini")
+        called = {}
+
+        def fake_transcribe(path, model_name):
+            called["path"] = path
+            called["model"] = model_name
+            return {"success": True, "transcript": "ok", "provider": "gemini"}
+
+        monkeypatch.setattr(tt, "_transcribe_gemini", fake_transcribe)
+        result = tt.transcribe_audio(sample_wav)
+        assert result["provider"] == "gemini"
+        assert called == {"path": sample_wav, "model": "gemini-test-model"}

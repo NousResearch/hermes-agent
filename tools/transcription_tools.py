@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with seven providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -12,6 +12,8 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **gemini** — Google Gemini multimodal STT via ``generateContent``,
+    requires ``GEMINI_API_KEY`` or ``GOOGLE_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -27,7 +29,9 @@ Usage::
         print(result["transcript"])
 """
 
+import base64
 import logging
+import mimetypes
 import os
 import shlex
 import shutil
@@ -90,6 +94,7 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_GEMINI_STT_MODEL = os.getenv("STT_GEMINI_MODEL", "gemini-3.1-flash-lite")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -98,6 +103,7 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
+GEMINI_STT_BASE_URL = os.getenv("GEMINI_STT_BASE_URL", "https://generativelanguage.googleapis.com/v1beta")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -228,7 +234,7 @@ def _try_lazy_install_stt() -> bool:
     return False
 
 
-# Names of the 6 STT providers with native handlers in this module.
+# Names of the 7 STT providers with native handlers in this module.
 # Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES`` —
 # a regression test fails if they drift. The plugin hook from
 # issue #30398-style follow-up rejects plugins registering under any
@@ -241,6 +247,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "openai",
     "mistral",
     "xai",
+    "gemini",
 })
 
 
@@ -255,7 +262,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
 #
 # Resolution order:
 #   1. Built-in (``local``, ``local_command``, ``groq``, ``openai``,
-#      ``mistral``, ``xai``)              → native handler. **Always wins.**
+#      ``mistral``, ``xai``, ``gemini``)  → native handler. **Always wins.**
 #   2. ``stt.providers.<name>: type: command``  → command-provider runner.
 #   3. Plugin-registered TranscriptionProvider  → plugin dispatch.
 #   4. No match                                 → "No STT provider available".
@@ -818,6 +825,15 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "gemini":
+            if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+                return "gemini"
+            logger.warning(
+                "STT provider 'gemini' configured but neither GEMINI_API_KEY nor "
+                "GOOGLE_API_KEY is set"
+            )
+            return "none"
+
         if provider == "elevenlabs":
             if get_env_value("ELEVENLABS_API_KEY"):
                 return "elevenlabs"
@@ -828,9 +844,9 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > xai > elevenlabs -
-    # mistral is intentionally skipped while `mistralai` is quarantined on
-    # PyPI (malicious 2.4.6 release on 2026-05-12).
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > gemini > xai > elevenlabs -
+    # Mistral is only auto-selected when the SDK is already installed; passive
+    # auto-detection must not trigger lazy dependency installation.
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -851,6 +867,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
+    if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
+        logger.info("No local STT available, using Gemini multimodal STT")
+        return "gemini"
     try:
         from tools.xai_http import resolve_xai_http_credentials
 
@@ -1616,6 +1635,106 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: Google Gemini multimodal STT
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_gemini(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Gemini ``generateContent`` with inline audio bytes."""
+    api_key = (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY") or "").strip()
+    if not api_key:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "GEMINI_API_KEY or GOOGLE_API_KEY not set",
+        }
+
+    stt_config = _load_stt_config()
+    gemini_config = stt_config.get("gemini", {}) if isinstance(stt_config.get("gemini"), dict) else {}
+    base_url = str(
+        gemini_config.get("base_url")
+        or get_env_value("GEMINI_STT_BASE_URL")
+        or get_env_value("GEMINI_BASE_URL")
+        or GEMINI_STT_BASE_URL
+    ).strip().rstrip("/")
+    prompt = str(
+        gemini_config.get("prompt")
+        or "Transcribe this audio exactly. Preserve the original language, mixed Arabic/English words, product names, and technical terms. Return only the transcript text."
+    )
+
+    try:
+        import requests
+
+        audio_bytes = Path(file_path).read_bytes()
+        mime_type = (
+            str(gemini_config.get("mime_type") or "").strip()
+            or mimetypes.guess_type(file_path)[0]
+            or "audio/ogg"
+        )
+        payload: Dict[str, Any] = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": base64.b64encode(audio_bytes).decode("ascii"),
+                            }
+                        },
+                    ],
+                }
+            ]
+        }
+
+        response = requests.post(
+            f"{base_url}/models/{model_name}:generateContent",
+            params={"key": api_key},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=120,
+        )
+        if response.status_code != 200:
+            try:
+                err = response.json().get("error", {})
+                detail = err.get("message") or response.text[:300]
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Gemini STT API error (HTTP {response.status_code}): {detail}",
+            }
+
+        result = response.json()
+        parts = result.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+        transcript_text = "".join(
+            str(part.get("text", "")) for part in parts if isinstance(part, dict)
+        ).strip()
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "Gemini STT returned empty transcript",
+            }
+
+        logger.info(
+            "Transcribed %s via Gemini STT (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "gemini"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Gemini STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Gemini STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -1626,7 +1745,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local > Groq > OpenAI > Mistral > xAI > ElevenLabs
+      2. Auto-detect: local > Groq > OpenAI > Mistral > Gemini > xAI > ElevenLabs
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -1688,6 +1807,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
 
+    if provider == "gemini":
+        gemini_cfg = stt_config.get("gemini", {})
+        model_name = model or gemini_cfg.get("model", DEFAULT_GEMINI_STT_MODEL)
+        return _transcribe_gemini(file_path, model_name)
+
     if provider == "elevenlabs":
         elevenlabs_cfg = stt_config.get("elevenlabs", {})
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
@@ -1743,7 +1867,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
+            "Voxtral Transcribe, set GEMINI_API_KEY or GOOGLE_API_KEY for Gemini STT, "
+            "configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, "
             "set ELEVENLABS_API_KEY for ElevenLabs Scribe, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),

@@ -8023,11 +8023,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _stt_msg = (
                                 "🎤 I received your voice message but can't transcribe it — "
                                 "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`uv pip install faster-whisper` in the Hermes venv; "
-                                "`pip install faster-whisper` also works if pip is on PATH) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
+                                "To enable voice: set `stt.enabled: true` and choose an "
+                                "STT provider in config.yaml, for example Gemini "
+                                "(`stt.provider: gemini` with `GEMINI_API_KEY` or "
+                                "`GOOGLE_API_KEY`), or install faster-whisper for local "
+                                "transcription, then /restart the gateway."
                             )
                             if self._has_setup_skill():
                                 _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"

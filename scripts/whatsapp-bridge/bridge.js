@@ -10,6 +10,7 @@
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
+ *   POST /profile-picture - Update/remove the account profile picture { filePath?, remove?, width?, height? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
@@ -623,6 +624,9 @@ app.post('/send-media', async (req, res) => {
       case 'video':
         msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
         break;
+      case 'sticker':
+        msgPayload = { sticker: buffer, mimetype: MIME_MAP[ext] || 'image/webp' };
+        break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
         // If the caller passes mp3, wav, m4a etc. (e.g. from Edge TTS / NeuTTS),
@@ -667,6 +671,55 @@ app.post('/send-media', async (req, res) => {
     trackSentMessageId(sent);
 
     res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update or remove the WhatsApp account profile picture.
+// This intentionally only targets the authenticated account. Baileys can also
+// update group pictures when given a group JID, but exposing that through this
+// bridge would create a broader moderation/admin surface than Hermes needs for
+// personal profile automation.
+app.post('/profile-picture', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { filePath, remove, width, height } = req.body;
+  const selfJid = sock.user?.id;
+  if (!selfJid) {
+    return res.status(503).json({ error: 'WhatsApp account ID is not available yet' });
+  }
+
+  try {
+    if (remove === true) {
+      await sock.removeProfilePicture(selfJid);
+      return res.json({ success: true, action: 'removed' });
+    }
+
+    if (!filePath) {
+      return res.status(400).json({ error: 'filePath is required unless remove=true' });
+    }
+    if (!existsSync(filePath)) {
+      return res.status(404).json({ error: `File not found: ${filePath}` });
+    }
+
+    const buffer = readFileSync(filePath);
+    const dimensions = {};
+    const widthNum = Number(width);
+    const heightNum = Number(height);
+    // WhatsApp rejects some oversized profile-picture dimensions; Baileys'
+    // own default is 640x640, so keep explicit values within that safe range.
+    if (Number.isFinite(widthNum) && widthNum > 0) dimensions.width = Math.min(widthNum, 640);
+    if (Number.isFinite(heightNum) && heightNum > 0) dimensions.height = Math.min(heightNum, 640);
+
+    await sock.updateProfilePicture(
+      selfJid,
+      buffer,
+      Object.keys(dimensions).length ? dimensions : undefined,
+    );
+    res.json({ success: true, action: 'updated' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

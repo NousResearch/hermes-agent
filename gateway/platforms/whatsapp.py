@@ -909,6 +909,51 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             file_name or os.path.basename(file_path),
         )
 
+    async def set_profile_picture(
+        self,
+        image_path: str,
+        *,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+    ) -> SendResult:
+        """Update this WhatsApp account's profile picture via the bridge."""
+        payload: Dict[str, Any] = {"filePath": image_path}
+        if width:
+            payload["width"] = width
+        if height:
+            payload["height"] = height
+        return await self._profile_picture_request(payload)
+
+    async def remove_profile_picture(self) -> SendResult:
+        """Remove this WhatsApp account's profile picture via the bridge."""
+        return await self._profile_picture_request({"remove": True})
+
+    async def _profile_picture_request(self, payload: Dict[str, Any]) -> SendResult:
+        if not self._running or not self._http_session:
+            return SendResult(success=False, error="Not connected")
+        bridge_exit = await self._check_managed_bridge_exit()
+        if bridge_exit:
+            return SendResult(success=False, error=bridge_exit)
+        try:
+            import aiohttp
+            if "filePath" in payload and not os.path.exists(str(payload["filePath"])):
+                return SendResult(success=False, error=f"File not found: {payload['filePath']}")
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/profile-picture",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                data: Dict[str, Any]
+                try:
+                    data = await resp.json()
+                except Exception:
+                    data = {"error": await resp.text()}
+                if resp.status == 200:
+                    return SendResult(success=True, raw_response=data)
+                return SendResult(success=False, error=str(data.get("error") or data))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator via bridge."""
         if not self._running or not self._http_session:

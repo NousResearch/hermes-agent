@@ -506,6 +506,24 @@ def sync_skills(quiet: bool = False) -> dict:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
 
+        # Recover an orphaned backup before classifying. If a previous
+        # update was interrupted between moving dest aside and copying the
+        # new version in, the user's only copy sits in ``dest.bak`` while
+        # dest is gone — without this, the "in manifest but not on disk"
+        # branch below misreads the skill as user-deleted and it silently
+        # vanishes from discovery.
+        _orphan = dest.with_suffix(".bak")
+        if _orphan.exists() and not dest.exists():
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(_orphan), str(dest))
+                logger.info("Recovered orphaned skill backup: %s", _orphan)
+            except (OSError, IOError):
+                logger.warning(
+                    "Could not recover orphaned skill backup %s", _orphan,
+                    exc_info=True,
+                )
+
         if skill_name not in manifest:
             # ── New skill — never offered before ──
             try:
@@ -569,6 +587,12 @@ def sync_skills(quiet: bool = False) -> dict:
                 try:
                     # Move old copy to a backup so we can restore on failure
                     backup = dest.with_suffix(".bak")
+                    # A stale backup left by an earlier failure would make
+                    # shutil.move() nest dest *inside* it (or fail outright)
+                    # and would poison the restore path below. The current
+                    # dest is the authoritative copy — clear the leftover.
+                    if backup.exists():
+                        _rmtree_writable(backup)
                     shutil.move(str(dest), str(backup))
                     try:
                         shutil.copytree(skill_src, dest)
@@ -582,9 +606,20 @@ def sync_skills(quiet: bool = False) -> dict:
                         except (OSError, IOError):
                             logger.debug("Could not remove backup %s", backup, exc_info=True)
                     except (OSError, IOError):
-                        # Restore from backup
-                        if backup.exists() and not dest.exists():
-                            shutil.move(str(backup), str(dest))
+                        # Restore from backup. A partially-written dest must
+                        # not shadow the user's copy or block the restore —
+                        # clear it first, then move the backup home.
+                        if backup.exists():
+                            if dest.exists():
+                                try:
+                                    _rmtree_writable(dest)
+                                except (OSError, IOError):
+                                    logger.warning(
+                                        "Could not clear partial copy %s during restore",
+                                        dest, exc_info=True,
+                                    )
+                            if not dest.exists():
+                                shutil.move(str(backup), str(dest))
                         raise
                 except (OSError, IOError) as e:
                     if not quiet:

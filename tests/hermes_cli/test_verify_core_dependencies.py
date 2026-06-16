@@ -191,6 +191,49 @@ class TestVerifyCoreDependencies:
             assert not mock_resolve.called
             assert not mock_install.called
 
+    def test_repair_reinstall_quarantines_running_shim_on_windows(
+        self, temp_pyproject, fake_venv_python
+    ):
+        """Regression: the ``--reinstall -e .`` repair must
+        quarantine the running ``hermes.exe`` on Windows before installing.
+
+        That reinstall rewrites the editable entry-point shims, and on Windows
+        pip can't overwrite the live launcher — so without quarantine the shim
+        is left missing and ``hermes`` drops off PATH. Previously this path
+        called ``_run_install_with_heartbeat`` directly, bypassing the
+        quarantine that the primary install path performs.
+        """
+        py, venv_root = fake_venv_python
+        env = {"VIRTUAL_ENV": str(venv_root)}
+
+        probe_calls = {"count": 0}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            probe_calls["count"] += 1
+            # 1st probe: pathspec missing → triggers --reinstall repair.
+            # 2nd probe (after repair): clean → stops before per-package path.
+            if probe_calls["count"] == 1:
+                return MagicMock(returncode=0, stdout="pathspec\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        fake_scripts = venv_root / "Scripts"  # created by fake_venv_python
+
+        with patch("hermes_cli.main._resolve_install_target_python", return_value=py), \
+             patch("hermes_cli.main.subprocess.run", side_effect=fake_subprocess_run), \
+             patch("hermes_cli.main._is_windows", return_value=True), \
+             patch("hermes_cli.main._venv_scripts_dir", return_value=fake_scripts), \
+             patch("hermes_cli.main._run_install_with_heartbeat"), \
+             patch("hermes_cli.main._quarantine_running_hermes_exe", return_value=[]) as mock_quar:
+
+            from hermes_cli.main import _verify_core_dependencies_installed
+            _verify_core_dependencies_installed(["uv", "pip"], env=env)
+
+            assert mock_quar.called, (
+                "the --reinstall -e . repair must quarantine the running "
+                "hermes.exe on Windows"
+            )
+            assert mock_quar.call_args[0][0] == fake_scripts
+
 
 class TestResolveInstallTargetPython:
     def test_uses_virtual_env_from_environment(self, tmp_path):

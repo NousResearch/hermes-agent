@@ -42,7 +42,7 @@ describe('startMemoryMonitor thresholds (#34095)', () => {
     // ceiling. With relative thresholds (~88%), 2.5GB is well within normal.
     const onCritical = vi.fn()
     withHeap(2.5 * GB)
-    stop = startMemoryMonitor({ intervalMs: 1, onCritical })
+    stop = startMemoryMonitor({ criticalBytes: 7 * GB, highBytes: 5 * GB, intervalMs: 1, onCritical })
 
     await vi.advanceTimersByTimeAsync(5)
 

@@ -44,7 +44,8 @@ Fleet default: use the service-account token. Do not use desktop auth, `op signi
 
 ### Service Account (fleet default)
 
-Use the fleet service-account token. Default path is `~/.openclaw/.op-service-token`; on Mac Studio with sandboxed agent homes, use `/Users/alexgierczyk/.openclaw/.op-service-token`. No desktop app needed. Supports `op read`, `op item get|create|edit`, `op inject`, and `op run`.
+Use the fleet service-account token via `OP_SERVICE_ACCOUNT_TOKEN`. Set it in `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load); the fleet keeps a copy at `/Users/alexgierczyk/.openclaw/.op-service-token` on Mac Studio with sandboxed agent homes.
+No desktop app needed. Supports `op read`, `op item get|create|edit`, `op inject`, and `op run`.
 
 ```bash
 TOKEN_FILE="${OP_SERVICE_ACCOUNT_TOKEN_FILE:-$HOME/.openclaw/.op-service-token}"

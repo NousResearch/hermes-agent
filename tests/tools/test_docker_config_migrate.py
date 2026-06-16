@@ -35,6 +35,10 @@ def _run_migration(hermes_home: Path, **env_overrides: str) -> subprocess.Comple
 def test_docker_config_migrate_backs_up_and_migrates_legacy_config(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
+    model_map = {
+        "local-small": {"context_length": 8192},
+        "local-large": {"context_length": 32768},
+    }
     config_path.write_text(
         yaml.safe_dump(
             {
@@ -44,6 +48,11 @@ def test_docker_config_migrate_backs_up_and_migrates_legacy_config(tmp_path: Pat
                         "name": "Local API",
                         "base_url": "http://localhost:8080/v1",
                         "api_key": "test-key",
+                        "api_mode": "chat_completions",
+                        "model": "local-small",
+                        "models": model_map,
+                        "context_length": 32768,
+                        "discover_models": False,
                     }
                 ],
             }
@@ -59,7 +68,13 @@ def test_docker_config_migrate_backs_up_and_migrates_legacy_config(tmp_path: Pat
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
     assert "custom_providers" not in raw
-    assert raw["providers"]["local-api"]["api"] == "http://localhost:8080/v1"
+    provider = raw["providers"]["local-api"]
+    assert provider["api"] == "http://localhost:8080/v1"
+    assert provider["transport"] == "chat_completions"
+    assert provider["default_model"] == "local-small"
+    assert provider["models"] == model_map
+    assert provider["context_length"] == 32768
+    assert provider["discover_models"] is False
     assert list(tmp_path.glob("config.yaml.bak-*"))
     assert list(tmp_path.glob(".env.bak-*"))
 

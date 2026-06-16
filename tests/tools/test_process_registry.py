@@ -5,16 +5,15 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
-    MAX_OUTPUT_CHARS,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
 )
@@ -63,6 +62,44 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
             return True
         time.sleep(interval)
     return False
+
+
+def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
+    """pywinpty expects str input; bytes raises a PyString conversion error."""
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-win")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", True)
+
+    result = registry.write_stdin(session.id, "hello\n")
+
+    assert result == {"status": "ok", "bytes_written": 6}
+    assert written == ["hello\n"]
+    assert isinstance(written[0], str)
+
+
+def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-posix")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
+
+    result = registry.write_stdin(session.id, "hello\n")
+
+    assert result == {"status": "ok", "bytes_written": 6}
+    assert written == [b"hello\n"]
 
 
 # =========================================================================
@@ -229,6 +266,31 @@ class TestOrphanedPipeReconciliation:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+
+    def test_wait_wakes_when_session_moves_to_finished(self, registry):
+        """wait() should not sleep for the old 1s polling tick after exit."""
+        s = _make_session(sid="proc_wait_event", output="done")
+        registry._running[s.id] = s
+
+        def finish_later():
+            time.sleep(0.05)
+            s.exited = True
+            s.exit_code = 0
+            with patch.object(registry, "_write_checkpoint"):
+                registry._move_to_finished(s)
+
+        t = threading.Thread(target=finish_later)
+        t.start()
+        start = time.monotonic()
+        try:
+            result = registry.wait(s.id, timeout=5)
+        finally:
+            t.join(timeout=1)
+        elapsed = time.monotonic() - start
+
+        assert result["status"] == "exited", result
+        assert result["exit_code"] == 0
+        assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
 # =========================================================================
@@ -483,8 +545,8 @@ class TestSpawnEnvSanitization:
             def get_temp_dir(self):
                 return "/data/data/com.termux/files/usr/tmp"
 
-            def execute(self, command, timeout=None):
-                self.commands.append((command, timeout))
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
                 return {"output": "4321\n"}
 
         env = FakeEnv()
@@ -503,6 +565,52 @@ class TestSpawnEnvSanitization:
         assert "cat /tmp/hermes_bg_" not in bg_command
         fake_thread.start.assert_called_once()
 
+    def test_spawn_via_env_checks_returncode_when_wrapper_fails(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "syntax error", "returncode": 2}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(env, "echo hello")
+
+        assert session.exited is True
+        assert session.exit_code == 2
+        assert session.pid is None
+        assert session.output_buffer == "syntax error"
+        fake_thread.start.assert_not_called()
+        # A failed launch must not be exposed as a running/tracked session.
+        assert session.id not in registry._running
+
+    def test_spawn_via_env_disables_rewrite_for_bg_wrapper(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/tmp"
+
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
+                return {"output": "4321\n", "returncode": 0}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            registry.spawn_via_env(env, "echo hello")
+
+        args, kwargs = env.commands[0]
+        assert kwargs.get("rewrite_compound_background") is False
+
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")
         session.exited = False
@@ -516,8 +624,8 @@ class TestSpawnEnvSanitization:
                     {"output": "0\n"},
                 ])
 
-            def execute(self, command, timeout=None):
-                self.commands.append((command, timeout))
+            def execute(self, command, **kwargs):
+                self.commands.append((command, kwargs))
                 return next(self._responses)
 
         env = FakeEnv()
@@ -563,9 +671,18 @@ class TestPopenLeakOnSetupFailure:
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
+        # proc.pid is a MagicMock-backed fake; os.getpgid(fake_pid) would query
+        # the real OS for an arbitrary PID. On a busy host that PID may exist,
+        # in which case spawn_local's primary cleanup path
+        # (os.killpg(os.getpgid(pid), SIGKILL)) succeeds against an UNRELATED
+        # real process group and proc.kill() is never reached — flaky failure,
+        # and a real risk of SIGKILLing an innocent process group. Force the
+        # ProcessLookupError fallback so the test deterministically exercises
+        # proc.kill() and never issues a real killpg.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
+             patch("os.getpgid", side_effect=ProcessLookupError), \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -590,9 +707,14 @@ class TestPopenLeakOnSetupFailure:
 
         fake_thread = MagicMock()
 
+        # See note in test_popen_killed_when_thread_creation_fails: force the
+        # ProcessLookupError fallback so cleanup deterministically calls
+        # proc.kill() instead of issuing a real os.killpg against whatever
+        # process group happens to own the fake PID on the host.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", return_value=fake_thread), \
+             patch("os.getpgid", side_effect=ProcessLookupError), \
              patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
             with pytest.raises(OSError, match="disk full"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -890,10 +1012,39 @@ def test_format_completion_event():
         "output": "done",
     }
     result = format_process_notification(evt)
-    assert "[IMPORTANT: Background process proc_abc completed" in result
+    assert "[IMPORTANT: Background process proc_abc completed normally" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
     assert "Output:\ndone]" in result
+
+
+def test_format_killed_completion_event_names_source_and_signal():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_killed",
+        "command": "sleep 5",
+        "exit_code": -15,
+        "completion_reason": "killed",
+        "termination_source": "process.kill",
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "proc_killed terminated by process.kill" in result
+    assert "exit code -15, SIGTERM" in result
+
+
+def test_format_external_sigterm_does_not_claim_agent_kill():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_external",
+        "command": "sleep 5",
+        "exit_code": 143,
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert "proc_external exited" in result
+    assert "terminated by" not in result
+    assert "exit code 143, SIGTERM" in result
 
 
 def test_format_watch_match_event():
@@ -965,7 +1116,7 @@ def test_drain_notifications_returns_pending_events():
         results = process_registry.drain_notifications()
         assert len(results) == 2
         assert results[0][0]["session_id"] == "proc_drain1"
-        assert "proc_drain1 completed" in results[0][1]
+        assert "proc_drain1 completed normally" in results[0][1]
         assert results[1][0]["session_id"] == "proc_drain2"
         assert "watch pattern" in results[1][1]
     finally:
@@ -1007,3 +1158,163 @@ def test_drain_notifications_empty_queue():
 
     results = process_registry.drain_notifications()
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# _terminate_host_pid — cross-platform process-tree termination
+# ---------------------------------------------------------------------------
+
+
+class TestTerminateHostPidWindows:
+    """Windows branch uses ``taskkill /T /F`` — the documented MS tree-kill
+    primitive. We can't use psutil's ``children(recursive=True)`` /
+    ``.terminate()`` path on Windows because (1) Windows doesn't maintain
+    a Unix-style process tree so the walk is unreliable, and (2)
+    ``Process.terminate()`` on Windows is ``TerminateProcess()`` for the
+    target handle only, not the tree.
+    """
+
+    def test_windows_invokes_taskkill_with_tree_and_force_flags(self, monkeypatch):
+        """The Windows branch must shell out to ``taskkill /PID N /T /F``."""
+        from tools import process_registry as pr
+
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert captured["args"][0] == "taskkill"
+        assert "/PID" in captured["args"]
+        assert "12345" in captured["args"]
+        assert "/T" in captured["args"], "Tree flag required to reach descendants"
+        assert "/F" in captured["args"], "Force flag required for headless Chromium"
+
+    def test_windows_falls_back_to_os_kill_when_taskkill_missing(self, monkeypatch):
+        """If ``taskkill.exe`` is somehow unavailable, fall back to a bare
+        ``os.kill(pid, SIGTERM)`` so we at least try to kill the parent."""
+        from tools import process_registry as pr
+
+        kill_calls = []
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("taskkill not found")
+
+        def fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+        monkeypatch.setattr(pr.os, "kill", fake_kill)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert kill_calls == [(12345, signal.SIGTERM)]
+
+    def test_windows_does_not_call_psutil(self, monkeypatch):
+        """The Windows branch must NOT exercise the psutil tree-walk
+        (it's unreliable on Windows — see the function docstring)."""
+        from tools import process_registry as pr
+        import psutil
+
+        psutil_calls = []
+
+        class _BoomProcess:
+            def __init__(self, pid):
+                psutil_calls.append(("Process", pid))
+
+            def children(self, recursive=False):
+                psutil_calls.append(("children", recursive))
+                return []
+
+            def terminate(self):
+                psutil_calls.append(("terminate",))
+
+        def fake_run(args, **kwargs):
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", True)
+        monkeypatch.setattr(pr.subprocess, "run", fake_run)
+        monkeypatch.setattr(psutil, "Process", _BoomProcess)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert psutil_calls == [], (
+            f"Windows branch must not touch psutil, but saw {psutil_calls!r}"
+        )
+
+
+class TestTerminateHostPidPosix:
+    """POSIX branch walks the tree via psutil and SIGTERMs children first."""
+
+    def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        terminate_order = []
+
+        class _FakeChild:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def terminate(self):
+                terminate_order.append(self.pid)
+
+        class _FakeParent:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def children(self, recursive=False):
+                assert recursive is True
+                return [_FakeChild(101), _FakeChild(102), _FakeChild(103)]
+
+            def terminate(self):
+                terminate_order.append(self.pid)
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(psutil, "Process", _FakeParent)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert terminate_order == [101, 102, 103, 12345], (
+            "Children must be terminated before the parent"
+        )
+
+    def test_posix_no_such_process_swallowed(self, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        def boom(pid):
+            raise psutil.NoSuchProcess(pid)
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(psutil, "Process", boom)
+
+        # Must not raise.
+        pr.ProcessRegistry._terminate_host_pid(999999999)
+
+    def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
+        from tools import process_registry as pr
+        import psutil
+
+        def boom(pid):
+            raise PermissionError("can't read /proc")
+
+        kill_calls = []
+
+        def fake_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        monkeypatch.setattr(pr, "_IS_WINDOWS", False)
+        monkeypatch.setattr(psutil, "Process", boom)
+        monkeypatch.setattr(pr.os, "kill", fake_kill)
+
+        pr.ProcessRegistry._terminate_host_pid(12345)
+
+        assert kill_calls == [(12345, signal.SIGTERM)]

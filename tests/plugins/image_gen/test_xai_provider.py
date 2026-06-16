@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -142,21 +142,75 @@ class TestGenerate:
         assert result["model"] == "grok-imagine-image"
 
     def test_successful_url_response(self):
+        """xAI URL response is cached locally — #26942 contract.
+
+        Pre-fix this asserted ``result["image"] == "<the bare URL>"``, which
+        was exactly the bug: xAI's ``imgen.x.ai/xai-tmp-*`` URLs expire fast
+        and the gateway 404'd by ``send_photo`` time.  Post-fix the URL
+        bytes are downloaded at tool-completion and the result carries an
+        absolute filesystem path the gateway can upload from.
+        """
         from plugins.image_gen.xai import XAIImageGenProvider
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {
-            "data": [{"url": "https://xai.image/result.png"}],
+            "data": [{"url": "https://imgen.x.ai/xai-tmp-imgen-test.jpeg"}],
         }
 
-        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp):
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 return_value=Path("/tmp/xai_grok-imagine-image_20260524_000000_deadbeef.jpg"),
+             ) as mock_save_url:
             provider = XAIImageGenProvider()
             result = provider.generate(prompt="A cat playing piano")
 
         assert result["success"] is True
-        assert result["image"] == "https://xai.image/result.png"
+        assert result["image"].startswith("/"), (
+            f"URL response must be cached to an absolute path, got {result['image']!r}"
+        )
+        assert "imgen.x.ai" not in result["image"], (
+            "ephemeral xAI URL must not leak into result.image — caller will 404"
+        )
+        # The downloader should have been called exactly once with the URL
+        # and an xai-prefixed cache filename.
+        mock_save_url.assert_called_once()
+        call_args, call_kwargs = mock_save_url.call_args
+        assert call_args[0] == "https://imgen.x.ai/xai-tmp-imgen-test.jpeg"
+        assert call_kwargs.get("prefix", "").startswith("xai_")
+
+    def test_url_response_falls_back_to_bare_url_when_download_fails(self):
+        """If caching the URL fails (network blip, 404 in-flight), the
+        provider must NOT hard-error — fall through to returning the bare
+        URL so the agent surface at least sees *something*.  The gateway's
+        existing URL-send fallback then has a chance to succeed; if it
+        too 404s, the user gets the original (now legible) error rather
+        than an opaque "image generation failed" tool result.
+        """
+        import requests as req_lib
+        from plugins.image_gen.xai import XAIImageGenProvider
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {
+            "data": [{"url": "https://imgen.x.ai/xai-tmp-imgen-already-404.jpeg"}],
+        }
+
+        with patch("plugins.image_gen.xai.requests.post", return_value=mock_resp), \
+             patch(
+                 "plugins.image_gen.xai.save_url_image",
+                 side_effect=req_lib.HTTPError("404 from CDN"),
+             ):
+            provider = XAIImageGenProvider()
+            result = provider.generate(prompt="A cat playing piano")
+
+        assert result["success"] is True, (
+            "Cache failure must not turn into a tool error — gateway gets a chance to retry"
+        )
+        assert result["image"] == "https://imgen.x.ai/xai-tmp-imgen-already-404.jpeg"
 
     def test_api_error(self):
         import requests as req_lib

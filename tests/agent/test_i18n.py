@@ -167,3 +167,63 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
 def test_t_unknown_language_uses_english():
     """Unknown lang codes normalize to English, not to a key-path fallback."""
     assert i18n.t("approval.denied", lang="klingon") == i18n.t("approval.denied", lang="en")
+
+
+# ---------------------------------------------------------------------------
+# _locales_dir resolution ladder -- regression for #23943 / #27632 / #35374.
+# Sealed installs (Nix store venv, pip wheel) have no source tree next to
+# agent/, so _locales_dir must resolve via env override or the data scheme.
+# ---------------------------------------------------------------------------
+
+def test_locales_dir_env_override_used_when_dir_exists(tmp_path, monkeypatch):
+    """HERMES_BUNDLED_LOCALES wins when it points at a real directory."""
+    bundled = tmp_path / "bundled-locales"
+    bundled.mkdir()
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(bundled))
+    assert i18n._locales_dir() == bundled
+
+
+def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
+    """A bogus HERMES_BUNDLED_LOCALES falls through to source/wheel resolution
+    instead of returning a path that doesn't exist."""
+    monkeypatch.setenv("HERMES_BUNDLED_LOCALES", str(tmp_path / "does-not-exist"))
+    result = i18n._locales_dir()
+    assert result != tmp_path / "does-not-exist"
+    # In a source checkout this is the repo-root locales dir.
+    assert result.name == "locales"
+
+
+def test_locales_dir_falls_back_to_data_scheme(tmp_path, monkeypatch):
+    """When neither the env override nor a source-adjacent locales/ exists,
+    _locales_dir uses sysconfig's data scheme (the pip-wheel layout)."""
+    import sysconfig
+
+    # No env override.
+    monkeypatch.delenv("HERMES_BUNDLED_LOCALES", raising=False)
+
+    # Force the source-adjacent path to a location with no locales/ dir.
+    fake_pkg = tmp_path / "site-packages" / "agent"
+    fake_pkg.mkdir(parents=True)
+    monkeypatch.setattr(i18n, "__file__", str(fake_pkg / "i18n.py"))
+
+    # Stand up a fake data scheme containing locales/.
+    data_root = tmp_path / "data-scheme"
+    (data_root / "locales").mkdir(parents=True)
+    real_get_path = sysconfig.get_path
+
+    def fake_get_path(name, *args, **kwargs):
+        if name == "data":
+            return str(data_root)
+        return real_get_path(name, *args, **kwargs)
+
+    monkeypatch.setattr(i18n.sysconfig, "get_path", fake_get_path)
+
+    assert i18n._locales_dir() == data_root / "locales"
+
+
+def test_t_resolves_real_string_in_source_checkout():
+    """Sanity: in the test environment (a source checkout) t() must return a
+    human string, never the bare key path. Guards against catalog-load
+    regressions independent of packaging."""
+    assert i18n.t("gateway.reset.header_default", lang="en") != "gateway.reset.header_default"
+    assert i18n.t("gateway.status.header", lang="en") != "gateway.status.header"

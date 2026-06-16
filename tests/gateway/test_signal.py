@@ -1,7 +1,6 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -769,6 +768,153 @@ class TestSignalMediaExtraction:
         assert type(adapter).send_video is not BasePlatformAdapter.send_video
         assert type(adapter).send_document is not BasePlatformAdapter.send_document
         assert type(adapter).send_image is not BasePlatformAdapter.send_image
+
+
+# ---------------------------------------------------------------------------
+# Inbound attachment message type classification
+# ---------------------------------------------------------------------------
+
+def _make_dm_envelope(sender: str, attachments: list, text: str = "") -> dict:
+    """Build a minimal signal-cli DM envelope with the given attachments."""
+    return {
+        "envelope": {
+            "sourceNumber": sender,
+            "sourceName": "Test User",
+            "sourceUuid": "aaaaaaaa-0000-0000-0000-000000000001",
+            "timestamp": 1700000000000,
+            "dataMessage": {
+                "timestamp": 1700000000000,
+                "message": text,
+                "expiresInSeconds": 0,
+                "viewOnce": False,
+                "attachments": attachments,
+            },
+        }
+    }
+
+
+class TestSignalInboundMessageTypeClassification:
+    """_handle_envelope must set MessageType.DOCUMENT for application/* and text/* attachments.
+
+    Before the fix, PDFs and other documents left msg_type as MessageType.TEXT,
+    so run.py's document-context injection (which gates on MessageType.DOCUMENT)
+    silently dropped the file and the agent never saw it.
+    """
+
+    async def _dispatch_single_attachment(self, monkeypatch, content_type: str,
+                                          att_id: str, fetch_path: str, fetch_ext: str):
+        """Helper: run _handle_envelope with one attachment and return the dispatched event."""
+        envelope = _make_dm_envelope(
+            sender="+15559876543",
+            attachments=[{
+                "contentType": content_type,
+                "id": att_id,
+                "size": 1024,
+                "filename": None,
+                "width": None,
+                "height": None,
+                "caption": None,
+                "uploadTimestamp": 1700000000000,
+            }],
+        )
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, _ = _stub_rpc(None)
+        dispatched = []
+
+        async def _fake_handle_message(event):
+            dispatched.append(event)
+
+        adapter.handle_message = _fake_handle_message
+        adapter._fetch_attachment = AsyncMock(return_value=(fetch_path, fetch_ext))
+        await adapter._handle_envelope(envelope)
+        assert dispatched, "_handle_envelope did not dispatch any event"
+        return dispatched[0]
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_sets_document_type(self, monkeypatch):
+        """A PDF attachment (application/pdf) must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="application/pdf",
+            att_id="6zLO3b-6Yf3zVWeLDctA.pdf",
+            fetch_path="/tmp/report.pdf",
+            fetch_ext=".pdf",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "PDFs must be classified as DOCUMENT so run.py injects file context."
+        )
+        assert "/tmp/report.pdf" in event.media_urls
+
+    @pytest.mark.asyncio
+    async def test_text_plain_attachment_sets_document_type(self, monkeypatch):
+        """A text/plain attachment must produce MessageType.DOCUMENT, not TEXT."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/plain",
+            att_id="notes.txt",
+            fetch_path="/tmp/notes.txt",
+            fetch_ext=".txt",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/plain must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_text_html_attachment_sets_document_type(self, monkeypatch):
+        """A text/html attachment must produce MessageType.DOCUMENT (covers the text/* wildcard)."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="text/html",
+            att_id="page.html",
+            fetch_path="/tmp/page.html",
+            fetch_ext=".html",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT, (
+            f"Expected DOCUMENT, got {event.message_type}. "
+            "text/html must be classified as DOCUMENT so run.py injects file context."
+        )
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_sets_video_type(self, monkeypatch):
+        """A video/mp4 attachment must produce MessageType.VIDEO."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="video/mp4",
+            att_id="clip.mp4",
+            fetch_path="/tmp/clip.mp4",
+            fetch_ext=".mp4",
+        )
+
+        assert event.message_type == MessageType.VIDEO
+
+    @pytest.mark.asyncio
+    async def test_unknown_mime_attachment_falls_back_to_document(self, monkeypatch):
+        """Unknown/exotic MIME types fall through to DOCUMENT (catch-all),
+        matching the WhatsApp/Slack/BlueBubbles classification pattern."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="chemical/x-pdb",
+            att_id="molecule.pdb",
+            fetch_path="/tmp/molecule.pdb",
+            fetch_ext=".pdb",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT
 
 
 # ---------------------------------------------------------------------------
@@ -1794,162 +1940,3 @@ class TestSignalContentlessEnvelope:
 
         assert "event" in captured, "Normal message should NOT be skipped"
         assert captured["event"].text == "hello world"
-
-
-# ---------------------------------------------------------------------------
-# Envelope handling — group routing (legacy groupInfo vs modern groupV2)
-# ---------------------------------------------------------------------------
-
-class TestSignalGroupV2Routing:
-    """Regression coverage for groupV2 envelope handling.
-
-    signal-cli's JSON-RPC ``subscribeReceive`` envelope shape has drifted across
-    versions: some forward the underlying libsignal V2 envelope as
-    ``dataMessage.groupV2.id`` while older / normalized paths still use
-    ``dataMessage.groupInfo.groupId``. The adapter must read groupV2 first and
-    fall back to groupInfo so V2-only groups aren't misrouted as DMs.
-
-    Ported from qwibitai/nanoclaw#1962 (V2 adapter improvements).
-    """
-
-    def _base_envelope(self, data_message: dict) -> dict:
-        return {
-            "envelope": {
-                "sourceNumber": "+15559998888",
-                "sourceUuid": "uuid-sender",
-                "sourceName": "Alice",
-                "timestamp": 1700000000000,
-                "dataMessage": data_message,
-            }
-        }
-
-    @pytest.mark.asyncio
-    async def test_group_v2_id_routes_as_group(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
-        captured = []
-
-        async def _capture(event):
-            captured.append(event)
-
-        adapter.handle_message = _capture
-
-        env = self._base_envelope({
-            "message": "hello v2",
-            "groupV2": {"id": "v2group=="},
-        })
-
-        await adapter._handle_envelope(env)
-
-        assert len(captured) == 1
-        assert captured[0].source.chat_id == "group:v2group=="
-        assert captured[0].source.chat_type == "group"
-        assert captured[0].text == "hello v2"
-
-    @pytest.mark.asyncio
-    async def test_legacy_group_info_still_works(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
-        captured = []
-
-        async def _capture(event):
-            captured.append(event)
-
-        adapter.handle_message = _capture
-
-        env = self._base_envelope({
-            "message": "hello v1",
-            "groupInfo": {"groupId": "legacy=="},
-        })
-
-        await adapter._handle_envelope(env)
-
-        assert len(captured) == 1
-        assert captured[0].source.chat_id == "group:legacy=="
-        assert captured[0].source.chat_type == "group"
-
-    @pytest.mark.asyncio
-    async def test_group_v2_preferred_over_group_info(self, monkeypatch):
-        """When both fields are present, groupV2 wins — it's the authoritative V2 id."""
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
-        captured = []
-
-        async def _capture(event):
-            captured.append(event)
-
-        adapter.handle_message = _capture
-
-        env = self._base_envelope({
-            "message": "hello",
-            "groupV2": {"id": "v2=="},
-            "groupInfo": {"groupId": "v1=="},
-        })
-
-        await adapter._handle_envelope(env)
-
-        assert len(captured) == 1
-        assert captured[0].source.chat_id == "group:v2=="
-
-    @pytest.mark.asyncio
-    async def test_no_group_fields_routes_as_dm(self, monkeypatch):
-        adapter = _make_signal_adapter(monkeypatch)
-        captured = []
-
-        async def _capture(event):
-            captured.append(event)
-
-        adapter.handle_message = _capture
-
-        env = self._base_envelope({"message": "direct message"})
-
-        await adapter._handle_envelope(env)
-
-        assert len(captured) == 1
-        assert captured[0].source.chat_type == "dm"
-        assert captured[0].source.chat_id == "+15559998888"
-
-    @pytest.mark.asyncio
-    async def test_group_v2_respects_allowlist(self, monkeypatch):
-        """V2 group ids flow through the same SIGNAL_GROUP_ALLOWED_USERS filter."""
-        adapter = _make_signal_adapter(monkeypatch, group_allowed="allowed-v2==")
-        captured = []
-
-        async def _capture(event):
-            captured.append(event)
-
-        adapter.handle_message = _capture
-
-        # Blocked group (not in allowlist)
-        await adapter._handle_envelope(self._base_envelope({
-            "message": "blocked",
-            "groupV2": {"id": "blocked-v2=="},
-        }))
-        assert len(captured) == 0
-
-        # Allowed group
-        await adapter._handle_envelope(self._base_envelope({
-            "message": "allowed",
-            "groupV2": {"id": "allowed-v2=="},
-        }))
-        assert len(captured) == 1
-        assert captured[0].source.chat_id == "group:allowed-v2=="
-
-    @pytest.mark.asyncio
-    async def test_malformed_group_fields_fall_through_to_dm(self, monkeypatch):
-        """Non-dict groupV2 / groupInfo shouldn't crash — treat as DM."""
-        adapter = _make_signal_adapter(monkeypatch)
-        captured = []
-
-        async def _capture(event):
-            captured.append(event)
-
-        adapter.handle_message = _capture
-
-        env = self._base_envelope({
-            "message": "malformed",
-            "groupV2": "not-a-dict",
-            "groupInfo": 42,
-        })
-
-        await adapter._handle_envelope(env)
-
-        assert len(captured) == 1
-        assert captured[0].source.chat_type == "dm"

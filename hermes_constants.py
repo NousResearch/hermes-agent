@@ -466,6 +466,10 @@ def is_container() -> bool:
     Checks ``/.dockerenv`` (Docker), ``/run/.containerenv`` (Podman),
     and ``/proc/1/cgroup`` for container runtime markers.  Result is
     cached for the process lifetime.  Import-safe — no heavy deps.
+
+    Also detects containerd + cgroup v2 (k8s/k3s) where /proc/1/cgroup
+    contains ``containerd`` or ``kubepods`` markers instead of Docker/
+    Podman identifiers.
     """
     global _container_detected
     if _container_detected is not None:
@@ -480,6 +484,12 @@ def is_container() -> bool:
         with open("/proc/1/cgroup", "r", encoding="utf-8") as f:
             cgroup = f.read()
             if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
+                _container_detected = True
+                return True
+            # containerd + cgroup v2 (k8s/k3s): /proc/1/cgroup contains
+            # "0::/system.slice/containerd.service/kubepods-..." with no
+            # docker/podman marker.  (#47111)
+            if "containerd" in cgroup or "kubepods" in cgroup:
                 _container_detected = True
                 return True
     except OSError:

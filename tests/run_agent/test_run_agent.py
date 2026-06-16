@@ -467,6 +467,45 @@ class TestStripThinkBlocks:
         assert "<tool_call>" not in result
         assert "final answer" in result
 
+    # ─── Unterminated tag regex compile (#45222) ──────────────────────
+    # The step-2 unterminated-tag regex has historically had the closing
+    # ``)`` of the non-capturing alternation group accidentally dropped
+    # during reformatting, turning the last alternative
+    # ``REASONING_SCRATCHPAD\b[^>]*>.*$`` into one giant alternative
+    # that swallows the rest of the regex. The result is a runtime
+    # ``re.error: missing ), unterminated subpattern`` the first time
+    # ``_strip_think_blocks`` runs. The whole module imports cleanly
+    # because re.sub compiles lazily at call time, so a unit test that
+    # only hits the closed-pair path (step 1) won't catch it. These
+    # tests force the unterminated path to run with the newly added
+    # ``mm:think`` variant and the historically affected
+    # ``REASONING_SCRATCHPAD`` variant — the two tags that wouldn't
+    # have compiled under the broken regex.
+
+    def test_unterminated_mm_think_block_content_stripped(self, agent):
+        """The newly added ``mm:think`` tag variant is stripped when
+        unterminated. Without the regex fix above this raises
+        ``re.error: missing ), unterminated subpattern``.
+        """
+        result = agent._strip_think_blocks(
+            "<mm:think>let me reconsider"
+        )
+        # The malformed regex would have raised re.error before any
+        # substitution could happen; the function returning here
+        # proves the regex compiled.
+        assert "let me reconsider" not in result
+        assert result.strip() == ""
+
+    def test_unterminated_reasoning_scratchpad_block_content_stripped(self, agent):
+        """``REASONING_SCRATCHPAD`` (the tag that exposed the missing
+        ``)``) is stripped when unterminated. Without the fix this
+        raises ``re.error``.
+        """
+        result = agent._strip_think_blocks(
+            "<REASONING_SCRATCHPAD>internal scratch without close"
+        )
+        assert "internal scratch" not in result
+        assert result.strip() == ""
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

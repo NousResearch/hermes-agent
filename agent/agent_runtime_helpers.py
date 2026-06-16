@@ -550,8 +550,13 @@ def strip_think_blocks(agent, content: str) -> str:
     #    (start of text, or after a newline) with no matching close.
     #    Strip from the tag to end of string.  Fixes #8878 / #9568
     #    (MiniMax M2.7 leaking raw reasoning into assistant content).
+    # NOTE: the non-capturing alternation group must be closed with `)`
+    # before the trailing ``\b[^>]*>.*$`` so REASONING_SCRATCHPAD stays
+    # inside the alternation instead of binding the whole rest of the
+    # regex as its last alternative. Without the `)` this raises
+    # ``re.error: missing ), unterminated subpattern`` at runtime.
     content = re.sub(
-        r"(?:^|\n)[ \t]*<(?:mm:think|think|thinking|reasoning|thought|REASONING_SCRATCHPAD\b[^>]*>.*$",
+        r"(?:^|\n)[ \t]*<(?:mm:think|think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\b[^>]*>.*$",
         "",
         content,
         flags=re.DOTALL | re.IGNORECASE,

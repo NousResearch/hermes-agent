@@ -15,6 +15,8 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
+  $cronSessions,
+  $messagingSessions,
   $messages,
   $sessions,
   $yoloActive,
@@ -231,7 +233,10 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 }
 
 async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const cached =
+    $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $messagingSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
+    $cronSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
 
   if (cached) {
     return cached

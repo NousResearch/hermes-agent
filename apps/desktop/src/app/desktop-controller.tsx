@@ -150,14 +150,24 @@ const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'subagent', 'tool', ...MESSAGING_SESSI
 // external-platform conversations remain, then split per platform in the UI.
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 
-// Cheap signature compare so the poll only swaps the atom (and re-renders the
-// sidebar) when the visible cron rows actually changed.
-function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
+// Cheap signature compare so polls only swap section atoms (and re-render the
+// sidebar) when the visible rows actually changed.
+function sameSessionSectionSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
   if (a.length !== b.length) {
     return false
   }
 
-  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+  return a.every((session, i) => {
+    const next = b[i]
+
+    return (
+      session.id === next?.id &&
+      session.title === next.title &&
+      normalizeProfileKey(session.profile) === normalizeProfileKey(next.profile) &&
+      normalizeSessionSource(session.source) === normalizeSessionSource(next.source) &&
+      session.last_active === next.last_active
+    )
+  })
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:
@@ -193,6 +203,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const messagingSessionProfileRef = useRef<string | null>(null)
   const refreshSessionsRequestRef = useRef(0)
 
   const gatewayState = useStore($gatewayState)
@@ -354,7 +365,7 @@ export function DesktopController() {
         source: 'cron'
       })
 
-      setCronSessions(prev => (sameCronSignature(prev, sessions) ? prev : sessions))
+      setCronSessions(prev => (sameSessionSectionSignature(prev, sessions) ? prev : sessions))
     } catch {
       // Non-fatal: the cron section just stays empty/stale.
     }
@@ -366,22 +377,30 @@ export function DesktopController() {
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const scopeChanged = messagingSessionProfileRef.current !== sessionProfile
+
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
+
+      messagingSessionProfileRef.current = sessionProfile
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+      setMessagingSessions(prev => (sameSessionSectionSignature(prev, rows) ? prev : rows))
+      if (scopeChanged) {
+        setMessagingPlatformTotals({})
+      }
       // Hit the cap → at least one platform may have more on disk than loaded,
       // so platform sections offer their own per-platform "load more".
       setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
@@ -389,8 +408,9 @@ export function DesktopController() {
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
     const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
+    const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', sessionProfile, {
       source: platform
     })
 
@@ -403,7 +423,7 @@ export function DesktopController() {
 
     const total = result.total ?? incoming.length
     setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+  }, [profileScope])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right

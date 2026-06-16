@@ -1177,8 +1177,6 @@ export const ar = defineLocale({
     unknown: 'غير معروف',
     search: 'البحث عن نموذج...',
     noModels: 'لا توجد نماذج',
-    persistGlobalSession: 'استخدامه للجلسات الجديدة',
-    persistGlobal: 'استخدامه افتراضيا',
     addProvider: 'إضافة مزود',
     loadFailed: 'فشل تحميل النماذج',
     noAuthenticatedProviders: 'لا توجد مزودات مصادق عليها',

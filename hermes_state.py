@@ -684,6 +684,7 @@ class SessionDB:
         self._lock = threading.Lock()
         self._write_count = 0
         self._fts_enabled = False
+        self._trigram_available = False
         self._fts_unavailable_warned = False
         self._conn = None
         try:
@@ -776,14 +777,29 @@ class SessionDB:
             return True
         # SQLite builds that have FTS5 but lack the optional trigram tokenizer
         # raise "no such tokenizer: trigram" instead of "no such module".
-        if "no such tokenizer" in err:
+        # Scope to trigram specifically to avoid masking unrelated tokenizer errors.
+        if "no such tokenizer: trigram" in err:
             return True
         return False
 
     @staticmethod
-    def _is_tokenizer_unavailable_error(exc: sqlite3.OperationalError) -> bool:
-        """Check if the error is about a specific tokenizer (not the whole FTS5 module)."""
-        return "no such tokenizer" in str(exc).lower()
+    def _is_trigram_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        """True when only the trigram tokenizer is missing (FTS5 itself works)."""
+        return "no such tokenizer: trigram" in str(exc).lower()
+
+    def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        """Log once that the trigram tokenizer is missing; base FTS5 stays enabled."""
+        if getattr(self, "_trigram_unavailable_warned", False):
+            return
+        self._trigram_unavailable_warned = True
+        logger.info(
+            "SQLite trigram tokenizer unavailable for %s "
+            "(requires SQLite >= 3.34, this build is %s); "
+            "CJK/substring search will fall back to LIKE: %s",
+            self.db_path,
+            sqlite3.sqlite_version,
+            exc,
+        )
 
     def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
         self._fts_enabled = False
@@ -856,7 +872,10 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             if self._is_fts5_unavailable_error(exc):
                 # Only disable FTS entirely when the whole module is missing.
-                if not self._is_tokenizer_unavailable_error(exc):
+                # A missing trigram tokenizer only affects trigram searches.
+                if self._is_trigram_unavailable_error(exc):
+                    self._warn_trigram_unavailable(exc)
+                else:
                     self._warn_fts5_unavailable(exc)
                 return None
             if "no such table" in str(exc).lower():
@@ -884,7 +903,9 @@ class SessionDB:
             # Only disable FTS entirely when the whole FTS5 module is missing.
             # A missing specific tokenizer (e.g. trigram) means only that
             # particular table cannot be created — the base FTS5 table is fine.
-            if not self._is_tokenizer_unavailable_error(exc):
+            if self._is_trigram_unavailable_error(exc):
+                self._warn_trigram_unavailable(exc)
+            else:
                 self._warn_fts5_unavailable(exc)
             return False
 
@@ -1183,22 +1204,23 @@ class SessionDB:
                         except sqlite3.OperationalError as exc:
                             if not self._is_fts5_unavailable_error(exc):
                                 raise
-                            if not self._is_tokenizer_unavailable_error(exc):
+                            if self._is_trigram_unavailable_error(exc):
+                                self._warn_trigram_unavailable(exc)
+                            else:
                                 self._warn_fts5_unavailable(exc)
-                            fts5_available = False
-                            fts_migrations_complete = False
+                                fts5_available = False
+                                fts_migrations_complete = False
                             break
 
                     if fts5_available:
                         # Recreate virtual tables + triggers with the new inline-mode
                         # schema that indexes content || tool_name || tool_calls.
-                        if (
-                            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
-                            and self._ensure_fts_schema(
-                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                            )
-                        ):
-                            # Backfill both indexes from every existing messages row.
+                        # Handle base and trigram independently — a missing
+                        # trigram tokenizer should not prevent base FTS backfill.
+                        base_fts_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts", FTS_SQL
+                        )
+                        if base_fts_ok:
                             cursor.execute(
                                 "INSERT INTO messages_fts(rowid, content) "
                                 "SELECT id, "
@@ -1207,6 +1229,10 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
+                        trigram_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        )
+                        if trigram_ok:
                             cursor.execute(
                                 "INSERT INTO messages_fts_trigram(rowid, content) "
                                 "SELECT id, "
@@ -1215,8 +1241,12 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
-                        else:
+                        if not base_fts_ok:
                             fts_migrations_complete = False
+                        # Track trigram availability for CJK LIKE fallback.
+                        self._trigram_available = trigram_ok
+                    else:
+                        fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
             if current_version < 12:
@@ -1286,6 +1316,7 @@ class SessionDB:
                 trigram_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
+                self._trigram_available = trigram_enabled
                 if trigram_enabled and triggers_need_repair:
                     self._rebuild_fts_indexes(cursor)
 
@@ -3422,7 +3453,8 @@ class SessionDB:
                 self._count_cjk(t) < 3 for t in _tokens_for_check
             )
 
-            if cjk_count >= 3 and not _any_short_cjk:
+            _trigram_succeeded = False
+            if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -3471,11 +3503,13 @@ class SessionDB:
                     try:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
                     except sqlite3.OperationalError:
-                        matches = []
+                        # Trigram query failed at runtime — fall through to LIKE.
+                        pass
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
-            else:
-                # Short / mixed CJK query: trigram cannot match tokens with
+                        _trigram_succeeded = True
+            if not _trigram_succeeded:
+                # Short / mixed CJK query, trigram unavailable, or trigram
                 # <3 CJK chars. Fall back to LIKE substring search.
                 # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
                 # build one LIKE condition per non-operator token so each term

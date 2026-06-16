@@ -1129,33 +1129,42 @@ def drop_thinking_only_and_merge_users(
 
 
 def _live_state_diverges_from_primary(agent) -> bool:
-    """True when the agent's LIVE provider/auth state differs from its primary
-    snapshot — i.e. the session is degraded and should be restored.
+    """True when the agent's LIVE auth state shows the specific *degradation*
+    signature that a failed fallback / mid-turn credential rebuild leaves
+    behind — namely a native-Anthropic session whose OAuth flag got flipped off
+    or whose resolved key was lost. That state produces unsanitised
+    ``Bearer None`` requests which Anthropic rejects with a misleading 400.
 
-    Compares the fields that a fallback activation or a mid-turn credential
-    rebuild mutates: provider, api_mode, base_url, and (for native Anthropic)
-    the OAuth flag and resolved key.  Used by restore_primary_runtime to
-    self-heal a session that was left degraded WITHOUT _fallback_activated set
-    (failed-activation / dead-fallback path).  Conservative: returns False when
-    there is no primary snapshot to compare against.
+    Used by restore_primary_runtime to self-heal a session left degraded
+    WITHOUT ``_fallback_activated`` set.
+
+    Deliberately NARROW: it only looks at the OAuth flag and the Anthropic key,
+    NOT at provider / api_mode / base_url. Those can legitimately differ from
+    the init snapshot when host code intentionally reconfigures the agent
+    mid-life (e.g. switching to a local Ollama endpoint), and treating that as
+    "degradation" would wrongly clobber the deliberate change. Restoration here
+    is reserved for the genuine credential-degradation fingerprint. Conservative:
+    returns False when there is no primary snapshot or the primary was not an
+    OAuth Anthropic session.
     """
     rt = getattr(agent, "_primary_runtime", None)
     if not rt:
         return False
+    # Only meaningful for a native-Anthropic OAuth primary — that's the only
+    # configuration where the degraded "Bearer None / unsanitised prompt" 400
+    # arises, and the only one we know how to safely restore from here.
+    if rt.get("api_mode") != "anthropic_messages" or not rt.get("is_anthropic_oauth"):
+        return False
+    # If the live provider was intentionally moved off Anthropic, this isn't the
+    # degradation we heal — leave it alone.
     if (getattr(agent, "provider", None) or "") != (rt.get("provider") or ""):
+        return False
+    # Degradation fingerprint: OAuth flag flipped off, or the resolved key lost.
+    if not bool(getattr(agent, "_is_anthropic_oauth", False)):
         return True
-    if (getattr(agent, "api_mode", None) or "") != (rt.get("api_mode") or ""):
+    live_key = getattr(agent, "_anthropic_api_key", None)
+    if rt.get("anthropic_api_key") and not live_key:
         return True
-    if str(getattr(agent, "base_url", "") or "").rstrip("/") != str(rt.get("base_url") or "").rstrip("/"):
-        return True
-    # Native Anthropic: a degraded turn flips _is_anthropic_oauth False and/or
-    # leaves an empty key, which produces unsanitised "Bearer None" requests.
-    if rt.get("api_mode") == "anthropic_messages":
-        if bool(getattr(agent, "_is_anthropic_oauth", False)) != bool(rt.get("is_anthropic_oauth", False)):
-            return True
-        live_key = getattr(agent, "_anthropic_api_key", None)
-        if rt.get("anthropic_api_key") and not live_key:
-            return True
     return False
 
 

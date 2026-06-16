@@ -3945,6 +3945,43 @@ class TestApplyWalProbe:
             "set-pragma must fire when probe returns 'delete'"
         )
 
+    def test_disk_i_o_error_forces_delete_even_if_disk_header_reports_wal(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """disk I/O errors must still force delete fallback, even if DB header is WAL."""
+        import sqlite3
+        import hermes_state
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                if "journal_mode=WAL" in sql:
+                    raise sqlite3.OperationalError("disk i/o error")
+                return super().execute(sql, params)
+
+        db_path = tmp_path / "force_delete.db"
+        conn = _TracingConn(str(db_path))
+
+        # Simulate a DB that is already WAL on disk but cannot switch journaling mode.
+        monkeypatch.setattr(
+            hermes_state,
+            "_on_disk_journal_mode",
+            lambda _conn: "wal",
+        )
+
+        try:
+            result = hermes_state.apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "delete"
+
 
 class TestSessionArchive:
     """Soft-archiving hides a session from default listings without deleting it."""

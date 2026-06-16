@@ -128,6 +128,13 @@ SCHEMA_VERSION = 16
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
+    "disk i/o error",         # Stale SHM/FS state can block WAL init
+)
+
+# Disk I/O failures where WAL is already impossible (for example stale
+# ``*.db-shm`` after unclean host/container shutdown on gRPC-FUSE/virtioFS).
+_WAL_FORCE_DELETE_MARKERS = (
+    "disk i/o error",
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
@@ -270,10 +277,18 @@ def apply_wal_with_fallback(
         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
             # Unrelated OperationalError — don't silently swallow.
             raise
-        # Don't downgrade if another process already set WAL on disk.
-        existing = _on_disk_journal_mode(conn)
-        if existing == "wal":
-            raise
+
+        # Treat explicit disk-I/O faults as a hard fallback signal even if the
+        # database header still reports WAL mode.
+        force_delete = any(
+            marker in msg for marker in _WAL_FORCE_DELETE_MARKERS
+        )
+        if not force_delete:
+            # Don't downgrade if another process already set WAL on disk.
+            existing = _on_disk_journal_mode(conn)
+            if existing == "wal":
+                raise
+
         _log_wal_fallback_once(db_label, exc)
         conn.execute("PRAGMA journal_mode=DELETE")
         return "delete"

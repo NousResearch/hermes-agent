@@ -28,6 +28,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
+    _load_context_cache,
     _MODEL_CACHE_TTL,
 )
 
@@ -1467,6 +1468,39 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+    def test_yaml_null_value_returns_empty_dict(self, tmp_path):
+        """context_lengths: (no value) parses as YAML null; must not crash.
+
+        Regression test for the case where context_length_cache.yaml
+        contains ``context_lengths:`` with no value.  YAML parses this
+        as ``{"context_lengths": None}``.  ``dict.get(key, default)``
+        returns the default only when the key is *absent*; when the
+        value is ``None`` it returns ``None`` — which then crashes
+        downstream callers that call ``.get()`` on the result.
+        """
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text("context_lengths:\n")
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            # Must return {}, not None
+            assert _load_context_cache() == {}
+            # Downstream must not crash
+            assert get_cached_context_length("model", "http://x") is None
+
+    def test_yaml_null_then_valid_write(self, tmp_path):
+        """After a null-value cache is fixed, writing a new entry works."""
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text("context_lengths:\n")
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("model", "http://x", 128000)
+            assert get_cached_context_length("model", "http://x") == 128000
+
+    def test_valid_cache_non_regression(self, tmp_path):
+        """Valid cache file with actual data still works correctly."""
+        cache_file = tmp_path / "cache.yaml"
+        cache_file.write_text("context_lengths:\n  model@http://x: 128000\n")
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_cached_context_length("model", "http://x") == 128000
 
 
 class TestGrok43StaleCacheGuard:

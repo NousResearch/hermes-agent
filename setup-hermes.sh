@@ -78,7 +78,7 @@ else
     fi
 
     if [ -n "$UV_CMD" ]; then
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_VERSION=$("$UV_CMD" --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} uv found ($UV_VERSION)"
     else
         echo -e "${CYAN}→${NC} Installing uv..."
@@ -106,7 +106,7 @@ else
 
             if [ -n "$UV_CMD" ]; then
                 rm -f "$_uv_log"
-                UV_VERSION=$($UV_CMD --version 2>/dev/null)
+                UV_VERSION=$("$UV_CMD" --version 2>/dev/null)
                 echo -e "${GREEN}✓${NC} uv installed ($UV_VERSION)"
             else
                 echo -e "${RED}✗${NC} uv installer reported success but binary not found. Add ~/.local/bin to PATH and retry."
@@ -149,14 +149,14 @@ if is_termux; then
         exit 1
     fi
 else
-    if $UV_CMD python find "$PYTHON_VERSION" &> /dev/null; then
-        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
+    if "$UV_CMD" python find "$PYTHON_VERSION" &> /dev/null; then
+        PYTHON_PATH=$("$UV_CMD" python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION found"
     else
         echo -e "${CYAN}→${NC} Python $PYTHON_VERSION not found, installing via uv..."
-        $UV_CMD python install "$PYTHON_VERSION"
-        PYTHON_PATH=$($UV_CMD python find "$PYTHON_VERSION")
+        "$UV_CMD" python install "$PYTHON_VERSION"
+        PYTHON_PATH=$("$UV_CMD" python find "$PYTHON_VERSION")
         PYTHON_FOUND_VERSION=$($PYTHON_PATH --version 2>/dev/null)
         echo -e "${GREEN}✓${NC} $PYTHON_FOUND_VERSION installed"
     fi
@@ -177,7 +177,7 @@ if is_termux; then
     "$PYTHON_PATH" -m venv venv
     echo -e "${GREEN}✓${NC} venv created with stdlib venv"
 else
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    "$UV_CMD" venv venv --python "$PYTHON_VERSION"
     echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
 fi
 
@@ -228,9 +228,9 @@ else
     done
     _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
     _try_install() {
-        $UV_CMD pip install -e ".[all]" \
-            || $UV_CMD pip install -e "$_SAFE_SPEC" \
-            || $UV_CMD pip install -e "."
+        "$UV_CMD" pip install -e ".[all]" \
+            || "$UV_CMD" pip install -e "$_SAFE_SPEC" \
+            || "$UV_CMD" pip install -e "."
     }
 
     if [ -f "uv.lock" ]; then
@@ -251,7 +251,7 @@ else
         # at first use.
         # Also: stream stderr through directly so the user sees uv's
         # progress UI instead of staring at a frozen prompt.
-        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --extra all --locked; then
+        if UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" "$UV_CMD" sync --extra all --locked; then
             echo -e "${GREEN}✓${NC} Dependencies installed (hash-verified via uv.lock)"
         else
             echo -e "${YELLOW}⚠${NC} Lockfile sync failed (see uv output above)."

@@ -1,0 +1,25 @@
+name: Deploy Installer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/install.ps1'
+      - '.github/workflows/deploy-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-vercel:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Vercel Deploy
+        run: curl -fsS -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"

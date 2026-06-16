@@ -974,6 +974,90 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_missing_ack_relay(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A terminal task reached a work verdict but the origin ACK/relay
+    could not be delivered (or had no target).
+
+    Fires on active ``ack_relay_status`` events — those not superseded by a
+    later clean ``completed`` / ``edited`` (a retry that relayed fine clears
+    the stale signal). ``ack_status="failed"`` is an error (the relay
+    demonstrably failed); ``ack_status="ambiguous"`` is a warning (no target
+    at terminal time — could be delivered-then-removed or never subscribed).
+
+    Keeps ``task_verdict`` and ``ack_status`` separate so a done BLOCK/GO
+    task is not silently treated as fully delivered. The recovery hint is
+    deliberately conservative: surface the gap and let the operator relay /
+    re-trigger, rather than auto-firing a wake.
+    """
+    hits = _active_hallucination_events(events, "ack_relay_status")
+    if not hits:
+        return []
+    # The latest active event wins for status/verdict; "failed" anywhere in
+    # the active run dominates "ambiguous".
+    statuses = [(_parse_payload(ev).get("ack_status") or "") for ev in hits]
+    failed = "failed" in statuses
+    ack_status = "failed" if failed else (statuses[-1] or "ambiguous")
+    matched: list[str] = []
+    task_verdict = None
+    for ev in hits:
+        p = _parse_payload(ev)
+        if p.get("task_verdict"):
+            task_verdict = p.get("task_verdict")
+        for m in p.get("matched", []) or []:
+            if m not in matched:
+                matched.append(m)
+    severity = "error" if failed else "warning"
+    task_id = _task_field(task, "id")
+    actions: list[DiagnosticAction] = [
+        DiagnosticAction(
+            kind="comment",
+            label="Relay the verdict to the origin and comment NEED_ACK_RELAY",
+            suggested=True,
+        ),
+    ]
+    if task_id:
+        actions.append(DiagnosticAction(
+            kind="cli_hint",
+            label=f"Inspect relay context: hermes kanban show {task_id}",
+            payload={"command": f"hermes kanban show {task_id}"},
+        ))
+    verdict_str = task_verdict or "(none)"
+    if failed:
+        detail = (
+            f"This task reached a terminal work verdict ({verdict_str}) but the "
+            f"origin ACK/relay could not be delivered "
+            f"({', '.join(matched) or 'relay failure'}). The worker could not "
+            f"message the origin and the gateway relay had no live target, so "
+            f"the origin may be silently waiting. The task is done, but the "
+            f"ACK is not — relay the result or re-trigger the origin wake."
+        )
+    else:
+        detail = (
+            f"This task reached a terminal work verdict ({verdict_str}) but no "
+            f"notify target was registered at completion time, so whether the "
+            f"origin was woken is ambiguous. Confirm the origin received the "
+            f"verdict; relay it manually if not."
+        )
+    return [Diagnostic(
+        kind="missing_ack_relay",
+        severity=severity,
+        title=(
+            f"Verdict {verdict_str} done but origin ACK "
+            f"{'failed' if failed else 'unconfirmed'}"
+        ),
+        detail=detail,
+        actions=actions,
+        first_seen_at=_event_ts(hits[0]),
+        last_seen_at=_event_ts(hits[-1]),
+        count=len(hits),
+        data={
+            "task_verdict": task_verdict,
+            "ack_status": ack_status,
+            "matched": matched,
+        },
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
@@ -985,6 +1069,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_missing_ack_relay,
 ]
 
 
@@ -999,6 +1084,7 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "missing_ack_relay",
 )
 
 

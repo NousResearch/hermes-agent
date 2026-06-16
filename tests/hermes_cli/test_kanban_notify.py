@@ -745,3 +745,93 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+# ---------------------------------------------------------------------------
+# ACK/relay status classification + durable event on terminal completion.
+# task_verdict (the work decision) is tracked separately from ack_status
+# (whether the origin wake/ACK relay actually reached a target).
+# ---------------------------------------------------------------------------
+
+
+def test_classify_ack_relay_detects_no_messaging_targets():
+    res = kb.classify_ack_relay(
+        summary="Verdict: BLOCK\nReview failed. no messaging targets",
+    )
+    assert res["task_verdict"] == "BLOCK"
+    assert res["ack_status"] == "failed"
+    assert res["relay_failure"] is True
+    assert "no messaging targets" in res["matched"]
+
+
+def test_classify_ack_relay_parses_go_verdict_without_relay_failure():
+    res = kb.classify_ack_relay(summary="Verdict: GO\nAll good, merged.")
+    assert res["task_verdict"] == "GO"
+    # No relay-failure string and no notify context -> not a hard failure.
+    assert res["relay_failure"] is False
+    assert res["ack_status"] == "unknown"
+
+
+def test_classify_ack_relay_empty_notify_after_terminal_is_ambiguous():
+    # A done task carrying a verdict but with zero notify subscriptions is
+    # ambiguous: the subs may have been delivered+removed, or there may
+    # never have been an origin target. Not a confirmed failure.
+    res = kb.classify_ack_relay(summary="Verdict: GO", notify_subs=[])
+    assert res["task_verdict"] == "GO"
+    assert res["relay_failure"] is False
+    assert res["ack_status"] == "ambiguous"
+
+
+def test_classify_ack_relay_scans_result_and_metadata():
+    res = kb.classify_ack_relay(
+        result="done",
+        metadata={"relay": "trigger_error no live gateway runner"},
+    )
+    assert res["relay_failure"] is True
+    assert res["ack_status"] == "failed"
+
+
+def test_complete_task_emits_ack_relay_status_event_on_relay_failure(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review task", assignee="reviewer")
+        kb.complete_task(
+            conn, tid,
+            summary="Verdict: BLOCK\norigin relay could not be sent",
+        )
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    ack = [e for e in events if e.kind == "ack_relay_status"]
+    assert len(ack) == 1, "exactly one durable ack_relay_status event"
+    payload = ack[0].payload
+    assert payload["ack_status"] == "failed"
+    assert payload["task_verdict"] == "BLOCK"
+    assert "origin relay could not be sent" in payload["matched"]
+
+
+def test_complete_task_clean_summary_emits_no_ack_relay_event(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="leaf task", assignee="worker")
+        # Has a live notify sub, so the empty-notify ambiguity does not apply.
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c1")
+        kb.complete_task(conn, tid, summary="Verdict: GO\nshipped.")
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert [e for e in events if e.kind == "ack_relay_status"] == []
+
+
+def test_complete_task_ack_relay_event_emitted_once_no_storm(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="fanin task", assignee="reviewer")
+        kb.complete_task(conn, tid, summary="Verdict: BLOCK no messaging targets")
+        # A second completion call on an already-done task is a no-op and
+        # must not append another ack_relay_status event.
+        kb.complete_task(conn, tid, summary="Verdict: BLOCK no messaging targets")
+        events = kb.list_events(conn, tid)
+    finally:
+        conn.close()
+    assert len([e for e in events if e.kind == "ack_relay_status"]) == 1

@@ -3619,6 +3619,96 @@ def _scan_prose_for_phantom_ids(
     return [m for m in unique if m not in existing]
 
 
+# Substrings that, when present in a terminal task's summary / result /
+# metadata, mean the origin wake/ACK relay did NOT reach a live target even
+# though the task itself reached a terminal verdict. Worker CLI sessions
+# frequently cannot send messages, so the gateway relay path is the only way
+# the origin learns the task finished — when that path emits one of these
+# strings the completion is durable but the ACK is missing. Matched
+# case-insensitively. See :func:`classify_ack_relay`.
+ACK_RELAY_FAILURE_PATTERNS: tuple[str, ...] = (
+    "no messaging targets",
+    "origin relay could not be sent",
+    "no live gateway runner",
+)
+
+
+def _parse_task_verdict(text: str) -> Optional[str]:
+    """Extract a ``Verdict: <X>`` token from terminal handoff text.
+
+    Review / fan-in tasks encode their work decision as a ``Verdict:``
+    line (e.g. ``Verdict: GO`` / ``Verdict: BLOCK``). Returns the
+    normalised upper-case token (``-`` folded to ``_``) or ``None`` when
+    no verdict line is present. Deliberately verdict-only: it says
+    nothing about whether the origin was woken — that is ``ack_status``.
+    """
+    if not text:
+        return None
+    m = re.search(r"verdict\s*[:=]\s*([A-Za-z][A-Za-z_-]*)", text, re.IGNORECASE)
+    if not m:
+        return None
+    return m.group(1).strip().upper().replace("-", "_")
+
+
+def classify_ack_relay(
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    *,
+    notify_subs: Optional[list] = None,
+) -> dict:
+    """Classify a terminal task's handoff into separate verdict + ack signals.
+
+    Returns a dict with:
+
+    * ``task_verdict`` — the work decision (``"GO"`` / ``"BLOCK"`` / …) parsed
+      from a ``Verdict:`` line, or ``None``.
+    * ``ack_status`` — one of:
+        - ``"failed"``: a relay-failure pattern was found in the text/metadata
+          (the origin ACK demonstrably could not be delivered).
+        - ``"ambiguous"``: no failure string, but a verdict is present and
+          ``notify_subs`` was supplied and empty — the origin relay had no
+          target at terminal time (could be delivered-then-removed, or never
+          subscribed; we cannot prove the wake happened).
+        - ``"unknown"``: no positive or negative ACK signal.
+    * ``relay_failure`` — ``True`` iff a failure pattern matched.
+    * ``matched`` — the failure substrings found (lower-cased), in pattern order.
+
+    ``task_verdict`` and ``ack_status`` are intentionally independent so a
+    done BLOCK/GO task is never treated as proof the origin was woken.
+    """
+    haystack_parts: list[str] = []
+    for part in (summary, result):
+        if part:
+            haystack_parts.append(str(part))
+    if isinstance(metadata, dict):
+        try:
+            haystack_parts.append(json.dumps(metadata, ensure_ascii=False))
+        except Exception:
+            haystack_parts.append(str(metadata))
+    haystack = "\n".join(haystack_parts)
+    hay_lower = haystack.lower()
+
+    matched = [p for p in ACK_RELAY_FAILURE_PATTERNS if p in hay_lower]
+    relay_failure = bool(matched)
+
+    verdict = _parse_task_verdict(haystack)
+
+    if relay_failure:
+        ack_status = "failed"
+    elif verdict is not None and notify_subs is not None and len(notify_subs) == 0:
+        ack_status = "ambiguous"
+    else:
+        ack_status = "unknown"
+
+    return {
+        "task_verdict": verdict,
+        "ack_status": ack_status,
+        "relay_failure": relay_failure,
+        "matched": matched,
+    }
+
+
 class HallucinatedCardsError(ValueError):
     """Raised by ``complete_task`` when ``created_cards`` contains ids
     that don't exist or weren't created by the completing worker.
@@ -3807,6 +3897,34 @@ def complete_task(
                     },
                     run_id=run_id,
                 )
+    # Durable ACK/relay classification. The work verdict can be terminal
+    # (done, BLOCK/GO) while the origin wake/ACK relay never reached a
+    # target — worker CLI sessions often cannot send messages, so a relay
+    # failure string in the handoff (or an empty notify list at terminal
+    # time) means the origin may be silently waiting. Record a durable
+    # ``ack_relay_status`` event so diagnostics can surface it; keep
+    # ``task_verdict`` and ``ack_status`` as distinct payload fields so a
+    # done verdict is never mistaken for a delivered ACK. Emitted at most
+    # once per terminal transition (this block only runs when the status
+    # update above flipped exactly one row), so it cannot storm.
+    ack = classify_ack_relay(
+        summary=summary,
+        result=result,
+        metadata=metadata,
+        notify_subs=list_notify_subs(conn, task_id),
+    )
+    if ack["ack_status"] in ("failed", "ambiguous"):
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "ack_relay_status",
+                {
+                    "ack_status": ack["ack_status"],
+                    "task_verdict": ack["task_verdict"],
+                    "matched": ack["matched"],
+                    "source": "completion",
+                },
+                run_id=run_id,
+            )
     # Successful completion — wipe the consecutive-failures counter.
     # Failure history stays on the event log for audit; the counter
     # just tracks "is there a current pathology the breaker should

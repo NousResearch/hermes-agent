@@ -56,8 +56,25 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+// Resolve a media path to a URL the shell can open. Remote mode rewrites
+// gateway-local paths to an authenticated /api/files/download URL (the file
+// lives on the gateway, not this disk); local mode keeps the file:// form.
 export function mediaExternalUrl(path: string): string {
-  return /^(?:https?|file):/i.test(path) ? path : `file://${path}`
+  if (/^https?:/i.test(path)) {
+    return path
+  }
+
+  if (isRemoteGateway()) {
+    const conn = $connection.get()
+
+    if (conn?.baseUrl && conn.token) {
+      const file = encodeURIComponent(filePathFromMediaPath(path))
+
+      return `${conn.baseUrl}/api/files/download?path=${file}&token=${encodeURIComponent(conn.token)}`
+    }
+  }
+
+  return /^file:/i.test(path) ? path : `file://${path}`
 }
 
 // Custom Electron scheme (registered in electron/main.cjs) that streams a local

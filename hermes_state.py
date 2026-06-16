@@ -845,9 +845,12 @@ class SessionDB:
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
     @staticmethod
-    def _rebuild_fts_indexes(cursor: sqlite3.Cursor) -> None:
-        for table_name in ("messages_fts", "messages_fts_trigram"):
-            cursor.execute(f"DELETE FROM {table_name}")
+    def _rebuild_fts_indexes(
+        cursor: sqlite3.Cursor,
+        *,
+        include_trigram: bool = True,
+    ) -> None:
+        cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
             "SELECT id, "
@@ -856,6 +859,9 @@ class SessionDB:
             "COALESCE(tool_calls, '') "
             "FROM messages"
         )
+        if not include_trigram:
+            return
+        cursor.execute("DELETE FROM messages_fts_trigram")
         cursor.execute(
             "INSERT INTO messages_fts_trigram(rowid, content) "
             "SELECT id, "
@@ -1317,8 +1323,11 @@ class SessionDB:
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
                 self._trigram_available = trigram_enabled
-                if trigram_enabled and triggers_need_repair:
-                    self._rebuild_fts_indexes(cursor)
+                if triggers_need_repair:
+                    self._rebuild_fts_indexes(
+                        cursor,
+                        include_trigram=trigram_enabled,
+                    )
 
         self._conn.commit()
 

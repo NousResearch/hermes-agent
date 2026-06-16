@@ -344,6 +344,45 @@ class TestSessionLifecycle:
         finally:
             restored.close()
 
+    def test_base_fts_rebuilds_after_trigger_repair_without_trigram(
+        self, tmp_path, monkeypatch
+    ):
+        """Trigger repair must rebuild base FTS even when trigram is unavailable."""
+        db_path = tmp_path / "state.db"
+        seeded = SessionDB(db_path=db_path)
+        try:
+            seeded.create_session(session_id="s1", source="cli")
+            seeded.append_message("s1", role="user", content="already indexed")
+            for trigger in (
+                "messages_fts_insert",
+                "messages_fts_delete",
+                "messages_fts_update",
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                seeded._conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            seeded._conn.commit()
+            seeded.append_message("s1", role="assistant", content="repair only base needle")
+        finally:
+            seeded.close()
+
+        real_connect = sqlite3.connect
+
+        def connect_without_trigram(*args, **kwargs):
+            kwargs["factory"] = _NoTrigramConnection
+            return real_connect(*args, **kwargs)
+
+        monkeypatch.setattr("hermes_state.sqlite3.connect", connect_without_trigram)
+        restored = SessionDB(db_path=db_path)
+        try:
+            assert restored._fts_enabled is True
+            assert restored._trigram_available is False
+            assert restored._fts_table_exists("messages_fts") is True
+            assert len(restored.search_messages("needle")) == 1
+        finally:
+            restored.close()
+
     def test_is_fts5_unavailable_error_catches_trigram_tokenizer(self):
         """Unit test: _is_fts5_unavailable_error matches 'no such tokenizer: trigram'."""
         fts5_err = sqlite3.OperationalError("no such module: fts5")

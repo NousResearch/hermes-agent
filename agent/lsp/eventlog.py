@@ -188,6 +188,15 @@ def log_spawn_failed(server_id: str, workspace_root: str, exc: BaseException) ->
     )
 
 
+def log_idle_reap(server_id: str, workspace_root: str, idle_timeout: float) -> None:
+    """An idle LSP client was shut down to reclaim memory.  INFO."""
+    _emit(
+        server_id,
+        logging.INFO,
+        f"idle reaped after {idle_timeout}s: {workspace_root}",
+    )
+
+
 def reset_announce_caches() -> None:
     """Test-only: clear the dedup caches.  Production code never calls this."""
     with _announce_lock:
@@ -209,5 +218,6 @@ __all__ = [
     "log_timeout",
     "log_server_error",
     "log_spawn_failed",
+    "log_idle_reap",
     "reset_announce_caches",
 ]

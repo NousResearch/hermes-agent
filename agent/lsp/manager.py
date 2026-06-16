@@ -183,6 +183,18 @@ class LSPService:
         # introduced by the current edit.
         self._delta_baseline: Dict[str, List[Dict[str, Any]]] = {}
 
+        # Idle reaper: periodically shut down clients that haven't been
+        # used for longer than _idle_timeout seconds.  Runs on the
+        # background loop so it can await client.shutdown() cleanly.
+        self._reaper_task: Optional[asyncio.Task] = None
+        if self._enabled and self._idle_timeout > 0:
+            self._loop.start()
+            loop = self._loop._loop
+            if loop is not None:
+                self._reaper_task = loop.create_task(
+                    self._reaper_loop(), name="lsp-idle-reaper"
+                )
+
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
         """Build a service from ``hermes_cli.config`` settings.
@@ -226,6 +238,8 @@ class LSPService:
                 if isinstance(init, dict):
                     init_overrides[name] = init
 
+        idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
+
         return cls(
             enabled=enabled,
             wait_mode=wait_mode,
@@ -235,6 +249,7 @@ class LSPService:
             env_overrides=env_overrides,
             init_overrides=init_overrides,
             disabled_servers=disabled,
+            idle_timeout=idle_timeout,
         )
 
     # ------------------------------------------------------------------
@@ -566,7 +581,46 @@ class LSPService:
             with self._state_lock:
                 self._spawning.pop(key, None)
 
+    async def _reaper_loop(self) -> None:
+        """Background task that shuts down idle LSP clients.
+
+        Runs every ``_idle_timeout / 2`` seconds (capped at 60s).
+        Clients whose ``_last_used`` timestamp is older than
+        ``_idle_timeout`` are gracefully shut down and removed from
+        the client map so memory is reclaimed.
+        """
+        interval = max(1.0, min(self._idle_timeout / 2, 60.0))
+        while True:
+            await asyncio.sleep(interval)
+            now = time.time()
+            to_reap: List[Tuple[str, str]] = []
+            with self._state_lock:
+                for key, last_t in list(self._last_used.items()):
+                    if now - last_t > self._idle_timeout:
+                        to_reap.append(key)
+            for key in to_reap:
+                with self._state_lock:
+                    client = self._clients.pop(key, None)
+                    self._last_used.pop(key, None)
+                if client is not None and client.is_running:
+                    server_id, ws_root = key
+                    eventlog.log_idle_reap(server_id, ws_root, self._idle_timeout)
+                    try:
+                        await client.shutdown()
+                    except Exception:  # noqa: BLE001
+                        pass
+
     async def _shutdown_async(self) -> None:
+        # Cancel the idle reaper before shutting down clients so it
+        # doesn't race with our cleanup.
+        if self._reaper_task is not None and not self._reaper_task.done():
+            self._reaper_task.cancel()
+            try:
+                await self._reaper_task
+            except asyncio.CancelledError:
+                pass
+            self._reaper_task = None
+
         with self._state_lock:
             clients = list(self._clients.values())
             self._clients.clear()

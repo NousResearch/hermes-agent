@@ -127,6 +127,15 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--reasoning",
+        default=None,
+        help=(
+            "Reasoning effort override for this invocation "
+            "(none, minimal, low, medium, high, xhigh). Applies to -z/--oneshot and --tui."
+        ),
+    )
+    _inherited_flag(
+        parser,
         "--provider",
         default=None,
         help=(
@@ -265,6 +274,12 @@ def build_top_level_parser():
     )
     chat_parser.add_argument(
         "-t", "--toolsets", help="Comma-separated toolsets to enable"
+    )
+    _inherited_flag(
+        chat_parser,
+        "--reasoning",
+        default=argparse.SUPPRESS,
+        help="Reasoning effort override (none, minimal, low, medium, high, xhigh)",
     )
     _inherited_flag(
         chat_parser,

@@ -3205,6 +3205,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
+        reasoning: str = None,
         verbose: Optional[bool] = None,
         compact: bool = False,
         resume: str = None,
@@ -3427,9 +3428,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
-        # Reasoning config (OpenRouter reasoning effort level)
+        # Reasoning config (OpenRouter reasoning effort level). CLI override
+        # wins over config for this process only.
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            reasoning if reasoning is not None else CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
@@ -13495,6 +13497,7 @@ def main(
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
+    reasoning: str = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
@@ -13523,6 +13526,7 @@ def main(
         api_key: API key for authentication
         base_url: Base URL for the API
         max_turns: Maximum tool-calling iterations (default: 60)
+        reasoning: Reasoning effort override for this process
         verbose: Enable verbose logging
         compact: Use compact display mode
         list_tools: List available tools and exit
@@ -13633,6 +13637,7 @@ def main(
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,
+        reasoning=reasoning,
         verbose=verbose,
         compact=compact,
         resume=resume,

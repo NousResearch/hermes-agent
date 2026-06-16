@@ -774,6 +774,10 @@ class Task:
     # list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    # Per-task reasoning effort override. When set, the dispatcher passes
+    # ``--reasoning <level>`` to the worker CLI, overriding the profile's
+    # configured ``agent.reasoning_effort`` for this run.
+    reasoning_override: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -864,6 +868,11 @@ class Task:
             ),
             skills=skills_value,
             model_override=row["model_override"] if "model_override" in keys and row["model_override"] else None,
+            reasoning_override=(
+                row["reasoning_override"]
+                if "reasoning_override" in keys and row["reasoning_override"]
+                else None
+            ),
             max_retries=(
                 row["max_retries"] if "max_retries" in keys else None
             ),
@@ -1016,6 +1025,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
     model_override       TEXT,
+    -- Per-task reasoning effort override. When set, the dispatcher passes
+    -- --reasoning <level> to the worker, overriding agent.reasoning_effort
+    -- for this task only. NULL = use the profile default.
+    reasoning_override   TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1668,7 +1681,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
 
     if "model_override" not in cols:
-        conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
+        _add_column_if_missing(conn, "tasks", "model_override", "model_override TEXT")
+
+    if "reasoning_override" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "reasoning_override", "reasoning_override TEXT"
+        )
 
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
@@ -2066,6 +2084,7 @@ def create_task(
     idempotency_key: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
+    reasoning_override: Optional[str] = None,
     max_retries: Optional[int] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
@@ -2114,6 +2133,14 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
+    if reasoning_override is not None:
+        from hermes_constants import parse_reasoning_effort
+
+        reasoning_override = str(reasoning_override).strip().lower() or None
+        if reasoning_override and parse_reasoning_effort(reasoning_override) is None:
+            raise ValueError(
+                "reasoning_override must be one of none, minimal, low, medium, high, xhigh"
+            )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2236,8 +2263,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, reasoning_override, max_retries, goal_mode,
+                        goal_max_turns, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2255,6 +2283,7 @@ def create_task(
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
+                        reasoning_override,
                         int(max_retries) if max_retries is not None else None,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
@@ -2277,6 +2306,7 @@ def create_task(
                         "tenant": tenant,
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
+                        "reasoning_override": reasoning_override,
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
@@ -6842,6 +6872,8 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
+    if task.reasoning_override:
+        cmd.extend(["--reasoning", task.reasoning_override])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])

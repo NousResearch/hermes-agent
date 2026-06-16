@@ -128,9 +128,45 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 # ── Tokenizer ──
 
+# Frequently used Chinese tech terms — when found, treated as whole words
+# (not bigram-split). Just bigram fallback covers the rest — this list
+# only needs to cover the most common query terms.
+_CN_TECH_TERMS = [
+    # Performance / 性能
+    "性能", "优化", "加速", "缓存", "延迟", "响应",
+    # Security / 安全
+    "安全", "漏洞", "注入", "扫描", "审计", "加密", "认证",
+    # Deploy / 部署
+    "部署", "发布", "上线", "回滚", "配置", "环境",
+    # Database / 数据库
+    "数据库", "查询", "索引", "事务", "备份", "恢复",
+    # Frontend / 前端
+    "前端", "组件", "页面", "路由", "渲染", "样式",
+    # Backend / 后端
+    "后端", "接口", "服务", "网关", "队列", "消息",
+    # Testing / 测试
+    "测试", "单元", "集成", "覆盖", "回归", "自动化",
+    # Code quality / 代码质量
+    "代码", "重构", "审查", "规范", "错误", "调试",
+    # General tech / 通用技术
+    "文件", "搜索", "检索", "构建", "编译", "打包", "安装",
+    "容器", "镜像", "编排", "监控", "日志", "告警",
+    "网络", "代理", "域名", "协议", "链接",
+    "架构", "设计", "文档", "模板", "工具",
+]
+
+
 def _tokenize_set(text: str) -> set[str]:
     tokens = set()
     tokens.update(re.findall(r"[a-z0-9]{2,}", text.lower()))
+
+    # Chinese tech terms first (whole-word match, more precise)
+    lower = text.lower()
+    for term in _CN_TECH_TERMS:
+        if term in lower:
+            tokens.add(term)
+
+    # Then bigram fallback for everything else
     tokens.update(re.findall(r"[一-鿿]{2,6}", text.lower()))
     return tokens
 
@@ -138,6 +174,12 @@ def _tokenize_set(text: str) -> set[str]:
 def _tokenize_list(text: str) -> list[str]:
     text_lower = text.lower()
     tokens = re.findall(r"[a-z0-9]{2,}", text_lower)
+
+    # Chinese tech terms as whole words
+    for term in _CN_TECH_TERMS:
+        if term in text_lower:
+            tokens.append(term)
+
     tokens.extend(re.findall(r"[一-鿿]{2,6}", text_lower))
     return tokens
 
@@ -149,7 +191,13 @@ class _KeywordIndex:
 
     def __init__(self, skills: list[tuple[str, str, str]]):
         self.skills = skills
+        # search_text already includes name + description + body[:500]
         self._doc_tokens = [_tokenize_list(st) for _, _, st in skills]
+        # Boost: name + description tokens get 2x weight (they're in search_text
+        # once to begin with; appending once more = 2x total)
+        for i, (name, desc, _) in enumerate(skills):
+            boost_text = f"{name} {desc}".lower()
+            self._doc_tokens[i].extend(_tokenize_list(boost_text))
         self._doc_token_sets = [set(t) for t in self._doc_tokens]
         self._doc_lens = [len(t) for t in self._doc_tokens]
         self._avgdl = sum(self._doc_lens) / max(len(skills), 1)

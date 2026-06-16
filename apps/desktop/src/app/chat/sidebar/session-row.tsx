@@ -198,7 +198,7 @@ export function SidebarSessionRow({
         onDragStart={nativeDraggable ? handleSessionDragStart : undefined}
         ref={ref}
         style={style}
-        {...dragHandleProps}
+        {...(reorderable ? undefined : dragHandleProps)}
         {...rest}
       >
         <motion.div
@@ -221,11 +221,10 @@ export function SidebarSessionRow({
         >
           {isWorking && !needsInput && !dragging && <span aria-hidden="true" className="arc-border" />}
           <button
+            {...(reorderable ? dragHandleProps : undefined)}
             className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
             data-session-row-main
             draggable={nativeDraggable}
-            onDragEnd={nativeDraggable ? handleRowButtonDragEnd : undefined}
-            onDragStart={nativeDraggable ? handleRowButtonDragStart : undefined}
             onClick={event => {
               const canSelect = Boolean(selectable && onToggleSelect)
 
@@ -293,6 +292,8 @@ export function SidebarSessionRow({
 
               onResume()
             }}
+            onDragEnd={nativeDraggable ? handleRowButtonDragEnd : undefined}
+            onDragStart={nativeDraggable ? handleRowButtonDragStart : undefined}
             type="button"
           >
             {selectionActive ? (

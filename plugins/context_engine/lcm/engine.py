@@ -81,6 +81,16 @@ logger = logging.getLogger(__name__)
 _PLUGIN_ROOT = Path(__file__).resolve().parent
 _PLUGIN_METADATA: dict[str, str] | None = None
 _SESSION_END_BUSY_TIMEOUT_MS = 50
+_FAIL_OPEN_RATE_WINDOW_SECONDS = 300.0
+
+
+class LCMFailOpenRecoveryError(RuntimeError):
+    """Raised when fail-open fallback cannot keep the next request under context."""
+
+    recoverable = True
+    compression_exhausted = True
+
+
 _VISIBLE_TEXT_PART_TYPES = {"text", "input_text", "output_text"}
 _INTERNAL_ASSISTANT_PART_TYPES = {
     "analysis",
@@ -372,6 +382,21 @@ class LCMEngine(ContextEngine):
         self._last_condensation_suppressed_reason = ""
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
+        self._degraded = False
+        self._last_degraded_reason = ""
+        self._last_fail_open_at = 0.0
+        self._last_fail_open_error = ""
+        self._last_fail_open_error_type = ""
+        self._last_fail_open_fallback_error = ""
+        self._last_fail_open_fallback_error_type = ""
+        self._last_fail_open_raw_tokens = 0
+        self._last_fail_open_context_limit = 0
+        self._last_fail_open_over_context_limit = False
+        self._last_fail_open_fallback_attempted = False
+        self._last_fail_open_fallback_status = ""
+        self._fail_open_total_count = 0
+        self._fail_open_consecutive_count = 0
+        self._fail_open_timestamps: list[float] = []
         # Cooldown timestamp to prevent compression cascade after boundary skip.
         # Set when skip-carry-over path is taken in _continue_compression_boundary.
         self._last_boundary_skip_time: float = 0
@@ -841,9 +866,31 @@ class LCMEngine(ContextEngine):
         raise RuntimeError("adaptive leaf rescue exhausted without a valid chunk")
 
     def compress(self, messages: List[Dict[str, Any]],
-                 current_tokens: int = None,
+                 current_tokens: Optional[int] = None,
                  focus_topic: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Main compaction entry point.
+        """Main compaction entry point with fail-open degraded handling."""
+        try:
+            compressed = self._compress_lossless(
+                messages,
+                current_tokens=current_tokens,
+                focus_topic=focus_topic,
+            )
+        except LCMFailOpenRecoveryError:
+            raise
+        except Exception as exc:
+            return self._handle_fail_open_compression_exception(
+                messages,
+                exc,
+                current_tokens=current_tokens,
+                focus_topic=focus_topic,
+            )
+        self._mark_compression_not_degraded()
+        return compressed
+
+    def _compress_lossless(self, messages: List[Dict[str, Any]],
+                           current_tokens: Optional[int] = None,
+                           focus_topic: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Main compaction implementation.
 
         1. Ingest any new messages into the store
         2. Identify messages outside the fresh tail
@@ -1159,6 +1206,213 @@ class LCMEngine(ContextEngine):
         compressed = self._sanitize_active_context_messages(compressed)
 
         return compressed
+
+    def _mark_compression_not_degraded(self) -> None:
+        self._degraded = False
+        self._last_degraded_reason = ""
+        self._fail_open_consecutive_count = 0
+
+    def _fail_open_rate_snapshot(self) -> tuple[int, float]:
+        now = time.time()
+        cutoff = now - _FAIL_OPEN_RATE_WINDOW_SECONDS
+        self._fail_open_timestamps = [
+            ts for ts in self._fail_open_timestamps if ts >= cutoff
+        ]
+        window_count = len(self._fail_open_timestamps)
+        rate_per_minute = window_count * (60.0 / _FAIL_OPEN_RATE_WINDOW_SECONDS)
+        return window_count, rate_per_minute
+
+    def _safe_fail_open_error_text(self, exc: BaseException) -> str:
+        redacted = redact_sensitive_value(str(exc), self._config)
+        text = str(redacted or "")
+        return text or type(exc).__name__
+
+    def _raw_messages_exceed_context_limit(
+        self,
+        raw_tokens: int,
+        context_limit: Optional[int],
+    ) -> bool:
+        return bool(context_limit and context_limit > 0 and raw_tokens >= context_limit)
+
+    def _record_fail_open_degraded(
+        self,
+        exc: BaseException,
+        *,
+        raw_tokens: int,
+        context_limit: Optional[int],
+        fallback_attempted: bool,
+        fallback_status: str,
+        fallback_exc: Optional[BaseException] = None,
+    ) -> None:
+        now = time.time()
+        safe_error = self._safe_fail_open_error_text(exc)
+        safe_fallback_error = (
+            self._safe_fail_open_error_text(fallback_exc)
+            if fallback_exc is not None
+            else ""
+        )
+
+        self._degraded = True
+        self._last_degraded_reason = "fail_open"
+        self._last_fail_open_at = now
+        self._last_fail_open_error = safe_error
+        self._last_fail_open_error_type = type(exc).__name__
+        self._last_fail_open_fallback_error = safe_fallback_error
+        self._last_fail_open_fallback_error_type = (
+            type(fallback_exc).__name__ if fallback_exc is not None else ""
+        )
+        self._last_fail_open_raw_tokens = raw_tokens
+        self._last_fail_open_context_limit = int(context_limit or 0)
+        self._last_fail_open_over_context_limit = self._raw_messages_exceed_context_limit(
+            raw_tokens,
+            context_limit,
+        )
+        self._last_fail_open_fallback_attempted = fallback_attempted
+        self._last_fail_open_fallback_status = fallback_status
+        self._fail_open_total_count += 1
+        self._fail_open_consecutive_count += 1
+        self._fail_open_timestamps.append(now)
+        window_count, rate_per_minute = self._fail_open_rate_snapshot()
+
+        if fallback_status == "succeeded":
+            self._last_compression_status = "degraded_fallback_compressed"
+            self._last_compression_noop_reason = ""
+        else:
+            self._last_compression_status = "degraded_fail_open"
+            self._last_compression_noop_reason = (
+                f"fail-open: {type(exc).__name__}: {safe_error}"
+            )
+
+        logger.warning(
+            "event=lcm_fail_open_degraded engine=lcm session_id=%s "
+            "error_type=%s error=%r raw_tokens=%d context_limit=%s "
+            "over_context_limit=%s fallback_attempted=%s fallback_status=%s "
+            "total=%d consecutive=%d window_seconds=%d window_count=%d "
+            "rate_per_minute=%.3f fallback_error_type=%s fallback_error=%r",
+            self.current_session_id or self._session_id or "",
+            type(exc).__name__,
+            safe_error,
+            raw_tokens,
+            int(context_limit or 0) if context_limit else "unknown",
+            self._last_fail_open_over_context_limit,
+            fallback_attempted,
+            fallback_status,
+            self._fail_open_total_count,
+            self._fail_open_consecutive_count,
+            int(_FAIL_OPEN_RATE_WINDOW_SECONDS),
+            window_count,
+            rate_per_minute,
+            type(fallback_exc).__name__ if fallback_exc is not None else "",
+            safe_fallback_error,
+        )
+
+    def _build_fail_open_fallback_compressor(self) -> Any:
+        from agent.context_compressor import ContextCompressor
+
+        return ContextCompressor(
+            model=self.model or "unknown",
+            threshold_percent=self.threshold_percent,
+            protect_first_n=self.protect_first_n,
+            protect_last_n=self.protect_last_n,
+            summary_target_ratio=0.20,
+            quiet_mode=True,
+            summary_model_override=self.summary_model or self._config.summary_model,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            config_context_length=self.context_length if self.context_length > 0 else None,
+            provider=self.provider,
+            api_mode=self.api_mode,
+            abort_on_summary_failure=False,
+        )
+
+    def _recoverable_fail_open_error(
+        self,
+        primary_exc: BaseException,
+        fallback_exc: BaseException,
+        *,
+        raw_tokens: int,
+        context_limit: Optional[int],
+    ) -> LCMFailOpenRecoveryError:
+        primary_text = self._safe_fail_open_error_text(primary_exc)
+        fallback_text = self._safe_fail_open_error_text(fallback_exc)
+        limit_text = str(int(context_limit or 0)) if context_limit else "unknown"
+        return LCMFailOpenRecoveryError(
+            "recoverable LCM fail-open overflow: primary LCM compression failed "
+            f"({type(primary_exc).__name__}: {primary_text}); raw context "
+            f"is over provider context limit ({raw_tokens}/{limit_text} tokens); "
+            "built-in ContextCompressor fallback failed "
+            f"({type(fallback_exc).__name__}: {fallback_text}). "
+            "No silent provider-overflow fallback is safe; start a fresh session "
+            "or manually compact after fixing LCM."
+        )
+
+    def _handle_fail_open_compression_exception(
+        self,
+        messages: List[Dict[str, Any]],
+        exc: Exception,
+        *,
+        current_tokens: Optional[int] = None,
+        focus_topic: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        raw_tokens = (
+            current_tokens
+            if current_tokens is not None and current_tokens > 0
+            else count_messages_tokens(messages)
+        )
+        request_overhead_tokens = max(0, raw_tokens - count_messages_tokens(messages))
+        context_limit = self.context_length if self.context_length > 0 else None
+
+        if not self._raw_messages_exceed_context_limit(raw_tokens, context_limit):
+            self._record_fail_open_degraded(
+                exc,
+                raw_tokens=raw_tokens,
+                context_limit=context_limit,
+                fallback_attempted=False,
+                fallback_status="not_needed_below_limit",
+            )
+            return messages
+
+        try:
+            fallback_compressor = self._build_fail_open_fallback_compressor()
+            fallback_messages = fallback_compressor.compress(
+                messages,
+                current_tokens=raw_tokens,
+                focus_topic=focus_topic,
+                force=True,
+            )
+            fallback_tokens = count_messages_tokens(fallback_messages) + request_overhead_tokens
+            if self._raw_messages_exceed_context_limit(fallback_tokens, context_limit):
+                raise LCMFailOpenRecoveryError(
+                    "built-in ContextCompressor fallback did not reduce raw "
+                    f"context below provider limit ({fallback_tokens}/"
+                    f"{int(context_limit or 0)} tokens)"
+                )
+        except Exception as fallback_exc:
+            self._record_fail_open_degraded(
+                exc,
+                raw_tokens=raw_tokens,
+                context_limit=context_limit,
+                fallback_attempted=True,
+                fallback_status="failed",
+                fallback_exc=fallback_exc,
+            )
+            raise self._recoverable_fail_open_error(
+                exc,
+                fallback_exc,
+                raw_tokens=raw_tokens,
+                context_limit=context_limit,
+            ) from fallback_exc
+
+        self._record_fail_open_degraded(
+            exc,
+            raw_tokens=raw_tokens,
+            context_limit=context_limit,
+            fallback_attempted=True,
+            fallback_status="succeeded",
+        )
+        self._ingest_cursor = len(fallback_messages)
+        self._ingest_cursor_needs_reconcile = False
+        return fallback_messages
 
     # -- ContextEngine optional methods ------------------------------------
 
@@ -1706,6 +1960,21 @@ class LCMEngine(ContextEngine):
         self._last_condensation_suppressed_reason = ""
         self._last_compression_status = "idle"
         self._last_compression_noop_reason = ""
+        self._degraded = False
+        self._last_degraded_reason = ""
+        self._last_fail_open_at = 0.0
+        self._last_fail_open_error = ""
+        self._last_fail_open_error_type = ""
+        self._last_fail_open_fallback_error = ""
+        self._last_fail_open_fallback_error_type = ""
+        self._last_fail_open_raw_tokens = 0
+        self._last_fail_open_context_limit = 0
+        self._last_fail_open_over_context_limit = False
+        self._last_fail_open_fallback_attempted = False
+        self._last_fail_open_fallback_status = ""
+        self._fail_open_total_count = 0
+        self._fail_open_consecutive_count = 0
+        self._fail_open_timestamps = []
         self._last_boundary_skip_time = 0
 
     def _reset_compaction_progress(self) -> None:
@@ -2388,6 +2657,7 @@ class LCMEngine(ContextEngine):
 
     def get_status(self) -> Dict[str, Any]:
         status = super().get_status()
+        fail_open_window_count, fail_open_rate_per_minute = self._fail_open_rate_snapshot()
         status.update({
             "compression_count": self.compression_count,
             "last_prompt_tokens": self.last_prompt_tokens,
@@ -2404,6 +2674,24 @@ class LCMEngine(ContextEngine):
             "threshold_tokens": self.threshold_tokens,
             "last_compression_status": self._last_compression_status,
             "last_compression_noop_reason": self._last_compression_noop_reason,
+            "degraded": self._degraded,
+            "context_engine_degraded": self._degraded,
+            "degraded_reason": self._last_degraded_reason,
+            "last_fail_open_at": self._last_fail_open_at or None,
+            "last_fail_open_error": self._last_fail_open_error,
+            "last_fail_open_error_type": self._last_fail_open_error_type,
+            "last_fail_open_fallback_error": self._last_fail_open_fallback_error,
+            "last_fail_open_fallback_error_type": self._last_fail_open_fallback_error_type,
+            "last_fail_open_raw_tokens": self._last_fail_open_raw_tokens,
+            "last_fail_open_context_limit": self._last_fail_open_context_limit,
+            "last_fail_open_over_context_limit": self._last_fail_open_over_context_limit,
+            "last_fail_open_fallback_attempted": self._last_fail_open_fallback_attempted,
+            "last_fail_open_fallback_status": self._last_fail_open_fallback_status,
+            "fail_open_total_count": self._fail_open_total_count,
+            "fail_open_consecutive_count": self._fail_open_consecutive_count,
+            "fail_open_window_seconds": int(_FAIL_OPEN_RATE_WINDOW_SECONDS),
+            "fail_open_window_count": fail_open_window_count,
+            "fail_open_rate_per_minute": round(fail_open_rate_per_minute, 4),
             "model": self.model,
             "provider": self.provider,
             "context_length_source": self._context_length_source,

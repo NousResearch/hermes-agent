@@ -1167,6 +1167,7 @@ class DiscordAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
         self._disconnecting = True
+        await self._cancel_typing_tasks(reason="disconnect")
         # Cancel the bot task before closing the client.  If connect() timed out
         # and returned False, the background client.start() task may still be
         # running; calling client.close() alone is not enough to stop it because
@@ -1202,6 +1203,46 @@ class DiscordAdapter(BasePlatformAdapter):
         self._release_platform_lock()
 
         logger.info("[%s] Disconnected", self.name)
+
+    async def cancel_background_tasks(self) -> None:
+        """Cancel Discord-specific background loops plus base tasks."""
+        await self._cancel_typing_tasks(reason="shutdown")
+        await super().cancel_background_tasks()
+
+    async def _cancel_typing_tasks(self, reason: str = "cleanup") -> None:
+        """Cancel all persistent typing loops owned by this adapter.
+
+        Discord keeps typing indicators alive with per-channel background tasks.
+        Those tasks are not part of BasePlatformAdapter's message-processing
+        task registry, so shutdown/restart must drain them explicitly.
+        """
+        tasks = [(chat_id, task) for chat_id, task in self._typing_tasks.items()]
+        if not tasks:
+            return
+
+        self._typing_tasks.clear()
+        live_tasks = [task for _, task in tasks if not task.done()]
+        for task in live_tasks:
+            task.cancel()
+
+        if live_tasks:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*live_tasks, return_exceptions=True),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] %d Discord typing task(s) did not exit within 2s during %s",
+                    self.name,
+                    len([task for task in live_tasks if not task.done()]),
+                    reason,
+                )
+
+        logger.debug(
+            "[%s] Cleared %d Discord typing task(s) during %s",
+            self.name, len(tasks), reason,
+        )
 
     def _command_sync_state_path(self) -> _Path:
         from hermes_constants import get_hermes_home

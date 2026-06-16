@@ -22,7 +22,7 @@ import uuid
 
 import requests
 from websockets.exceptions import ConnectionClosed
-from websockets.sync.client import connect
+from websockets.sync.client import ClientConnection, connect
 
 from hermes_state import SessionDB
 from tools.environments.base import BaseEnvironment, _ThreadedProcessHandle
@@ -504,7 +504,7 @@ class CoderEnvironment(BaseEnvironment):
         return json.dumps({"data": data}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
     @classmethod
-    def _send_stdin_data(cls, websocket, stdin_data: str) -> None:
+    def _send_stdin_data(cls, websocket: ClientConnection, stdin_data: str) -> None:
         if not stdin_data:
             return
         chunk_size = max(1, cls._STDIN_CHUNK_SIZE)
@@ -514,7 +514,7 @@ class CoderEnvironment(BaseEnvironment):
             websocket.send(frame)
 
     @classmethod
-    def _send_stdin_eof(cls, websocket) -> None:
+    def _send_stdin_eof(cls, websocket: ClientConnection) -> None:
         # EOT / Ctrl+D signals EOF for stdin-driven commands.
         frame = cls._stdin_frame("\u0004")
         websocket.send(frame)
@@ -559,8 +559,9 @@ class CoderEnvironment(BaseEnvironment):
         pty_url = self._pty_url(agent_id, command=pty_command, reconnect_id=reconnect_id)
         output_parts: list[str] = []
         recv_poll_timeout = max(0.1, min(self._PTY_RECV_POLL_TIMEOUT, float(timeout)))
-        max_empty_reconnects = self._PTY_EMPTY_EOF_RECONNECTS if stdin_data is None else 0
+        max_empty_reconnects = self._PTY_EMPTY_EOF_RECONNECTS
         empty_reconnects = 0
+        stdin_send_attempted = False
 
         while True:
             attempt_started = time.monotonic()
@@ -578,7 +579,11 @@ class CoderEnvironment(BaseEnvironment):
                 if self._cancel_requested(cancel_state):
                     self._interrupt_pty(websocket)
 
-                if stdin_data is not None:
+                if stdin_data is not None and not stdin_send_attempted:
+                    # The reconnect id resumes the same PTY session.  Stdin
+                    # must be forwarded at most once locally; resending on a
+                    # reconnect can duplicate file writes or command input.
+                    stdin_send_attempted = True
                     self._send_stdin_data(websocket, stdin_data)
                     self._send_stdin_eof(websocket)
 

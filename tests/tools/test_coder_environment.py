@@ -454,7 +454,10 @@ def test_coder_environment_reconnects_same_pty_after_empty_initial_eof(monkeypat
     assert second_query["command"] == first_query["command"]
 
 
-def test_coder_environment_does_not_reconnect_empty_eof_with_stdin(monkeypatch):
+def test_coder_environment_reconnects_empty_eof_with_stdin_without_resending(monkeypatch):
+    reconnect_id = uuid.UUID("22222222-3333-4444-5555-666666666666")
+    exit_marker = f"__HERMES_EXIT_{reconnect_id}__"
+
     class _SendingWebSocket(_FakeWebSocket):
         def __init__(self, messages):
             super().__init__(messages)
@@ -463,10 +466,12 @@ def test_coder_environment_does_not_reconnect_empty_eof_with_stdin(monkeypatch):
         def send(self, message):
             self.sent.append(message)
 
-    fake_ws = _SendingWebSocket([])
-    connect_mock = MagicMock(return_value=fake_ws)
+    first_ws = _SendingWebSocket([])
+    second_ws = _SendingWebSocket([f"after reconnect\n\n{exit_marker}0{exit_marker}\n".encode()])
+    connect_mock = MagicMock(side_effect=[first_ws, second_ws])
 
     monkeypatch.setattr("tools.environments.coder.connect", connect_mock)
+    monkeypatch.setattr("tools.environments.coder.uuid.uuid4", lambda: reconnect_id)
     monkeypatch.setattr(CoderEnvironment, "_resolve_agent_id", lambda self: "agent-123")
     monkeypatch.setattr(
         "tools.environments.coder.coder_workspace_name_for_task",
@@ -484,10 +489,17 @@ def test_coder_environment_does_not_reconnect_empty_eof_with_stdin(monkeypatch):
 
     result = env.execute("cat > /tmp/out.txt", stdin_data="hello stdin")
 
-    assert result["returncode"] == 1
-    assert connect_mock.call_count == 1
-    sent_payloads = [json.loads(frame.decode("utf-8")) for frame in fake_ws.sent]
+    assert result["returncode"] == 0
+    assert result["output"] == "after reconnect\n"
+    assert connect_mock.call_count == 2
+    sent_payloads = [json.loads(frame.decode("utf-8")) for frame in first_ws.sent]
     assert sent_payloads == [{"data": "hello stdin"}, {"data": "\u0004"}]
+    assert second_ws.sent == []
+    first_query = parse_qs(urlparse(connect_mock.call_args_list[0].args[0]).query)
+    second_query = parse_qs(urlparse(connect_mock.call_args_list[1].args[0]).query)
+    assert first_query["reconnect"] == [str(reconnect_id)]
+    assert second_query["reconnect"] == [str(reconnect_id)]
+    assert second_query["command"] == first_query["command"]
 
 
 def test_coder_environment_recv_timeout_poll_does_not_fail_silent_command(monkeypatch):

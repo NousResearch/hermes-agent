@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  createCronJob,
+  deleteCronJob,
+  getCronJob,
+  getCronJobRuns,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -10,7 +14,12 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  pauseCronJob,
+  resumeCronJob,
+  setApiRequestProfile,
+  triggerCronJob,
+  updateCronJob
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -33,6 +42,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -153,5 +163,66 @@ describe('Hermes REST session helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+
+  it('tags cron job reads and mutations with the active API profile', async () => {
+    setApiRequestProfile('worker_alpha')
+    api.mockResolvedValue({ runs: [] })
+
+    await getCronJobs()
+    await getCronJob('job 1')
+    await getCronJobRuns('job 1', 7)
+    await createCronJob({ name: 'Daily', prompt: 'say hi', schedule: '0 9 * * *' })
+    await updateCronJob('job 1', { enabled: false })
+    await pauseCronJob('job 1')
+    await resumeCronJob('job 1')
+    await triggerCronJob('job 1')
+    await deleteCronJob('job 1')
+
+    expect(api).toHaveBeenNthCalledWith(1, {
+      path: '/api/cron/jobs?profile=worker_alpha',
+      profile: 'worker_alpha',
+      timeoutMs: 60_000
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      path: '/api/cron/jobs/job%201?profile=worker_alpha',
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(3, {
+      path: '/api/cron/jobs/job%201/runs?limit=7&profile=worker_alpha',
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(4, {
+      path: '/api/cron/jobs?profile=worker_alpha',
+      method: 'POST',
+      body: { name: 'Daily', prompt: 'say hi', schedule: '0 9 * * *' },
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(5, {
+      path: '/api/cron/jobs/job%201?profile=worker_alpha',
+      method: 'PUT',
+      body: { updates: { enabled: false } },
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(6, {
+      path: '/api/cron/jobs/job%201/pause?profile=worker_alpha',
+      method: 'POST',
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(7, {
+      path: '/api/cron/jobs/job%201/resume?profile=worker_alpha',
+      method: 'POST',
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(8, {
+      path: '/api/cron/jobs/job%201/trigger?profile=worker_alpha',
+      method: 'POST',
+      profile: 'worker_alpha'
+    })
+    expect(api).toHaveBeenNthCalledWith(9, {
+      path: '/api/cron/jobs/job%201?profile=worker_alpha',
+      method: 'DELETE',
+      profile: 'worker_alpha'
+    })
   })
 })
